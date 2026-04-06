@@ -1,0 +1,7 @@
+test/
+.github/
+.git/
+.DS_Store
+*.md
+!README.md
+package-lock.json
