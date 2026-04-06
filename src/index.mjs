@@ -1,232 +1,279 @@
 #!/usr/bin/env node
 /**
- * open-claude-code v2
+ * @tarang/cli — Tarang AI Coding Agent CLI
  *
- * Open source implementation of Claude Code CLI architecture.
- * Based on ruDevolution decompilation of Claude Code v2.1.91.
+ * Hybrid local/remote multi-agent orchestration.
+ * Built on open-claude-code v2 scaffold.
  *
- * Architecture mirrors the actual Claude Code internals:
- * - Async generator agent loop (13 event types)
- * - 25+ tools with validateInput/call interface
- * - MCP client (stdio/SSE/WS/sHTTP transports)
- * - 6 permission modes + sandbox
- * - Context compaction + auto-compaction
- * - Hooks system (7 events)
- * - Settings chain (5 layers, 76 properties)
- * - Multi-provider support (Anthropic, OpenAI, Google)
- * - Custom agents and skills
- * - Session management and checkpoints
- * - Prompt caching
- * - 39 slash commands
- * - Telemetry stub
+ * Phase 1: SSE consumer + tool executor + callback client.
  */
 
-import { createAgentLoop } from './core/agent-loop.mjs';
-import { createToolRegistry } from './tools/registry.mjs';
-import { createPermissionChecker } from './permissions/checker.mjs';
-import { loadSettings } from './config/settings.mjs';
-import { parseArgs, getUsageText } from './config/cli-args.mjs';
-import { HookEngine } from './hooks/engine.mjs';
-import { McpClient } from './mcp/client.mjs';
-import { AgentLoader } from './agents/loader.mjs';
-import { SkillsLoader } from './skills/loader.mjs';
-import { SessionManager } from './core/session.mjs';
-import { CheckpointManager } from './core/checkpoints.mjs';
-import { PromptCache } from './core/cache.mjs';
-import { readEnv } from './config/env.mjs';
-import * as telemetry from './telemetry/index.mjs';
+import { TarangStreamClient, EVENT_TYPES } from './core/stream-client.mjs';
+import { createToolExecutor } from './core/tool-executor.mjs';
+import { TarangAuth } from './auth/tarang-auth.mjs';
+
+const VERSION = '5.0.0-alpha.1';
+
+// ── Arg Parsing ─────────────────────────────────────────────
+
+function parseArgs(argv) {
+    const args = {
+        command: null,       // login, config, resume
+        instruction: null,   // positional instruction
+        verbose: false,
+        yes: false,
+        version: false,
+        help: false,
+        // config subcommand opts
+        showConfig: false,
+        openRouterKey: null,
+        anthropicKey: null,
+        backendUrl: null,
+        mode: null,
+    };
+
+    let i = 0;
+    while (i < argv.length) {
+        const arg = argv[i];
+        switch (arg) {
+            case '--version': case '-V': args.version = true; break;
+            case '--help': case '-h': args.help = true; break;
+            case '--verbose': case '-v': args.verbose = true; break;
+            case '--yes': case '-y': args.yes = true; break;
+            case 'login': args.command = 'login'; break;
+            case 'resume': args.command = 'resume'; break;
+            case 'config':
+                args.command = 'config';
+                break;
+            case '--show': args.showConfig = true; break;
+            case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
+            case '--anthropic-key': args.anthropicKey = argv[++i]; break;
+            case '--backend-url': args.backendUrl = argv[++i]; break;
+            case '--mode': args.mode = argv[++i]; break;
+            default:
+                if (!arg.startsWith('-') && !args.command && !args.instruction) {
+                    args.instruction = arg;
+                }
+                break;
+        }
+        i++;
+    }
+    return args;
+}
+
+function printUsage() {
+    console.log(`
+\x1b[1m@tarang/cli v${VERSION}\x1b[0m — AI Coding Agent CLI
+
+\x1b[1mUSAGE\x1b[0m
+  tarang "instruction"         Execute instruction (one-shot)
+  tarang                       Interactive mode (REPL)
+  tarang login                 Authenticate via GitHub OAuth
+  tarang config --show         Display configuration
+  tarang config -k KEY         Set OpenRouter API key
+  tarang resume                Resume a paused session
+
+\x1b[1mFLAGS\x1b[0m
+  --verbose, -v                Show tool details and thinking
+  --yes, -y                    Auto-approve all operations
+  --version, -V                Show version
+  --help, -h                   Show this help
+
+\x1b[1mCONFIG\x1b[0m
+  --openrouter-key KEY         Set OpenRouter API key
+  --anthropic-key KEY          Set Anthropic API key
+  --backend-url URL            Set custom backend URL
+  --mode local|remote|auto     Set default execution mode
+
+\x1b[1mEXAMPLES\x1b[0m
+  tarang "add user authentication"
+  tarang -v "explain the project structure"
+  tarang --yes "fix the login bug"
+  npx @tarang/cli "add auth"
+`);
+}
+
+// ── Event Rendering ─────────────────────────────────────────
+
+function renderEvent(event, verbose = false) {
+    const { type, data } = event;
+    switch (type) {
+        case EVENT_TYPES.STATUS:
+            process.stderr.write(`\x1b[2m${data.message || ''}\x1b[0m\n`);
+            break;
+        case EVENT_TYPES.PLAN:
+            if (data.milestones) {
+                process.stderr.write('\n\x1b[1mPlan:\x1b[0m\n');
+                for (const m of data.milestones) {
+                    const icon = m.status === 'completed' ? '✓' : m.status === 'failed' ? '✗' : '○';
+                    process.stderr.write(`  ${icon} ${m.name}${m.description ? ': ' + m.description : ''}\n`);
+                }
+                process.stderr.write('\n');
+            }
+            break;
+        case EVENT_TYPES.CONTENT:
+            process.stdout.write(data.text || data.message || '');
+            break;
+        case EVENT_TYPES.ERROR:
+            process.stderr.write(`\x1b[31m✗ ${data.message || 'Unknown error'}\x1b[0m\n`);
+            break;
+        case EVENT_TYPES.COMPLETE:
+            process.stderr.write(`\n\x1b[32m✓ ${data.summary || 'Done'}`);
+            if (data.changes) process.stderr.write(` (${data.changes} changes)`);
+            if (data.duration_s) process.stderr.write(` in ${data.duration_s.toFixed(1)}s`);
+            process.stderr.write('\x1b[0m\n');
+            break;
+        // Phase 2: remaining events
+        case EVENT_TYPES.THINKING:
+            if (verbose) process.stderr.write(`\x1b[2m${(data.text || '').slice(0, 200)}\x1b[0m\n`);
+            break;
+        case EVENT_TYPES.PHASE_UPDATE:
+        case EVENT_TYPES.PHASE_SUMMARY:
+        case EVENT_TYPES.WORKER_UPDATE:
+        case EVENT_TYPES.DELEGATION:
+            if (verbose) process.stderr.write(`\x1b[2m[${type}] ${JSON.stringify(data).slice(0, 120)}\x1b[0m\n`);
+            break;
+        default:
+            if (verbose) process.stderr.write(`\x1b[2m[${type}] ${JSON.stringify(data).slice(0, 100)}\x1b[0m\n`);
+            break;
+    }
+}
+
+// ── Interactive REPL ────────────────────────────────────────
+
+async function startRepl(client, verbose) {
+    const readline = await import('node:readline');
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stderr,
+        prompt: '\x1b[36mtarang>\x1b[0m ',
+    });
+
+    console.error(`\x1b[1m@tarang/cli v${VERSION}\x1b[0m — Type an instruction or /help\n`);
+    rl.prompt();
+
+    rl.on('line', async (line) => {
+        const input = line.trim();
+        if (!input) { rl.prompt(); return; }
+
+        if (input === '/exit' || input === '/quit') {
+            rl.close();
+            process.exit(0);
+        }
+        if (input === '/help') {
+            console.error('  /help    Show this help');
+            console.error('  /exit    Exit CLI');
+            console.error('  /config  Show configuration');
+            console.error('  Or type any instruction to execute.\n');
+            rl.prompt();
+            return;
+        }
+        if (input === '/config') {
+            const auth = new TarangAuth();
+            auth.printConfig();
+            rl.prompt();
+            return;
+        }
+
+        try {
+            for await (const event of client.execute(input)) {
+                renderEvent(event, verbose);
+            }
+        } catch (err) {
+            process.stderr.write(`\x1b[31mError: ${err.message}\x1b[0m\n`);
+        }
+        process.stdout.write('\n');
+        rl.prompt();
+    });
+
+    rl.on('close', () => process.exit(0));
+}
+
+// ── Main ────────────────────────────────────────────────────
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
 
-    // Handle --version
-    if (args.showVersion) {
-        console.log('open-claude-code v2.0.0-alpha.1');
+    if (args.version) {
+        console.log(`@tarang/cli ${VERSION}`);
+        process.exit(0);
+    }
+    if (args.help) {
+        printUsage();
         process.exit(0);
     }
 
-    // Handle --help
-    if (args.showHelp) {
-        console.log(getUsageText());
+    const auth = new TarangAuth();
+
+    // ── Subcommands ──
+
+    if (args.command === 'login') {
+        const creds = auth.loadCredentials();
+        await auth.login(args.backendUrl || creds.backendUrl);
+        console.log('\x1b[32m✓ Login successful!\x1b[0m');
         process.exit(0);
     }
 
-    const settings = await loadSettings();
-    const env = readEnv();
-
-    // Apply CLI overrides to settings
-    if (args.permissionMode) settings.permissions = { ...settings.permissions, defaultMode: args.permissionMode };
-    if (args.systemPrompt) settings.systemPromptOverride = args.systemPrompt;
-    if (args.addDirs?.length) settings.addDirs = args.addDirs;
-    if (args.maxTurns) settings.maxTurns = args.maxTurns;
-    if (args.verbose) settings.verbose = true;
-    if (args.debug) settings.debug = true;
-
-    const tools = createToolRegistry();
-    const permissions = createPermissionChecker(settings.permissions);
-    const hooks = new HookEngine(settings.hooks);
-
-    // Apply tool allow/deny lists
-    if (args.allowedTools) settings.allowedTools = args.allowedTools;
-    if (args.disallowedTools) settings.disallowedTools = args.disallowedTools;
-
-    // Load custom agents
-    const agentLoader = new AgentLoader();
-    agentLoader.load();
-
-    // Load skills
-    const skillsLoader = new SkillsLoader();
-    skillsLoader.load();
-
-    // Wire skill tool
-    const skillTool = tools.get('Skill');
-    if (skillTool) skillTool._skillsLoader = skillsLoader;
-
-    // Session management
-    const sessionManager = new SessionManager();
-    const checkpointManager = new CheckpointManager();
-    const promptCache = new PromptCache();
-
-    // Connect MCP servers if configured
-    const mcpClients = [];
-    if (settings.mcpServers) {
-        for (const [name, config] of Object.entries(settings.mcpServers)) {
-            try {
-                const client = new McpClient(config);
-                await client.connect();
-                const mcpTools = await client.listTools();
-                tools.registerMcpTools(mcpTools, (toolName, toolArgs) => client.callTool(toolName, toolArgs));
-                mcpClients.push(client);
-            } catch (err) {
-                console.error(`MCP server "${name}" failed to connect: ${err.message}`);
-            }
+    if (args.command === 'config') {
+        if (args.openRouterKey) {
+            auth.saveOpenRouterKey(args.openRouterKey);
+            console.log('✓ OpenRouter key saved.');
         }
+        if (args.anthropicKey) {
+            auth.saveAnthropicKey(args.anthropicKey);
+            console.log('✓ Anthropic key saved.');
+        }
+        if (args.backendUrl) {
+            auth.setBackendUrl(args.backendUrl);
+            console.log(`✓ Backend URL set to ${args.backendUrl}`);
+        }
+        if (args.mode) {
+            auth.setMode(args.mode);
+            console.log(`✓ Mode set to ${args.mode}`);
+        }
+        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.backendUrl && !args.mode)) {
+            auth.printConfig();
+        }
+        process.exit(0);
     }
 
-    // Wire MCP resource tool
-    const mcpResourceTool = tools.get('ReadMcpResource');
-    if (mcpResourceTool) mcpResourceTool._mcpClients = mcpClients;
+    // ── Load credentials ──
+    const creds = auth.loadCredentials();
 
-    const loop = createAgentLoop({
-        model: args.model || settings.model || 'claude-sonnet-4-6',
-        tools,
-        permissions,
-        settings,
-        hooks,
+    // ── Create tool executor + stream client ──
+    const toolExecutor = createToolExecutor();
+    const client = new TarangStreamClient({
+        baseUrl: creds.backendUrl,
+        token: creds.token,
+        openRouterKey: creds.openRouterKey,
+        toolExecutor,
+        verbose: args.verbose,
     });
 
-    // Attach extra state for commands to access
-    loop.state._agentLoader = agentLoader;
-    loop.state._skillsLoader = skillsLoader;
-    loop.state._mcpClients = mcpClients;
-    loop.state._hooks = settings.hooks;
-    loop.state._permissionMode = settings.permissions?.defaultMode || 'default';
-    loop.state._sessionManager = sessionManager;
-    loop.state._checkpointManager = checkpointManager;
-    loop.state._promptCache = promptCache;
+    // ── Graceful shutdown ──
+    process.on('SIGINT', async () => {
+        await client.cancel();
+        process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+        await client.cancel();
+        process.exit(0);
+    });
 
-    telemetry.track('session.start', { model: loop.state.model });
-
-    // Graceful shutdown
-    const cleanup = async () => {
-        telemetry.track('session.end', {
-            turns: loop.state.turnCount,
-            tokens: loop.state.tokenUsage,
-        });
-        for (const client of mcpClients) {
-            await client.disconnect().catch(() => {});
+    // ── One-shot mode ──
+    if (args.instruction) {
+        for await (const event of client.execute(args.instruction)) {
+            renderEvent(event, args.verbose);
         }
-    };
-    process.on('SIGINT', async () => { await cleanup(); process.exit(0); });
-    process.on('SIGTERM', async () => { await cleanup(); process.exit(0); });
-
-    if (args.prompt) {
-        // Non-interactive: run prompt and exit (no Ink — plain stdout)
-        const outputFormat = args.outputFormat || 'text';
-        const results = [];
-
-        for await (const event of loop.run(args.prompt)) {
-            if (outputFormat === 'json') {
-                results.push(event);
-            } else if (outputFormat === 'stream-json') {
-                console.log(JSON.stringify(event));
-            } else {
-                handleEvent(event, settings);
-            }
-        }
-
-        if (outputFormat === 'json') {
-            // Extract final text
-            const texts = results
-                .filter(e => e.type === 'assistant')
-                .map(e => e.content)
-                .filter(Boolean);
-            console.log(JSON.stringify({
-                result: texts.join('\n'),
-                usage: loop.state.tokenUsage,
-                model: loop.state.model,
-            }));
-        } else {
-            console.log('');
-        }
-
-        await cleanup();
-    } else {
-        // Interactive: use Ink React TUI
-        try {
-            const { startInkApp } = await import('./ui/app.mjs');
-            const inkInstance = startInkApp(loop, settings);
-
-            // Wait for Ink to exit (user pressed Ctrl+C or /quit)
-            await inkInstance.waitUntilExit();
-        } catch (err) {
-            // Fallback to readline REPL if Ink fails (e.g. no TTY, missing deps)
-            if (settings.debug) {
-                console.error(`Ink UI unavailable (${err.message}), falling back to readline REPL`);
-            }
-            const { startRepl } = await import('./ui/repl.mjs');
-            await startRepl(loop, settings);
-        }
-        await cleanup();
+        process.stdout.write('\n');
+        process.exit(0);
     }
+
+    // ── Interactive REPL ──
+    await startRepl(client, args.verbose);
 }
 
-function handleEvent(event, settings = {}) {
-    switch (event.type) {
-        case 'stream_request_start':
-            break;
-        case 'stream_event':
-            process.stdout.write(event.text || '');
-            break;
-        case 'thinking':
-            if (process.env.SHOW_THINKING || settings.verbose) {
-                process.stdout.write(`\x1b[2m${event.text}\x1b[0m`);
-            }
-            break;
-        case 'assistant':
-            if (!event._streamed && event.content) console.log(event.content);
-            break;
-        case 'tool_progress':
-            process.stderr.write(`\x1b[33m[${event.tool}]\x1b[0m running...\n`);
-            break;
-        case 'result':
-            break;
-        case 'compaction':
-            process.stderr.write(`\x1b[2m[compaction #${event.count}]\x1b[0m\n`);
-            break;
-        case 'hookPermissionResult':
-            if (!event.allowed) {
-                process.stderr.write(`\x1b[31m[blocked: ${event.tool}]\x1b[0m\n`);
-            }
-            break;
-        case 'error':
-            console.error(`\x1b[31mError: ${event.message}\x1b[0m`);
-            break;
-        case 'stop':
-            break;
-        default:
-            break;
-    }
-}
-
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch(err => {
+    console.error(`\x1b[31mFatal: ${err.message}\x1b[0m`);
+    process.exit(1);
+});
