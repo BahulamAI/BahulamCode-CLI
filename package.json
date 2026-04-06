@@ -1,0 +1,45 @@
+{
+  "name": "open-claude-code",
+  "version": "2.0.0",
+  "description": "Open source Claude Code CLI — based on ruDevolution decompilation of v2.1.91",
+  "type": "module",
+  "bin": {
+    "occ": "src/index.mjs"
+  },
+  "files": [
+    "src/",
+    "test/"
+  ],
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node test/test.mjs"
+  },
+  "keywords": [
+    "claude",
+    "code",
+    "cli",
+    "ai",
+    "decompiler",
+    "open-source"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruvnet/open-claude-code.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ruvnet/open-claude-code/issues"
+  },
+  "homepage": "https://github.com/ruvnet/open-claude-code#readme",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "author": "",
+  "dependencies": {
+    "ink": "^5.2.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1"
+  }
+}
