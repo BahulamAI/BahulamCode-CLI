@@ -1,6 +1,6 @@
 {
   "name": "@tarang/cli",
-  "version": "5.0.0-beta.1",
+  "version": "5.0.0",
   "description": "Tarang AI Coding Agent CLI — hybrid local/remote multi-agent orchestration",
   "type": "module",
   "bin": {
