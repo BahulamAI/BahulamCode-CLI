@@ -6,10 +6,11 @@
  * tool_request/tool_call events (executes locally, POSTs callback), and
  * yields all other events to the caller for rendering.
  *
- * Phase 1: handles 6 of 22 event types.
+ * Phase 2: handles all 22 event types. Approval flow integrated.
  */
 
 import { sendCallback, sendSkippedCallback } from './callback-client.mjs';
+import { ApprovalManager } from './approval.mjs';
 
 export const EVENT_TYPES = Object.freeze({
     // Phase 1 — handled
@@ -47,14 +48,16 @@ export class TarangStreamClient {
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, openRouterKey, toolExecutor, verbose = false }) {
+    constructor({ baseUrl, token, openRouterKey, toolExecutor, verbose = false, approvalManager = null }) {
         this.baseUrl = (baseUrl || 'https://tarang-backend-intl-web-app-production.up.railway.app').replace(/\/$/, '');
         this.token = token;
         this.openRouterKey = openRouterKey;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
+        this.approval = approvalManager || new ApprovalManager();
         this.currentTaskId = null;
         this._cancelled = false;
+        this._paused = false;
     }
 
     /**
@@ -203,7 +206,15 @@ export class TarangStreamClient {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
         }
 
-        // Phase 1: auto-approve all. Phase 2 will add Y/n/a/t/v flow.
+        // Phase 2: approval flow
+        const { approved, reason } = await this.approval.check(toolName, args || {}, require_approval);
+        if (!approved) {
+            if (this.currentTaskId && callId) {
+                await sendSkippedCallback(this.baseUrl, this.token, this.currentTaskId, callId, reason);
+            }
+            return { type: EVENT_TYPES.STATUS, data: { message: `Skipped ${toolName}: ${reason || 'rejected'}` } };
+        }
+
         // Execute tool locally via the tool executor bridge
         const startTime = Date.now();
         let result;
@@ -224,7 +235,7 @@ export class TarangStreamClient {
             await sendCallback(this.baseUrl, this.token, this.currentTaskId, callId, result);
         }
 
-        return null; // don't yield tool events to caller in Phase 1
+        return null;
     }
 
     /** Cancel the current stream. */

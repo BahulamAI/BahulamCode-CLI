@@ -1,6 +1,6 @@
 {
   "name": "@tarang/cli",
-  "version": "5.0.0-alpha.1",
+  "version": "5.0.0-beta.1",
   "description": "Tarang AI Coding Agent CLI — hybrid local/remote multi-agent orchestration",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "start": "node src/index.mjs",
-    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-callback.mjs",
+    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-callback.mjs && node test/test-formatter.mjs && node test/test-slash-commands.mjs && node test/test-approval.mjs && node test/test-session-manager.mjs",
     "test:e2e": "node test/e2e-smoke.mjs && node test/e2e-sse-flow.mjs && node test/e2e-tool-roundtrip.mjs",
     "test:all": "npm test && npm run test:e2e"
   },
