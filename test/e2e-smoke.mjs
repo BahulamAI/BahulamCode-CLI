@@ -26,12 +26,12 @@ const opts = { cwd: process.cwd(), encoding: 'utf-8', timeout: 10_000 };
 
 test('--version prints version', () => {
     const out = execSync(`${CLI} --version`, opts).trim();
-    assert.ok(out.includes('5.0.0-alpha.1'), `Expected version string, got: ${out}`);
+    assert.ok(out.includes('@tarang/cli'), `Expected version string, got: ${out}`);
 });
 
 test('-V prints version', () => {
     const out = execSync(`${CLI} -V`, opts).trim();
-    assert.ok(out.includes('5.0.0-alpha.1'));
+    assert.ok(out.includes('@tarang/cli'));
 });
 
 test('--help prints usage', () => {

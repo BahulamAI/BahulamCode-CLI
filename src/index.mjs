@@ -2,29 +2,38 @@
 /**
  * @tarang/cli — Tarang AI Coding Agent CLI
  *
- * Hybrid local/remote multi-agent orchestration.
- * Built on open-claude-code v2 scaffold.
- *
- * Phase 1: SSE consumer + tool executor + callback client.
+ * Phase 2: Full UI/UX parity with Python CLI.
+ * - All 22 SSE events (T9)
+ * - 14 slash commands (T10)
+ * - Approval flow Y/n/v/a/t (T11)
+ * - Keyboard: ESC=cancel, SPACE=pause (T12)
+ * - Session management (T13)
+ * - Control endpoints (T14)
+ * - Config management with env fallbacks (T15)
+ * - Error handling & output filtering (T16)
  */
 
 import { TarangStreamClient, EVENT_TYPES } from './core/stream-client.mjs';
 import { createToolExecutor } from './core/tool-executor.mjs';
 import { TarangAuth } from './auth/tarang-auth.mjs';
+import { ApprovalManager } from './core/approval.mjs';
+import { SessionManager } from './core/session-manager.mjs';
+import { EventFormatter } from './ui/formatter.mjs';
+import { handleSlashCommand, COMMANDS } from './ui/slash-commands.mjs';
 
-const VERSION = '5.0.0-alpha.1';
+const VERSION = '5.0.0-beta.1';
 
-// ── Arg Parsing ─────────────────────────────────────────────
+// ── Arg Parsing (T15) ──────────────────────────────────────
 
 function parseArgs(argv) {
     const args = {
-        command: null,       // login, config, resume
-        instruction: null,   // positional instruction
+        command: null,
+        instruction: null,
         verbose: false,
         yes: false,
+        plan: false,
         version: false,
         help: false,
-        // config subcommand opts
         showConfig: false,
         openRouterKey: null,
         anthropicKey: null,
@@ -40,11 +49,10 @@ function parseArgs(argv) {
             case '--help': case '-h': args.help = true; break;
             case '--verbose': case '-v': args.verbose = true; break;
             case '--yes': case '-y': args.yes = true; break;
+            case '--plan': args.plan = true; break;
             case 'login': args.command = 'login'; break;
             case 'resume': args.command = 'resume'; break;
-            case 'config':
-                args.command = 'config';
-                break;
+            case 'config': args.command = 'config'; break;
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
             case '--anthropic-key': args.anthropicKey = argv[++i]; break;
@@ -58,6 +66,11 @@ function parseArgs(argv) {
         }
         i++;
     }
+
+    // T15: env var fallbacks
+    if (!args.verbose && process.env.TARANG_VERBOSE === '1') args.verbose = true;
+    if (!args.yes && process.env.TARANG_YES === '1') args.yes = true;
+
     return args;
 }
 
@@ -70,12 +83,12 @@ function printUsage() {
   tarang                       Interactive mode (REPL)
   tarang login                 Authenticate via GitHub OAuth
   tarang config --show         Display configuration
-  tarang config -k KEY         Set OpenRouter API key
   tarang resume                Resume a paused session
 
 \x1b[1mFLAGS\x1b[0m
   --verbose, -v                Show tool details and thinking
   --yes, -y                    Auto-approve all operations
+  --plan                       Read-only mode (block all writes)
   --version, -V                Show version
   --help, -h                   Show this help
 
@@ -85,63 +98,43 @@ function printUsage() {
   --backend-url URL            Set custom backend URL
   --mode local|remote|auto     Set default execution mode
 
+\x1b[1mSLASH COMMANDS\x1b[0m (interactive mode)
+${Object.entries(COMMANDS).map(([k, v]) => `  ${k.padEnd(14)} ${v.description}`).join('\n')}
+
+\x1b[1mKEYBOARD\x1b[0m
+  ESC                          Cancel current execution
+  SPACE                        Pause + inject instruction
+  Ctrl+C                       Exit
+
 \x1b[1mEXAMPLES\x1b[0m
   tarang "add user authentication"
   tarang -v "explain the project structure"
   tarang --yes "fix the login bug"
-  npx @tarang/cli "add auth"
+  tarang --plan "analyze the codebase"
 `);
 }
 
-// ── Event Rendering ─────────────────────────────────────────
+// ── Execute & Render ────────────────────────────────────────
 
-function renderEvent(event, verbose = false) {
-    const { type, data } = event;
-    switch (type) {
-        case EVENT_TYPES.STATUS:
-            process.stderr.write(`\x1b[2m${data.message || ''}\x1b[0m\n`);
-            break;
-        case EVENT_TYPES.PLAN:
-            if (data.milestones) {
-                process.stderr.write('\n\x1b[1mPlan:\x1b[0m\n');
-                for (const m of data.milestones) {
-                    const icon = m.status === 'completed' ? '✓' : m.status === 'failed' ? '✗' : '○';
-                    process.stderr.write(`  ${icon} ${m.name}${m.description ? ': ' + m.description : ''}\n`);
-                }
-                process.stderr.write('\n');
-            }
-            break;
-        case EVENT_TYPES.CONTENT:
-            process.stdout.write(data.text || data.message || '');
-            break;
-        case EVENT_TYPES.ERROR:
-            process.stderr.write(`\x1b[31m✗ ${data.message || 'Unknown error'}\x1b[0m\n`);
-            break;
-        case EVENT_TYPES.COMPLETE:
-            process.stderr.write(`\n\x1b[32m✓ ${data.summary || 'Done'}`);
-            if (data.changes) process.stderr.write(` (${data.changes} changes)`);
-            if (data.duration_s) process.stderr.write(` in ${data.duration_s.toFixed(1)}s`);
-            process.stderr.write('\x1b[0m\n');
-            break;
-        // Phase 2: remaining events
-        case EVENT_TYPES.THINKING:
-            if (verbose) process.stderr.write(`\x1b[2m${(data.text || '').slice(0, 200)}\x1b[0m\n`);
-            break;
-        case EVENT_TYPES.PHASE_UPDATE:
-        case EVENT_TYPES.PHASE_SUMMARY:
-        case EVENT_TYPES.WORKER_UPDATE:
-        case EVENT_TYPES.DELEGATION:
-            if (verbose) process.stderr.write(`\x1b[2m[${type}] ${JSON.stringify(data).slice(0, 120)}\x1b[0m\n`);
-            break;
-        default:
-            if (verbose) process.stderr.write(`\x1b[2m[${type}] ${JSON.stringify(data).slice(0, 100)}\x1b[0m\n`);
-            break;
+async function executeInstruction(client, instruction, formatter, sessionMgr) {
+    sessionMgr.start(instruction);
+
+    for await (const event of client.execute(instruction)) {
+        formatter.render(event);
+
+        // Track session state
+        if (event.type === 'session_info') sessionMgr.setSessionInfo(event.data);
+        if (event.type === 'tool_call' || event.type === 'tool_request') sessionMgr.recordToolCall(event.data?.tool);
+        if (event.type === 'complete') sessionMgr.complete(event.data?.summary);
+        if (event.type === 'error' && event.data?.fatal) sessionMgr.fail(event.data?.message);
+        if (event.type === 'cancelled') sessionMgr.cancel();
+        if (event.type === 'paused') sessionMgr.pause();
     }
 }
 
-// ── Interactive REPL ────────────────────────────────────────
+// ── Interactive REPL (T10, T12, T14) ────────────────────────
 
-async function startRepl(client, verbose) {
+async function startRepl(client, formatter, sessionMgr, auth, args) {
     const readline = await import('node:readline');
     const rl = readline.createInterface({
         input: process.stdin,
@@ -149,44 +142,81 @@ async function startRepl(client, verbose) {
         prompt: '\x1b[36mtarang>\x1b[0m ',
     });
 
-    console.error(`\x1b[1m@tarang/cli v${VERSION}\x1b[0m — Type an instruction or /help\n`);
+    const ctx = { formatter, auth, model: null, sessionMgr };
+
+    process.stderr.write(`\x1b[1m@tarang/cli v${VERSION}\x1b[0m — Type an instruction or /help\n\n`);
+
+    // T12: keyboard controls (ESC, SPACE) in raw mode during execution
+    let executing = false;
+
+    if (process.stdin.isTTY) {
+        process.stdin.on('keypress', async (str, key) => {
+            if (!executing) return;
+            if (key && key.name === 'escape') {
+                process.stderr.write('\n\x1b[33mCancelling...\x1b[0m\n');
+                await client.cancel();
+                sessionMgr.cancel();
+            }
+        });
+    }
+
     rl.prompt();
 
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) { rl.prompt(); return; }
 
-        if (input === '/exit' || input === '/quit') {
-            rl.close();
-            process.exit(0);
-        }
-        if (input === '/help') {
-            console.error('  /help    Show this help');
-            console.error('  /exit    Exit CLI');
-            console.error('  /config  Show configuration');
-            console.error('  Or type any instruction to execute.\n');
-            rl.prompt();
-            return;
-        }
-        if (input === '/config') {
-            const auth = new TarangAuth();
-            auth.printConfig();
+        // T10: slash commands
+        if (input.startsWith('/')) {
+            handleSlashCommand(input, ctx);
             rl.prompt();
             return;
         }
 
+        // Execute instruction
+        executing = true;
         try {
-            for await (const event of client.execute(input)) {
-                renderEvent(event, verbose);
-            }
+            await executeInstruction(client, input, formatter, sessionMgr);
         } catch (err) {
             process.stderr.write(`\x1b[31mError: ${err.message}\x1b[0m\n`);
         }
+        executing = false;
         process.stdout.write('\n');
         rl.prompt();
     });
 
     rl.on('close', () => process.exit(0));
+}
+
+// ── Resume (T14) ────────────────────────────────────────────
+
+async function handleResume(client, sessionMgr, formatter) {
+    const state = sessionMgr.loadState();
+    if (!state) {
+        process.stderr.write('No saved session to resume.\n');
+        process.exit(1);
+    }
+    if (state.status === 'completed') {
+        process.stderr.write(`Session already completed: ${state.summary || ''}\n`);
+        process.exit(0);
+    }
+    if (state.status === 'failed') {
+        process.stderr.write(`Session failed: ${state.error || ''}\n`);
+        process.exit(1);
+    }
+    if (state.status !== 'paused' && state.status !== 'running') {
+        process.stderr.write(`Session status: ${state.status}. Cannot resume.\n`);
+        process.exit(1);
+    }
+
+    process.stderr.write(`Resuming session: ${state.instruction || ''}\n`);
+    client.currentTaskId = state.task_id;
+    await client.resume();
+
+    // Re-consume the stream
+    for await (const event of client.execute(state.instruction)) {
+        formatter.render(event);
+    }
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -215,65 +245,63 @@ async function main() {
     }
 
     if (args.command === 'config') {
-        if (args.openRouterKey) {
-            auth.saveOpenRouterKey(args.openRouterKey);
-            console.log('✓ OpenRouter key saved.');
-        }
-        if (args.anthropicKey) {
-            auth.saveAnthropicKey(args.anthropicKey);
-            console.log('✓ Anthropic key saved.');
-        }
-        if (args.backendUrl) {
-            auth.setBackendUrl(args.backendUrl);
-            console.log(`✓ Backend URL set to ${args.backendUrl}`);
-        }
-        if (args.mode) {
-            auth.setMode(args.mode);
-            console.log(`✓ Mode set to ${args.mode}`);
-        }
+        if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); console.log('✓ OpenRouter key saved.'); }
+        if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); console.log('✓ Anthropic key saved.'); }
+        if (args.backendUrl) { auth.setBackendUrl(args.backendUrl); console.log(`✓ Backend URL set to ${args.backendUrl}`); }
+        if (args.mode) { auth.setMode(args.mode); console.log(`✓ Mode set to ${args.mode}`); }
         if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.backendUrl && !args.mode)) {
             auth.printConfig();
         }
         process.exit(0);
     }
 
-    // ── Load credentials ──
+    // ── Load credentials (T15: env var fallbacks) ──
     const creds = auth.loadCredentials();
+    const token = process.env.TARANG_TOKEN || creds.token;
+    const openRouterKey = process.env.TARANG_OPENROUTER_KEY || creds.openRouterKey;
+    const backendUrl = process.env.TARANG_BACKEND_URL || creds.backendUrl;
 
-    // ── Create tool executor + stream client ──
+    // ── Create components ──
     const toolExecutor = createToolExecutor();
+    const approval = new ApprovalManager({ autoApprove: args.yes, planMode: args.plan });
+    const formatter = new EventFormatter({ verbose: args.verbose });
+    const sessionMgr = new SessionManager();
+
     const client = new TarangStreamClient({
-        baseUrl: creds.backendUrl,
-        token: creds.token,
-        openRouterKey: creds.openRouterKey,
+        baseUrl: backendUrl,
+        token,
+        openRouterKey,
         toolExecutor,
         verbose: args.verbose,
+        approvalManager: approval,
     });
 
-    // ── Graceful shutdown ──
-    process.on('SIGINT', async () => {
-        await client.cancel();
+    // ── Graceful shutdown (T16) ──
+    const shutdown = async () => {
+        await client.cancel().catch(() => {});
         process.exit(0);
-    });
-    process.on('SIGTERM', async () => {
-        await client.cancel();
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    // ── Resume command (T14) ──
+    if (args.command === 'resume') {
+        await handleResume(client, sessionMgr, formatter);
         process.exit(0);
-    });
+    }
 
     // ── One-shot mode ──
     if (args.instruction) {
-        for await (const event of client.execute(args.instruction)) {
-            renderEvent(event, args.verbose);
-        }
+        await executeInstruction(client, args.instruction, formatter, sessionMgr);
         process.stdout.write('\n');
         process.exit(0);
     }
 
     // ── Interactive REPL ──
-    await startRepl(client, args.verbose);
+    await startRepl(client, formatter, sessionMgr, auth, args);
 }
 
 main().catch(err => {
-    console.error(`\x1b[31mFatal: ${err.message}\x1b[0m`);
+    process.stderr.write(`\x1b[31mFatal: ${err.message}\x1b[0m\n`);
     process.exit(1);
 });
