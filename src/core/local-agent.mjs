@@ -294,12 +294,22 @@ export class LocalAgent {
     }
 
     async _callLLM(systemPrompt, messages, tools) {
-        if (this.apiKey && (this.apiKey.startsWith('sk-ant-') || !this.openRouterKey)) {
+        const isClaude = this.model.startsWith('claude') || this.model.startsWith('anthropic/claude');
+
+        // Use Anthropic direct API only for Claude models when we have an Anthropic key
+        if (isClaude && this.apiKey && this.apiKey.startsWith('sk-ant-')) {
             return this._callClaude(systemPrompt, messages, tools);
         }
+
+        // Everything else goes through OpenRouter (DeepSeek, GPT, Gemini, or Claude via OR)
         if (this.openRouterKey) {
             return this._callOpenRouter(systemPrompt, messages, tools);
         }
+
+        if (this.apiKey) {
+            return this._callClaude(systemPrompt, messages, tools);
+        }
+
         throw new Error('No API key configured. Set ANTHROPIC_API_KEY or configure OpenRouter key.');
     }
 
@@ -328,6 +338,12 @@ export class LocalAgent {
     }
 
     async _callOpenRouter(systemPrompt, messages, tools) {
+        // OpenRouter requires provider prefix (e.g. anthropic/claude-sonnet-4-20250514)
+        let model = this.model;
+        if (model.startsWith('claude') && !model.includes('/')) {
+            model = `anthropic/${model}`;
+        }
+
         const orMessages = [{ role: 'system', content: systemPrompt }, ...messages];
         const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -336,7 +352,7 @@ export class LocalAgent {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: this.model,
+                model,
                 messages: orMessages,
                 tools: tools.length > 0 ? tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) : undefined,
             }),

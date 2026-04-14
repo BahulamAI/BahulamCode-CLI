@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
 import { getLoginSuccessHTML } from '../ui/banner.mjs';
+import { resolveBackendUrl } from '../core/backend-url.mjs';
 
 const CONFIG_DIR = path.join(os.homedir(), '.tarang');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -39,7 +40,7 @@ export class TarangAuth {
         return {
             token: this._config.token || null,
             openRouterKey: this._config.openrouter_key || null,
-            backendUrl: this._config.backend_url || 'https://tarang-backend-intl-web-app-production.up.railway.app',
+            backendUrl: resolveBackendUrl(),
             mode: this._config.mode || 'auto',
             anthropicKey: this._config.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null,
         };
@@ -93,16 +94,6 @@ export class TarangAuth {
         this.saveCredentials({ mode });
     }
 
-    /** Set custom backend URL. */
-    setBackendUrl(url) {
-        try {
-            new URL(url);
-        } catch {
-            throw new Error(`Invalid URL: ${url}`);
-        }
-        this.saveCredentials({ backend_url: url });
-    }
-
     /** Display config with masked secrets (styled). */
     printConfig() {
         const creds = this.loadCredentials();
@@ -139,7 +130,9 @@ export class TarangAuth {
         } catch (err) {
             process.stderr.write(`\x1b[31m✗ Cannot reach Tarang backend at ${base}\x1b[0m\n`);
             process.stderr.write(`  \x1b[2m${err.message}\x1b[0m\n`);
-            process.stderr.write('\x1b[33mSet a custom URL with:\x1b[0m tarang config --backend-url URL\n');
+            const env = process.env.TARANG_ENV || process.env.NODE_ENV || '(not set)';
+            process.stderr.write(`\x1b[2m  Environment: ${env}\x1b[0m\n`);
+            process.stderr.write('\x1b[33mSet TARANG_ENV=local|development|production or TARANG_BACKEND_URL=<url>\x1b[0m\n');
             process.exit(1);
         }
 

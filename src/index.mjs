@@ -64,11 +64,12 @@ function parseArgs(argv) {
             case 'login': args.command = 'login'; break;
             case 'resume': args.command = 'resume'; break;
             case 'config': args.command = 'config'; break;
+            case 'configure': args.command = 'configure'; break;
             // Config flags
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
             case '--anthropic-key': args.anthropicKey = argv[++i]; break;
-            case '--backend-url': args.backendUrl = argv[++i]; break;
+            // --backend-url removed: backend is resolved from TARANG_ENV/NODE_ENV automatically
             // Extended flags
             case '--model': case '-m': args.model = argv[++i]; break;
             case '--permission-mode': args.permissionMode = argv[++i]; break;
@@ -99,7 +100,8 @@ function printUsage() {
     process.stderr.write(`  ${C}tarang "instruction"${R}         Execute instruction\n`);
     process.stderr.write(`  ${C}tarang${R}                       Interactive mode (REPL)\n`);
     process.stderr.write(`  ${C}tarang login${R}                 Authenticate via GitHub OAuth\n`);
-    process.stderr.write(`  ${C}tarang config --show${R}         Display configuration\n`);
+    process.stderr.write(`  ${C}tarang configure${R}             Open settings in browser\n`);
+    process.stderr.write(`  ${C}tarang config --show${R}         Display local configuration\n`);
     process.stderr.write(`  ${C}tarang resume${R}                Resume a paused session\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
@@ -216,7 +218,7 @@ async function main() {
         printBanner();
         process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
         const creds = auth.loadCredentials();
-        await auth.login(args.backendUrl || creds.backendUrl);
+        await auth.login(creds.backendUrl);
         process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
 
         if (!auth.hasOpenRouterKey()) {
@@ -226,12 +228,27 @@ async function main() {
         process.exit(0);
     }
 
+    if (args.command === 'configure') {
+        printBanner();
+        const { resolveWebUrl } = await import('./core/backend-url.mjs');
+        const webUrl = resolveWebUrl();
+        const settingsUrl = `${webUrl}/dashboard/settings?tab=providers&source=cli`;
+        process.stderr.write('\x1b[36mOpening settings in browser...\x1b[0m\n');
+        process.stderr.write(`\x1b[2m${settingsUrl}\x1b[0m\n`);
+        const openCmd = process.platform === 'darwin' ? 'open' :
+                        process.platform === 'win32' ? 'start' : 'xdg-open';
+        const { exec } = await import('node:child_process');
+        exec(`${openCmd} "${settingsUrl}"`, () => {});
+        process.stderr.write('\n\x1b[2mConfigure your provider, models, and CLI preferences in the browser.\x1b[0m\n');
+        process.stderr.write('\x1b[2mChanges sync automatically to the backend.\x1b[0m\n');
+        process.exit(0);
+    }
+
     if (args.command === 'config') {
         if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); process.stderr.write('\x1b[32m✓ OpenRouter key saved.\x1b[0m\n'); }
         if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); process.stderr.write('\x1b[32m✓ Anthropic key saved.\x1b[0m\n'); }
-        if (args.backendUrl) { auth.setBackendUrl(args.backendUrl); process.stderr.write(`\x1b[32m✓ Backend URL set.\x1b[0m\n`); }
         if (args.mode) { auth.setMode(args.mode); process.stderr.write(`\x1b[32m✓ Mode set to ${args.mode}\x1b[0m\n`); }
-        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.backendUrl && !args.mode)) {
+        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.mode)) {
             printStyledConfig(auth.loadCredentials());
         }
         process.exit(0);
@@ -244,7 +261,7 @@ async function main() {
     const token = process.env.TARANG_TOKEN || creds.token;
     const openRouterKey = process.env.TARANG_OPENROUTER_KEY || creds.openRouterKey;
     const anthropicKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
-    const backendUrl = process.env.TARANG_BACKEND_URL || creds.backendUrl;
+    const backendUrl = creds.backendUrl;
 
     // Apply settings as defaults (CLI flags override settings)
     if (!args.model && settings.model) args.model = settings.model;
@@ -297,7 +314,7 @@ async function main() {
                 verbose: args.verbose, approvalManager: approval,
             });
             process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
-            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext });
+            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext }, args.model);
         }
     }
 

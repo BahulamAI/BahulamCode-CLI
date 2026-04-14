@@ -119,7 +119,9 @@ export function printStyledConfig(creds) {
     process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
     process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
     process.stderr.write(`  Anthropic:      ${mask(creds.anthropicKey)}\n`);
-    process.stderr.write(`  Backend URL:    ${DIM}${creds.backendUrl || '(default)'}${RESET}\n`);
+    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+    process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
+    process.stderr.write(`  Backend URL:    ${DIM}${creds.backendUrl}${RESET}\n`);
     process.stderr.write(`  Mode:           ${DIM}${creds.mode || 'auto'}${RESET}\n`);
     process.stderr.write('\n');
 }

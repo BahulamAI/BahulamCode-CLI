@@ -49,7 +49,7 @@ export class TarangStreamClient {
      * @param {boolean} [opts.verbose=false]
      */
     constructor({ baseUrl, token, openRouterKey, toolExecutor, verbose = false, approvalManager = null }) {
-        this.baseUrl = (baseUrl || 'https://tarang-backend-intl-web-app-production.up.railway.app').replace(/\/$/, '');
+        this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.openRouterKey = openRouterKey;
         this.toolExecutor = toolExecutor;

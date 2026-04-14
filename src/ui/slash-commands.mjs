@@ -22,7 +22,7 @@ export const COMMANDS = {
     '/model':    { description: 'Show current model', handler: cmdModel },
     '/tokens':   { description: 'Show token usage', handler: cmdTokens },
     '/cost':     { description: 'Show session cost', handler: cmdCost },
-    '/config':   { description: 'Show configuration', handler: cmdConfig },
+    '/config':   { description: 'Open settings in browser', handler: cmdConfig },
 };
 
 function run(cmd) {
@@ -150,7 +150,20 @@ function cmdCost(ctx) {
 }
 
 function cmdConfig(ctx) {
+    // Show local config summary
     if (ctx.auth) ctx.auth.printConfig();
+
+    // Open settings in browser
+    import('../core/backend-url.mjs').then(({ resolveWebUrl }) => {
+        const webUrl = resolveWebUrl();
+        const settingsUrl = `${webUrl}/dashboard/settings?tab=providers&source=cli`;
+        process.stderr.write(`\x1b[36mOpening settings...\x1b[0m \x1b[2m${settingsUrl}\x1b[0m\n`);
+        const openCmd = process.platform === 'darwin' ? 'open' :
+                        process.platform === 'win32' ? 'start' : 'xdg-open';
+        import('node:child_process').then(({ exec }) => {
+            exec(`${openCmd} "${settingsUrl}"`, () => {});
+        });
+    });
 }
 
 /**
