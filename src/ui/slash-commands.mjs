@@ -5,6 +5,7 @@
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { printGoodbye } from './banner.mjs';
 
 export const COMMANDS = {
     '/help':     { description: 'Show available commands', handler: cmdHelp },
@@ -32,14 +33,27 @@ function run(cmd) {
 }
 
 function cmdHelp(ctx) {
-    process.stderr.write('\n\x1b[1mSlash Commands:\x1b[0m\n');
+    const BOLD = '\x1b[1m', CYAN = '\x1b[36m', DIM = '\x1b[2m', GREEN = '\x1b[32m', BLUE = '\x1b[34m', RESET = '\x1b[0m';
+
+    process.stderr.write(`\n${BLUE}┌──────────────────────────────────────────────┐${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Tarang Help${RESET}                                 ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}├──────────────────────────────────────────────┤${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Commands:${RESET}                                   ${BLUE}│${RESET}\n`);
     for (const [name, { description }] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  \x1b[36m${name.padEnd(12)}\x1b[0m ${description}\n`);
+        const line = `  ${CYAN}${name.padEnd(12)}${RESET} ${description}`;
+        process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - name.length - description.length))}${BLUE}│${RESET}\n`);
     }
-    process.stderr.write('\n\x1b[1mKeyboard:\x1b[0m\n');
-    process.stderr.write('  ESC        Cancel current execution\n');
-    process.stderr.write('  SPACE      Pause + inject instruction\n');
-    process.stderr.write('  Ctrl+C     Exit\n\n');
+    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Keyboard:${RESET}                                   ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}ESC${RESET}${DIM}=${RESET}cancel  ${BOLD}SPACE${RESET}${DIM}=${RESET}pause  ${BOLD}Ctrl+C${RESET}${DIM}=${RESET}exit       ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Tips:${RESET}                                       ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Type naturally: "add a login button"${RESET}        ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Reference files: "fix bug in src/main.py"${RESET}   ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Ask questions: "explain how auth works"${RESET}     ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}└──────────────────────────────────────────────┘${RESET}\n\n`);
 }
 
 function cmdGit() {
@@ -101,6 +115,7 @@ function cmdSessions() {
 }
 
 function cmdExit() {
+    printGoodbye();
     process.exit(0);
 }
 

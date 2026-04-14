@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
+import { getLoginSuccessHTML } from '../ui/banner.mjs';
 
 const CONFIG_DIR = path.join(os.homedir(), '.tarang');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -102,20 +103,23 @@ export class TarangAuth {
         this.saveCredentials({ backend_url: url });
     }
 
-    /** Display config with masked secrets. */
+    /** Display config with masked secrets (styled). */
     printConfig() {
         const creds = this.loadCredentials();
+        const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', RESET = '\x1b[0m';
         const mask = (val) => {
-            if (!val) return '(not set)';
-            if (val.length <= 8) return '****';
-            return val.slice(0, 6) + '...' + val.slice(-4) + ' (set)';
+            if (!val) return `${RED}\u2717 not set${RESET}`;
+            if (val.length <= 8) return `${GREEN}\u2713 ****${RESET}`;
+            return `${GREEN}\u2713${RESET} ${val.slice(0, 6)}...${val.slice(-4)}`;
         };
-        console.log(`token:          ${mask(creds.token)}`);
-        console.log(`openrouter_key: ${mask(creds.openRouterKey)}`);
-        console.log(`anthropic_key:  ${mask(creds.anthropicKey)}`);
-        console.log(`backend_url:    ${creds.backendUrl}`);
-        console.log(`mode:           ${creds.mode}`);
-        console.log(`config_path:    ${CONFIG_PATH}`);
+        process.stderr.write(`\n${BOLD}Tarang Configuration${RESET} ${DIM}(~/.tarang/config.json)${RESET}\n`);
+        process.stderr.write(`${'─'.repeat(50)}\n`);
+        process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
+        process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
+        process.stderr.write(`  Anthropic:      ${mask(creds.anthropicKey)}\n`);
+        process.stderr.write(`  Backend URL:    ${DIM}${creds.backendUrl || '(default)'}${RESET}\n`);
+        process.stderr.write(`  Mode:           ${DIM}${creds.mode || 'auto'}${RESET}\n`);
+        process.stderr.write('\n');
     }
 
     /**
@@ -128,11 +132,14 @@ export class TarangAuth {
 
         // Check if backend is reachable
         try {
+            process.stderr.write('\x1b[2mConnecting to Tarang backend...\x1b[0m\n');
             const resp = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
             if (!resp.ok) throw new Error(`Backend returned ${resp.status}`);
+            process.stderr.write('\x1b[32m✓ Backend reachable\x1b[0m\n');
         } catch (err) {
-            console.error(`Cannot reach Tarang backend at ${base}: ${err.message}`);
-            console.error('Set a custom URL with: tarang config --backend-url URL');
+            process.stderr.write(`\x1b[31m✗ Cannot reach Tarang backend at ${base}\x1b[0m\n`);
+            process.stderr.write(`  \x1b[2m${err.message}\x1b[0m\n`);
+            process.stderr.write('\x1b[33mSet a custom URL with:\x1b[0m tarang config --backend-url URL\n');
             process.exit(1);
         }
 
@@ -156,7 +163,7 @@ export class TarangAuth {
                     this.saveCredentials({ token: data.access_token || data.token });
 
                     res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end('<html><body><h1>Login successful!</h1><p>You can close this tab.</p></body></html>');
+                    res.end(getLoginSuccessHTML());
 
                     server.close();
                     resolve(true);
@@ -173,8 +180,8 @@ export class TarangAuth {
                 const redirectUri = `http://127.0.0.1:${port}/callback`;
                 const authUrl = `${base}/auth/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
 
-                console.log(`\nOpening browser for GitHub login...`);
-                console.log(`If browser doesn't open, visit:\n  ${authUrl}\n`);
+                process.stderr.write(`\n\x1b[36mOpening browser for GitHub login...\x1b[0m\n`);
+                process.stderr.write(`\x1b[2mIf browser doesn't open, visit:\x1b[0m\n  \x1b[4m${authUrl}\x1b[0m\n\n`);
 
                 // Open browser (platform-specific)
                 const openCmd = process.platform === 'darwin' ? 'open' :
@@ -198,7 +205,7 @@ export class TarangAuth {
      */
     async ensureAuth(backendUrl) {
         if (!this.isAuthenticated()) {
-            console.log('Not logged in. Starting login flow...');
+            process.stderr.write('\x1b[33mNot logged in.\x1b[0m Starting login flow...\n');
             await this.login(backendUrl);
         }
     }

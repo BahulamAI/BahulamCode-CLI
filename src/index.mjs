@@ -14,6 +14,7 @@ import { SessionManager } from './core/session-manager.mjs';
 import { EventFormatter } from './ui/formatter.mjs';
 import { handleSlashCommand, COMMANDS } from './ui/slash-commands.mjs';
 import { selectMode } from './core/mode-selector.mjs';
+import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyledConfig, printGoodbye } from './ui/banner.mjs';
 
 const VERSION = '5.0.0';
 
@@ -60,34 +61,37 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-    console.log(`
-\x1b[1m@tarang/cli v${VERSION}\x1b[0m — AI Coding Agent CLI (Hybrid)
+    printBanner();
 
-\x1b[1mUSAGE\x1b[0m
-  tarang "instruction"         Execute instruction
-  tarang                       Interactive mode (REPL)
-  tarang login                 Authenticate via GitHub OAuth
-  tarang config --show         Display configuration
-  tarang resume                Resume a paused session
+    const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
-\x1b[1mMODE FLAGS\x1b[0m
-  --local                      Direct LLM API (<100ms, offline)
-  --remote                     SSE backend (multi-agent orchestration)
-  (default: auto-select based on task complexity)
-
-\x1b[1mPERMISSION FLAGS\x1b[0m
-  --yes, -y                    Auto-approve all operations
-  --plan                       Read-only mode (block all writes)
-  --strict                     Deny tools not in allowed list
-
-\x1b[1mOTHER FLAGS\x1b[0m
-  --verbose, -v                Show tool details and thinking
-  --version, -V                Show version
-  --help, -h                   Show this help
-
-\x1b[1mSLASH COMMANDS\x1b[0m (interactive mode)
-${Object.entries(COMMANDS).map(([k, v]) => `  ${k.padEnd(14)} ${v.description}`).join('\n')}
-`);
+    process.stderr.write(`${B}USAGE${R}\n`);
+    process.stderr.write(`  ${C}tarang "instruction"${R}         Execute instruction\n`);
+    process.stderr.write(`  ${C}tarang${R}                       Interactive mode (REPL)\n`);
+    process.stderr.write(`  ${C}tarang login${R}                 Authenticate via GitHub OAuth\n`);
+    process.stderr.write(`  ${C}tarang config --show${R}         Display configuration\n`);
+    process.stderr.write(`  ${C}tarang resume${R}                Resume a paused session\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}MODE FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
+    process.stderr.write(`  ${G}--remote${R}                     SSE backend ${D}(multi-agent orchestration)${R}\n`);
+    process.stderr.write(`  ${D}(default: auto-select based on task complexity)${R}\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
+    process.stderr.write(`  ${G}--plan${R}                       Read-only mode (block all writes)\n`);
+    process.stderr.write(`  ${G}--strict${R}                     Deny tools not in allowed list\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}OTHER FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--verbose, -v${R}                Show tool details and thinking\n`);
+    process.stderr.write(`  ${G}--version, -V${R}                Show version\n`);
+    process.stderr.write(`  ${G}--help, -h${R}                   Show this help\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}SLASH COMMANDS${R} ${D}(interactive mode)${R}\n`);
+    for (const [k, v] of Object.entries(COMMANDS)) {
+        process.stderr.write(`  ${C}${k.padEnd(14)}${R} ${v.description}\n`);
+    }
+    process.stderr.write('\n');
 }
 
 // ── Execute ─────────────────────────────────────────────────
@@ -112,7 +116,25 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: '\x1b[36mtarang>\x1b[0m ' });
     const ctx = { formatter, auth, model: null, sessionMgr };
 
-    process.stderr.write(`\x1b[1m@tarang/cli v${VERSION}\x1b[0m — Type an instruction or /help\n\n`);
+    // Branded startup
+    printBanner();
+    printProjectInfo(VERSION);
+    process.stderr.write('\n');
+
+    // Show auth status on startup
+    const creds = auth.loadCredentials();
+    printAuthStatus(creds);
+
+    // Guided first-run: prompt login if not authenticated
+    if (!creds.token && !creds.openRouterKey && !creds.anthropicKey) {
+        process.stderr.write('\x1b[33mFirst time? Get started:\x1b[0m\n');
+        process.stderr.write('  1. \x1b[36mtarang login\x1b[0m              Authenticate via GitHub\n');
+        process.stderr.write('  2. \x1b[36mtarang config -k KEY\x1b[0m     Set your OpenRouter API key\n');
+        process.stderr.write('  3. \x1b[36mtarang "your instruction"\x1b[0m Start coding!\n');
+        process.stderr.write('\n');
+    }
+
+    printHints();
     rl.prompt();
 
     rl.on('line', async (line) => {
@@ -130,7 +152,10 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
         rl.prompt();
     });
 
-    rl.on('close', () => process.exit(0));
+    rl.on('close', () => {
+        printGoodbye();
+        process.exit(0);
+    });
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -143,18 +168,27 @@ async function main() {
     const auth = new TarangAuth();
 
     if (args.command === 'login') {
+        printBanner();
+        process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
         const creds = auth.loadCredentials();
         await auth.login(args.backendUrl || creds.backendUrl);
-        console.log('\x1b[32m✓ Login successful!\x1b[0m');
+        process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
+
+        if (!auth.hasOpenRouterKey()) {
+            process.stderr.write('\n\x1b[33mNext step:\x1b[0m Set your OpenRouter API key:\n');
+            process.stderr.write('  \x1b[36mtarang config --openrouter-key YOUR_KEY\x1b[0m\n\n');
+        }
         process.exit(0);
     }
 
     if (args.command === 'config') {
-        if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); console.log('✓ OpenRouter key saved.'); }
-        if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); console.log('✓ Anthropic key saved.'); }
-        if (args.backendUrl) { auth.setBackendUrl(args.backendUrl); console.log(`✓ Backend URL set.`); }
-        if (args.mode) { auth.setMode(args.mode); console.log(`✓ Mode set to ${args.mode}`); }
-        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.backendUrl && !args.mode)) auth.printConfig();
+        if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); process.stderr.write('\x1b[32m✓ OpenRouter key saved.\x1b[0m\n'); }
+        if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); process.stderr.write('\x1b[32m✓ Anthropic key saved.\x1b[0m\n'); }
+        if (args.backendUrl) { auth.setBackendUrl(args.backendUrl); process.stderr.write(`\x1b[32m✓ Backend URL set.\x1b[0m\n`); }
+        if (args.mode) { auth.setMode(args.mode); process.stderr.write(`\x1b[32m✓ Mode set to ${args.mode}\x1b[0m\n`); }
+        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.backendUrl && !args.mode)) {
+            printStyledConfig(auth.loadCredentials());
+        }
         process.exit(0);
     }
 
