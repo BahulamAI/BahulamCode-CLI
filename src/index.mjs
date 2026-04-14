@@ -34,7 +34,6 @@ function parseArgs(argv) {
         showConfig: false, openRouterKey: null, anthropicKey: null,
         backendUrl: null, mode: null,
         // Extended flags (from cli-args.mjs)
-        model: null,
         permissionMode: null,
         outputFormat: null,
         systemPrompt: null,
@@ -69,9 +68,9 @@ function parseArgs(argv) {
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
             case '--anthropic-key': args.anthropicKey = argv[++i]; break;
-            // --backend-url removed: backend is resolved from TARANG_ENV/NODE_ENV automatically
+            // --backend-url removed: use TARANG_ENV
+            // --model removed: use tarang configure (web settings)
             // Extended flags
-            case '--model': case '-m': args.model = argv[++i]; break;
             case '--permission-mode': args.permissionMode = argv[++i]; break;
             case '--print': case '-p': args.instruction = argv[++i]; break;
             case '--output-format': args.outputFormat = argv[++i]; break;
@@ -111,9 +110,9 @@ function printUsage() {
     process.stderr.write(`  ${D}(default: auto-select based on task complexity)${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
-    process.stderr.write(`  ${G}--model, -m <model>${R}          Model to use ${D}(e.g., claude-sonnet-4-6)${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
+    process.stderr.write(`  ${D}Models are configured via: tarang configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
@@ -264,7 +263,6 @@ async function main() {
     const backendUrl = creds.backendUrl;
 
     // Apply settings as defaults (CLI flags override settings)
-    if (!args.model && settings.model) args.model = settings.model;
     if (!args.verbose && settings.debugMode) args.verbose = true;
     if (!args.permissionMode && settings.permissions?.defaultMode !== 'default') {
         args.permissionMode = settings.permissions.defaultMode;
@@ -285,7 +283,7 @@ async function main() {
             return new LocalAgent({
                 apiKey: anthropicKey,
                 openRouterKey,
-                model: args.model || 'claude-sonnet-4-20250514',
+                model: settings.model || 'claude-sonnet-4-20250514',
                 toolExecutor,
                 verbose: args.verbose,
                 cwd: process.cwd(),
@@ -314,7 +312,7 @@ async function main() {
                 verbose: args.verbose, approvalManager: approval,
             });
             process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
-            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext }, args.model);
+            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext });
         }
     }
 
