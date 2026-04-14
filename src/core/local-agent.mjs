@@ -4,16 +4,197 @@
  * Yields events matching the same format as TarangStreamClient.
  */
 
+import { ContextRetriever } from '../context/retriever.mjs';
+
 const MAX_ITERATIONS = 50;
 const STAGNATION_THRESHOLD = 3;
 
+/** Tool schemas for the LLM — proper parameter definitions. */
+const TOOL_SCHEMAS = [
+    {
+        name: 'shell',
+        description: 'Run a shell command and return stdout/stderr. Use for: installing packages, running tests, builds, git operations, or any terminal command.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'The shell command to execute' },
+                timeout: { type: 'number', description: 'Timeout in milliseconds (default: 120000)' },
+            },
+            required: ['command'],
+        },
+    },
+    {
+        name: 'read_file',
+        description: 'Read a file and return its contents. Supports line ranges for large files.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file (relative to project root)' },
+                offset: { type: 'number', description: 'Start line number (1-based, optional)' },
+                limit: { type: 'number', description: 'Number of lines to read (optional)' },
+            },
+            required: ['file_path'],
+        },
+    },
+    {
+        name: 'write_file',
+        description: 'Create or overwrite a file with the given content. Parent directories are created automatically.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file (relative to project root)' },
+                content: { type: 'string', description: 'The full file content to write' },
+            },
+            required: ['file_path', 'content'],
+        },
+    },
+    {
+        name: 'edit_file',
+        description: 'Search for a string in a file and replace it. The old_string must match exactly (including whitespace).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file' },
+                old_string: { type: 'string', description: 'Exact string to find in the file' },
+                new_string: { type: 'string', description: 'Replacement string' },
+            },
+            required: ['file_path', 'old_string', 'new_string'],
+        },
+    },
+    {
+        name: 'list_files',
+        description: 'List files matching a glob pattern. Returns file paths relative to project root.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Glob pattern (e.g., "src/**/*.ts", "*.json")' },
+                path: { type: 'string', description: 'Directory to search in (default: project root)' },
+            },
+            required: ['pattern'],
+        },
+    },
+    {
+        name: 'search_code',
+        description: 'Search file contents using a regex pattern. Returns matching lines with file paths and line numbers.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Regex pattern to search for' },
+                path: { type: 'string', description: 'Directory or file to search in (default: project root)' },
+                include: { type: 'string', description: 'File glob filter (e.g., "*.ts")' },
+            },
+            required: ['pattern'],
+        },
+    },
+    {
+        name: 'search_files',
+        description: 'Search for files by name pattern. Returns matching file paths.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Filename pattern to search for' },
+                path: { type: 'string', description: 'Directory to search in (default: project root)' },
+            },
+            required: ['query'],
+        },
+    },
+    {
+        name: 'read_files',
+        description: 'Read multiple files at once (batch). More efficient than multiple read_file calls.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_paths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Array of file paths to read',
+                },
+            },
+            required: ['file_paths'],
+        },
+    },
+    {
+        name: 'delete_file',
+        description: 'Delete a file from the project.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file to delete' },
+            },
+            required: ['file_path'],
+        },
+    },
+    {
+        name: 'get_file_info',
+        description: 'Get file metadata: size, modification time, type, permissions.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file' },
+            },
+            required: ['file_path'],
+        },
+    },
+    {
+        name: 'validate_file',
+        description: 'Check file syntax. Runs language-specific checks (node --check for JS, py_compile for Python).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file to validate' },
+            },
+            required: ['file_path'],
+        },
+    },
+    {
+        name: 'validate_build',
+        description: 'Run the project build command. Auto-detects: npm run build, make, cargo build, etc.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'Build command override (optional — auto-detected if omitted)' },
+            },
+        },
+    },
+    {
+        name: 'lint_check',
+        description: 'Run linter on a file. Uses ruff for Python, eslint for JS/TS.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                file_path: { type: 'string', description: 'Path to the file to lint' },
+            },
+            required: ['file_path'],
+        },
+    },
+    {
+        name: 'validate_structure',
+        description: 'Check that a list of expected files exist in the project.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                files: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Array of file paths that should exist',
+                },
+            },
+            required: ['files'],
+        },
+    },
+];
+
 export class LocalAgent {
-    constructor({ apiKey, model, toolExecutor, verbose = false, openRouterKey = null }) {
+    constructor({ apiKey, model, toolExecutor, verbose = false, openRouterKey = null, cwd = null, systemPromptOverride = null, maxTurns = null }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
         this.model = model || 'claude-sonnet-4-20250514';
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
+        this.cwd = cwd || process.cwd();
+        this.retriever = new ContextRetriever(this.cwd);
+        this.systemPromptOverride = systemPromptOverride;
+        this.maxTurns = maxTurns || MAX_ITERATIONS;
         this._cancelled = false;
     }
 
@@ -24,13 +205,24 @@ export class LocalAgent {
 
         yield { type: 'status', data: { message: `Local mode: ${this.model}` } };
 
+        // Retrieve relevant code context via BM25 index
+        let retrievedContext = [];
+        try {
+            retrievedContext = this.retriever.retrieve(instruction, 8);
+            if (retrievedContext.length > 0) {
+                yield { type: 'status', data: { message: `Context: ${retrievedContext.length} relevant chunks from index` } };
+            }
+        } catch {
+            // Index may not exist yet — that's fine, continue without context
+        }
+
         const tools = this._buildToolDefs();
-        const systemPrompt = this._buildSystemPrompt(context);
+        const systemPrompt = this._buildSystemPrompt(context, retrievedContext);
         const messages = [{ role: 'user', content: instruction }];
 
         const recentCalls = []; // for stagnation detection
 
-        for (let i = 0; i < MAX_ITERATIONS; i++) {
+        for (let i = 0; i < this.maxTurns; i++) {
             if (this._cancelled) {
                 yield { type: 'cancelled', data: { reason: 'User cancelled' } };
                 return;
@@ -97,8 +289,8 @@ export class LocalAgent {
             }
         }
 
-        yield { type: 'error', data: { message: `Max iterations (${MAX_ITERATIONS}) reached.` } };
-        yield { type: 'complete', data: { summary: 'Aborted (max iterations)', changes: toolCount, duration_s: (Date.now() - startTime) / 1000 } };
+        yield { type: 'error', data: { message: `Max turns (${this.maxTurns}) reached.` } };
+        yield { type: 'complete', data: { summary: 'Aborted (max turns)', changes: toolCount, duration_s: (Date.now() - startTime) / 1000 } };
     }
 
     async _callLLM(systemPrompt, messages, tools) {
@@ -166,15 +358,14 @@ export class LocalAgent {
     }
 
     _buildToolDefs() {
-        const toolNames = this.toolExecutor.listTools();
-        return toolNames.map(name => ({
-            name,
-            description: `Execute the ${name} tool`,
-            input_schema: { type: 'object', properties: {}, additionalProperties: true },
-        }));
+        return TOOL_SCHEMAS;
     }
 
-    _buildSystemPrompt(context) {
+    _buildSystemPrompt(context, retrievedContext = null) {
+        if (this.systemPromptOverride) {
+            return this.systemPromptOverride;
+        }
+
         const parts = [
             'You are Tarang, an AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
@@ -182,6 +373,20 @@ export class LocalAgent {
         ];
         if (context.cwd) parts.push(`Working directory: ${context.cwd}`);
         if (context.gitBranch) parts.push(`Git branch: ${context.gitBranch}`);
+
+        if (retrievedContext && retrievedContext.length > 0) {
+            parts.push('');
+            parts.push('== RELEVANT CODE CONTEXT (from project index) ==');
+            for (const chunk of retrievedContext) {
+                parts.push(`--- ${chunk.id} (score: ${chunk.score.toFixed(2)}) ---`);
+                parts.push(chunk.text);
+                parts.push('');
+            }
+            parts.push('== END CONTEXT ==');
+            parts.push('');
+            parts.push('Use the above context to understand the codebase. Read full files with read_file when you need more detail.');
+        }
+
         return parts.join('\n');
     }
 

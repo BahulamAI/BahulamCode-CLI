@@ -15,40 +15,70 @@ import { EventFormatter } from './ui/formatter.mjs';
 import { handleSlashCommand, COMMANDS } from './ui/slash-commands.mjs';
 import { selectMode } from './core/mode-selector.mjs';
 import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyledConfig, printGoodbye } from './ui/banner.mjs';
+import { ContextRetriever } from './context/retriever.mjs';
+import { loadSettings } from './config/settings.mjs';
 
 const VERSION = '5.0.0';
 
-// ── Arg Parsing ─────────────────────────────────────────────
+// ── Arg Parsing (consolidated from index.mjs + cli-args.mjs) ──
 
 function parseArgs(argv) {
     const args = {
+        // Commands
         command: null, instruction: null,
+        // Tarang mode flags
         verbose: false, yes: false, plan: false, strict: false,
-        local: false, remote: false,
+        local: false, remote: false, debug: false,
         version: false, help: false,
+        // Config subcommand flags
         showConfig: false, openRouterKey: null, anthropicKey: null,
         backendUrl: null, mode: null,
+        // Extended flags (from cli-args.mjs)
+        model: null,
+        permissionMode: null,
+        outputFormat: null,
+        systemPrompt: null,
+        addDirs: [],
+        maxTurns: null,
+        allowedTools: null,
+        disallowedTools: null,
     };
     let i = 0;
     while (i < argv.length) {
         const arg = argv[i];
         switch (arg) {
+            // Version / help
             case '--version': case '-V': args.version = true; break;
             case '--help': case '-h': args.help = true; break;
+            // Behavior flags
             case '--verbose': case '-v': args.verbose = true; break;
+            case '--debug': case '-d': args.debug = true; args.verbose = true; break;
             case '--yes': case '-y': args.yes = true; break;
             case '--plan': args.plan = true; break;
             case '--strict': args.strict = true; break;
+            // Mode flags
             case '--local': args.local = true; break;
             case '--remote': args.remote = true; break;
+            case '--mode': args.mode = argv[++i]; break;
+            // Commands
             case 'login': args.command = 'login'; break;
             case 'resume': args.command = 'resume'; break;
             case 'config': args.command = 'config'; break;
+            // Config flags
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
             case '--anthropic-key': args.anthropicKey = argv[++i]; break;
             case '--backend-url': args.backendUrl = argv[++i]; break;
-            case '--mode': args.mode = argv[++i]; break;
+            // Extended flags
+            case '--model': case '-m': args.model = argv[++i]; break;
+            case '--permission-mode': args.permissionMode = argv[++i]; break;
+            case '--print': case '-p': args.instruction = argv[++i]; break;
+            case '--output-format': args.outputFormat = argv[++i]; break;
+            case '--system-prompt': args.systemPrompt = argv[++i]; break;
+            case '--add-dir': args.addDirs.push(argv[++i]); break;
+            case '--max-turns': args.maxTurns = parseInt(argv[++i], 10); break;
+            case '--allowedTools': args.allowedTools = argv[++i]?.split(',').map(s => s.trim()); break;
+            case '--disallowedTools': args.disallowedTools = argv[++i]?.split(',').map(s => s.trim()); break;
             default:
                 if (!arg.startsWith('-') && !args.command && !args.instruction) args.instruction = arg;
                 break;
@@ -75,17 +105,32 @@ function printUsage() {
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
     process.stderr.write(`  ${G}--remote${R}                     SSE backend ${D}(multi-agent orchestration)${R}\n`);
+    process.stderr.write(`  ${G}--mode <auto|local|remote>${R}   Set mode explicitly\n`);
     process.stderr.write(`  ${D}(default: auto-select based on task complexity)${R}\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}MODEL FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--model, -m <model>${R}          Model to use ${D}(e.g., claude-sonnet-4-6)${R}\n`);
+    process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
+    process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
     process.stderr.write(`  ${G}--plan${R}                       Read-only mode (block all writes)\n`);
     process.stderr.write(`  ${G}--strict${R}                     Deny tools not in allowed list\n`);
+    process.stderr.write(`  ${G}--permission-mode <mode>${R}     Permission mode ${D}(auto, plan, strict)${R}\n`);
+    process.stderr.write(`  ${G}--allowedTools <tools>${R}       Comma-separated allowed tools\n`);
+    process.stderr.write(`  ${G}--disallowedTools <tools>${R}    Comma-separated denied tools\n`);
+    process.stderr.write('\n');
+    process.stderr.write(`${B}OUTPUT FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--print, -p <prompt>${R}         Non-interactive: run prompt and exit\n`);
+    process.stderr.write(`  ${G}--output-format <fmt>${R}        Output format: text, json, stream-json\n`);
+    process.stderr.write(`  ${G}--verbose, -v${R}                Show tool details and thinking\n`);
+    process.stderr.write(`  ${G}--debug, -d${R}                  Debug mode ${D}(implies verbose)${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}OTHER FLAGS${R}\n`);
-    process.stderr.write(`  ${G}--verbose, -v${R}                Show tool details and thinking\n`);
     process.stderr.write(`  ${G}--version, -V${R}                Show version\n`);
     process.stderr.write(`  ${G}--help, -h${R}                   Show this help\n`);
+    process.stderr.write(`  ${G}--add-dir <dir>${R}              Additional CLAUDE.md directory\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}SLASH COMMANDS${R} ${D}(interactive mode)${R}\n`);
     for (const [k, v] of Object.entries(COMMANDS)) {
@@ -192,16 +237,27 @@ async function main() {
         process.exit(0);
     }
 
+    // Load settings (user ~/.claude/settings.json + project .claude/settings.json + local)
+    const settings = await loadSettings();
+
     const creds = auth.loadCredentials();
     const token = process.env.TARANG_TOKEN || creds.token;
     const openRouterKey = process.env.TARANG_OPENROUTER_KEY || creds.openRouterKey;
     const anthropicKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
     const backendUrl = process.env.TARANG_BACKEND_URL || creds.backendUrl;
 
+    // Apply settings as defaults (CLI flags override settings)
+    if (!args.model && settings.model) args.model = settings.model;
+    if (!args.verbose && settings.debugMode) args.verbose = true;
+    if (!args.permissionMode && settings.permissions?.defaultMode !== 'default') {
+        args.permissionMode = settings.permissions.defaultMode;
+    }
+
     const toolExecutor = createToolExecutor();
     const approval = new ApprovalManager({ autoApprove: args.yes, planMode: args.plan });
     const formatter = new EventFormatter({ verbose: args.verbose });
     const sessionMgr = new SessionManager();
+    const contextRetriever = new ContextRetriever(process.cwd());
 
     /** Create an executor (local or remote) for a given instruction. */
     async function createExecutor(instruction) {
@@ -212,18 +268,36 @@ async function main() {
             return new LocalAgent({
                 apiKey: anthropicKey,
                 openRouterKey,
-                model: 'claude-sonnet-4-20250514',
+                model: args.model || 'claude-sonnet-4-20250514',
                 toolExecutor,
                 verbose: args.verbose,
+                cwd: process.cwd(),
+                systemPromptOverride: args.systemPrompt,
+                maxTurns: args.maxTurns,
             }).execute(instruction, { cwd: process.cwd() });
         } else {
             if (args.verbose) process.stderr.write('\x1b[2m[mode] remote\x1b[0m\n');
+
+            // Retrieve BM25 context to send to backend
+            let indexedContext = {};
+            try {
+                const chunks = contextRetriever.retrieve(instruction, 8);
+                if (chunks.length > 0) {
+                    indexedContext = {
+                        indexed: chunks.map(c => ({ id: c.id, score: c.score, text: c.text })),
+                    };
+                    if (args.verbose) process.stderr.write(`\x1b[2m[context] ${chunks.length} chunks from BM25 index\x1b[0m\n`);
+                }
+            } catch {
+                // No index available — send without context
+            }
+
             const client = new TarangStreamClient({
                 baseUrl: backendUrl, token, openRouterKey, toolExecutor,
                 verbose: args.verbose, approvalManager: approval,
             });
             process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
-            return client.execute(instruction);
+            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext });
         }
     }
 

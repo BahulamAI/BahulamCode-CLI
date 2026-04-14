@@ -18,6 +18,7 @@ export class ContextRetriever {
         this.projectDir = projectDir;
         this.indexDir = path.join(projectDir, '.tarang', 'index');
         this.index = null;
+        this.chunkTexts = new Map(); // id → original text content
     }
 
     /** Build or rebuild the search index. */
@@ -37,9 +38,16 @@ export class ContextRetriever {
         this.index = new BM25Index();
         this.index.buildIndex(documents);
 
-        // Persist
+        // Store chunk texts for retrieval
+        this.chunkTexts = new Map();
+        for (const doc of documents) {
+            this.chunkTexts.set(doc.id, doc.text);
+        }
+
+        // Persist index + chunk texts
         if (!fs.existsSync(this.indexDir)) fs.mkdirSync(this.indexDir, { recursive: true });
         fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
+        fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
 
         return { fileCount: files.length, chunkCount: documents.length };
     }
@@ -47,22 +55,34 @@ export class ContextRetriever {
     /** Load persisted index. */
     loadIndex() {
         const indexPath = path.join(this.indexDir, 'bm25.json');
+        const chunksPath = path.join(this.indexDir, 'chunks.json');
         if (!fs.existsSync(indexPath)) return false;
         try {
             const data = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
             this.index = BM25Index.fromJSON(data);
+
+            // Load chunk texts if available
+            if (fs.existsSync(chunksPath)) {
+                const chunks = JSON.parse(fs.readFileSync(chunksPath, 'utf-8'));
+                this.chunkTexts = new Map(Object.entries(chunks));
+            }
             return true;
         } catch {
             return false;
         }
     }
 
-    /** Retrieve relevant context chunks for a query. */
+    /** Retrieve relevant context chunks for a query, with full text. */
     retrieve(query, topK = 10) {
         if (!this.index) {
             if (!this.loadIndex()) return [];
         }
-        return this.index.search(query, topK);
+        const results = this.index.search(query, topK);
+        // Attach chunk text to results
+        return results.map(r => ({
+            ...r,
+            text: this.chunkTexts.get(r.id) || `[File: ${r.id}]`,
+        }));
     }
 
     /** Scan project files respecting .gitignore-like patterns. */

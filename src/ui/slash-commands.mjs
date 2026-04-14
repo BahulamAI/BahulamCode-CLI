@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { printGoodbye } from './banner.mjs';
+import { ContextRetriever } from '../context/retriever.mjs';
 
 export const COMMANDS = {
     '/help':     { description: 'Show available commands', handler: cmdHelp },
@@ -17,7 +18,7 @@ export const COMMANDS = {
     '/sessions': { description: 'List previous sessions', handler: cmdSessions },
     '/exit':     { description: 'Exit CLI', handler: cmdExit },
     '/quit':     { description: 'Alias for /exit', handler: cmdExit },
-    '/index':    { description: 'Build/rebuild context index (Phase 3)', handler: cmdIndex },
+    '/index':    { description: 'Build/rebuild BM25 context index', handler: cmdIndex },
     '/model':    { description: 'Show current model', handler: cmdModel },
     '/tokens':   { description: 'Show token usage', handler: cmdTokens },
     '/cost':     { description: 'Show session cost', handler: cmdCost },
@@ -119,8 +120,17 @@ function cmdExit() {
     process.exit(0);
 }
 
-function cmdIndex() {
-    process.stderr.write('\x1b[2mContext indexing available in Phase 3 (--local mode).\x1b[0m\n');
+async function cmdIndex() {
+    const cwd = process.cwd();
+    process.stderr.write('\x1b[2mBuilding BM25 index...\x1b[0m\n');
+    try {
+        const retriever = new ContextRetriever(cwd);
+        const result = await retriever.buildIndex();
+        process.stderr.write(`\x1b[32m✓ Index built: ${result.fileCount} files, ${result.chunkCount} chunks\x1b[0m\n`);
+        process.stderr.write(`\x1b[2m  Stored at: ${path.join(cwd, '.tarang', 'index')}\x1b[0m\n`);
+    } catch (err) {
+        process.stderr.write(`\x1b[31mIndex build failed: ${err.message}\x1b[0m\n`);
+    }
 }
 
 function cmdModel(ctx) {

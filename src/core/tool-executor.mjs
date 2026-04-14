@@ -8,6 +8,7 @@
  */
 
 import { createToolRegistry } from '../tools/registry.mjs';
+import { filterOutput } from './output-filter.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -59,23 +60,64 @@ export function createToolExecutor() {
         };
     }
 
+    // ── Auto-lint after file writes ────────────────────────────
+
+    const LINT_COMMANDS = {
+        '.py':  (file) => `python3 -m py_compile "${file}" 2>&1`,
+        '.js':  (file) => `npx eslint --no-eslintrc --rule '{}' "${file}" 2>&1 || true`,
+        '.ts':  (file) => `npx tsc --noEmit --pretty "${file}" 2>&1 || true`,
+        '.tsx': (file) => `npx tsc --noEmit --pretty "${file}" 2>&1 || true`,
+        '.go':  (file) => `go vet "${file}" 2>&1`,
+        '.rs':  (file) => `rustfmt --check "${file}" 2>&1`,
+    };
+
+    function autoLint(filePath) {
+        const ext = path.extname(filePath);
+        const cmdFn = LINT_COMMANDS[ext];
+        if (!cmdFn) return null;
+
+        try {
+            const output = execSync(cmdFn(filePath), {
+                encoding: 'utf-8',
+                timeout: 15_000,
+                cwd: process.cwd(),
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            const trimmed = output.trim();
+            if (!trimmed) return null;
+            return trimmed;
+        } catch (err) {
+            // Non-zero exit means lint errors found
+            const output = (err.stderr || err.stdout || '').trim();
+            if (!output) return null;
+            return output;
+        }
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
-        // 1. shell → Bash
+        // 1. shell → Bash + smart output filtering
         shell: async (args) => {
             const result = await occRegistry.call('Bash', {
                 command: args.command,
                 timeout: args.timeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
             });
-            const output = typeof result === 'string' ? result : String(result);
-            const exitMatch = output.match(/Exit code: (\d+)/);
+            const rawOutput = typeof result === 'string' ? result : String(result);
+            const exitMatch = rawOutput.match(/Exit code: (\d+)/);
+            const success = !exitMatch || exitMatch[1] === '0';
+
+            // Apply smart filtering based on command type
+            const filtered = filterOutput(rawOutput, args.command, success);
+
             return {
-                success: !exitMatch || exitMatch[1] === '0',
-                output,
+                success,
+                output: filtered.output,
                 exit_code: exitMatch ? parseInt(exitMatch[1]) : 0,
                 _tool: 'shell',
+                _commandType: filtered.commandType,
+                _filtered: filtered.truncated || filtered.originalLines !== filtered.filteredLines,
             };
         },
 
@@ -99,7 +141,7 @@ export function createToolExecutor() {
             };
         },
 
-        // 3. write_file → Write
+        // 3. write_file → Write + auto-lint
         write_file: async (args) => {
             const filePath = resolvePath(args.path);
             // OCC Write requires Read first for existing files — handle gracefully
@@ -112,10 +154,19 @@ export function createToolExecutor() {
                 file_path: filePath,
                 content: args.content,
             });
-            return wrapResult(result, 'write_file');
+            const wrapped = wrapResult(result, 'write_file');
+
+            // Auto-lint the written file
+            const lintOutput = autoLint(filePath);
+            if (lintOutput) {
+                wrapped.output += `\n\n--- Lint result ---\n${lintOutput}`;
+                wrapped.lint = lintOutput;
+            }
+
+            return wrapped;
         },
 
-        // 4. edit_file → Edit
+        // 4. edit_file → Edit + auto-lint
         edit_file: async (args) => {
             const filePath = resolvePath(args.path);
             // OCC Edit requires Read first
@@ -128,7 +179,16 @@ export function createToolExecutor() {
                 new_string: args.replace,
                 replace_all: args.replace_all || false,
             });
-            return wrapResult(result, 'edit_file');
+            const wrapped = wrapResult(result, 'edit_file');
+
+            // Auto-lint the edited file
+            const lintOutput = autoLint(filePath);
+            if (lintOutput) {
+                wrapped.output += `\n\n--- Lint result ---\n${lintOutput}`;
+                wrapped.lint = lintOutput;
+            }
+
+            return wrapped;
         },
 
         // 5. list_files → Glob

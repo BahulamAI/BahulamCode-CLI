@@ -1,65 +1,145 @@
 /**
- * Output Filter — T24: Smart output filtering + auto-lint.
+ * Output Filter — Smart shell output filtering + auto-lint.
+ * Ported from tarang-cli (Python) ws/executor.py with enhanced patterns.
  */
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
 
-const NOISE_PATTERNS = [
-    /^npm WARN/,
-    /^npm notice/,
-    /^\s*$/,
-    /^added \d+ packages?/,
-    /^up to date/,
-    /^[\s│├└─]+$/,  // tree drawing chars
-    /^\[=+\s*\]/,   // progress bars
-];
+// ── Command Classification ──────────────────────────────────
 
-const PROFILES = {
-    install: { keepLines: 20, filterNoise: true },
-    test:    { keepLines: 50, keepErrors: true },
-    build:   { keepLines: 30, keepErrors: true },
-    run:     { keepLines: 100, filterNoise: false },
+const COMMAND_PROFILES = {
+    install: {
+        patterns: [/pip install/i, /npm install/i, /yarn add/i, /pnpm add/i, /cargo add/i, /go get/i, /brew install/i, /apt install/i],
+        successLimit: 500,
+        failureLimit: 2000,
+        noisePatterns: [
+            /^Collecting \S+/,
+            /^Downloading \S+/,
+            /^Installing collected/,
+            /^Successfully installed/,
+            /^━+/,                          // Progress bars
+            /^\s*\d+%\s*\|/,              // Percentage bars
+            /^Using cached/,
+            /^Requirement already satisfied/,
+            /^added \d+ packages?/,
+            /^up to date/,
+            /^npm WARN/,
+            /^npm notice/,
+            /^\s*$/,                        // Empty lines
+        ],
+        keepPatterns: [/error/i, /failed/i, /WARN(?:ING)?/i, /not found/i, /permission denied/i],
+    },
+    test: {
+        patterns: [/pytest/i, /npm test/i, /cargo test/i, /go test/i, /jest/i, /vitest/i, /mocha/i],
+        successLimit: 2000,
+        failureLimit: 8000,
+        noisePatterns: [
+            /^\.+$/,                        // Lines of dots (pytest progress)
+            /^PASSED/,
+            /^\s*✓/,                        // Checkmarks
+            /^\s*$/,
+        ],
+        keepPatterns: [/FAILED/i, /FAIL/i, /Error/i, /AssertionError/i, /Expected/i, /Actual/i, /✗/, /✘/],
+    },
+    build: {
+        patterns: [/npm run build/i, /cargo build/i, /go build/i, /tsc/i, /webpack/i, /vite build/i, /make\b/i, /next build/i],
+        successLimit: 1000,
+        failureLimit: 6000,
+        noisePatterns: [
+            /^Compiling \S+/,
+            /^Finished \S+ target/,
+            /^\s*$/,
+        ],
+        keepPatterns: [/error/i, /warning/i],
+    },
+    run: {
+        patterns: [/python\s/i, /node\s/i, /go run/i, /cargo run/i, /npm start/i, /npm run dev/i],
+        successLimit: 4000,
+        failureLimit: 8000,
+        noisePatterns: [],
+        keepPatterns: [],
+    },
+    default: {
+        patterns: [],
+        successLimit: 3000,
+        failureLimit: 6000,
+        noisePatterns: [/^\s*$/],
+        keepPatterns: [],
+    },
 };
 
-/** Detect shell command type. */
+/** Detect shell command type for smart filtering. */
 export function detectCommandType(command) {
-    if (!command) return 'run';
-    const cmd = command.toLowerCase();
-    if (/\b(npm install|pip install|yarn add|pnpm add)\b/.test(cmd)) return 'install';
-    if (/\b(npm test|pytest|jest|vitest|mocha|cargo test)\b/.test(cmd)) return 'test';
-    if (/\b(npm run build|make|cargo build|go build|tsc)\b/.test(cmd)) return 'build';
-    return 'run';
+    if (!command) return 'default';
+    for (const [type, profile] of Object.entries(COMMAND_PROFILES)) {
+        if (type === 'default') continue;
+        if (profile.patterns.some(p => p.test(command))) return type;
+    }
+    return 'default';
 }
 
-/** Filter shell output based on command type. */
-export function filterOutput(output, command) {
-    if (!output) return output;
+// ── Output Filtering ────────────────────────────────────────
+
+/**
+ * Filter shell output based on command type.
+ * Reduces noise from install/build while preserving errors and useful output.
+ *
+ * @param {string} output - Raw shell output
+ * @param {string} command - The command that was run
+ * @param {boolean} success - Whether the command succeeded
+ * @returns {{ output: string, commandType: string, truncated: boolean, originalLines: number, filteredLines: number }}
+ */
+export function filterOutput(output, command, success = true) {
+    if (!output) return { output: '', commandType: 'default', truncated: false, originalLines: 0, filteredLines: 0 };
+
     const type = detectCommandType(command);
-    const profile = PROFILES[type];
-    let lines = output.split('\n');
+    const profile = COMMAND_PROFILES[type];
+    const limit = success ? profile.successLimit : profile.failureLimit;
+    const lines = output.split('\n');
+    const originalLines = lines.length;
 
-    if (profile.filterNoise) {
-        lines = lines.filter(line => !NOISE_PATTERNS.some(p => p.test(line)));
-    }
+    let filteredLines = [];
 
-    if (profile.keepErrors) {
-        const errorLines = lines.filter(l => /error|Error|ERR!|FAIL|failed/i.test(l));
-        if (errorLines.length > 0) {
-            // Keep all error context
-            const filtered = lines.slice(-profile.keepLines);
-            return filtered.join('\n');
+    for (const line of lines) {
+        // Always keep lines matching keep patterns (errors, failures)
+        const shouldKeep = profile.keepPatterns.length > 0 &&
+            profile.keepPatterns.some(p => p.test(line));
+
+        // Filter out noise patterns
+        const isNoise = !shouldKeep && profile.noisePatterns.length > 0 &&
+            profile.noisePatterns.some(p => p.test(line));
+
+        if (shouldKeep || !isNoise) {
+            filteredLines.push(line);
         }
     }
 
-    if (lines.length > profile.keepLines) {
-        lines = lines.slice(-profile.keepLines);
-        return `[...truncated ${output.split('\n').length - profile.keepLines} lines]\n${lines.join('\n')}`;
+    let filteredOutput = filteredLines.join('\n');
+    let truncated = false;
+
+    // Truncate to limit
+    if (filteredOutput.length > limit) {
+        filteredOutput = filteredOutput.slice(0, limit);
+        const lastNewline = filteredOutput.lastIndexOf('\n');
+        if (lastNewline > 0) {
+            filteredOutput = filteredOutput.slice(0, lastNewline);
+        }
+        filteredOutput += '\n... (truncated)';
+        truncated = true;
     }
 
-    return lines.join('\n');
+    return {
+        output: filteredOutput,
+        commandType: type,
+        truncated,
+        originalLines,
+        filteredLines: filteredLines.length,
+    };
 }
+
+// ── Auto-Lint ───────────────────────────────────────────────
 
 /** Auto-lint a file after write/edit. Returns lint output or null. */
 export function autoLint(filePath) {
@@ -68,21 +148,30 @@ export function autoLint(filePath) {
     let cmd;
 
     try {
-        if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) {
-            if (fs.existsSync('node_modules/.bin/eslint')) cmd = `npx eslint "${filePath}" --no-error-on-unmatched-pattern 2>&1`;
-            else if (fs.existsSync('node_modules/.bin/prettier')) cmd = `npx prettier --check "${filePath}" 2>&1`;
-        } else if (ext === '.py') {
-            cmd = `python3 -m py_compile "${filePath}" 2>&1`;
-        } else if (ext === '.go') {
-            cmd = `gofmt -l "${filePath}" 2>&1`;
-        } else if (ext === '.rs') {
-            cmd = `rustfmt --check "${filePath}" 2>&1`;
+        switch (ext) {
+            case '.py':
+                cmd = `python3 -m py_compile "${filePath}" 2>&1`;
+                break;
+            case '.js': case '.mjs': case '.cjs':
+                cmd = `node --check "${filePath}" 2>&1`;
+                break;
+            case '.ts': case '.tsx':
+                if (fs.existsSync('node_modules/.bin/tsc'))
+                    cmd = `npx tsc --noEmit --pretty "${filePath}" 2>&1`;
+                break;
+            case '.go':
+                cmd = `go vet "${filePath}" 2>&1`;
+                break;
+            case '.rs':
+                cmd = `rustfmt --check "${filePath}" 2>&1`;
+                break;
         }
 
         if (!cmd) return null;
         const output = execSync(cmd, { stdio: 'pipe', timeout: 15_000, encoding: 'utf-8' });
         return output.trim() || null;
     } catch (err) {
-        return err.stdout?.toString().trim() || err.stderr?.toString().trim() || null;
+        const output = (err.stderr || err.stdout || '').toString().trim();
+        return output || null;
     }
 }
