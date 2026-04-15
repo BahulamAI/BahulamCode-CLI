@@ -43,15 +43,13 @@ export class TarangStreamClient {
     /**
      * @param {Object} opts
      * @param {string} opts.baseUrl - Tarang backend URL
-     * @param {string} opts.token - GitHub OAuth token
-     * @param {string} opts.openRouterKey - OpenRouter API key
+     * @param {string} opts.token - CLI auth token
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, openRouterKey, toolExecutor, verbose = false, approvalManager = null }) {
+    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
-        this.openRouterKey = openRouterKey;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
@@ -82,7 +80,6 @@ export class TarangStreamClient {
             'Content-Type': 'application/json',
         };
         if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-        if (this.openRouterKey) headers['X-OpenRouter-Key'] = this.openRouterKey;
 
         let response;
         try {

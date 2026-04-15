@@ -1,34 +1,22 @@
 /**
- * Mode Selector — T19: --local/--remote/--auto with smart selection.
+ * Mode Selector
+ *
+ * remote (default): All requests go to Tarang backend.
+ *   Backend handles orchestration, model selection, tool routing.
+ *   User's provider and models configured via web Settings page.
+ *
+ * local: For local LLMs (Ollama, LM Studio, etc.)
+ *   Direct API call, no backend. Only when user explicitly opts in.
  */
-
-const SIMPLE_PATTERNS = [
-    /\b(explain|describe|read|show|list|what is|how does|tell me|summarize)\b/i,
-];
-const COMPLEX_PATTERNS = [
-    /\b(add|create|implement|build|design|architect|migrate|refactor)\b/i,
-    /\b(authentication|system|framework|platform|infrastructure|database)\b/i,
-];
 
 let _probeCache = { available: null, timestamp: 0 };
 const PROBE_CACHE_TTL = 60_000; // 60s
 
 export async function selectMode(instruction, options, config) {
-    // Explicit flag
+    // Explicit --local flag: user wants local LLM
     if (options.local) return 'local';
-    if (options.remote) return 'remote';
 
-    // Config default
-    const defaultMode = config.mode || 'auto';
-    if (defaultMode !== 'auto') return defaultMode;
-
-    // Backend probe
-    const backendAvailable = await probeBackend(config.backendUrl || config.backend_url);
-    if (!backendAvailable) return 'local';
-
-    // Task classification
-    const complexity = classifyTask(instruction);
-    if (complexity === 'simple') return 'local';
+    // Everything else goes to the backend
     return 'remote';
 }
 

@@ -94,89 +94,83 @@ export class TarangAuth {
         this.saveCredentials({ mode });
     }
 
-    /** Display config with masked secrets (styled). */
+    /** Display config (styled). */
     printConfig() {
         const creds = this.loadCredentials();
-        const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', RESET = '\x1b[0m';
-        const mask = (val) => {
-            if (!val) return `${RED}\u2717 not set${RESET}`;
-            if (val.length <= 8) return `${GREEN}\u2713 ****${RESET}`;
-            return `${GREEN}\u2713${RESET} ${val.slice(0, 6)}...${val.slice(-4)}`;
-        };
-        process.stderr.write(`\n${BOLD}Tarang Configuration${RESET} ${DIM}(~/.tarang/config.json)${RESET}\n`);
+        const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', CYAN = '\x1b[36m', RESET = '\x1b[0m';
+        const check = `${GREEN}\u2713${RESET}`;
+        const cross = `${RED}\u2717${RESET}`;
+
+        const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+
+        process.stderr.write(`\n${BOLD}Tarang Configuration${RESET}\n`);
         process.stderr.write(`${'─'.repeat(50)}\n`);
-        process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
-        process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
-        process.stderr.write(`  Anthropic:      ${mask(creds.anthropicKey)}\n`);
-        process.stderr.write(`  Backend URL:    ${DIM}${creds.backendUrl || '(default)'}${RESET}\n`);
+        process.stderr.write(`  Auth:           ${creds.token ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
+        process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
+        process.stderr.write(`  Backend:        ${DIM}${creds.backendUrl}${RESET}\n`);
         process.stderr.write(`  Mode:           ${DIM}${creds.mode || 'auto'}${RESET}\n`);
+        process.stderr.write(`\n  ${DIM}Models and providers are configured in the browser.${RESET}\n`);
+        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}/config${RESET}${DIM} to open settings.${RESET}\n`);
         process.stderr.write('\n');
     }
 
     /**
-     * Run GitHub OAuth login flow.
-     * Opens browser, starts local callback server, exchanges code for token.
-     * @param {string} backendUrl
+     * Run login flow via web app.
+     *
+     * Flow:
+     *   1. CLI starts local HTTP server on random port
+     *   2. Opens browser to web /auth/cli?callback=http://127.0.0.1:{port}/callback
+     *   3. Web checks Supabase session (if none → GitHub OAuth → Supabase)
+     *   4. Web generates CLI token via /api/cli/token
+     *   5. Web redirects browser to CLI callback with token
+     *   6. CLI receives token, saves to ~/.tarang/config.json
      */
-    async login(backendUrl) {
-        const base = backendUrl || this.loadCredentials().backendUrl;
-
-        // Check if backend is reachable
-        try {
-            process.stderr.write('\x1b[2mConnecting to Tarang backend...\x1b[0m\n');
-            const resp = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
-            if (!resp.ok) throw new Error(`Backend returned ${resp.status}`);
-            process.stderr.write('\x1b[32m✓ Backend reachable\x1b[0m\n');
-        } catch (err) {
-            process.stderr.write(`\x1b[31m✗ Cannot reach Tarang backend at ${base}\x1b[0m\n`);
-            process.stderr.write(`  \x1b[2m${err.message}\x1b[0m\n`);
-            const env = process.env.TARANG_ENV || process.env.NODE_ENV || '(not set)';
-            process.stderr.write(`\x1b[2m  Environment: ${env}\x1b[0m\n`);
-            process.stderr.write('\x1b[33mSet TARANG_ENV=local|development|production or TARANG_BACKEND_URL=<url>\x1b[0m\n');
-            process.exit(1);
-        }
+    async login() {
+        const { resolveWebUrl } = await import('../core/backend-url.mjs');
+        const webUrl = resolveWebUrl();
 
         return new Promise((resolve, reject) => {
             const server = http.createServer(async (req, res) => {
                 const url = new URL(req.url, `http://localhost`);
-                const code = url.searchParams.get('code');
 
-                if (!code) {
-                    res.writeHead(400);
-                    res.end('Missing code parameter');
+                // The web app redirects here with ?token=<cli_token>
+                const token = url.searchParams.get('token');
+
+                if (!token) {
+                    // Maybe an error or missing token
+                    const error = url.searchParams.get('error');
+                    if (error) {
+                        res.writeHead(200, { 'Content-Type': 'text/html' });
+                        res.end(`<html><body><h2>Login failed</h2><p>${error}</p></body></html>`);
+                        server.close();
+                        reject(new Error(error));
+                        return;
+                    }
+                    // Ignore other requests (favicon, etc.)
+                    res.writeHead(200);
+                    res.end('');
                     return;
                 }
 
-                try {
-                    // Exchange code for token via backend
-                    const tokenResp = await fetch(`${base}/auth/callback?code=${code}`);
-                    if (!tokenResp.ok) throw new Error(`Token exchange failed: ${tokenResp.status}`);
-                    const data = await tokenResp.json();
+                // Save the CLI token
+                this.saveCredentials({ token });
 
-                    this.saveCredentials({ token: data.access_token || data.token });
+                res.writeHead(200, { 'Content-Type': 'text/html' });
+                res.end(getLoginSuccessHTML());
 
-                    res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end(getLoginSuccessHTML());
-
-                    server.close();
-                    resolve(true);
-                } catch (err) {
-                    res.writeHead(500);
-                    res.end(`Login failed: ${err.message}`);
-                    server.close();
-                    reject(err);
-                }
+                server.close();
+                resolve(true);
             });
 
             server.listen(0, '127.0.0.1', () => {
                 const port = server.address().port;
-                const redirectUri = `http://127.0.0.1:${port}/callback`;
-                const authUrl = `${base}/auth/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
+                const callbackUrl = `http://127.0.0.1:${port}/callback`;
+                const authUrl = `${webUrl}/auth/cli?callback=${encodeURIComponent(callbackUrl)}`;
 
-                process.stderr.write(`\n\x1b[36mOpening browser for GitHub login...\x1b[0m\n`);
+                process.stderr.write(`\n\x1b[36mOpening browser for login...\x1b[0m\n`);
                 process.stderr.write(`\x1b[2mIf browser doesn't open, visit:\x1b[0m\n  \x1b[4m${authUrl}\x1b[0m\n\n`);
 
-                // Open browser (platform-specific)
+                // Open browser
                 const openCmd = process.platform === 'darwin' ? 'open' :
                                 process.platform === 'win32' ? 'start' : 'xdg-open';
                 import('node:child_process').then(({ exec }) => {
@@ -194,12 +188,11 @@ export class TarangAuth {
 
     /**
      * Ensure user is authenticated, prompt login if not.
-     * @param {string} backendUrl
      */
-    async ensureAuth(backendUrl) {
+    async ensureAuth() {
         if (!this.isAuthenticated()) {
             process.stderr.write('\x1b[33mNot logged in.\x1b[0m Starting login flow...\n');
-            await this.login(backendUrl);
+            await this.login();
         }
     }
 }

@@ -23,6 +23,7 @@ export const COMMANDS = {
     '/tokens':   { description: 'Show token usage', handler: cmdTokens },
     '/cost':     { description: 'Show session cost', handler: cmdCost },
     '/config':   { description: 'Open settings in browser', handler: cmdConfig },
+    '/login':    { description: 'Re-authenticate via browser', handler: cmdLogin },
 };
 
 function run(cmd) {
@@ -164,6 +165,17 @@ function cmdConfig(ctx) {
             exec(`${openCmd} "${settingsUrl}"`, () => {});
         });
     });
+}
+
+function cmdLogin(ctx) {
+    if (ctx.auth) {
+        process.stderr.write('\x1b[36mStarting login flow...\x1b[0m\n');
+        ctx.auth.login().then(() => {
+            process.stderr.write('\x1b[32m✓ Login successful!\x1b[0m\n');
+        }).catch((err) => {
+            process.stderr.write(`\x1b[31m✗ Login failed: ${err.message}\x1b[0m\n`);
+        });
+    }
 }
 
 /**

@@ -93,10 +93,10 @@ export function printAuthStatus(creds) {
     const cross = `${RED}✗${RESET}`;
 
     const tokenOk = !!creds.token;
-    const keyOk = !!creds.openRouterKey || !!creds.anthropicKey;
+    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-    process.stderr.write(`  Auth:     ${tokenOk ? `${check} logged in` : `${cross} not logged in ${DIM}(run: tarang login)${RESET}`}\n`);
-    process.stderr.write(`  API Key:  ${keyOk ? `${check} configured` : `${cross} not set ${DIM}(run: tarang config --openrouter-key KEY)${RESET}`}\n`);
+    process.stderr.write(`  Auth:     ${tokenOk ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
+    process.stderr.write(`  Env:      ${DIM}${env}${RESET}\n`);
     process.stderr.write(`  Mode:     ${DIM}${creds.mode || 'auto'}${RESET}\n`);
     process.stderr.write('\n');
 }

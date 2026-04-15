@@ -5,6 +5,23 @@
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
 
+// Load .env file from cwd or ~/.tarang/.env
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.tarang', '.env')]) {
+    if (existsSync(envPath)) {
+        for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+            const match = line.match(/^\s*([\w]+)\s*=\s*(.+?)\s*$/);
+            if (match && !process.env[match[1]]) {
+                process.env[match[1]] = match[2];
+            }
+        }
+        break;
+    }
+}
+
 import { TarangStreamClient, EVENT_TYPES } from './core/stream-client.mjs';
 import { LocalAgent } from './core/local-agent.mjs';
 import { createToolExecutor } from './core/tool-executor.mjs';
@@ -216,15 +233,9 @@ async function main() {
     if (args.command === 'login') {
         printBanner();
         process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
-        const creds = auth.loadCredentials();
-        await auth.login(creds.backendUrl);
-        process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
-
-        if (!auth.hasOpenRouterKey()) {
-            process.stderr.write('\n\x1b[33mNext step:\x1b[0m Set your OpenRouter API key:\n');
-            process.stderr.write('  \x1b[36mtarang config --openrouter-key YOUR_KEY\x1b[0m\n\n');
-        }
-        process.exit(0);
+        await auth.login();
+        process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n\n');
+        // Fall through to REPL — user starts working right away
     }
 
     if (args.command === 'configure') {
@@ -308,7 +319,7 @@ async function main() {
             }
 
             const client = new TarangStreamClient({
-                baseUrl: backendUrl, token, openRouterKey, toolExecutor,
+                baseUrl: backendUrl, token, toolExecutor,
                 verbose: args.verbose, approvalManager: approval,
             });
             process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
@@ -319,7 +330,7 @@ async function main() {
     if (args.command === 'resume') {
         const state = sessionMgr.loadState();
         if (!state || state.status === 'completed') { process.stderr.write('No resumable session.\n'); process.exit(1); }
-        const client = new TarangStreamClient({ baseUrl: backendUrl, token, openRouterKey, toolExecutor, verbose: args.verbose, approvalManager: approval });
+        const client = new TarangStreamClient({ baseUrl: backendUrl, token, toolExecutor, verbose: args.verbose, approvalManager: approval });
         client.currentTaskId = state.task_id;
         await client.resume();
         for await (const event of client.execute(state.instruction)) formatter.render(event);
