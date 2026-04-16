@@ -29,7 +29,9 @@ export class EventFormatter {
         this.tokenCount = { input: 0, output: 0 };
         this._spinnerFrame = 0;
         this._hasContent = false;
-        this._seenCallIds = new Set(); // Deduplicate tool_call events
+        this._lastContent = '';
+        this._completed = false;
+        this._seenCallIds = new Set();
         this._lastThinking = '';
     }
 
@@ -125,14 +127,15 @@ export class EventFormatter {
         const text = data?.text || '';
         if (!text) return;
 
-        // Prevent duplicate content (CONTENT + COMPLETE both have text)
-        if (this._hasContent) return;
+        // Deduplicate exact same content (CONTENT event may repeat)
+        if (text === this._lastContent) return;
+        this._lastContent = text;
+
+        // Add newline separator before content block
+        if (this.toolCount > 0 || this._hasContent) process.stdout.write('\n');
         this._hasContent = true;
 
-        // Add newline before content if we had tool calls
-        if (this.toolCount > 0) process.stdout.write('\n');
-
-        // Render content with 2-space indent for consistency
+        // Render content with 2-space indent
         const lines = text.split('\n');
         for (const line of lines) {
             process.stdout.write(`  ${line}\n`);
@@ -269,7 +272,10 @@ export class EventFormatter {
     }
 
     _complete(data) {
-        // Skip if we already showed content (avoid double "Done")
+        // Only show once
+        if (this._completed) return;
+        this._completed = true;
+
         const duration = data?.duration_s ? `${Number(data.duration_s).toFixed(1)}s` : '';
         const tools = this.toolCount || data?.tool_calls || 0;
         const iterations = data?.iterations || 0;
