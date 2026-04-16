@@ -98,8 +98,8 @@ export class ApprovalManager {
             process.stdin.setRawMode(true);
             process.stdin.resume();
             process.stdin.once('data', (data) => {
-                process.stdin.setRawMode(wasRaw);
-                process.stdin.pause();
+                process.stdin.setRawMode(wasRaw || false);
+                // Don't pause stdin — readline needs it open
                 const char = data.toString();
                 if (char === '\x03') { // Ctrl+C
                     process.exit(0);
