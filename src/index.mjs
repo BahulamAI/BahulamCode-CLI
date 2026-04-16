@@ -243,6 +243,16 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
             if (assistantContent) {
                 conversationHistory.push({ role: 'assistant', content: assistantContent });
             }
+
+            // Reset formatter for next turn
+            formatter.toolCount = 0;
+            formatter.toolCalls = [];
+            formatter.changes = [];
+            formatter._hasContent = false;
+            formatter._lastContent = '';
+            formatter._completed = false;
+            formatter._seenCallIds = new Set();
+            formatter._spinnerFrame = 0;
         } catch (err) {
             process.stderr.write(`\x1b[31mError: ${err.message}\x1b[0m\n`);
         }
@@ -357,7 +367,9 @@ async function main() {
                 baseUrl: backendUrl, token, toolExecutor,
                 verbose: args.verbose, approvalManager: approval,
             });
-            process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
+            // Cancel on SIGINT but don't exit (REPL handles exit)
+            const sigHandler = async () => { await client.cancel().catch(() => {}); };
+            process.once('SIGINT', sigHandler);
             return client.execute(instruction, { cwd: process.cwd(), ...indexedContext }, messages);
         }
     }

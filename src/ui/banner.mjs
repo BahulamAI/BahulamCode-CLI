@@ -79,8 +79,11 @@ export function printProjectInfo(version) {
  * Print keyboard hints and usage tips.
  */
 export function printHints() {
+    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+
     process.stderr.write(`${GREEN}Type your instructions${RESET}, or ${CYAN}/help${RESET} for commands\n`);
-    process.stderr.write(`${BOLD}ESC${RESET}${DIM}=${RESET}cancel  ${BOLD}Ctrl+C${RESET}${DIM}=${RESET}exit  ${BOLD}/help${RESET}${DIM}=${RESET}commands\n`);
+    process.stderr.write(`${DIM}Ctrl+C${RESET}${DIM}=exit  ${RESET}${DIM}/clear${RESET}${DIM}=reset  ${RESET}${DIM}/config${RESET}${DIM}=settings  ${RESET}${DIM}/login${RESET}${DIM}=auth${RESET}\n`);
+    process.stderr.write(`${DIM}env:${env}  models:configured via browser (/config)${RESET}\n`);
     process.stderr.write('\n');
 }
 
