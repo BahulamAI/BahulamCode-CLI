@@ -113,10 +113,11 @@ export class TarangStreamClient {
                 return;
             }
 
-            // Tool requests are intercepted — execute locally, POST callback
+            // Tool requests — show to user, then execute locally and POST callback
             if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
+                yield { type: event, data }; // Show tool call to user first
                 const toolEvent = await this._handleToolRequest(data);
-                if (toolEvent) yield toolEvent; // yield status updates about tool execution
+                if (toolEvent) yield toolEvent;
                 continue;
             }
 
