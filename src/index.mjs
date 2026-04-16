@@ -179,6 +179,9 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: '\x1b[36mtarang>\x1b[0m ' });
     const ctx = { formatter, auth, model: null, sessionMgr };
 
+    // Conversation history — accumulates across turns in this REPL session
+    const conversationHistory = [];
+
     // Branded startup
     printBanner();
     printProjectInfo(VERSION);
@@ -203,11 +206,43 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) { rl.prompt(); return; }
-        if (input.startsWith('/')) { handleSlashCommand(input, ctx); rl.prompt(); return; }
+        if (input.startsWith('/')) {
+            if (input === '/clear') {
+                conversationHistory.length = 0;
+                process.stderr.write('\x1b[2mConversation cleared.\x1b[0m\n');
+                rl.prompt();
+                return;
+            }
+            handleSlashCommand(input, ctx);
+            rl.prompt();
+            return;
+        }
 
         try {
-            const exec = await createExecutor(input);
-            await executeInstruction(exec, input, formatter, sessionMgr);
+            // Add user message to history
+            conversationHistory.push({ role: 'user', content: input });
+
+            const exec = await createExecutor(input, conversationHistory);
+            let assistantContent = '';
+            for await (const event of exec) {
+                formatter.render(event);
+                if (event.type === 'session_info') sessionMgr.setSessionInfo(event.data);
+                if (event.type === 'tool_call' || event.type === 'tool_request') sessionMgr.recordToolCall(event.data?.tool);
+                if (event.type === 'complete') sessionMgr.complete(event.data?.summary);
+                if (event.type === 'error' && event.data?.fatal) sessionMgr.fail(event.data?.message);
+                if (event.type === 'cancelled') sessionMgr.cancel();
+                if (event.type === 'paused') sessionMgr.pause();
+                // Capture assistant response for history
+                if (event.type === 'content' || event.type === 'content_partial') {
+                    const text = event.data?.text || '';
+                    if (text && text !== assistantContent) assistantContent = text;
+                }
+            }
+
+            // Add assistant response to history
+            if (assistantContent) {
+                conversationHistory.push({ role: 'assistant', content: assistantContent });
+            }
         } catch (err) {
             process.stderr.write(`\x1b[31mError: ${err.message}\x1b[0m\n`);
         }
@@ -286,7 +321,7 @@ async function main() {
     const contextRetriever = new ContextRetriever(process.cwd());
 
     /** Create an executor (local or remote) for a given instruction. */
-    async function createExecutor(instruction) {
+    async function createExecutor(instruction, messages = null) {
         const mode = await selectMode(instruction, args, { ...creds, backendUrl });
 
         if (mode === 'local') {
@@ -323,7 +358,7 @@ async function main() {
                 verbose: args.verbose, approvalManager: approval,
             });
             process.on('SIGINT', async () => { await client.cancel().catch(() => {}); process.exit(0); });
-            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext });
+            return client.execute(instruction, { cwd: process.cwd(), ...indexedContext }, messages);
         }
     }
 

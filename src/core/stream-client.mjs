@@ -68,12 +68,12 @@ export class TarangStreamClient {
      * @param {string} [model]
      * @yields {{ type: string, data: Object }}
      */
-    async *execute(instruction, context = {}, model = null) {
+    async *execute(instruction, context = {}, messages = null) {
         this._cancelled = false;
 
         const url = `${this.baseUrl}/api/execute`;
         const body = { instruction, context };
-        if (model) body.model = model;
+        if (messages && messages.length > 0) body.messages = messages;
 
         const headers = {
             'Accept': 'text/event-stream',
