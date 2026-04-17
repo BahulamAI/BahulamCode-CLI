@@ -24,6 +24,7 @@ export const COMMANDS = {
     '/cost':     { description: 'Show session cost', handler: cmdCost },
     '/config':   { description: 'Open settings in browser', handler: cmdConfig },
     '/login':    { description: 'Re-authenticate via browser', handler: cmdLogin },
+    '/sync':     { description: 'Sync settings from web', handler: cmdSync },
 };
 
 function run(cmd) {
@@ -174,6 +175,20 @@ function cmdLogin(ctx) {
             process.stderr.write('\x1b[32m✓ Login successful!\x1b[0m\n');
         }).catch((err) => {
             process.stderr.write(`\x1b[31m✗ Login failed: ${err.message}\x1b[0m\n`);
+        });
+    }
+}
+
+function cmdSync(ctx) {
+    if (ctx.auth) {
+        process.stderr.write('\x1b[36mSyncing settings from web...\x1b[0m\n');
+        ctx.auth.syncSettings().then((remote) => {
+            process.stderr.write(`\x1b[32m✓ Synced:\x1b[0m gateway=${remote.gateway_type}`);
+            if (remote.models?.orchestrator) process.stderr.write(`, orchestrator=${remote.models.orchestrator}`);
+            if (remote.models?.reasoning) process.stderr.write(`, coding=${remote.models.reasoning}`);
+            process.stderr.write('\n');
+        }).catch((err) => {
+            process.stderr.write(`\x1b[31m✗ Sync failed: ${err.message}\x1b[0m\n`);
         });
     }
 }

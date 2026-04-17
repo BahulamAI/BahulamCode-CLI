@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @axplusb/orca v1.0.0 — Orca AI Coding Agent CLI
+ * @axplusb/orca v1.0.1 — Orca AI Coding Agent CLI
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
@@ -35,7 +35,7 @@ import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyled
 import { ContextRetriever } from './context/retriever.mjs';
 import { loadSettings } from './config/settings.mjs';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 
 // ── Arg Parsing (consolidated from index.mjs + cli-args.mjs) ──
 
@@ -81,10 +81,14 @@ function parseArgs(argv) {
             case 'resume': args.command = 'resume'; break;
             case 'config': args.command = 'config'; break;
             case 'configure': args.command = 'configure'; break;
+            case 'sync': args.command = 'sync'; break;
             // Config flags
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
             case '--anthropic-key': args.anthropicKey = argv[++i]; break;
+            case '--openai-key': args.openaiKey = argv[++i]; break;
+            case '--google-key': args.googleKey = argv[++i]; break;
+            case '--gateway': args.gateway = argv[++i]; break;
             // --backend-url removed: use TARANG_ENV
             // --model removed: use tarang configure (web settings)
             // Extended flags
@@ -279,8 +283,34 @@ async function main() {
         printBanner();
         process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
         await auth.login();
-        process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n\n');
+        process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
+        // Sync settings from web after login
+        try {
+            process.stderr.write('\x1b[2mSyncing settings from server...\x1b[0m\n');
+            const remote = await auth.syncSettings();
+            process.stderr.write(`\x1b[32m✓ Settings synced\x1b[0m ${remote.gateway_type ? `(gateway: ${remote.gateway_type})` : ''}\n`);
+        } catch {
+            process.stderr.write('\x1b[2mSettings sync skipped — configure at devtarang.ai/dashboard/settings\x1b[0m\n');
+        }
+        process.stderr.write('\n');
         // Fall through to REPL — user starts working right away
+    }
+
+    if (args.command === 'sync') {
+        printBanner();
+        process.stderr.write('\x1b[1mSyncing settings...\x1b[0m\n\n');
+        try {
+            const remote = await auth.syncSettings();
+            process.stderr.write(`\x1b[32m✓ Gateway:\x1b[0m     ${remote.gateway_type}\n`);
+            if (remote.models?.orchestrator) process.stderr.write(`\x1b[32m✓ Orchestrator:\x1b[0m ${remote.models.orchestrator}\n`);
+            if (remote.models?.reasoning)    process.stderr.write(`\x1b[32m✓ Coding:\x1b[0m       ${remote.models.reasoning}\n`);
+            if (remote.models?.local)        process.stderr.write(`\x1b[32m✓ Local:\x1b[0m        ${remote.models.local}\n`);
+            if (remote.configured_providers?.length) process.stderr.write(`\x1b[32m✓ Providers:\x1b[0m   ${remote.configured_providers.join(', ')}\n`);
+            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.orca/config.json\x1b[0m\n');
+        } catch (err) {
+            process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
+        }
+        process.exit(0);
     }
 
     if (args.command === 'configure') {
@@ -300,11 +330,15 @@ async function main() {
     }
 
     if (args.command === 'config') {
-        if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); process.stderr.write('\x1b[32m✓ OpenRouter key saved.\x1b[0m\n'); }
-        if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); process.stderr.write('\x1b[32m✓ Anthropic key saved.\x1b[0m\n'); }
-        if (args.mode) { auth.setMode(args.mode); process.stderr.write(`\x1b[32m✓ Mode set to ${args.mode}\x1b[0m\n`); }
-        if (args.showConfig || (!args.openRouterKey && !args.anthropicKey && !args.mode)) {
-            printStyledConfig(auth.loadCredentials());
+        let changed = false;
+        if (args.openRouterKey) { auth.saveOpenRouterKey(args.openRouterKey); process.stderr.write('\x1b[32m✓ OpenRouter key saved.\x1b[0m\n'); changed = true; }
+        if (args.anthropicKey) { auth.saveAnthropicKey(args.anthropicKey); process.stderr.write('\x1b[32m✓ Anthropic key saved.\x1b[0m\n'); changed = true; }
+        if (args.openaiKey) { auth.saveOpenAIKey(args.openaiKey); process.stderr.write('\x1b[32m✓ OpenAI key saved.\x1b[0m\n'); changed = true; }
+        if (args.googleKey) { auth.saveGoogleKey(args.googleKey); process.stderr.write('\x1b[32m✓ Google AI key saved.\x1b[0m\n'); changed = true; }
+        if (args.gateway) { auth.saveCredentials({ gateway_type: args.gateway }); process.stderr.write(`\x1b[32m✓ Gateway set to ${args.gateway}\x1b[0m\n`); changed = true; }
+        if (args.mode) { auth.setMode(args.mode); process.stderr.write(`\x1b[32m✓ Mode set to ${args.mode}\x1b[0m\n`); changed = true; }
+        if (args.showConfig || !changed) {
+            auth.printConfig();
         }
         process.exit(0);
     }
@@ -317,9 +351,13 @@ async function main() {
         const c = auth.loadCredentials();
         return {
             token: process.env.TARANG_TOKEN || c.token,
-            openRouterKey: process.env.TARANG_OPENROUTER_KEY || c.openRouterKey,
+            openRouterKey: process.env.OPENROUTER_API_KEY || c.openRouterKey,
             anthropicKey: process.env.ANTHROPIC_API_KEY || c.anthropicKey,
+            openaiKey: process.env.OPENAI_API_KEY || c.openaiKey,
+            googleKey: process.env.GOOGLE_API_KEY || c.googleKey,
             backendUrl: c.backendUrl,
+            gatewayType: c.gatewayType,
+            models: c.models,
         };
     }
 
@@ -345,11 +383,20 @@ async function main() {
         const mode = await selectMode(instruction, args, { ...creds, backendUrl: creds.backendUrl });
 
         if (mode === 'local') {
-            if (args.verbose) process.stderr.write('\x1b[2m[mode] local\x1b[0m\n');
+            // Model priority: CLI flag > synced web setting > settings.json > default
+            const localModel = creds.models?.local || settings.model || 'anthropic/claude-sonnet-4-6';
+            if (args.verbose) process.stderr.write(`\x1b[2m[mode] local (${localModel})\x1b[0m\n`);
+
+            // Pick the right API key based on the model/gateway
+            let apiKey = creds.anthropicKey;
+            let orKey = creds.openRouterKey;
+            if (creds.gatewayType === 'openai') apiKey = creds.openaiKey;
+            if (creds.gatewayType === 'googleai') apiKey = creds.googleKey;
+
             return new LocalAgent({
-                apiKey: creds.anthropicKey,
-                openRouterKey: creds.openRouterKey,
-                model: settings.model || 'claude-sonnet-4-20250514',
+                apiKey,
+                openRouterKey: orKey,
+                model: localModel,
                 toolExecutor,
                 verbose: args.verbose,
                 cwd: process.cwd(),

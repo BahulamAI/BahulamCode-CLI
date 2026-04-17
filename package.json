@@ -1,6 +1,6 @@
 {
   "name": "@axplusb/orca",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Orca (Orchestration of Composable Agents) — AI coding agent CLI powered by Tarang",
   "type": "module",
   "bin": {

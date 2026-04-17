@@ -25,7 +25,7 @@ export class TarangAuth {
         }
     }
 
-    /** Load credentials from config.json. */
+    /** Load credentials and settings from config.json. */
     loadCredentials() {
         try {
             if (fs.existsSync(CONFIG_PATH)) {
@@ -39,11 +39,23 @@ export class TarangAuth {
         }
         return {
             token: this._config.token || null,
-            openRouterKey: this._config.openrouter_key || null,
+            openRouterKey: this._config.openrouter_key || process.env.OPENROUTER_API_KEY || null,
+            anthropicKey: this._config.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null,
+            openaiKey: this._config.openai_api_key || process.env.OPENAI_API_KEY || null,
+            googleKey: this._config.google_api_key || process.env.GOOGLE_API_KEY || null,
             backendUrl: resolveBackendUrl(),
             mode: this._config.mode || 'auto',
-            anthropicKey: this._config.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null,
+            gatewayType: this._config.gateway_type || 'openrouter',
+            models: this._config.models || {},
+            configuredProviders: this._config.configured_providers || [],
+            gatewayConfig: this._config.gateway_config || {},
         };
+    }
+
+    /** Get the raw config object. */
+    getRawConfig() {
+        if (!this._config) this.loadCredentials();
+        return this._config || {};
     }
 
     /** Save credentials atomically (temp-file + rename). */
@@ -69,20 +81,54 @@ export class TarangAuth {
         return !!creds.openRouterKey;
     }
 
+    /** Save an API key by provider name. */
+    saveProviderKey(provider, key) {
+        const keyMap = {
+            openrouter: 'openrouter_key',
+            anthropic: 'anthropic_api_key',
+            openai: 'openai_api_key',
+            googleai: 'google_api_key',
+            azureopenai: 'azure_api_key',
+            bedrock: 'aws_access_key',
+            databricks: 'databricks_token',
+        };
+        const field = keyMap[provider];
+        if (!field) throw new Error(`Unknown provider: ${provider}`);
+        this.saveCredentials({ [field]: key });
+    }
+
     /** Save OpenRouter API key. */
     saveOpenRouterKey(key) {
-        if (!key.startsWith('sk-or-')) {
-            throw new Error('Invalid OpenRouter key format. Expected sk-or-...');
-        }
-        this.saveCredentials({ openrouter_key: key });
+        this.saveProviderKey('openrouter', key);
     }
 
     /** Save Anthropic API key. */
     saveAnthropicKey(key) {
-        if (!key.startsWith('sk-ant-')) {
-            throw new Error('Invalid Anthropic key format. Expected sk-ant-...');
-        }
-        this.saveCredentials({ anthropic_api_key: key });
+        this.saveProviderKey('anthropic', key);
+    }
+
+    /** Save OpenAI API key. */
+    saveOpenAIKey(key) {
+        this.saveProviderKey('openai', key);
+    }
+
+    /** Save Google AI API key. */
+    saveGoogleKey(key) {
+        this.saveProviderKey('googleai', key);
+    }
+
+    /** Sync settings from web backend and save locally. */
+    async syncSettings() {
+        const { fetchRemoteSettings, mergeRemoteSettings } = await import('../core/settings-sync.mjs');
+        const creds = this.loadCredentials();
+        if (!creds.token) throw new Error('Not logged in. Run `orca login` first.');
+
+        const remote = await fetchRemoteSettings(creds.token);
+        if (!remote) throw new Error('Failed to fetch settings from server.');
+
+        const merged = mergeRemoteSettings(this.getRawConfig(), remote);
+        this.saveCredentials(merged);
+        return remote;
     }
 
     /** Set default mode. */
@@ -109,8 +155,28 @@ export class TarangAuth {
         process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
         process.stderr.write(`  Backend:        ${DIM}${creds.backendUrl}${RESET}\n`);
         process.stderr.write(`  Mode:           ${DIM}${creds.mode || 'auto'}${RESET}\n`);
-        process.stderr.write(`\n  ${DIM}Models and providers are configured in the browser.${RESET}\n`);
-        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}/config${RESET}${DIM} to open settings.${RESET}\n`);
+        process.stderr.write(`  Gateway:        ${DIM}${creds.gatewayType}${RESET}\n`);
+
+        const models = creds.models || {};
+        if (models.orchestrator || models.reasoning || models.local) {
+            process.stderr.write(`\n${BOLD}  Models${RESET}\n`);
+            if (models.orchestrator) process.stderr.write(`  Orchestrator:   ${DIM}${models.orchestrator}${RESET}\n`);
+            if (models.reasoning)    process.stderr.write(`  Coding:         ${DIM}${models.reasoning}${RESET}\n`);
+            if (models.local)        process.stderr.write(`  Local:          ${DIM}${models.local}${RESET}\n`);
+        }
+
+        const providers = creds.configuredProviders || [];
+        if (providers.length > 0) {
+            process.stderr.write(`  Providers:      ${DIM}${providers.join(', ')}${RESET}\n`);
+        }
+
+        const raw = this.getRawConfig();
+        if (raw.last_synced_at) {
+            process.stderr.write(`  Last synced:    ${DIM}${new Date(raw.last_synced_at).toLocaleString()}${RESET}\n`);
+        }
+
+        process.stderr.write(`\n  ${DIM}Run ${RESET}${CYAN}orca sync${RESET}${DIM} to sync settings from web.${RESET}\n`);
+        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}orca configure${RESET}${DIM} to open settings in browser.${RESET}\n`);
         process.stderr.write('\n');
     }
 
