@@ -1,12 +1,12 @@
 /**
  * Session Manager — T13: persist session state and history.
- * Saves to .tarang/state.json and .tarang/sessions/.
+ * Saves to .orca/state.json and .orca/sessions/.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const TARANG_DIR = '.tarang';
+const ORCA_DIR = '.orca';
 const STATE_FILE = 'state.json';
 const SESSIONS_DIR = 'sessions';
 const MAX_SESSIONS = 100;
@@ -14,14 +14,14 @@ const MAX_SESSIONS = 100;
 export class SessionManager {
     constructor(projectDir = process.cwd()) {
         this.projectDir = projectDir;
-        this.tarangDir = path.join(projectDir, TARANG_DIR);
-        this.statePath = path.join(this.tarangDir, STATE_FILE);
-        this.sessionsDir = path.join(this.tarangDir, SESSIONS_DIR);
+        this.orcaDir = path.join(projectDir, ORCA_DIR);
+        this.statePath = path.join(this.orcaDir, STATE_FILE);
+        this.sessionsDir = path.join(this.orcaDir, SESSIONS_DIR);
         this.currentState = null;
     }
 
     _ensureDirs() {
-        if (!fs.existsSync(this.tarangDir)) fs.mkdirSync(this.tarangDir, { recursive: true });
+        if (!fs.existsSync(this.orcaDir)) fs.mkdirSync(this.orcaDir, { recursive: true });
         if (!fs.existsSync(this.sessionsDir)) fs.mkdirSync(this.sessionsDir, { recursive: true });
     }
 

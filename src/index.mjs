@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * @tarang/cli v5.0.0 — Tarang AI Coding Agent CLI
+ * @axplusb/orca v5.0.0 — Orca AI Coding Agent CLI
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
 
-// Load .env file from cwd or ~/.tarang/.env
+// Load .env file from cwd or ~/.orca/.env
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.tarang', '.env')]) {
+for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.orca', '.env')]) {
     if (existsSync(envPath)) {
         for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
             const match = line.match(/^\s*([\w]+)\s*=\s*(.+?)\s*$/);
@@ -113,12 +113,12 @@ function printUsage() {
     const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
     process.stderr.write(`${B}USAGE${R}\n`);
-    process.stderr.write(`  ${C}tarang "instruction"${R}         Execute instruction\n`);
-    process.stderr.write(`  ${C}tarang${R}                       Interactive mode (REPL)\n`);
-    process.stderr.write(`  ${C}tarang login${R}                 Authenticate via GitHub OAuth\n`);
-    process.stderr.write(`  ${C}tarang configure${R}             Open settings in browser\n`);
-    process.stderr.write(`  ${C}tarang config --show${R}         Display local configuration\n`);
-    process.stderr.write(`  ${C}tarang resume${R}                Resume a paused session\n`);
+    process.stderr.write(`  ${C}orca "instruction"${R}         Execute instruction\n`);
+    process.stderr.write(`  ${C}orca${R}                       Interactive mode (REPL)\n`);
+    process.stderr.write(`  ${C}orca login${R}                 Authenticate via GitHub OAuth\n`);
+    process.stderr.write(`  ${C}orca configure${R}             Open settings in browser\n`);
+    process.stderr.write(`  ${C}orca config --show${R}         Display local configuration\n`);
+    process.stderr.write(`  ${C}orca resume${R}                Resume a paused session\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
@@ -129,7 +129,7 @@ function printUsage() {
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
-    process.stderr.write(`  ${D}Models are configured via: tarang configure${R}\n`);
+    process.stderr.write(`  ${D}Models are configured via: orca configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
@@ -176,7 +176,7 @@ async function executeInstruction(executor, instruction, formatter, sessionMgr) 
 
 async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
     const readline = await import('node:readline');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: '\x1b[36mtarang>\x1b[0m ' });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: '\x1b[36morca>\x1b[0m ' });
     const ctx = { formatter, auth, model: null, sessionMgr };
 
     // Conversation history — accumulates across turns in this REPL session
@@ -194,9 +194,9 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
     // Guided first-run: prompt login if not authenticated
     if (!creds.token && !creds.openRouterKey && !creds.anthropicKey) {
         process.stderr.write('\x1b[33mFirst time? Get started:\x1b[0m\n');
-        process.stderr.write('  1. \x1b[36mtarang login\x1b[0m              Authenticate via GitHub\n');
-        process.stderr.write('  2. \x1b[36mtarang config -k KEY\x1b[0m     Set your OpenRouter API key\n');
-        process.stderr.write('  3. \x1b[36mtarang "your instruction"\x1b[0m Start coding!\n');
+        process.stderr.write('  1. \x1b[36morca login\x1b[0m              Authenticate via GitHub\n');
+        process.stderr.write('  2. \x1b[36morca config -k KEY\x1b[0m     Set your OpenRouter API key\n');
+        process.stderr.write('  3. \x1b[36morca "your instruction"\x1b[0m Start coding!\n');
         process.stderr.write('\n');
     }
 
@@ -270,7 +270,7 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (args.version) { console.log(`@tarang/cli ${VERSION}`); process.exit(0); }
+    if (args.version) { console.log(`@axplusb/orca ${VERSION}`); process.exit(0); }
     if (args.help) { printUsage(); process.exit(0); }
 
     const auth = new TarangAuth();

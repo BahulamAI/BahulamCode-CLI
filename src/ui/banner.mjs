@@ -17,22 +17,13 @@ const BLUE = '\x1b[34m';
 const BOLD_GREEN = '\x1b[1;32m';
 const BOLD_CYAN = '\x1b[1;36m';
 
-const BANNER_DEV = [
-    '██████╗  ███████╗ ██╗   ██╗',
-    '██╔══██╗ ██╔════╝ ██║   ██║',
-    '██║  ██║ █████╗   ██║   ██║',
-    '██║  ██║ ██╔══╝   ╚██╗ ██╔╝',
-    '██████╔╝ ███████╗  ╚████╔╝ ',
-    '╚═════╝  ╚══════╝   ╚═══╝  ',
-];
-
-const BANNER_TARANG = [
-    '████████╗  █████╗  ██████╗   █████╗  ███╗   ██╗  ██████╗ ',
-    '╚══██╔══╝ ██╔══██╗ ██╔══██╗ ██╔══██╗ ████╗  ██║ ██╔════╝ ',
-    '   ██║    ███████║ ██████╔╝ ███████║ ██╔██╗ ██║ ██║  ███╗',
-    '   ██║    ██╔══██║ ██╔══██╗ ██╔══██║ ██║╚██╗██║ ██║   ██║',
-    '   ██║    ██║  ██║ ██║  ██║ ██║  ██║ ██║ ╚████║ ╚██████╔╝',
-    '   ╚═╝    ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝  ╚═════╝ ',
+const BANNER_ORCA = [
+    ' ██████╗  ██████╗   ██████╗  █████╗ ',
+    '██╔═══██╗ ██╔══██╗ ██╔════╝ ██╔══██╗',
+    '██║   ██║ ██████╔╝ ██║      ███████║',
+    '██║   ██║ ██╔══██╗ ██║      ██╔══██║',
+    '╚██████╔╝ ██║  ██║ ╚██████╗ ██║  ██║',
+    ' ╚═════╝  ╚═╝  ╚═╝  ╚═════╝ ╚═╝  ╚═╝',
 ];
 
 /**
@@ -40,13 +31,10 @@ const BANNER_TARANG = [
  */
 export function printBanner() {
     process.stderr.write('\n');
-    for (const line of BANNER_DEV) {
-        process.stderr.write(`  ${BOLD_GREEN}${line}${RESET}\n`);
+    for (const line of BANNER_ORCA) {
+        process.stderr.write(`  ${BOLD_CYAN}${line}${RESET}\n`);
     }
-    process.stderr.write('\n');
-    for (const line of BANNER_TARANG) {
-        process.stderr.write(`${BOLD_CYAN}${line}${RESET}\n`);
-    }
+    process.stderr.write(`  ${DIM}Orchestration of Composable Agents${RESET}\n`);
     process.stderr.write('\n');
 }
 
@@ -117,7 +105,7 @@ export function printStyledConfig(creds) {
         return `${check} ${val.slice(0, 6)}...${val.slice(-4)}`;
     };
 
-    process.stderr.write(`\n${BOLD}Tarang Configuration${RESET} ${DIM}(~/.tarang/config.json)${RESET}\n`);
+    process.stderr.write(`\n${BOLD}Orca Configuration${RESET} ${DIM}(~/.orca/config.json)${RESET}\n`);
     process.stderr.write(`${'─'.repeat(50)}\n`);
     process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
     process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -179,7 +167,7 @@ export function getLoginSuccessHTML() {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Tarang - Login Successful</title>
+    <title>Orca - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -201,7 +189,7 @@ export function getLoginSuccessHTML() {
             margin-bottom: 8px;
         }
         .dev { color: #3fb950; }
-        .tarang { color: #58a6ff; }
+        .orca { color: #58a6ff; }
         .check {
             font-size: 64px;
             color: #3fb950;
@@ -235,14 +223,14 @@ export function getLoginSuccessHTML() {
     <div class="container">
         <div class="logo">
             <span class="dev">DEV</span>
-            <span class="tarang">TARANG</span>
+            <span class="orca">ORCA</span>
         </div>
         <div class="check">&#10003;</div>
         <h1>Login Successful!</h1>
         <p>You can close this tab and return to your terminal.</p>
         <div class="hint">
             <p>Next step: set your API key</p>
-            <code>tarang config --openrouter-key YOUR_KEY</code>
+            <code>orca config --openrouter-key YOUR_KEY</code>
         </div>
     </div>
 </body>

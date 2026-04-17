@@ -38,7 +38,7 @@ function cmdHelp(ctx) {
     const BOLD = '\x1b[1m', CYAN = '\x1b[36m', DIM = '\x1b[2m', GREEN = '\x1b[32m', BLUE = '\x1b[34m', RESET = '\x1b[0m';
 
     process.stderr.write(`\n${BLUE}┌──────────────────────────────────────────────┐${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Tarang Help${RESET}                                 ${BLUE}│${RESET}\n`);
+    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Orca Help${RESET}                                   ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}├──────────────────────────────────────────────┤${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Commands:${RESET}                                   ${BLUE}│${RESET}\n`);
@@ -91,7 +91,7 @@ function cmdClear(ctx) {
 }
 
 function cmdSessions() {
-    const sessDir = path.join(process.cwd(), '.tarang', 'sessions');
+    const sessDir = path.join(process.cwd(), '.orca', 'sessions');
     if (!fs.existsSync(sessDir)) {
         process.stderr.write('No sessions found.\n');
         return;
@@ -128,7 +128,7 @@ async function cmdIndex() {
         const retriever = new ContextRetriever(cwd);
         const result = await retriever.buildIndex();
         process.stderr.write(`\x1b[32m✓ Index built: ${result.fileCount} files, ${result.chunkCount} chunks\x1b[0m\n`);
-        process.stderr.write(`\x1b[2m  Stored at: ${path.join(cwd, '.tarang', 'index')}\x1b[0m\n`);
+        process.stderr.write(`\x1b[2m  Stored at: ${path.join(cwd, '.orca', 'index')}\x1b[0m\n`);
     } catch (err) {
         process.stderr.write(`\x1b[31mIndex build failed: ${err.message}\x1b[0m\n`);
     }

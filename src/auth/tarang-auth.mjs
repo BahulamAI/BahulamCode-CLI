@@ -1,6 +1,6 @@
 /**
- * Tarang Authentication — GitHub OAuth + config management.
- * Reads/writes ~/.tarang/config.json (shared with Python CLI).
+ * Orca Authentication — GitHub OAuth + config management.
+ * Reads/writes ~/.orca/config.json (shared with Python CLI).
  */
 
 import * as fs from 'node:fs';
@@ -10,7 +10,7 @@ import * as http from 'node:http';
 import { getLoginSuccessHTML } from '../ui/banner.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 
-const CONFIG_DIR = path.join(os.homedir(), '.tarang');
+const CONFIG_DIR = path.join(os.homedir(), '.orca');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 export class TarangAuth {
@@ -18,7 +18,7 @@ export class TarangAuth {
         this._config = null;
     }
 
-    /** Ensure ~/.tarang/ directory exists with secure permissions. */
+    /** Ensure ~/.orca/ directory exists with secure permissions. */
     _ensureConfigDir() {
         if (!fs.existsSync(CONFIG_DIR)) {
             fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
@@ -103,7 +103,7 @@ export class TarangAuth {
 
         const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-        process.stderr.write(`\n${BOLD}Tarang Configuration${RESET}\n`);
+        process.stderr.write(`\n${BOLD}Orca Configuration${RESET}\n`);
         process.stderr.write(`${'─'.repeat(50)}\n`);
         process.stderr.write(`  Auth:           ${creds.token ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
         process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
@@ -123,7 +123,7 @@ export class TarangAuth {
      *   3. Web checks Supabase session (if none → GitHub OAuth → Supabase)
      *   4. Web generates CLI token via /api/cli/token
      *   5. Web redirects browser to CLI callback with token
-     *   6. CLI receives token, saves to ~/.tarang/config.json
+     *   6. CLI receives token, saves to ~/.orca/config.json
      */
     async login() {
         const { resolveWebUrl } = await import('../core/backend-url.mjs');

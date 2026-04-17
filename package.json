@@ -1,10 +1,10 @@
 {
-  "name": "@tarang/cli",
+  "name": "@axplusb/orca",
   "version": "5.0.0",
-  "description": "Tarang AI Coding Agent CLI — hybrid local/remote multi-agent orchestration",
+  "description": "Orca (Orchestration of Composable Agents) — AI coding agent CLI powered by Tarang",
   "type": "module",
   "bin": {
-    "tarang": "src/index.mjs"
+    "orca": "src/index.mjs"
   },
   "files": [
     "src/"

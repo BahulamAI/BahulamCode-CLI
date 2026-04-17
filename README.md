@@ -1,36 +1,35 @@
-# @tarang/cli
+# @axplusb/orca
 
-AI coding agent CLI — hybrid local/remote multi-agent orchestration.
+Orca (Orchestration of Composable Agents) — AI coding agent CLI with hybrid local/remote multi-agent orchestration. Powered by the Tarang platform.
 
 ## Install
 
 ```bash
-npm install -g @tarang/cli
+npm install -g @axplusb/orca
 ```
 
 Or run without installing:
 
 ```bash
-npx @tarang/cli "add user authentication"
+npx @axplusb/orca "add user authentication"
 ```
 
 ## Quick Start
 
 ```bash
-tarang login
-tarang config --openrouter-key YOUR_KEY
-tarang "add user authentication"
+orca login
+orca config --openrouter-key YOUR_KEY
+orca "add user authentication"
 ```
 
 ## Configuration
 
-Config stored at `~/.tarang/config.json` (shared with Python CLI).
+Config stored at `~/.orca/config.json`.
 
 ```bash
-tarang config --show
-tarang config --openrouter-key KEY
-tarang config --backend-url URL
-tarang config --mode local|remote|auto
+orca config --show
+orca config --openrouter-key KEY
+orca config --mode local|remote|auto
 ```
 
 ## License

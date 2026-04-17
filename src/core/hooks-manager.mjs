@@ -8,8 +8,8 @@ import { execSync } from 'node:child_process';
 
 export class HooksManager {
     constructor(projectDir = process.cwd()) {
-        this.projectHooksPath = path.join(projectDir, '.tarang', 'hooks.json');
-        this.globalHooksPath = path.join(process.env.HOME || '', '.tarang', 'hooks.json');
+        this.projectHooksPath = path.join(projectDir, '.orca', 'hooks.json');
+        this.globalHooksPath = path.join(process.env.HOME || '', '.orca', 'hooks.json');
         this.hooks = this._loadHooks();
         this.firedHooks = [];
     }

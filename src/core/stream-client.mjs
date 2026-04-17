@@ -94,7 +94,7 @@ export class TarangStreamClient {
         }
 
         if (response.status === 401) {
-            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `tarang login` to re-authenticate.', fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `orca login` to re-authenticate.', fatal: true } };
             return;
         }
         if (!response.ok) {

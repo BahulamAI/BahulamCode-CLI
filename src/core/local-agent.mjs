@@ -383,7 +383,7 @@ export class LocalAgent {
         }
 
         const parts = [
-            'You are Tarang, an AI coding agent running in local mode.',
+            'You are Orca, an AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
             'Use tools to accomplish the user\'s request. Be concise and direct.',
         ];

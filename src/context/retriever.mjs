@@ -7,7 +7,7 @@ import { BM25Index } from './bm25.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.tarang', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next']);
+const IGNORED_DIRS = new Set(['.git', 'node_modules', '.orca', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.ts', '.tsx', '.py', '.go', '.rs', '.java', '.rb', '.php', '.c', '.cpp', '.h', '.css', '.html', '.json', '.yaml', '.yml', '.toml', '.md', '.sh']);
 const MAX_FILE_SIZE = 100_000; // 100KB
 const CHUNK_LINES = 50;
@@ -16,7 +16,7 @@ const CHUNK_OVERLAP = 10;
 export class ContextRetriever {
     constructor(projectDir = process.cwd()) {
         this.projectDir = projectDir;
-        this.indexDir = path.join(projectDir, '.tarang', 'index');
+        this.indexDir = path.join(projectDir, '.orca', 'index');
         this.index = null;
         this.chunkTexts = new Map(); // id → original text content
     }
