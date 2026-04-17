@@ -312,11 +312,19 @@ async function main() {
     // Load settings (user ~/.claude/settings.json + project .claude/settings.json + local)
     const settings = await loadSettings();
 
-    const creds = auth.loadCredentials();
-    const token = process.env.TARANG_TOKEN || creds.token;
-    const openRouterKey = process.env.TARANG_OPENROUTER_KEY || creds.openRouterKey;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
-    const backendUrl = creds.backendUrl;
+    /** Re-read credentials from disk (so /login updates take effect). */
+    function freshCreds() {
+        const c = auth.loadCredentials();
+        return {
+            token: process.env.TARANG_TOKEN || c.token,
+            openRouterKey: process.env.TARANG_OPENROUTER_KEY || c.openRouterKey,
+            anthropicKey: process.env.ANTHROPIC_API_KEY || c.anthropicKey,
+            backendUrl: c.backendUrl,
+        };
+    }
+
+    // Initial load — used for settings and startup checks
+    const initCreds = freshCreds();
 
     // Apply settings as defaults (CLI flags override settings)
     if (!args.verbose && settings.debugMode) args.verbose = true;
@@ -332,13 +340,15 @@ async function main() {
 
     /** Create an executor (local or remote) for a given instruction. */
     async function createExecutor(instruction, messages = null) {
-        const mode = await selectMode(instruction, args, { ...creds, backendUrl });
+        // Always re-read credentials so /login changes are picked up
+        const creds = freshCreds();
+        const mode = await selectMode(instruction, args, { ...creds, backendUrl: creds.backendUrl });
 
         if (mode === 'local') {
             if (args.verbose) process.stderr.write('\x1b[2m[mode] local\x1b[0m\n');
             return new LocalAgent({
-                apiKey: anthropicKey,
-                openRouterKey,
+                apiKey: creds.anthropicKey,
+                openRouterKey: creds.openRouterKey,
                 model: settings.model || 'claude-sonnet-4-20250514',
                 toolExecutor,
                 verbose: args.verbose,
@@ -364,7 +374,7 @@ async function main() {
             }
 
             const client = new TarangStreamClient({
-                baseUrl: backendUrl, token, toolExecutor,
+                baseUrl: creds.backendUrl, token: creds.token, toolExecutor,
                 verbose: args.verbose, approvalManager: approval,
             });
             // Cancel on SIGINT but don't exit (REPL handles exit)
@@ -377,7 +387,8 @@ async function main() {
     if (args.command === 'resume') {
         const state = sessionMgr.loadState();
         if (!state || state.status === 'completed') { process.stderr.write('No resumable session.\n'); process.exit(1); }
-        const client = new TarangStreamClient({ baseUrl: backendUrl, token, toolExecutor, verbose: args.verbose, approvalManager: approval });
+        const resumeCreds = freshCreds();
+        const client = new TarangStreamClient({ baseUrl: resumeCreds.backendUrl, token: resumeCreds.token, toolExecutor, verbose: args.verbose, approvalManager: approval });
         client.currentTaskId = state.task_id;
         await client.resume();
         for await (const event of client.execute(state.instruction)) formatter.render(event);
