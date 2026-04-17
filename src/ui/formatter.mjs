@@ -25,6 +25,7 @@ export class EventFormatter {
         this.toolCount = 0;
         this.toolCalls = [];
         this.changes = [];
+        this.phases = new Map();
         this.sessionInfo = null;
         this.tokenCount = { input: 0, output: 0 };
         this._spinnerFrame = 0;
@@ -40,6 +41,9 @@ export class EventFormatter {
         switch (type) {
             case 'session_info':
                 this.sessionInfo = data;
+                if (this.verbose) {
+                    process.stderr.write(`${DIM}  [session] ${data.session_id || ''}${RESET}\n`);
+                }
                 return true;
             case 'status':
                 this._status(data);
@@ -64,15 +68,28 @@ export class EventFormatter {
             case 'error':
                 this._error(data);
                 return true;
+            case 'plan':
+                this._plan(data);
+                return true;
             case 'phase_start':
-            case 'phase_update':
                 this._phaseStart(data);
+                return true;
+            case 'phase_update':
+                this._phaseUpdate(data);
                 return true;
             case 'phase_summary':
                 this._phaseSummary(data);
                 return true;
             case 'change':
                 this._change(data);
+                return true;
+            case 'worker_update':
+            case 'worker_start':
+            case 'worker_done':
+                this._workerEvent(type, data);
+                return true;
+            case 'delegation':
+                this._delegation(data);
                 return true;
             case 'cancelled':
                 process.stderr.write(`\n${YELLOW}  Cancelled${data?.reason ? ': ' + data.reason : ''}${RESET}\n`);
@@ -82,6 +99,9 @@ export class EventFormatter {
                 return true;
             case 'resumed':
                 process.stderr.write(`${GREEN}  Resumed${RESET}\n`);
+                return true;
+            case 'pause_instruction':
+                this._pauseInstruction(data);
                 return true;
             default:
                 if (this.verbose) {
@@ -109,17 +129,15 @@ export class EventFormatter {
     }
 
     _thinking(data) {
+        if (!this.verbose) return;
+
         const text = data?.message || data?.text || '';
         if (!text || text === this._lastThinking) return;
         this._lastThinking = text;
 
-        // Show iteration as a working indicator
-        if (text.startsWith('Processing')) {
-            // Skip generic "Processing (iteration N)..." — too noisy
-            return;
-        }
+        // Skip generic "Processing (iteration N)..." — too noisy
+        if (text.startsWith('Processing')) return;
 
-        // Show actual thinking text
         process.stderr.write(`  ${this._spinner()} ${CYAN}${text.slice(0, 200)}${RESET}\n`);
     }
 
@@ -163,7 +181,7 @@ export class EventFormatter {
 
         // Build human-readable description
         const desc = this._toolDescription(tool, args);
-        process.stderr.write(`  ${this._spinner()} ${CYAN}${desc}${RESET}\n`);
+        process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${tool}: ${desc}${RESET}\n`);
 
         this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
     }
@@ -172,14 +190,16 @@ export class EventFormatter {
         switch (tool) {
             case 'read_file':
                 return `Reading ${args.file_path || 'file'}...`;
-            case 'read_files':
+            case 'read_files': {
                 const paths = args.file_paths || [];
                 return `Reading ${paths.length} files...`;
+            }
             case 'write_file':
                 return `Writing ${args.file_path || 'file'}...`;
-            case 'write_project':
+            case 'write_project': {
                 const files = args.files || [];
                 return `Writing ${files.length} files...`;
+            }
             case 'edit_file':
                 return `Editing ${args.file_path || 'file'}...`;
             case 'list_files':
@@ -188,9 +208,10 @@ export class EventFormatter {
                 return `Searching for "${args.pattern || ''}"...`;
             case 'search_code':
                 return `Searching code: ${args.query || ''}...`;
-            case 'shell':
+            case 'shell': {
                 const cmd = (args.command || '').slice(0, 60);
                 return `Running: ${cmd}${(args.command || '').length > 60 ? '...' : ''}`;
+            }
             case 'validate_build':
                 return `Running build validation...`;
             case 'validate_file':
@@ -205,6 +226,12 @@ export class EventFormatter {
     _toolDone(data) {
         const tool = data?.tool || '';
         const success = data?.success !== false;
+        const durationMs = data?.duration_ms;
+
+        if (this.verbose) {
+            const dur = durationMs ? ` (${durationMs}ms)` : '';
+            process.stderr.write(`  ${GREEN}✓${RESET} ${tool} done${dur}\n`);
+        }
 
         // Show file modifications as green checkmarks
         if (tool === 'write_file' || tool === 'edit_file' || tool === 'write_project') {
@@ -238,6 +265,18 @@ export class EventFormatter {
         }
     }
 
+    _plan(data) {
+        const milestones = data?.milestones || [];
+        if (milestones.length === 0) return;
+        process.stderr.write(`\n  ${BOLD}Plan${RESET}\n`);
+        for (const m of milestones) {
+            const icon = m.status === 'completed' ? `${GREEN}✓${RESET}` :
+                         m.status === 'started' ? `${CYAN}◐${RESET}` :
+                         `${DIM}○${RESET}`;
+            process.stderr.write(`  ${icon} ${m.name}\n`);
+        }
+    }
+
     _phaseStart(data) {
         const phase = data?.phase || data?.stage_name || '';
         if (phase && phase !== 'undefined') {
@@ -245,9 +284,44 @@ export class EventFormatter {
         }
     }
 
+    _phaseUpdate(data) {
+        const phase = data?.phase || data?.stage_name || '';
+        const status = data?.status || '';
+        if (phase && phase !== 'undefined') {
+            this.phases.set(phase, status);
+            process.stderr.write(`\n  ${this._spinner()} ${CYAN}${BOLD}${phase}${RESET}\n`);
+        }
+    }
+
     _phaseSummary(data) {
         if (data?.summary) {
             process.stderr.write(`  ${GREEN}✓${RESET} ${data.summary.slice(0, 200)}\n`);
+        }
+    }
+
+    _workerEvent(type, data) {
+        const worker = data?.worker || data?.name || '';
+        const status = data?.status || '';
+        if (type === 'worker_start') {
+            process.stderr.write(`  ${this._spinner()} ${CYAN}${worker} starting${RESET}\n`);
+        } else if (type === 'worker_done') {
+            process.stderr.write(`  ${GREEN}✓${RESET} ${worker} done\n`);
+        } else {
+            process.stderr.write(`  ${this._spinner()} ${CYAN}${worker}: ${status}${RESET}\n`);
+        }
+    }
+
+    _delegation(data) {
+        const from = data?.from || '';
+        const to = data?.to || '';
+        const instruction = data?.instruction || '';
+        process.stderr.write(`  ${CYAN}${from} → ${to}${RESET}${instruction ? ': ' + instruction : ''}\n`);
+    }
+
+    _pauseInstruction(data) {
+        const instruction = data?.instruction || '';
+        if (instruction) {
+            process.stderr.write(`  ${YELLOW}Pause instruction: ${instruction}${RESET}\n`);
         }
     }
 
@@ -276,17 +350,23 @@ export class EventFormatter {
         if (this._completed) return;
         this._completed = true;
 
+        const summary = data?.summary || '';
         const duration = data?.duration_s ? `${Number(data.duration_s).toFixed(1)}s` : '';
         const tools = this.toolCount || data?.tool_calls || 0;
-        const iterations = data?.iterations || 0;
+        const changeCount = data?.changes || this.changes.length || 0;
 
         // Summary line
         const parts = [];
         if (duration) parts.push(duration);
         if (tools > 0) parts.push(`${tools} tool calls`);
+        if (changeCount > 0) parts.push(`${changeCount} changes`);
 
         const stats = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-        process.stderr.write(`\n  ${GREEN}✓ Done${stats}${RESET}\n`);
+        if (summary) {
+            process.stderr.write(`\n  ${GREEN}✓ ${summary}${stats}${RESET}\n`);
+        } else {
+            process.stderr.write(`\n  ${GREEN}✓ Done${stats}${RESET}\n`);
+        }
 
         // Token usage if available
         const usage = data?.usage;

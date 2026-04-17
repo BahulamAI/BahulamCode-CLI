@@ -36,7 +36,7 @@ fs.mkdirSync(testDir, { recursive: true });
 test('start creates state.json', () => {
     const mgr = new SessionManager(testDir);
     mgr.start('add auth');
-    const statePath = path.join(testDir, '.tarang', 'state.json');
+    const statePath = path.join(testDir, '.orca', 'state.json');
     assert.ok(fs.existsSync(statePath));
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     assert.strictEqual(state.instruction, 'add auth');

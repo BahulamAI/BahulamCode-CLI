@@ -28,8 +28,8 @@ let captured = '';
 function capture() { captured = ''; process.stderr.write = (s) => { captured += s; }; process.stdout.write = (s) => { captured += s; }; }
 function restore() { process.stderr.write = origStderr; process.stdout.write = origStdout; }
 
-test('COMMANDS has 14 entries', () => {
-    assert.strictEqual(Object.keys(COMMANDS).length, 14);
+test('COMMANDS has 15 entries', () => {
+    assert.strictEqual(Object.keys(COMMANDS).length, 15);
 });
 
 test('/help lists commands', () => {
@@ -99,11 +99,11 @@ test('/cost shows estimated cost', () => {
     assert.ok(captured.includes('$'));
 });
 
-test('/index shows Phase 3 message', () => {
+test('/index shows indexing message', () => {
     capture();
     handleSlashCommand('/index', {});
     restore();
-    assert.ok(captured.includes('Phase 3'));
+    assert.ok(captured.includes('index') || captured.includes('Index') || captured.includes('BM25'));
 });
 
 test('unknown command shows error', () => {

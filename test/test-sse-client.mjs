@@ -120,8 +120,8 @@ await test('tool_call triggers execution and callback', async () => {
         events.push(evt);
     }
     server.close();
-    // tool_call should NOT be yielded (handled internally)
-    assert.ok(events.every(e => e.type !== 'tool_call'), 'tool_call should not be yielded');
+    // tool_call IS yielded (to show the user what tool is running), then handled internally
+    assert.ok(events.some(e => e.type === 'tool_call'), 'tool_call should be yielded to show user');
     assert.ok(callbackReceived, 'callback should have been sent');
 });
 

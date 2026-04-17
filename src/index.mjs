@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @axplusb/orca v5.0.0 — Orca AI Coding Agent CLI
+ * @axplusb/orca v1.0.0 — Orca AI Coding Agent CLI
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
@@ -35,7 +35,7 @@ import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyled
 import { ContextRetriever } from './context/retriever.mjs';
 import { loadSettings } from './config/settings.mjs';
 
-const VERSION = '5.0.0';
+const VERSION = '1.0.0';
 
 // ── Arg Parsing (consolidated from index.mjs + cli-args.mjs) ──
 
