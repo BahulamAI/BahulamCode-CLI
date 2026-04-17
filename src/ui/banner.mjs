@@ -222,7 +222,6 @@ export function getLoginSuccessHTML() {
 <body>
     <div class="container">
         <div class="logo">
-            <span class="dev">DEV</span>
             <span class="orca">ORCA</span>
         </div>
         <div class="check">&#10003;</div>
