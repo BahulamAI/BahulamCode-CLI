@@ -25,6 +25,7 @@ export const COMMANDS = {
     '/config':   { description: 'Open settings in browser', handler: cmdConfig },
     '/login':    { description: 'Re-authenticate via browser', handler: cmdLogin },
     '/sync':     { description: 'Sync settings from web', handler: cmdSync },
+    '/whoami':   { description: 'Show logged-in user', handler: cmdWhoami },
 };
 
 function run(cmd) {
@@ -191,6 +192,35 @@ function cmdSync(ctx) {
             process.stderr.write(`\x1b[31m✗ Sync failed: ${err.message}\x1b[0m\n`);
         });
     }
+}
+
+function cmdWhoami(ctx) {
+    if (!ctx.auth) {
+        process.stderr.write('\x1b[31mNot logged in.\x1b[0m\n');
+        return;
+    }
+    const creds = ctx.auth.loadCredentials();
+    if (!creds.token) {
+        process.stderr.write('\x1b[31mNot logged in. Run /login first.\x1b[0m\n');
+        return;
+    }
+    const backendUrl = creds.backendUrl;
+    process.stderr.write('\x1b[2mFetching user info...\x1b[0m\n');
+    fetch(`${backendUrl}/api/user/me`, {
+        headers: { 'Authorization': `Bearer ${creds.token}` },
+    }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+    }).then(data => {
+        const GREEN = '\x1b[32m', CYAN = '\x1b[36m', DIM = '\x1b[2m', RESET = '\x1b[0m';
+        process.stderr.write(`\n  ${GREEN}✓${RESET} ${data.github_username || 'unknown'}\n`);
+        process.stderr.write(`  ${DIM}Email:${RESET}    ${data.email || 'n/a'}\n`);
+        process.stderr.write(`  ${DIM}User ID:${RESET}  ${data.id}\n`);
+        process.stderr.write(`  ${DIM}Step:${RESET}     ${data.onboarding_step || 'signed_up'}\n`);
+        process.stderr.write(`  ${DIM}Role:${RESET}     ${data.role || 'user'}\n\n`);
+    }).catch(err => {
+        process.stderr.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+    });
 }
 
 /**

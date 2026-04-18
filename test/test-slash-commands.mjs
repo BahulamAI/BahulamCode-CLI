@@ -28,8 +28,8 @@ let captured = '';
 function capture() { captured = ''; process.stderr.write = (s) => { captured += s; }; process.stdout.write = (s) => { captured += s; }; }
 function restore() { process.stderr.write = origStderr; process.stdout.write = origStdout; }
 
-test('COMMANDS has 16 entries', () => {
-    assert.strictEqual(Object.keys(COMMANDS).length, 16);
+test('COMMANDS has 17 entries', () => {
+    assert.strictEqual(Object.keys(COMMANDS).length, 17);
 });
 
 test('/help lists commands', () => {

@@ -86,7 +86,7 @@ export function printAuthStatus(creds) {
     const tokenOk = !!creds.token;
     const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-    process.stderr.write(`  Auth:     ${tokenOk ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
+    process.stderr.write(`  Auth:     ${tokenOk ? `${check} logged in ${DIM}(/whoami for details)${RESET}` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
     process.stderr.write(`  Env:      ${DIM}${env}${RESET}\n`);
     process.stderr.write(`  Mode:     ${DIM}${creds.mode || 'auto'}${RESET}\n`);
     process.stderr.write('\n');
