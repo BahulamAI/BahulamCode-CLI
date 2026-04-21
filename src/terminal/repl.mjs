@@ -5,23 +5,27 @@
  *
  * Features:
  * - Persistent status bar (model, cost, context, elapsed)
- * - Spinner with tool names (in-place updates)
- * - Markdown rendering (bold, code blocks, lists)
- * - Input history (Up/Down arrows)
- * - Command autocomplete (Tab)
- * - Cost tracking per session
+ * - Streaming content with live partial updates
+ * - Tool execution display (transparent, collapsible)
+ * - File diff display with +/- highlighting
+ * - Phase/worker progress indicators
+ * - Built-in agents (explore, review, architect)
  * - Permission prompts (Y/n/a/t)
+ * - Input history & Tab autocomplete
+ * - Safety guardrails on all tool execution
  */
 
 import * as readline from 'node:readline';
-import { cursor, c, drawBox, progressBar, spinner, inPlace, statusBar, renderMarkdown, formatElapsed, formatCost, hr } from './ansi.mjs';
+import * as path from 'node:path';
+import { c, progressBar, spinner, inPlace, renderMarkdown, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
+import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 // ── Session State ──
 
@@ -35,72 +39,252 @@ const session = {
   inputHistory: [],    // previous prompts (for Up/Down)
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
+  blockedOps: 0,       // safety guardrail blocks
+  activeTools: [],     // currently running tools
 };
 
 // ── Commands ──
 
 const COMMANDS = {
-  '/help':    'Show commands',
-  '/login':   'Sign in via browser',
-  '/whoami':  'Show logged-in user',
-  '/status':  'Session status & system info',
-  '/stats':   'Progress bars & metrics',
-  '/clear':   'Clear conversation',
-  '/git':     'Git status',
-  '/diff':    'Git diff',
-  '/cost':    'Show session cost',
-  '/history': 'Show conversation',
-  '/compact': 'Compact conversation context',
-  '/exit':    'Exit CLI',
+  '/help':     'Show commands',
+  '/login':    'Sign in via browser',
+  '/whoami':   'Show logged-in user',
+  '/status':   'Session status & system info',
+  '/stats':    'Progress bars & metrics',
+  '/clear':    'Clear conversation',
+  '/git':      'Git status',
+  '/diff':     'Git diff',
+  '/cost':     'Show session cost',
+  '/history':  'Show conversation',
+  '/compact':  'Compact conversation context',
+  '/agents':   'List available agents',
+  '/explore':  'Code explorer agent',
+  '/review':   'Code review agent',
+  '/architect':'Feature architect agent',
+  '/safety':   'Show safety guardrail status',
+  '/exit':     'Exit CLI',
 };
 
 // ── Banner ──
-
-const BANNER = [
-  ' ██████╗  ██████╗   ██████╗  █████╗ ',
-  '██╔═══██╗██╔══██╗ ██╔════╝ ██╔══██╗',
-  '██║   ██║██████╔╝ ██║      ███████║',
-  '██║   ██║██╔══██╗ ██║      ██╔══██║',
-  '╚██████╔╝██║  ██║ ╚██████╗██║  ██║',
-  ' ╚═════╝ ╚═╝  ╚═╝  ╚═════╝╚═╝  ╚═╝',
-];
 
 function printBanner(auth) {
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
   const backendUrl = resolveBackendUrl();
+  const w = process.stdout.columns || 80;
 
   process.stderr.write('\n');
-  for (const line of BANNER) {
-    process.stderr.write(`  ${c.cyan(c.bold(line))}\n`);
-  }
-  process.stderr.write(`  ${c.gray('Orchestration of Composable Agents')}\n\n`);
-
-  process.stderr.write(`  ${c.gray('Provider:')}  ${c.green('Tarang')}  ${c.gray('│')}  ${c.gray('Env: ' + env)}  ${c.gray('│')}  ${c.gray('v' + VERSION)}\n`);
-  process.stderr.write(`  ${c.gray('Endpoint:')}  ${c.gray(backendUrl)}\n`);
-  process.stderr.write(`  ${c.gray('Auth:')}      ${creds.token ? c.green('✓ logged in') : c.red('✗ run /login')}\n\n`);
-  process.stderr.write(`  ${c.gray('Type your instructions, or /help for commands')}\n`);
-  process.stderr.write(`  ${c.gray('Ctrl+C exit  Tab autocomplete  ↑↓ history')}\n\n`);
+  process.stderr.write(`  ${c.bold(c.cyan('orca'))} ${c.gray('v' + VERSION)}  ${c.dim('Orchestration of Composable Agents')}\n`);
+  process.stderr.write(`  ${c.dim(backendUrl)}  ${c.dim(env)}  ${creds.token ? c.green('authenticated') : c.red('/login to start')}\n`);
+  process.stderr.write('\n');
 }
 
-// ── Status Bar Update ──
+// ── Prompt Chrome ──
+//
+// Design: let the content breathe. The prompt area is a thin contextual
+// strip — only shows what changed since last turn. No heavy borders.
+//
+// Layout after a response:
+//
+//   <assistant content>
+//
+//   ✓ 3 tools · 1.2s · $0.02                      ctx 21% · 42k tok
+//   ╶─────────────────────────────────────────────────────────────────╴
+//   orca ›
+//
+// Layout on first prompt (no stats yet):
+//
+//   ╶─────────────────────────────────────────────────────────────────╴
+//   orca ›
 
-function updateStatusBar() {
-  const cost = formatCost(session.inputTokens, session.outputTokens);
-  const elapsed = formatElapsed(session.startTime);
+/**
+ * Build the contextual status strip — compact, one line.
+ * Left side: last-turn summary (tools, time, cost)
+ * Right side: session totals (ctx%, tokens)
+ */
+function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const ctxPct = Math.min(100, Math.round((totalTokens / 200000) * 100));
   const ctxColor = ctxPct < 50 ? 'green' : ctxPct < 80 ? 'yellow' : 'red';
+  const cost = formatCost(session.inputTokens, session.outputTokens);
+  const elapsed = formatElapsed(session.startTime);
 
-  statusBar([
-    c.cyan(c.bold('orca')),
-    c.green(session.user?.github_username || '—'),
-    c.gray(session.model || 'backend'),
-    c[ctxColor](`ctx:${ctxPct}%`),
-    c.gray(`${(totalTokens / 1000).toFixed(1)}k tok`),
-    c.gray(cost),
-    c.yellow(elapsed),
-  ]);
+  // Right side — always shown
+  const right = [
+    c[ctxColor](`ctx ${ctxPct}%`),
+    c.dim(`${(totalTokens / 1000).toFixed(1)}k tok`),
+    c.dim(cost),
+    c.dim(elapsed),
+  ].join(c.dim(' · '));
+
+  return right;
+}
+
+/**
+ * Print the prompt separator + prompt label.
+ * Minimal horizontal rule with contextual info.
+ */
+function printPromptBlock() {
+  const w = process.stdout.columns || 80;
+  const strip = buildContextStrip();
+  const stripPlain = stripAnsi(strip);
+
+  // Rule with context strip right-aligned
+  const ruleLen = Math.max(0, w - stripPlain.length - 4);
+  process.stderr.write(
+    c.dim('╶') + c.dim('─'.repeat(ruleLen)) + ' ' + strip + ' ' + c.dim('╴') + '\n'
+  );
+}
+
+/**
+ * Print a turn summary after a response completes.
+ * Shows only when there's something meaningful to report.
+ */
+function printTurnSummary(toolCount, durationS, usage) {
+  const parts = [];
+  if (toolCount > 0) parts.push(`${toolCount} tools`);
+  if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
+  if (usage) {
+    const inp = usage.total_input_tokens || usage.input_tokens || 0;
+    const out = usage.total_output_tokens || usage.output_tokens || 0;
+    if (inp + out > 0) parts.push(formatCost(inp, out));
+  }
+  if (parts.length > 0) {
+    process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
+  }
+}
+
+function updateStatusBar() {
+  // No-op: status is printed inline via printPromptBlock before each prompt
+}
+
+// ── Tool Display Renderer ──
+
+/**
+ * Render a tool call in a transparent, informational way.
+ * Shows tool name + key args on one line, no box borders for reads.
+ */
+function renderToolCall(data) {
+  const tool = data?.tool || 'unknown';
+  const args = data?.args || {};
+
+  // Tool icon based on type
+  const icons = {
+    read_file: '📄', read_files: '📄', search_code: '🔍', search_files: '🔍',
+    list_files: '📁', get_file_info: 'ℹ️',
+    write_file: '✏️', edit_file: '✏️', delete_file: '🗑️',
+    shell: '⚡', validate_file: '✅', validate_build: '🔨',
+    lint_check: '🧹',
+  };
+  const icon = icons[tool] || '🔧';
+
+  // Build description
+  let desc, detail;
+  switch (tool) {
+    case 'read_file':
+      desc = shortPath(args.file_path || args.path || 'file');
+      detail = args.offset ? `lines ${args.offset}-${(args.offset || 0) + (args.limit || 100)}` : '';
+      break;
+    case 'write_file':
+      desc = shortPath(args.file_path || args.path || 'file');
+      detail = args.content ? `${args.content.split('\n').length} lines` : '';
+      break;
+    case 'edit_file':
+      desc = shortPath(args.file_path || args.path || 'file');
+      detail = args.search ? `"${args.search.slice(0, 30)}${args.search.length > 30 ? '...' : ''}"` : '';
+      break;
+    case 'shell':
+      desc = (args.command || '').slice(0, 70);
+      detail = '';
+      break;
+    case 'search_code':
+      desc = `/${args.pattern || ''}/`;
+      detail = args.path ? `in ${shortPath(args.path)}` : '';
+      break;
+    case 'list_files':
+      desc = args.pattern || '**/*';
+      detail = args.path ? `in ${shortPath(args.path)}` : '';
+      break;
+    case 'delete_file':
+      desc = shortPath(args.file_path || args.path || 'file');
+      detail = '';
+      break;
+    default:
+      desc = tool;
+      detail = Object.keys(args).slice(0, 2).join(', ');
+  }
+
+  const detailStr = detail ? `  ${c.gray(detail)}` : '';
+  process.stderr.write(`  ${icon} ${c.dim(desc)}${detailStr}\n`);
+}
+
+/**
+ * Render a tool result (success/failure, output snippet).
+ */
+function renderToolResult(data) {
+  if (!data) return;
+
+  if (data._blocked) {
+    session.blockedOps++;
+    process.stderr.write(`  ${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
+    return;
+  }
+
+  if (data.success === false) {
+    const msg = (data.output || data.message || 'Failed').slice(0, 120);
+    process.stderr.write(`  ${c.red('✗ ' + msg)}\n`);
+    return;
+  }
+
+  // For writes, show the change
+  if (data._tool === 'write_file' || data._tool === 'edit_file') {
+    const lint = data.lint;
+    if (lint) {
+      process.stderr.write(`  ${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
+    }
+  }
+}
+
+/**
+ * Shorten a file path for display: /Users/sree/Sites/project/src/foo.mjs → src/foo.mjs
+ */
+function shortPath(p) {
+  if (!p) return '';
+  const cwd = process.cwd();
+  if (p.startsWith(cwd)) return p.slice(cwd.length + 1);
+  // Show last 2 segments
+  const parts = p.split('/');
+  return parts.length > 2 ? parts.slice(-2).join('/') : p;
+}
+
+// ── Content Streaming Display ──
+
+let _streamBuffer = '';
+let _streamTimer = null;
+
+function startContentStream() {
+  _streamBuffer = '';
+  inPlace(''); // Clear any spinner
+}
+
+function appendContent(text) {
+  if (!text) return;
+  _streamBuffer += text;
+
+  // Debounce rendering to avoid flicker on rapid partial updates
+  if (_streamTimer) clearTimeout(_streamTimer);
+  _streamTimer = setTimeout(() => flushContent(), 50);
+}
+
+function flushContent() {
+  if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
+  if (!_streamBuffer) return;
+
+  const rendered = renderMarkdown(_streamBuffer);
+  for (const line of rendered.split('\n')) {
+    process.stdout.write(`  ${line}\n`);
+  }
+  _streamBuffer = '';
 }
 
 // ── Event Renderer ──
@@ -123,16 +307,16 @@ function renderEvent(event) {
     case 'thinking': {
       const text = data?.message || data?.text || '';
       if (text && !text.startsWith('Processing')) {
-        inPlace(`  ${spinner(text.slice(0, 80))}`);
+        inPlace(`  ${spinner(c.dim(text.slice(0, 80)))}`);
       }
       break;
     }
 
-    case 'content':
-    case 'content_partial': {
+    case 'content': {
       const text = data?.text || '';
       if (text) {
-        inPlace('');
+        flushContent(); // Flush any partial
+        inPlace('');    // Clear spinner
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
@@ -141,25 +325,31 @@ function renderEvent(event) {
       break;
     }
 
+    case 'content_partial': {
+      const text = data?.text || '';
+      if (text) appendContent(text);
+      break;
+    }
+
     case 'tool_call':
     case 'tool_request': {
       session.toolCalls++;
-      const tool = data?.tool || 'unknown';
-      const args = data?.args || {};
-      const desc = tool === 'read_file' ? `Reading ${args.file_path || args.path || 'file'}`
-        : tool === 'write_file' ? `Writing ${args.file_path || args.path || 'file'}`
-        : tool === 'edit_file' ? `Editing ${args.file_path || args.path || 'file'}`
-        : tool === 'shell' ? `Running: ${(args.command || '').slice(0, 50)}`
-        : tool === 'list_files' ? `Listing files${args.pattern ? ' (' + args.pattern + ')' : ''}`
-        : tool === 'search_code' ? `Searching: ${args.query || ''}`
-        : tool;
-      inPlace(`  ${spinner(desc)}`);
+      inPlace(''); // Clear spinner
+      renderToolCall(data);
+      break;
+    }
+
+    case 'tool_result':
+    case 'tool_done': {
+      renderToolResult(data);
       break;
     }
 
     case 'change': {
-      const icon = data?.type === 'create' ? c.green('+') : c.green('~');
-      process.stderr.write(`  ${icon} ${c.green(data?.path || '')}\n`);
+      const changeType = data?.type || 'modify';
+      const icon = changeType === 'create' ? c.green('+ ') :
+                   changeType === 'delete' ? c.red('- ') : c.yellow('~ ');
+      process.stderr.write(`  ${icon}${c.green(shortPath(data?.path || ''))}\n`);
       break;
     }
 
@@ -168,24 +358,46 @@ function renderEvent(event) {
       const phase = data?.phase || data?.stage_name || '';
       if (phase) {
         inPlace('');
-        process.stderr.write(`\n  ${spinner(c.bold(phase))}\n`);
+        process.stderr.write(`\n  ${c.bold(c.cyan('▸ ' + phase))}\n`);
       }
       break;
     }
 
+    case 'phase_summary': {
+      const summary = data?.summary || '';
+      if (summary) {
+        process.stderr.write(`  ${c.gray(summary.slice(0, 120))}\n`);
+      }
+      break;
+    }
+
+    case 'worker_start':
     case 'worker_update': {
-      const worker = data?.worker || '';
-      const status = data?.status || '';
-      if (worker) inPlace(`  ${spinner(`${worker}: ${status}`)}`);
+      const worker = data?.worker || data?.name || '';
+      const status = data?.status || data?.message || 'working';
+      if (worker) inPlace(`  ${spinner(`${c.dim(worker)}: ${status}`)}`);
+      break;
+    }
+
+    case 'worker_done': {
+      const worker = data?.worker || data?.name || '';
+      if (worker) process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)} done\n`);
       break;
     }
 
     case 'delegation':
-      process.stderr.write(`  ${c.cyan(`${data?.from || ''} → ${data?.to || ''}`)}${data?.instruction ? ': ' + data.instruction : ''}\n`);
+      process.stderr.write(`  ${c.cyan('→')} ${c.dim(data?.from || '')} ${c.cyan('→')} ${c.bold(data?.to || '')}${data?.instruction ? ': ' + c.gray(data.instruction.slice(0, 60)) : ''}\n`);
       break;
+
+    case 'session_info': {
+      if (data?.model) session.model = data.model;
+      if (data?.user) session.user = { ...session.user, ...data.user };
+      break;
+    }
 
     case 'error':
       inPlace('');
+      flushContent();
       process.stderr.write(`\n  ${c.red('✗ ' + (data?.message || 'Unknown error'))}\n`);
       if ((data?.message || '').includes('Authentication')) {
         process.stderr.write(`  ${c.gray('Run /login to re-authenticate')}\n`);
@@ -194,13 +406,7 @@ function renderEvent(event) {
 
     case 'complete': {
       inPlace('');
-      const duration = data?.duration_s ? `${Number(data.duration_s).toFixed(1)}s` : '';
-      const tools = data?.tool_calls || session.toolCalls || 0;
-      const parts = [];
-      if (duration) parts.push(duration);
-      if (tools > 0) parts.push(`${tools} tool calls`);
-      const stats = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-      process.stderr.write(`\n  ${c.green('✓ Done' + stats)}\n`);
+      flushContent();
 
       // Update session token counts
       const usage = data?.usage;
@@ -209,14 +415,27 @@ function renderEvent(event) {
         const out = usage.total_output_tokens || usage.output_tokens || 0;
         session.inputTokens += inp;
         session.outputTokens += out;
-        process.stderr.write(`  ${c.gray(`Tokens: ${inp.toLocaleString()} in / ${out.toLocaleString()} out`)}\n`);
       }
+
+      // Compact turn summary
+      const tools = data?.tool_calls || session.toolCalls || 0;
+      printTurnSummary(tools, data?.duration_s, usage);
       break;
     }
 
     case 'cancelled':
       inPlace('');
-      process.stderr.write(`\n  ${c.yellow('Cancelled' + (data?.reason ? ': ' + data.reason : ''))}\n`);
+      flushContent();
+      process.stderr.write(`\n  ${c.yellow('⏹ Cancelled' + (data?.reason ? ': ' + data.reason : ''))}\n`);
+      break;
+
+    case 'paused':
+      inPlace('');
+      process.stderr.write(`  ${c.yellow('⏸ Paused' + (data?.reason ? ': ' + data.reason : ''))}\n`);
+      break;
+
+    case 'resumed':
+      process.stderr.write(`  ${c.green('▶ Resumed')}\n`);
       break;
 
     default:
@@ -229,13 +448,14 @@ function renderEvent(event) {
 async function handleCommand(input, ctx) {
   const parts = input.split(/\s+/);
   const cmd = parts[0].toLowerCase();
+  const rest = parts.slice(1).join(' ');
 
   switch (cmd) {
     case '/help':
       process.stderr.write(`\n  ${c.bold('Orca Commands')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
       for (const [name, desc] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${c.cyan(name.padEnd(12))} ${desc}\n`);
+        process.stderr.write(`  ${c.cyan(name.padEnd(14))} ${desc}\n`);
       }
       process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
       process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n\n`);
@@ -246,7 +466,6 @@ async function handleCommand(input, ctx) {
       try {
         await ctx.auth.login();
         process.stderr.write(`${c.green('✓ Login successful!')}\n`);
-        // Fetch user profile after login
         await fetchUser(ctx);
       } catch (err) {
         process.stderr.write(`${c.red('✗ Login failed: ' + err.message)}\n`);
@@ -305,10 +524,11 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${progressBar(ctxPct, 15, 'Context')} ${(totalTokens / 1000).toFixed(1)}k tok\n`);
       process.stderr.write(`  ${progressBar(Math.round((usedMem / totalMem) * 100), 15, 'Memory')} ${(usedMem / 1024 / 1024 / 1024).toFixed(1)}G\n`);
       process.stderr.write(`  ${progressBar(Math.round((mem.heapUsed / mem.heapTotal) * 100), 15, 'Heap')} ${(mem.heapUsed / 1024 / 1024).toFixed(0)}M\n`);
-      process.stderr.write(`  ${c.gray('Turns:')}    ${session.turns}\n`);
-      process.stderr.write(`  ${c.gray('Tools:')}    ${session.toolCalls}\n`);
-      process.stderr.write(`  ${c.gray('Cost:')}     ${formatCost(session.inputTokens, session.outputTokens)}\n`);
-      process.stderr.write(`  ${c.gray('Elapsed:')} ${formatElapsed(session.startTime)}\n\n`);
+      process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
+      process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
+      process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
+      process.stderr.write(`  ${c.gray('Cost:')}      ${formatCost(session.inputTokens, session.outputTokens)}\n`);
+      process.stderr.write(`  ${c.gray('Elapsed:')}  ${formatElapsed(session.startTime)}\n\n`);
       return;
     }
 
@@ -357,6 +577,41 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/safety': {
+      const { getSafetyRules } = await import('../core/safety.mjs');
+      const rules = getSafetyRules();
+      process.stderr.write(`\n  ${c.bold('Safety Guardrails')} ${c.green('ACTIVE')}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
+      process.stderr.write(`  ${c.gray('Protected files:')} ${rules.protectedNames.join(', ')}\n`);
+      process.stderr.write(`  ${c.gray('Source dirs:')}     ${rules.sourceDirs.join(', ')}\n`);
+      process.stderr.write(`  ${c.gray('Blocked patterns:')} ${rules.blockedPatterns}\n`);
+      process.stderr.write(`  ${c.gray('High-risk patterns:')} ${rules.highRiskPatterns}\n`);
+      process.stderr.write(`  ${c.gray('Ops blocked:')}     ${session.blockedOps}\n\n`);
+      return;
+    }
+
+    case '/agents':
+      process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
+      for (const agent of BUILTIN_AGENTS) {
+        process.stderr.write(`  ${c.cyan(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
+        process.stderr.write(`  ${' '.repeat(14)} ${c.gray(agent.detail)}\n`);
+      }
+      process.stderr.write(`\n  ${c.gray('Usage: /<agent> <instruction>')}\n`);
+      process.stderr.write(`  ${c.gray('Example: /explore how does the auth flow work?')}\n\n`);
+      return;
+
+    case '/explore':
+    case '/review':
+    case '/architect': {
+      if (!rest) {
+        process.stderr.write(`  ${c.yellow('Usage:')} ${cmd} <instruction>\n`);
+        process.stderr.write(`  ${c.gray(`Example: ${cmd} ${cmd === '/explore' ? 'how does authentication work?' : cmd === '/review' ? 'check src/core/ for bugs' : 'design a caching layer'}`)}\n`);
+        return;
+      }
+      return await runAgent(cmd.slice(1), rest, ctx, session, renderEvent);
+    }
+
     case '/exit':
     case '/quit':
       process.stderr.write(`\n  ${c.cyan('Goodbye!')}\n\n`);
@@ -389,17 +644,19 @@ export async function startTerminalRepl() {
   const auth = new TarangAuth();
   const toolExecutor = createToolExecutor();
   const approval = new ApprovalManager({ autoApprove: false });
-  const ctx = { auth };
+  const ctx = { auth, toolExecutor, approval };
 
   printBanner(auth);
 
   // Fetch user profile in background
   fetchUser(ctx);
 
+  const PROMPT = `${c.cyan('orca')} ${c.dim('›')} `;
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stderr,
-    prompt: `${c.cyan('orca>')} `,
+    prompt: PROMPT,
     completer: (line) => {
       if (line.startsWith('/')) {
         const hits = Object.keys(COMMANDS).filter(cmd => cmd.startsWith(line));
@@ -410,10 +667,13 @@ export async function startTerminalRepl() {
     historySize: 100,
   });
 
-  rl.prompt();
+  // Helper: show prompt with separator
+  function showPrompt() {
+    printPromptBlock();
+    rl.prompt();
+  }
 
-  // Update status bar periodically
-  const statusInterval = setInterval(() => updateStatusBar(), 5000);
+  showPrompt();
 
   rl.on('line', async (line) => {
     const input = line.trim();
@@ -425,8 +685,7 @@ export async function startTerminalRepl() {
     // Slash commands
     if (input.startsWith('/')) {
       await handleCommand(input, ctx);
-      updateStatusBar();
-      rl.prompt();
+      showPrompt();
       return;
     }
 
@@ -438,9 +697,11 @@ export async function startTerminalRepl() {
     const creds = auth.loadCredentials();
     if (!creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
-      rl.prompt();
+      showPrompt();
       return;
     }
+
+    process.stderr.write('\n');
 
     const client = new TarangStreamClient({
       baseUrl: creds.backendUrl,
@@ -452,6 +713,8 @@ export async function startTerminalRepl() {
     let assistantContent = '';
 
     try {
+      startContentStream();
+
       for await (const event of client.execute(input, { cwd: process.cwd() }, session.history)) {
         renderEvent(event);
 
@@ -460,8 +723,11 @@ export async function startTerminalRepl() {
           if (text) assistantContent = text;
         }
       }
+
+      flushContent();
     } catch (err) {
       inPlace('');
+      flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     }
 
@@ -469,14 +735,11 @@ export async function startTerminalRepl() {
       session.history.push({ role: 'assistant', content: assistantContent });
     }
 
-    updateStatusBar();
-    process.stdout.write('\n');
-    rl.prompt();
+    showPrompt();
   });
 
   rl.on('close', () => {
-    clearInterval(statusInterval);
-    process.stderr.write(`\n  ${c.cyan('Goodbye!')}\n\n`);
+    process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);
     process.exit(0);
   });
 }

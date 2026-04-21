@@ -4,11 +4,13 @@
  * The Tarang backend sends tool_request events with its own tool names and arg shapes.
  * This bridge translates those into OCC tool calls and wraps the results.
  *
+ * Safety guardrails integrated — prevents destructive operations on source code.
  * 14 tools mapped: 7 OCC-bridged + 7 Tarang-specific.
  */
 
 import { createToolRegistry } from '../tools/registry.mjs';
 import { filterOutput } from './output-filter.mjs';
+import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -97,8 +99,18 @@ export function createToolExecutor() {
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
-        // 1. shell → Bash + smart output filtering
+        // 1. shell → Bash + smart output filtering + safety check
         shell: async (args) => {
+            const shellCheck = validateShellCommand(args.command);
+            if (!shellCheck.safe) {
+                return { success: false, output: `🛡️ BLOCKED: ${shellCheck.reason}`, _tool: 'shell', _blocked: true };
+            }
+            if (shellCheck.highRisk) {
+                // highRisk flag — the approval manager will catch this,
+                // but tag it so the REPL can show a warning
+                args._highRisk = true;
+                args._riskReason = shellCheck.reason;
+            }
             const result = await occRegistry.call('Bash', {
                 command: args.command,
                 timeout: args.timeout,
@@ -141,9 +153,13 @@ export function createToolExecutor() {
             };
         },
 
-        // 3. write_file → Write + auto-lint
+        // 3. write_file → Write + auto-lint + safety check
         write_file: async (args) => {
             const filePath = resolvePath(args.path);
+            const writeCheck = validateWrite(filePath, args.content);
+            if (!writeCheck.safe) {
+                return { success: false, output: `🛡️ BLOCKED: ${writeCheck.reason}`, _tool: 'write_file', _blocked: true };
+            }
             // OCC Write requires Read first for existing files — handle gracefully
             try {
                 if (fs.existsSync(filePath)) {
@@ -257,10 +273,14 @@ export function createToolExecutor() {
             return { success: true, files: results, _tool: 'read_files' };
         },
 
-        // 9. delete_file
+        // 9. delete_file + safety check
         delete_file: async (args) => {
             try {
                 const filePath = resolvePath(args.path);
+                const delCheck = validateDelete(filePath);
+                if (!delCheck.safe) {
+                    return { success: false, output: `🛡️ BLOCKED: ${delCheck.reason}`, _tool: 'delete_file', _blocked: true };
+                }
                 fs.unlinkSync(filePath);
                 return { success: true, message: `Deleted ${args.path}`, _tool: 'delete_file' };
             } catch (err) {

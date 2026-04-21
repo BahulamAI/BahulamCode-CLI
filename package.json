@@ -1,6 +1,6 @@
 {
   "name": "@axplusb/orca",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Orca (Orchestration of Composable Agents) — AI coding agent CLI powered by Tarang",
   "type": "module",
   "bin": {
@@ -12,7 +12,7 @@
   "scripts": {
     "start": "node src/terminal/main.mjs",
     "start:legacy": "node src/index.mjs",
-    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-callback.mjs && node test/test-formatter.mjs && node test/test-slash-commands.mjs && node test/test-approval.mjs && node test/test-session-manager.mjs",
+    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-callback.mjs && node test/test-formatter.mjs && node test/test-slash-commands.mjs && node test/test-approval.mjs && node test/test-session-manager.mjs && node test/test-safety.mjs",
     "test:e2e": "node test/e2e-smoke.mjs && node test/e2e-sse-flow.mjs && node test/e2e-tool-roundtrip.mjs",
     "test:all": "npm test && npm run test:e2e"
   },
@@ -26,10 +26,5 @@
     "type": "git",
     "url": "git+https://github.com/raviakasapu/tarang-npm.git"
   },
-  "dependencies": {
-    "ink": "^5.2.1",
-    "ink-spinner": "^5.0.0",
-    "ink-text-input": "^6.0.0",
-    "react": "^18.3.1"
-  }
+  "dependencies": {}
 }

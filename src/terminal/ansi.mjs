@@ -232,6 +232,76 @@ function inlineMarkdown(text) {
     .replace(/\[(.+?)\]\((.+?)\)/g, (_, label, url) => `${c.blue(label)} ${c.gray('(' + url + ')')}`);
 }
 
+// ── Diff Display ──
+
+/**
+ * Render a unified diff with +/- color highlighting.
+ */
+export function renderDiff(diffText) {
+  if (!diffText) return '';
+  const lines = diffText.split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      out.push(c.bold(line));
+    } else if (line.startsWith('@@')) {
+      out.push(c.cyan(line));
+    } else if (line.startsWith('+')) {
+      out.push(c.green(line));
+    } else if (line.startsWith('-')) {
+      out.push(c.red(line));
+    } else {
+      out.push(c.gray(line));
+    }
+  }
+  return out.join('\n');
+}
+
+// ── Info Panel ──
+
+/**
+ * Display a labeled info panel (no box borders, just indented content).
+ * @param {string} label - Panel title
+ * @param {Array<[string, string]>} rows - [label, value] pairs
+ * @param {string} [color='cyan'] - Title color
+ */
+export function infoPanel(label, rows, color = 'cyan') {
+  const colorFn = c[color] || c.cyan;
+  write(`  ${colorFn(c.bold(label))}\n`);
+  write(`  ${c.gray('─'.repeat(Math.min(40, (process.stdout.columns || 80) - 4)))}\n`);
+  for (const [key, val] of rows) {
+    write(`  ${c.gray(key.padEnd(14))} ${val}\n`);
+  }
+  write('\n');
+}
+
+// ── Table Display ──
+
+/**
+ * Render a simple table.
+ * @param {string[]} headers
+ * @param {string[][]} rows
+ */
+export function table(headers, rows) {
+  const widths = headers.map((h, i) => {
+    const maxRow = rows.reduce((max, row) => Math.max(max, stripAnsi(row[i] || '').length), 0);
+    return Math.max(stripAnsi(h).length, maxRow) + 2;
+  });
+
+  // Header
+  write('  ' + headers.map((h, i) => c.bold(h.padEnd(widths[i]))).join('') + '\n');
+  write('  ' + widths.map(w => c.gray('─'.repeat(w))).join('') + '\n');
+
+  // Rows
+  for (const row of rows) {
+    write('  ' + row.map((cell, i) => {
+      const plain = stripAnsi(cell || '');
+      const pad = Math.max(0, widths[i] - plain.length);
+      return (cell || '') + ' '.repeat(pad);
+    }).join('') + '\n');
+  }
+}
+
 // ── Elapsed Timer ──
 
 export function formatElapsed(startMs) {
