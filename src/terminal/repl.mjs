@@ -25,7 +25,7 @@ import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.1';
 
 // ── Safe CWD ──
 // If the working directory gets deleted (by a rogue tool call),
@@ -98,12 +98,11 @@ const COMMANDS = {
 function printBanner(auth) {
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
-  const backendUrl = resolveBackendUrl();
-  const w = process.stdout.columns || 80;
+  const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
 
   process.stderr.write('\n');
   process.stderr.write(`  ${c.bold(c.cyan('orca'))} ${c.gray('v' + VERSION)}  ${c.dim('Orchestration of Composable Agents')}\n`);
-  process.stderr.write(`  ${c.dim(backendUrl)}  ${c.dim(env)}  ${creds.token ? c.green('authenticated') : c.red('/login to start')}\n`);
+  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n`);
   process.stderr.write('\n');
 }
 
@@ -578,7 +577,9 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
       process.stderr.write(`  ${c.dim('User')}         ${session.user?.github_username || '—'}\n`);
       process.stderr.write(`  ${c.dim('Model')}        ${session.model || 'backend default'}\n`);
-      process.stderr.write(`  ${c.dim('Backend')}      ${creds.backendUrl}\n`);
+      if (env === 'local') {
+        process.stderr.write(`  ${c.dim('Backend')}      ${creds.backendUrl}\n`);
+      }
       process.stderr.write(`  ${c.dim('Env')}          ${env}\n`);
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
