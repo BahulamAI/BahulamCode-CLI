@@ -23,18 +23,20 @@ function sleep(ms) {
  */
 export async function sendCallback(baseUrl, token, taskId, callId, result) {
     const url = `${baseUrl}/api/callback`;
+
+    // Clean result for the backend — strip internal CLI metadata so the LLM
+    // sees a clear, unambiguous tool result (not noisy JSON with _tool, _output_meta, etc.)
+    const cleanResult = {};
+    for (const [key, value] of Object.entries(result)) {
+        if (!key.startsWith('_')) {
+            cleanResult[key] = value;
+        }
+    }
+
     const body = JSON.stringify({
         task_id: taskId,
         call_id: callId,
-        result: {
-            ...result,
-            _output_meta: {
-                tool: result._tool || 'unknown',
-                success: result.success !== false,
-                output_type: result._output_type || 'generic',
-                priority: 'normal',
-            },
-        },
+        result: cleanResult,
     });
 
     const headers = {

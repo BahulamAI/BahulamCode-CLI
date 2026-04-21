@@ -49,7 +49,7 @@ await test('--plan blocks writes', async () => {
     const mgr = new ApprovalManager({ planMode: true });
     const r1 = await mgr.check('shell', { command: 'echo hi' });
     assert.strictEqual(r1.approved, false);
-    assert.ok(r1.reason.includes('--plan'));
+    assert.ok(r1.reason.includes('plan mode'));
 
     const r2 = await mgr.check('write_file', { path: 'x', content: 'y' });
     assert.strictEqual(r2.approved, false);
