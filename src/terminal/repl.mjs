@@ -34,13 +34,17 @@ const session = {
   inputTokens: 0,
   outputTokens: 0,
   toolCalls: 0,
+  totalToolCalls: 0,   // across all turns
   turns: 0,
   history: [],         // conversation messages
   inputHistory: [],    // previous prompts (for Up/Down)
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
   blockedOps: 0,       // safety guardrail blocks
-  activeTools: [],     // currently running tools
+  delegations: [],     // agent delegation events: { from, to, time }
+  phases: [],          // phase history: { name, time }
+  filesChanged: [],    // files modified this session
+  lastTurnDuration: 0,
 };
 
 // ── Commands ──
@@ -257,6 +261,37 @@ function shortPath(p) {
   return parts.length > 2 ? parts.slice(-2).join('/') : p;
 }
 
+// ── Live Spinner ──
+// A real animated spinner that ticks on an interval, not just per-call.
+// Shows what's happening right now — thinking, tool executing, etc.
+
+const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let _spinInterval = null;
+let _spinFrame = 0;
+let _spinText = '';
+
+function startSpinner(text) {
+  _spinText = text;
+  _spinFrame = 0;
+  if (_spinInterval) return; // already running
+  _spinInterval = setInterval(() => {
+    if (!_spinText) return;
+    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+    _spinFrame++;
+    inPlace(`  ${c.cyan(frame)} ${c.dim(_spinText)}`);
+  }, 80);
+}
+
+function updateSpinner(text) {
+  _spinText = text;
+}
+
+function stopSpinner() {
+  if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
+  _spinText = '';
+  inPlace('');
+}
+
 // ── Content Streaming Display ──
 
 let _streamBuffer = '';
@@ -264,7 +299,7 @@ let _streamTimer = null;
 
 function startContentStream() {
   _streamBuffer = '';
-  inPlace(''); // Clear any spinner
+  stopSpinner();
 }
 
 function appendContent(text) {
@@ -280,6 +315,7 @@ function flushContent() {
   if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
   if (!_streamBuffer) return;
 
+  stopSpinner();
   const rendered = renderMarkdown(_streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
@@ -296,18 +332,14 @@ function renderEvent(event) {
     case 'status': {
       const msg = data?.message || '';
       if (!msg || msg === 'Agent started') return;
-      if (msg.startsWith('Creating agent') || msg.startsWith('Task type:')) {
-        inPlace(`  ${c.gray(msg)}`);
-      } else {
-        inPlace(`  ${spinner(msg)}`);
-      }
+      startSpinner(msg);
       break;
     }
 
     case 'thinking': {
       const text = data?.message || data?.text || '';
       if (text && !text.startsWith('Processing')) {
-        inPlace(`  ${spinner(c.dim(text.slice(0, 80)))}`);
+        startSpinner(text.slice(0, 80));
       }
       break;
     }
@@ -315,8 +347,8 @@ function renderEvent(event) {
     case 'content': {
       const text = data?.text || '';
       if (text) {
-        flushContent(); // Flush any partial
-        inPlace('');    // Clear spinner
+        flushContent();
+        stopSpinner();
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
@@ -327,29 +359,42 @@ function renderEvent(event) {
 
     case 'content_partial': {
       const text = data?.text || '';
-      if (text) appendContent(text);
+      if (text) {
+        stopSpinner();
+        appendContent(text);
+      }
       break;
     }
 
     case 'tool_call':
     case 'tool_request': {
       session.toolCalls++;
-      inPlace(''); // Clear spinner
+      session.totalToolCalls++;
+      stopSpinner();
       renderToolCall(data);
+      // Don't start spinner here — approval prompt may follow.
+      // Spinner resumes from 'status' or 'thinking' events after tool completes.
       break;
     }
 
     case 'tool_result':
     case 'tool_done': {
+      stopSpinner();
       renderToolResult(data);
       break;
     }
 
     case 'change': {
+      stopSpinner();
       const changeType = data?.type || 'modify';
-      const icon = changeType === 'create' ? c.green('+ ') :
-                   changeType === 'delete' ? c.red('- ') : c.yellow('~ ');
-      process.stderr.write(`  ${icon}${c.green(shortPath(data?.path || ''))}\n`);
+      const filePath = shortPath(data?.path || '');
+      const icon = changeType === 'create' ? c.green('+') :
+                   changeType === 'delete' ? c.red('-') : c.yellow('~');
+      process.stderr.write(`  ${icon} ${c.dim(filePath)}\n`);
+      // Track changed files
+      if (filePath && !session.filesChanged.includes(filePath)) {
+        session.filesChanged.push(filePath);
+      }
       break;
     }
 
@@ -357,8 +402,9 @@ function renderEvent(event) {
     case 'phase_update': {
       const phase = data?.phase || data?.stage_name || '';
       if (phase) {
-        inPlace('');
-        process.stderr.write(`\n  ${c.bold(c.cyan('▸ ' + phase))}\n`);
+        stopSpinner();
+        session.phases.push({ name: phase, time: Date.now() });
+        process.stderr.write(`\n  ${c.cyan('▸')} ${c.bold(phase)}\n`);
       }
       break;
     }
@@ -366,7 +412,7 @@ function renderEvent(event) {
     case 'phase_summary': {
       const summary = data?.summary || '';
       if (summary) {
-        process.stderr.write(`  ${c.gray(summary.slice(0, 120))}\n`);
+        process.stderr.write(`  ${c.dim(summary.slice(0, 120))}\n`);
       }
       break;
     }
@@ -375,19 +421,29 @@ function renderEvent(event) {
     case 'worker_update': {
       const worker = data?.worker || data?.name || '';
       const status = data?.status || data?.message || 'working';
-      if (worker) inPlace(`  ${spinner(`${c.dim(worker)}: ${status}`)}`);
+      if (worker) startSpinner(`${worker}: ${status}`);
       break;
     }
 
     case 'worker_done': {
+      stopSpinner();
       const worker = data?.worker || data?.name || '';
-      if (worker) process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)} done\n`);
+      if (worker) process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)}\n`);
       break;
     }
 
-    case 'delegation':
-      process.stderr.write(`  ${c.cyan('→')} ${c.dim(data?.from || '')} ${c.cyan('→')} ${c.bold(data?.to || '')}${data?.instruction ? ': ' + c.gray(data.instruction.slice(0, 60)) : ''}\n`);
+    case 'delegation': {
+      stopSpinner();
+      const from = data?.from || '';
+      const to = data?.to || '';
+      session.delegations.push({ from, to, time: Date.now() });
+      process.stderr.write(`\n  ${c.cyan('↳')} ${c.dim(from)} ${c.cyan('→')} ${c.bold(to)}`);
+      if (data?.instruction) {
+        process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
+      }
+      process.stderr.write('\n');
       break;
+    }
 
     case 'session_info': {
       if (data?.model) session.model = data.model;
@@ -396,16 +452,16 @@ function renderEvent(event) {
     }
 
     case 'error':
-      inPlace('');
+      stopSpinner();
       flushContent();
-      process.stderr.write(`\n  ${c.red('✗ ' + (data?.message || 'Unknown error'))}\n`);
+      process.stderr.write(`\n  ${c.red('✗')} ${data?.message || 'Unknown error'}\n`);
       if ((data?.message || '').includes('Authentication')) {
-        process.stderr.write(`  ${c.gray('Run /login to re-authenticate')}\n`);
+        process.stderr.write(`  ${c.dim('Run /login to re-authenticate')}\n`);
       }
       break;
 
     case 'complete': {
-      inPlace('');
+      stopSpinner();
       flushContent();
 
       // Update session token counts
@@ -417,6 +473,8 @@ function renderEvent(event) {
         session.outputTokens += out;
       }
 
+      session.lastTurnDuration = data?.duration_s || 0;
+
       // Compact turn summary
       const tools = data?.tool_calls || session.toolCalls || 0;
       printTurnSummary(tools, data?.duration_s, usage);
@@ -424,18 +482,18 @@ function renderEvent(event) {
     }
 
     case 'cancelled':
-      inPlace('');
+      stopSpinner();
       flushContent();
-      process.stderr.write(`\n  ${c.yellow('⏹ Cancelled' + (data?.reason ? ': ' + data.reason : ''))}\n`);
+      process.stderr.write(`\n  ${c.yellow('⏹')} Cancelled${data?.reason ? ': ' + c.dim(data.reason) : ''}\n`);
       break;
 
     case 'paused':
-      inPlace('');
-      process.stderr.write(`  ${c.yellow('⏸ Paused' + (data?.reason ? ': ' + data.reason : ''))}\n`);
+      stopSpinner();
+      process.stderr.write(`  ${c.yellow('⏸')} Paused${data?.reason ? '  ' + c.dim(data.reason) : ''}\n`);
       break;
 
     case 'resumed':
-      process.stderr.write(`  ${c.green('▶ Resumed')}\n`);
+      process.stderr.write(`  ${c.green('▶')} Resumed\n`);
       break;
 
     default:
@@ -490,24 +548,66 @@ async function handleCommand(input, ctx) {
       const env = process.env.TARANG_ENV || 'production';
       const os = await import('node:os');
       const mem = process.memoryUsage();
+      const approvalSummary = ctx.approval.getSummary();
 
       process.stderr.write(`\n  ${c.bold('Session')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-      process.stderr.write(`  ${c.gray('User:')}      ${session.user?.github_username || '—'}\n`);
-      process.stderr.write(`  ${c.gray('Model:')}     ${session.model || 'backend default'}\n`);
-      process.stderr.write(`  ${c.gray('Backend:')}   ${creds.backendUrl}\n`);
-      process.stderr.write(`  ${c.gray('Env:')}       ${env}\n`);
-      process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
-      process.stderr.write(`  ${c.gray('Duration:')}  ${formatElapsed(session.startTime)}\n`);
-      process.stderr.write(`  ${c.gray('Cost:')}      ${formatCost(session.inputTokens, session.outputTokens)}\n`);
-      process.stderr.write(`  ${c.gray('CWD:')}       ${process.cwd()}\n\n`);
+      process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+      process.stderr.write(`  ${c.dim('User')}         ${session.user?.github_username || '—'}\n`);
+      process.stderr.write(`  ${c.dim('Model')}        ${session.model || 'backend default'}\n`);
+      process.stderr.write(`  ${c.dim('Backend')}      ${creds.backendUrl}\n`);
+      process.stderr.write(`  ${c.dim('Env')}          ${env}\n`);
+      process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
+      process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
+      process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
+      process.stderr.write(`  ${c.dim('Cost')}         ${formatCost(session.inputTokens, session.outputTokens)}\n`);
+      process.stderr.write(`  ${c.dim('CWD')}          ${process.cwd()}\n`);
 
-      process.stderr.write(`  ${c.bold('System')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-      process.stderr.write(`  ${c.gray('Node:')}      ${process.version}\n`);
-      process.stderr.write(`  ${c.gray('Platform:')}  ${process.platform} ${os.arch()}\n`);
-      process.stderr.write(`  ${c.gray('Heap:')}      ${(mem.heapUsed / 1024 / 1024).toFixed(0)} MB\n`);
-      process.stderr.write(`  ${c.gray('Memory:')}    ${((os.totalmem() - os.freemem()) / 1024 / 1024 / 1024).toFixed(1)}G / ${(os.totalmem() / 1024 / 1024 / 1024).toFixed(1)}G\n\n`);
+      // Permissions
+      process.stderr.write(`\n  ${c.bold('Permissions')}\n`);
+      process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+      process.stderr.write(`  ${c.dim('Approved')}     ${approvalSummary.approved}  ${c.dim('Denied')} ${approvalSummary.denied}\n`);
+      if (approvalSummary.autoApproveAll) {
+        process.stderr.write(`  ${c.dim('Mode')}         ${c.yellow('approve-all active')}\n`);
+      }
+      if (approvalSummary.autoApprovedTypes.length > 0) {
+        process.stderr.write(`  ${c.dim('Auto-types')}   ${approvalSummary.autoApprovedTypes.join(', ')}\n`);
+      }
+      process.stderr.write(`  ${c.dim('Blocked')}      ${session.blockedOps} by safety guardrails\n`);
+
+      // Orchestration
+      if (session.delegations.length > 0 || session.phases.length > 0) {
+        process.stderr.write(`\n  ${c.bold('Orchestration')}\n`);
+        process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+        if (session.delegations.length > 0) {
+          process.stderr.write(`  ${c.dim('Delegations')}  ${session.delegations.length}\n`);
+          for (const d of session.delegations.slice(-5)) {
+            process.stderr.write(`    ${c.dim(d.from)} ${c.cyan('→')} ${d.to}\n`);
+          }
+        }
+        if (session.phases.length > 0) {
+          process.stderr.write(`  ${c.dim('Phases')}       ${session.phases.map(p => p.name).join(' → ')}\n`);
+        }
+      }
+
+      // Files changed
+      if (session.filesChanged.length > 0) {
+        process.stderr.write(`\n  ${c.bold('Files Changed')} ${c.dim(`(${session.filesChanged.length})`)}\n`);
+        process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+        for (const f of session.filesChanged.slice(-10)) {
+          process.stderr.write(`  ${c.dim('~')} ${f}\n`);
+        }
+        if (session.filesChanged.length > 10) {
+          process.stderr.write(`  ${c.dim(`  ...and ${session.filesChanged.length - 10} more`)}\n`);
+        }
+      }
+
+      // System
+      process.stderr.write(`\n  ${c.bold('System')}\n`);
+      process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+      process.stderr.write(`  ${c.dim('Node')}         ${process.version}\n`);
+      process.stderr.write(`  ${c.dim('Platform')}     ${process.platform} ${os.arch()}\n`);
+      process.stderr.write(`  ${c.dim('Heap')}         ${(mem.heapUsed / 1024 / 1024).toFixed(0)} MB\n`);
+      process.stderr.write(`  ${c.dim('Memory')}       ${((os.totalmem() - os.freemem()) / 1024 / 1024 / 1024).toFixed(1)}G / ${(os.totalmem() / 1024 / 1024 / 1024).toFixed(1)}G\n\n`);
       return;
     }
 
@@ -701,7 +801,8 @@ export async function startTerminalRepl() {
       return;
     }
 
-    process.stderr.write('\n');
+    // Orca response label
+    process.stderr.write(`\n${c.bold(c.cyan('orca'))}\n`);
 
     const client = new TarangStreamClient({
       baseUrl: creds.backendUrl,
@@ -739,6 +840,7 @@ export async function startTerminalRepl() {
   });
 
   rl.on('close', () => {
+    stopSpinner();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);
     process.exit(0);
   });
