@@ -135,7 +135,7 @@ export function createToolExecutor() {
 
         // 2. read_file → Read
         read_file: async (args) => {
-            const filePath = resolvePath(args.path);
+            const filePath = resolvePath(args.file_path || args.path);
             const result = await occRegistry.call('Read', {
                 file_path: filePath,
                 offset: args.offset,
@@ -155,7 +155,7 @@ export function createToolExecutor() {
 
         // 3. write_file → Write + auto-lint + safety check
         write_file: async (args) => {
-            const filePath = resolvePath(args.path);
+            const filePath = resolvePath(args.file_path || args.path);
             const writeCheck = validateWrite(filePath, args.content);
             if (!writeCheck.safe) {
                 return { success: false, output: `🛡️ BLOCKED: ${writeCheck.reason}`, _tool: 'write_file', _blocked: true };
@@ -184,7 +184,7 @@ export function createToolExecutor() {
 
         // 4. edit_file → Edit + auto-lint
         edit_file: async (args) => {
-            const filePath = resolvePath(args.path);
+            const filePath = resolvePath(args.file_path || args.path);
             // OCC Edit requires Read first
             try {
                 await occRegistry.call('Read', { file_path: filePath, limit: 1 });
@@ -276,7 +276,7 @@ export function createToolExecutor() {
         // 9. delete_file + safety check
         delete_file: async (args) => {
             try {
-                const filePath = resolvePath(args.path);
+                const filePath = resolvePath(args.file_path || args.path);
                 const delCheck = validateDelete(filePath);
                 if (!delCheck.safe) {
                     return { success: false, output: `🛡️ BLOCKED: ${delCheck.reason}`, _tool: 'delete_file', _blocked: true };
@@ -291,7 +291,7 @@ export function createToolExecutor() {
         // 10. get_file_info
         get_file_info: async (args) => {
             try {
-                const filePath = resolvePath(args.path);
+                const filePath = resolvePath(args.file_path || args.path);
                 const stat = fs.statSync(filePath);
                 return {
                     success: true,
@@ -355,7 +355,7 @@ export function createToolExecutor() {
         // 14. lint_check
         lint_check: async (args) => {
             try {
-                const filePath = resolvePath(args.path);
+                const filePath = resolvePath(args.file_path || args.path);
                 const ext = path.extname(filePath);
                 let cmd;
                 if (ext === '.py') cmd = `python3 -m ruff check "${filePath}" 2>&1 || true`;

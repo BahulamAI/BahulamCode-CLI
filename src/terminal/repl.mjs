@@ -27,6 +27,30 @@ import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 
 const VERSION = '2.1.0';
 
+// ── Safe CWD ──
+// If the working directory gets deleted (by a rogue tool call),
+// process.cwd() throws ENOENT. Detect and recover.
+
+let _cachedCwd = null;
+
+function safeCwd() {
+  try {
+    _cachedCwd = process.cwd();
+    return _cachedCwd;
+  } catch {
+    // CWD deleted — try to recover
+    const fallback = _cachedCwd || process.env.HOME || '/tmp';
+    try {
+      process.chdir(fallback);
+      process.stderr.write(`  ${c.yellow('Working directory was deleted. Recovered to: ' + fallback)}\n`);
+      _cachedCwd = fallback;
+      return fallback;
+    } catch {
+      return process.env.HOME || '/tmp';
+    }
+  }
+}
+
 // ── Session State ──
 
 const session = {
@@ -254,7 +278,7 @@ function renderToolResult(data) {
  */
 function shortPath(p) {
   if (!p) return '';
-  const cwd = process.cwd();
+  const cwd = safeCwd();
   if (p.startsWith(cwd)) return p.slice(cwd.length + 1);
   // Show last 2 segments
   const parts = p.split('/');
@@ -560,7 +584,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
       process.stderr.write(`  ${c.dim('Cost')}         ${formatCost(session.inputTokens, session.outputTokens)}\n`);
-      process.stderr.write(`  ${c.dim('CWD')}          ${process.cwd()}\n`);
+      process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
 
       // Permissions
       process.stderr.write(`\n  ${c.bold('Permissions')}\n`);
@@ -739,8 +763,11 @@ async function fetchUser(ctx) {
 }
 
 // ── Main REPL ──
+// Cache CWD at startup so safeCwd() has a fallback if the dir gets deleted
 
 export async function startTerminalRepl() {
+  _cachedCwd = process.cwd(); // Cache startup CWD for recovery
+
   const auth = new TarangAuth();
   const toolExecutor = createToolExecutor();
   const approval = new ApprovalManager({ autoApprove: false });
@@ -819,7 +846,7 @@ export async function startTerminalRepl() {
     try {
       startContentStream();
 
-      for await (const event of client.execute(input, { cwd: process.cwd() }, session.history)) {
+      for await (const event of client.execute(input, { cwd: safeCwd() }, session.history)) {
         renderEvent(event);
 
         if (event.type === 'content' || event.type === 'content_partial') {
