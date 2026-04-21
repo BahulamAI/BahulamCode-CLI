@@ -142,3 +142,108 @@ export function hr(char = '─', color = 'gray') {
   const w = process.stdout.columns || 80;
   write(c[color](char.repeat(w)) + '\n');
 }
+
+// ── Markdown Rendering ──
+
+/**
+ * Render markdown to ANSI-styled terminal text.
+ * Supports: headers, bold, italic, code, code blocks, lists, links.
+ */
+export function renderMarkdown(text) {
+  if (!text) return '';
+
+  const lines = text.split('\n');
+  const out = [];
+  let inCodeBlock = false;
+  let codeLang = '';
+
+  for (const line of lines) {
+    // Code block start/end
+    if (line.trimStart().startsWith('```')) {
+      if (inCodeBlock) {
+        out.push(c.gray('  └' + '─'.repeat(40)));
+        inCodeBlock = false;
+        codeLang = '';
+      } else {
+        codeLang = line.trim().slice(3).trim();
+        out.push(c.gray('  ┌' + '─'.repeat(4) + (codeLang ? ` ${codeLang} ` : '') + '─'.repeat(Math.max(0, 35 - codeLang.length))));
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      out.push(c.gray('  │ ') + c.cyan(line));
+      continue;
+    }
+
+    // Headers
+    if (line.startsWith('### ')) {
+      out.push(c.bold(c.cyan(line.slice(4))));
+      continue;
+    }
+    if (line.startsWith('## ')) {
+      out.push(c.bold(c.cyan(line.slice(3))));
+      continue;
+    }
+    if (line.startsWith('# ')) {
+      out.push(c.bold(c.cyan(line.slice(2))));
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      out.push(c.gray('─'.repeat(40)));
+      continue;
+    }
+
+    // Lists
+    if (/^\s*[-*]\s/.test(line)) {
+      const indent = line.match(/^(\s*)/)[1];
+      const content = line.replace(/^\s*[-*]\s/, '');
+      out.push(`${indent}  ${c.cyan('•')} ${inlineMarkdown(content)}`);
+      continue;
+    }
+
+    // Numbered lists
+    if (/^\s*\d+\.\s/.test(line)) {
+      const match = line.match(/^(\s*)(\d+)\.\s(.*)/);
+      if (match) {
+        out.push(`${match[1]}  ${c.cyan(match[2] + '.')} ${inlineMarkdown(match[3])}`);
+        continue;
+      }
+    }
+
+    // Regular line with inline formatting
+    out.push(inlineMarkdown(line));
+  }
+
+  return out.join('\n');
+}
+
+/**
+ * Apply inline markdown: **bold**, *italic*, `code`, [links](url)
+ */
+function inlineMarkdown(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, (_, s) => c.bold(s))
+    .replace(/\*(.+?)\*/g, (_, s) => c.italic(s))
+    .replace(/`(.+?)`/g, (_, s) => c.cyan(s))
+    .replace(/\[(.+?)\]\((.+?)\)/g, (_, label, url) => `${c.blue(label)} ${c.gray('(' + url + ')')}`);
+}
+
+// ── Elapsed Timer ──
+
+export function formatElapsed(startMs) {
+  const s = Math.floor((Date.now() - startMs) / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+// ── Format Cost ──
+
+export function formatCost(inputTokens, outputTokens) {
+  // Default: Sonnet pricing ($3/$15 per MTok)
+  const cost = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
+  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
+}
