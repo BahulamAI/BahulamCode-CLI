@@ -132,6 +132,12 @@ export class ApprovalManager {
         this.approveAll = false;
         this.approvedToolTypes = new Set();
         this.history = [];  // track what was approved/denied
+        this._rl = null;    // readline interface — set via setReadline()
+    }
+
+    /** Attach the readline interface so we can pause/resume around prompts. */
+    setReadline(rl) {
+        this._rl = rl;
     }
 
     async check(toolName, args, requireApproval = false) {
@@ -240,11 +246,19 @@ export class ApprovalManager {
                 resolve('y');
                 return;
             }
+
+            // Pause readline so it doesn't steal our keypress
+            if (this._rl) this._rl.pause();
+
             const wasRaw = process.stdin.isRaw;
             process.stdin.setRawMode(true);
             process.stdin.resume();
             process.stdin.once('data', (data) => {
                 process.stdin.setRawMode(wasRaw || false);
+
+                // Resume readline after we've captured the char
+                if (this._rl) this._rl.resume();
+
                 const char = data.toString();
                 if (char === '\x03') process.exit(0);
                 resolve(char);

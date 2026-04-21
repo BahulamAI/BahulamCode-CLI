@@ -767,6 +767,9 @@ export async function startTerminalRepl() {
     historySize: 100,
   });
 
+  // Give approval manager access to readline for pause/resume
+  approval.setReadline(rl);
+
   // Helper: show prompt with separator
   function showPrompt() {
     printPromptBlock();
