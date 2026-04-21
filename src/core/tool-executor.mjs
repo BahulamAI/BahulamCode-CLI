@@ -226,7 +226,7 @@ export function createToolExecutor() {
         // 6. search_code → Grep
         search_code: async (args) => {
             const result = await occRegistry.call('Grep', {
-                pattern: args.pattern,
+                pattern: args.query || args.pattern,
                 path: args.path ? resolvePath(args.path) : undefined,
                 output_mode: args.output_mode || 'content',
             });
