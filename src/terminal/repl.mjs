@@ -25,7 +25,7 @@ import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 
-const VERSION = '2.2.0';
+const VERSION = '2.2.1';
 
 // ── Safe CWD ──
 // If the working directory gets deleted (by a rogue tool call),
