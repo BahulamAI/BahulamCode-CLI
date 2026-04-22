@@ -24,6 +24,8 @@ import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
+import { ContextRetriever } from '../context/retriever.mjs';
+import { buildProjectSkeleton } from '../context/skeleton.mjs';
 
 const VERSION = '2.2.1';
 
@@ -770,11 +772,27 @@ export async function startTerminalRepl() {
   _cachedCwd = process.cwd(); // Cache startup CWD for recovery
 
   const auth = new TarangAuth();
-  const toolExecutor = createToolExecutor();
+
+  // BM25 retriever — indexes project files for search_code tool
+  const retriever = new ContextRetriever(safeCwd());
+  const toolExecutor = createToolExecutor({ retriever });
   const approval = new ApprovalManager({ autoApprove: false });
   const ctx = { auth, toolExecutor, approval };
 
   printBanner(auth);
+
+  // Build BM25 index + project skeleton in background (non-blocking)
+  let projectSkeleton = '';
+  retriever.buildIndex()
+    .then(({ fileCount, chunkCount }) => {
+      process.stderr.write(`  ${c.dim(`Indexed ${fileCount} files (${chunkCount} chunks)`)}\n`);
+      // Build skeleton after index (uses same file scan)
+      projectSkeleton = buildProjectSkeleton(safeCwd());
+      if (projectSkeleton) {
+        process.stderr.write(`  ${c.dim(`Project skeleton ready`)}\n`);
+      }
+    })
+    .catch(() => { /* index build failed — search_code falls back to grep */ });
 
   // Fetch user profile in background
   fetchUser(ctx);
@@ -847,7 +865,10 @@ export async function startTerminalRepl() {
     try {
       startContentStream();
 
-      for await (const event of client.execute(input, { cwd: safeCwd() }, session.history)) {
+      const execContext = { cwd: safeCwd() };
+      if (projectSkeleton) execContext.project_skeleton = projectSkeleton;
+
+      for await (const event of client.execute(input, execContext, session.history)) {
         renderEvent(event);
 
         if (event.type === 'content' || event.type === 'content_partial') {

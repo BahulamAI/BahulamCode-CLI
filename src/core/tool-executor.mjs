@@ -11,15 +11,18 @@
 import { createToolRegistry } from '../tools/registry.mjs';
 import { filterOutput } from './output-filter.mjs';
 import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
+import { ContextRetriever } from '../context/retriever.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 
 /**
  * Create a tool executor that bridges Tarang tool names to OCC tools.
+ * @param {Object} [options]
+ * @param {ContextRetriever} [options.retriever] - BM25 retriever for search_code
  * @returns {{ execute(name, args): Promise<Object>, listTools(): string[] }}
  */
-export function createToolExecutor() {
+export function createToolExecutor({ retriever } = {}) {
     const occRegistry = createToolRegistry();
 
     /**
@@ -223,18 +226,41 @@ export function createToolExecutor() {
             };
         },
 
-        // 6. search_code → Grep
+        // 6. search_code → BM25 retriever (semantic chunks) with grep fallback
         search_code: async (args) => {
+            const query = args.query || args.pattern;
+            if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
+
+            // Try BM25 retriever first (returns code chunks, not grep lines)
+            if (retriever) {
+                const chunks = retriever.retrieve(query, 8);
+                if (chunks.length > 0) {
+                    // Format as structured output: file path + code
+                    const output = chunks.map(c => {
+                        const score = c.score?.toFixed(2) || '?';
+                        return `── ${c.id} (score: ${score}) ──\n${c.text}`;
+                    }).join('\n\n');
+                    return {
+                        success: true,
+                        output,
+                        chunks: chunks.length,
+                        _tool: 'search_code',
+                        _method: 'bm25',
+                    };
+                }
+            }
+
+            // Fallback to grep if no BM25 index or no results
             const result = await occRegistry.call('Grep', {
-                pattern: args.query || args.pattern,
+                pattern: query,
                 path: args.path ? resolvePath(args.path) : undefined,
                 output_mode: args.output_mode || 'content',
             });
             return {
                 success: true,
-                matches: typeof result === 'string' ? result : String(result),
                 output: typeof result === 'string' ? result : String(result),
                 _tool: 'search_code',
+                _method: 'grep',
             };
         },
 
