@@ -211,7 +211,8 @@ function renderToolCall(data) {
   let desc, detail;
   switch (tool) {
     case 'read_file':
-      desc = shortPath(args.file_path || args.path || 'file');
+      desc = shortPath(args.file_path || args.path || '');
+      if (!desc) desc = `(no path! keys: ${Object.keys(args).join(', ')})`;
       if (args.start_line && args.end_line) {
         detail = `lines ${args.start_line}-${args.end_line}`;
       } else if (args.start_line) {
@@ -223,7 +224,8 @@ function renderToolCall(data) {
       }
       break;
     case 'write_file':
-      desc = shortPath(args.file_path || args.path || 'file');
+      desc = shortPath(args.file_path || args.path || '');
+      if (!desc) desc = `(no path! keys: ${Object.keys(args).join(', ')})`;
       detail = args.content ? `${args.content.split('\n').length} lines` : '';
       break;
     case 'edit_file':
