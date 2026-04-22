@@ -190,7 +190,11 @@ export function createToolExecutor({ retriever } = {}) {
 
         // 3. write_file → Write + auto-lint + safety check
         write_file: async (args) => {
-            const filePath = resolvePath(args.file_path || args.path);
+            const rawPath = args.file_path || args.path;
+            if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
+                return { success: false, output: 'Error: Invalid file path. Provide a real file path like "src/main.py"', _tool: 'write_file' };
+            }
+            const filePath = resolvePath(rawPath);
             const writeCheck = validateWrite(filePath, args.content);
             if (!writeCheck.safe) {
                 return { success: false, output: `🛡️ BLOCKED: ${writeCheck.reason}`, _tool: 'write_file', _blocked: true };
