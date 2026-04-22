@@ -335,15 +335,28 @@ export function createToolExecutor({ retriever } = {}) {
 
         // ── Tarang-specific tools (no OCC bridge) ──────────────
 
-        // 8. read_files → batch Read
+        // 8. read_files → batch Read (with AST truncation for large files)
         read_files: async (args) => {
-            const paths = args.paths || [];
+            const paths = args.file_paths || args.paths || [];
             const results = [];
             for (const p of paths) {
                 try {
                     const filePath = resolvePath(p);
                     const content = fs.readFileSync(filePath, 'utf-8');
-                    results.push({ path: p, content, success: true });
+                    const lines = content.split('\n').length;
+
+                    if (lines > 50) {
+                        // Large file: return AST summary instead of full content
+                        const analysis = analyzeCode(filePath);
+                        results.push({
+                            path: p, lines,
+                            content: analysis.summary,
+                            _truncated: true,
+                            success: true,
+                        });
+                    } else {
+                        results.push({ path: p, content, success: true });
+                    }
                 } catch (err) {
                     results.push({ path: p, error: err.message, success: false });
                 }
