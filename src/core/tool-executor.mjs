@@ -12,6 +12,7 @@ import { createToolRegistry } from '../tools/registry.mjs';
 import { filterOutput } from './output-filter.mjs';
 import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
+import { analyzeCode } from '../context/ast-parser.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -433,6 +434,23 @@ export function createToolExecutor({ retriever } = {}) {
             } catch (err) {
                 return { success: false, output: err.message, _tool: 'git_status' };
             }
+        },
+
+        // 18. analyze_code — AST-based structured code analysis
+        // Returns function signatures, classes, imports instead of raw file contents
+        // 10x more token-efficient than read_file
+        analyze_code: async (args) => {
+            const filePath = resolvePath(args.file_path || args.path);
+            const result = analyzeCode(filePath, {
+                startLine: args.start_line,
+                endLine: args.end_line,
+            });
+            return {
+                success: result.success,
+                output: result.summary,
+                structure: result.structure,
+                _tool: 'analyze_code',
+            };
         },
     };
 
