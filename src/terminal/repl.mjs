@@ -200,10 +200,10 @@ function renderToolCall(data) {
   // Tool icon based on type
   const icons = {
     read_file: '📄', read_files: '📄', search_code: '🔍', search_files: '🔍',
-    list_files: '📁', get_file_info: 'ℹ️',
+    list_files: '📁', get_file_info: 'ℹ️', analyze_code: '🔬',
     write_file: '✏️', edit_file: '✏️', delete_file: '🗑️',
     shell: '⚡', validate_file: '✅', validate_build: '🔨',
-    lint_check: '🧹',
+    lint_check: '🧹', run_tests: '🧪', git_diff: '📊', git_status: '📊',
   };
   const icon = icons[tool] || '🔧';
 
@@ -212,7 +212,15 @@ function renderToolCall(data) {
   switch (tool) {
     case 'read_file':
       desc = shortPath(args.file_path || args.path || 'file');
-      detail = args.offset ? `lines ${args.offset}-${(args.offset || 0) + (args.limit || 100)}` : '';
+      if (args.start_line && args.end_line) {
+        detail = `lines ${args.start_line}-${args.end_line}`;
+      } else if (args.start_line) {
+        detail = `from line ${args.start_line}`;
+      } else if (args.offset) {
+        detail = `lines ${args.offset}-${(args.offset || 0) + (args.limit || 100)}`;
+      } else {
+        detail = '';
+      }
       break;
     case 'write_file':
       desc = shortPath(args.file_path || args.path || 'file');
@@ -227,8 +235,24 @@ function renderToolCall(data) {
       detail = '';
       break;
     case 'search_code':
-      desc = `/${args.pattern || ''}/`;
+      desc = `"${args.query || args.pattern || ''}"`;
       detail = args.path ? `in ${shortPath(args.path)}` : '';
+      break;
+    case 'analyze_code':
+      desc = shortPath(args.file_path || args.path || 'file');
+      detail = '';
+      break;
+    case 'run_tests':
+      desc = args.command || 'npm test';
+      detail = '';
+      break;
+    case 'git_diff':
+      desc = args.file_path ? shortPath(args.file_path) : 'all changes';
+      detail = '';
+      break;
+    case 'git_status':
+      desc = '';
+      detail = '';
       break;
     case 'list_files':
       desc = args.pattern || '**/*';
