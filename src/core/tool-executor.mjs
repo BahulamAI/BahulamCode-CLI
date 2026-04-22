@@ -368,6 +368,46 @@ export function createToolExecutor() {
                 return { success: false, output: err.message, _tool: 'lint_check' };
             }
         },
+
+        // 15. run_tests
+        run_tests: async (args) => {
+            try {
+                const cmd = args.command || 'npm test';
+                const output = execSync(cmd, {
+                    stdio: 'pipe', timeout: 120_000, cwd: process.cwd(),
+                    encoding: 'utf-8',
+                }).toString();
+                return { success: true, output: output.slice(-3000), _tool: 'run_tests' };
+            } catch (err) {
+                const output = (err.stdout || '') + (err.stderr || '');
+                return { success: false, output: output.slice(-3000), exit_code: err.status, _tool: 'run_tests' };
+            }
+        },
+
+        // 16. git_diff
+        git_diff: async (args) => {
+            try {
+                const filePath = args.file_path ? `-- "${args.file_path}"` : '';
+                const output = execSync(`git diff ${filePath}`, {
+                    stdio: 'pipe', timeout: 10_000, cwd: process.cwd(), encoding: 'utf-8',
+                }).toString();
+                return { success: true, output: output.slice(-5000) || '(no changes)', _tool: 'git_diff' };
+            } catch (err) {
+                return { success: false, output: err.message, _tool: 'git_diff' };
+            }
+        },
+
+        // 17. git_status
+        git_status: async (args) => {
+            try {
+                const output = execSync('git status --short', {
+                    stdio: 'pipe', timeout: 10_000, cwd: process.cwd(), encoding: 'utf-8',
+                }).toString();
+                return { success: true, output: output || '(clean)', _tool: 'git_status' };
+            } catch (err) {
+                return { success: false, output: err.message, _tool: 'git_status' };
+            }
+        },
     };
 
     return {
