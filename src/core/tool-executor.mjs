@@ -137,16 +137,48 @@ export function createToolExecutor({ retriever } = {}) {
             };
         },
 
-        // 2. read_file → Read
+        // 2. read_file → Read (with smart truncation for large files)
         read_file: async (args) => {
             const filePath = resolvePath(args.file_path || args.path);
+            const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
+
+            // If no line range specified, check file size first
+            if (!hasLineRange) {
+                try {
+                    const stat = fs.statSync(filePath);
+                    const lines = fs.readFileSync(filePath, 'utf-8').split('\n').length;
+                    if (lines > 200) {
+                        // Large file: return analyze_code summary + first/last lines instead
+                        const analysis = analyzeCode(filePath);
+                        const firstLines = fs.readFileSync(filePath, 'utf-8').split('\n').slice(0, 30).join('\n');
+                        return {
+                            success: true,
+                            output: `File is ${lines} lines. Showing structure + first 30 lines.\n` +
+                                    `Use read_file with start_line/end_line for specific sections.\n` +
+                                    `Use search_code to find relevant code.\n\n` +
+                                    `## Structure\n${analysis.summary}\n\n` +
+                                    `## First 30 lines\n${firstLines}`,
+                            content: analysis.summary,
+                            _tool: 'read_file',
+                            _truncated: true,
+                            _total_lines: lines,
+                        };
+                    }
+                } catch { /* file doesn't exist or can't stat — let Read handle the error */ }
+            }
+
+            // Convert start_line/end_line to offset/limit
+            const offset = args.start_line ? args.start_line - 1 : args.offset;
+            const limit = (args.start_line && args.end_line)
+                ? (args.end_line - args.start_line + 1)
+                : args.limit;
+
             const result = await occRegistry.call('Read', {
                 file_path: filePath,
-                offset: args.offset,
-                limit: args.limit,
+                offset,
+                limit,
             });
             const output = typeof result === 'string' ? result : String(result);
-            // Strip line number prefixes (cat -n format)
             const content = output.replace(/^\s*\d+[→\t]/gm, '');
             return {
                 success: !isError(output),
@@ -265,13 +297,33 @@ export function createToolExecutor({ retriever } = {}) {
             };
         },
 
-        // 7. search_files → Glob (construct glob from query)
+        // 7. search_files → Grep with line numbers + context (like grep -n -C 3)
         search_files: async (args) => {
             const query = args.query || args.pattern || '*';
-            const pattern = query.includes('*') ? query : `**/*${query}*`;
-            const result = await occRegistry.call('Glob', {
-                pattern,
+
+            // If it looks like a glob pattern, use Glob
+            if (query.includes('*') || query.includes('?')) {
+                const result = await occRegistry.call('Glob', {
+                    pattern: query,
+                    path: args.path ? resolvePath(args.path) : undefined,
+                });
+                const output = typeof result === 'string' ? result : String(result);
+                return {
+                    success: true,
+                    files: output.split('\n').filter(Boolean),
+                    output,
+                    _tool: 'search_files',
+                };
+            }
+
+            // For text patterns: grep with context lines (like grep -n -C 3)
+            const result = await occRegistry.call('Grep', {
+                pattern: query,
                 path: args.path ? resolvePath(args.path) : undefined,
+                output_mode: 'content',
+                '-n': true,
+                '-C': 3,
+                head_limit: 50,
             });
             const output = typeof result === 'string' ? result : String(result);
             return {

@@ -112,17 +112,95 @@ export class ContextRetriever {
         return results;
     }
 
-    /** Chunk a file into overlapping line-based segments. */
+    /**
+     * Chunk a file by AST boundaries (functions/classes) with line-based fallback.
+     * AST-aware chunks contain complete functions/classes — not arbitrary 50-line blocks.
+     */
     _chunkFile(content, relPath) {
         const lines = content.split('\n');
+
+        // Small files: single chunk
         if (lines.length <= CHUNK_LINES) {
             return [{ id: relPath, text: `${relPath}\n${content}` }];
         }
+
+        // Try AST-aware chunking: split at function/class boundaries
+        const boundaries = this._findASTBoundaries(lines);
+
+        if (boundaries.length > 1) {
+            // AST-aware: chunk at function/class boundaries
+            const chunks = [];
+            for (const { name, startLine, endLine } of boundaries) {
+                const chunk = lines.slice(startLine, endLine).join('\n');
+                const id = `${relPath}:${startLine + 1}:${name}`;
+                chunks.push({ id, text: `${relPath}:${startLine + 1} (${name})\n${chunk}` });
+            }
+            return chunks;
+        }
+
+        // Fallback: line-based chunking for non-code files
         const chunks = [];
         for (let i = 0; i < lines.length; i += (CHUNK_LINES - CHUNK_OVERLAP)) {
             const chunk = lines.slice(i, i + CHUNK_LINES).join('\n');
             chunks.push({ id: `${relPath}:${i + 1}`, text: `${relPath}:${i + 1}\n${chunk}` });
         }
         return chunks;
+    }
+
+    /**
+     * Find function/class boundaries using regex patterns.
+     * Returns array of { name, startLine, endLine }.
+     */
+    _findASTBoundaries(lines) {
+        const boundaries = [];
+        const patterns = [
+            // Python: def/class (indentation-based)
+            /^(?:async\s+)?def\s+(\w+)\s*\(/,
+            /^class\s+(\w+)/,
+            // JS/TS: function, class, export function
+            /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/,
+            /^(?:export\s+)?class\s+(\w+)/,
+            // JS/TS: const fn = arrow
+            /^(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\(/,
+            // Go: func
+            /^func\s+(?:\([^)]*\)\s+)?(\w+)\s*\(/,
+            // Rust: fn, struct, impl
+            /^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/,
+            /^(?:pub\s+)?struct\s+(\w+)/,
+        ];
+
+        let currentStart = 0;
+        let currentName = '_top_level';
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trimStart();
+            for (const pattern of patterns) {
+                const match = line.match(pattern);
+                if (match) {
+                    // Close previous boundary
+                    if (i > currentStart) {
+                        boundaries.push({
+                            name: currentName,
+                            startLine: currentStart,
+                            endLine: i,
+                        });
+                    }
+                    currentStart = i;
+                    currentName = match[1] || match[2] || 'unknown';
+                    break;
+                }
+            }
+        }
+
+        // Close last boundary
+        if (lines.length > currentStart) {
+            boundaries.push({
+                name: currentName,
+                startLine: currentStart,
+                endLine: lines.length,
+            });
+        }
+
+        return boundaries;
     }
 }
