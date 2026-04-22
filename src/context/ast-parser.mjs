@@ -69,15 +69,16 @@ function parseJavaScriptTypeScript(content) {
   const classes = [];
   const interfaces = [];
   const types = [];
+  const lines = content.split('\n');
 
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const lineNum = i + 1;
 
     // Imports
     const importMatch = trimmed.match(/^import\s+(?:\{([^}]+)\}|(\w+))\s+from\s+['"]([^'"]+)['"]/);
     if (importMatch) {
-      const names = (importMatch[1] || importMatch[2] || '').trim();
-      imports.push({ names, from: importMatch[3] });
+      imports.push({ names: (importMatch[1] || importMatch[2] || '').trim(), from: importMatch[3] });
       continue;
     }
 
@@ -92,37 +93,37 @@ function parseJavaScriptTypeScript(content) {
     // Functions
     const fnMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/);
     if (fnMatch) {
-      functions.push({ name: fnMatch[1], params: fnMatch[2].trim() });
+      functions.push({ name: fnMatch[1], params: fnMatch[2].trim(), line: lineNum });
       continue;
     }
 
-    // Arrow functions (const name = ...)
+    // Arrow functions
     const arrowMatch = trimmed.match(/^(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?::\s*\w+)?\s*=>/);
     if (arrowMatch) {
-      functions.push({ name: arrowMatch[1], params: arrowMatch[2].trim() });
+      functions.push({ name: arrowMatch[1], params: arrowMatch[2].trim(), line: lineNum });
       continue;
     }
 
     // Classes
     const classMatch = trimmed.match(/^(?:export\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?/);
     if (classMatch) {
-      classes.push({ name: classMatch[1], extends: classMatch[2] || null });
+      classes.push({ name: classMatch[1], extends: classMatch[2] || null, line: lineNum });
       continue;
     }
 
-    // Methods inside classes
+    // Methods
     const methodMatch = trimmed.match(/^(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*\w+)?\s*\{/);
     if (methodMatch && !['if', 'for', 'while', 'switch', 'catch'].includes(methodMatch[1])) {
-      functions.push({ name: methodMatch[1], params: methodMatch[2].trim(), isMethod: true });
+      functions.push({ name: methodMatch[1], params: methodMatch[2].trim(), line: lineNum, isMethod: true });
     }
 
     // Interfaces
     const ifaceMatch = trimmed.match(/^(?:export\s+)?interface\s+(\w+)/);
-    if (ifaceMatch) interfaces.push(ifaceMatch[1]);
+    if (ifaceMatch) interfaces.push({ name: ifaceMatch[1], line: lineNum });
 
-    // Type aliases
+    // Types
     const typeMatch = trimmed.match(/^(?:export\s+)?type\s+(\w+)\s*=/);
-    if (typeMatch) types.push(typeMatch[1]);
+    if (typeMatch) types.push({ name: typeMatch[1], line: lineNum });
   }
 
   return { imports, exports, functions, classes, interfaces, types };
@@ -135,34 +136,32 @@ function parsePython(content) {
   const functions = [];
   const classes = [];
   const decorators = [];
+  const lines = content.split('\n');
 
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const lineNum = i + 1;
 
-    // Imports
     const importMatch = trimmed.match(/^(?:from\s+(\S+)\s+)?import\s+(.+)/);
     if (importMatch) {
       imports.push({ from: importMatch[1] || '', names: importMatch[2].trim() });
       continue;
     }
 
-    // Decorators
     if (trimmed.startsWith('@')) {
       decorators.push(trimmed);
       continue;
     }
 
-    // Functions
     const fnMatch = trimmed.match(/^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)/);
     if (fnMatch) {
-      functions.push({ name: fnMatch[1], params: fnMatch[2].trim() });
+      functions.push({ name: fnMatch[1], params: fnMatch[2].trim(), line: lineNum });
       continue;
     }
 
-    // Classes
     const classMatch = trimmed.match(/^class\s+(\w+)(?:\(([^)]*)\))?/);
     if (classMatch) {
-      classes.push({ name: classMatch[1], bases: classMatch[2] || '' });
+      classes.push({ name: classMatch[1], bases: classMatch[2] || '', line: lineNum });
     }
   }
 
@@ -242,30 +241,40 @@ function parseGeneric(content) {
 function buildSummary(structure) {
   const parts = [];
   parts.push(`${structure.file} (${structure.lines} lines, ${structure.language})`);
+  parts.push(`Use read_file with start_line/end_line to read specific sections.`);
+  parts.push('');
 
   if (structure.classes?.length) {
     for (const cls of structure.classes) {
       const ext = cls.extends ? ` extends ${cls.extends}` : (cls.bases ? `(${cls.bases})` : '');
-      parts.push(`  class ${cls.name}${ext}`);
+      const ln = cls.line ? ` [line ${cls.line}]` : '';
+      parts.push(`  class ${cls.name}${ext}${ln}`);
     }
   }
 
   if (structure.interfaces?.length) {
-    parts.push(`  interfaces: ${structure.interfaces.join(', ')}`);
+    const ifaceList = structure.interfaces.map(i =>
+      typeof i === 'string' ? i : `${i.name} [line ${i.line}]`
+    ).join(', ');
+    parts.push(`  interfaces: ${ifaceList}`);
   }
 
   if (structure.types?.length) {
-    parts.push(`  types: ${structure.types.join(', ')}`);
+    const typeList = structure.types.map(t =>
+      typeof t === 'string' ? t : `${t.name} [line ${t.line}]`
+    ).join(', ');
+    parts.push(`  types: ${typeList}`);
   }
 
   if (structure.functions?.length) {
-    for (const fn of structure.functions.slice(0, 15)) {
+    for (const fn of structure.functions.slice(0, 20)) {
       const receiver = fn.receiver ? `(${fn.receiver}) ` : '';
       const method = fn.isMethod ? '  ' : '';
-      parts.push(`${method}  ${receiver}${fn.name}(${fn.params || ''})`);
+      const ln = fn.line ? ` [line ${fn.line}]` : '';
+      parts.push(`${method}  ${receiver}${fn.name}(${fn.params || ''})${ln}`);
     }
-    if (structure.functions.length > 15) {
-      parts.push(`  ... and ${structure.functions.length - 15} more functions`);
+    if (structure.functions.length > 20) {
+      parts.push(`  ... and ${structure.functions.length - 20} more functions`);
     }
   }
 
@@ -275,7 +284,7 @@ function buildSummary(structure) {
 
   if (structure.imports?.length) {
     const importSummary = structure.imports.slice(0, 5).map(i =>
-      i.from ? `${i.from}` : i.names
+      i.from ? `${i.from}` : (typeof i === 'string' ? i : i.names)
     ).join(', ');
     const more = structure.imports.length > 5 ? ` +${structure.imports.length - 5} more` : '';
     parts.push(`  imports: ${importSummary}${more}`);

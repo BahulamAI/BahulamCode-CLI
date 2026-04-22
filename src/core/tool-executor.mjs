@@ -142,29 +142,28 @@ export function createToolExecutor({ retriever } = {}) {
             const filePath = resolvePath(args.file_path || args.path);
             const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
 
-            // If no line range specified, check file size first
+            // If no line range specified, auto-truncate and return AST summary
             if (!hasLineRange) {
                 try {
-                    const stat = fs.statSync(filePath);
-                    const lines = fs.readFileSync(filePath, 'utf-8').split('\n').length;
-                    if (lines > 200) {
-                        // Large file: return analyze_code summary + first/last lines instead
+                    const content = fs.readFileSync(filePath, 'utf-8');
+                    const lines = content.split('\n').length;
+
+                    if (lines > 50) {
+                        // File >50 lines: return AST summary with line numbers
+                        // Model must use start_line/end_line to read specific sections
                         const analysis = analyzeCode(filePath);
-                        const firstLines = fs.readFileSync(filePath, 'utf-8').split('\n').slice(0, 30).join('\n');
+                        const firstLines = content.split('\n').slice(0, 20).join('\n');
                         return {
                             success: true,
-                            output: `File is ${lines} lines. Showing structure + first 30 lines.\n` +
-                                    `Use read_file with start_line/end_line for specific sections.\n` +
-                                    `Use search_code to find relevant code.\n\n` +
-                                    `## Structure\n${analysis.summary}\n\n` +
-                                    `## First 30 lines\n${firstLines}`,
-                            content: analysis.summary,
+                            output: `${analysis.summary}\n\n` +
+                                    `## First 20 lines\n${firstLines}`,
                             _tool: 'read_file',
                             _truncated: true,
                             _total_lines: lines,
                         };
                     }
-                } catch { /* file doesn't exist or can't stat — let Read handle the error */ }
+                    // Small file (<50 lines): return full content
+                } catch { /* let Read handle the error */ }
             }
 
             // Convert start_line/end_line to offset/limit
