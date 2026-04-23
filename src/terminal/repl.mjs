@@ -57,7 +57,7 @@ function safeCwd() {
 // ── Session State ──
 
 const session = {
-  id: crypto.randomUUID(),  // persistent across turns — must be valid UUID for Supabase
+  id: null,                  // set by backend on first turn via session_info event
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
@@ -495,6 +495,7 @@ function renderEvent(event) {
     }
 
     case 'session_info': {
+      if (data?.session_id) session.id = data.session_id;
       if (data?.model) session.model = data.model;
       if (data?.user) session.user = { ...session.user, ...data.user };
       break;
@@ -858,6 +859,10 @@ export async function startTerminalRepl() {
   const retriever = new ContextRetriever(safeCwd());
   const toolExecutor = createToolExecutor({ retriever });
   const approval = new ApprovalManager({ autoApprove: false });
+
+  // Persistent stream client — session_id captured from backend on first turn
+  let streamClient = null;
+
   const ctx = { auth, toolExecutor, approval };
 
   printBanner(auth);
@@ -935,13 +940,16 @@ export async function startTerminalRepl() {
     // Orca response label
     process.stderr.write(`\n${c.bold(c.cyan('orca'))}\n`);
 
-    const client = new TarangStreamClient({
-      baseUrl: creds.backendUrl,
-      token: creds.token,
-      toolExecutor,
-      approvalManager: approval,
-      sessionId: session.id,
-    });
+    // Create or reuse stream client — sessionId persists across turns
+    if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
+      streamClient = new TarangStreamClient({
+        baseUrl: creds.backendUrl,
+        token: creds.token,
+        toolExecutor,
+        approvalManager: approval,
+      });
+    }
+    const client = streamClient;
 
     let assistantContent = '';
 

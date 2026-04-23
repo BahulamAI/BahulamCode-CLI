@@ -47,14 +47,14 @@ export class TarangStreamClient {
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null, sessionId = null }) {
+    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
         this.currentTaskId = null;
-        this.sessionId = sessionId;  // Persistent across turns — one REPL session = one DB session
+        this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
         this._cancelled = false;
         this._paused = false;
     }
@@ -113,6 +113,11 @@ export class TarangStreamClient {
             if (this._cancelled) {
                 yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
+            }
+
+            // Capture session_id from backend (first turn creates it, subsequent turns reuse)
+            if (event === EVENT_TYPES.SESSION_INFO && data?.session_id) {
+                this.sessionId = data.session_id;
             }
 
             // Tool requests — show to user, then execute locally and POST callback
