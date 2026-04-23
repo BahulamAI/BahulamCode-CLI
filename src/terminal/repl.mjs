@@ -73,6 +73,7 @@ const session = {
   blockedOps: 0,       // safety guardrail blocks
   delegations: [],     // agent delegation events: { from, to, time }
   phases: [],          // phase history: { name, time }
+  inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
   filesChanged: [],    // files modified this session
   lastTurnDuration: 0,
   costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
@@ -281,7 +282,8 @@ function renderToolCall(data) {
   }
 
   const detailStr = detail ? `  ${c.gray(detail)}` : '';
-  process.stderr.write(`  ${icon} ${c.dim(desc)}${detailStr}\n`);
+  const indent = session.inSubAgent ? '     ' : '  ';
+  process.stderr.write(`${indent}${icon} ${c.dim(desc)}${detailStr}\n`);
 }
 
 /**
@@ -289,16 +291,17 @@ function renderToolCall(data) {
  */
 function renderToolResult(data) {
   if (!data) return;
+  const indent = session.inSubAgent ? '     ' : '  ';
 
   if (data._blocked) {
     session.blockedOps++;
-    process.stderr.write(`  ${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
+    process.stderr.write(`${indent}${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
     return;
   }
 
   if (data.success === false) {
     const msg = (data.output || data.message || 'Failed').slice(0, 120);
-    process.stderr.write(`  ${c.red('✗ ' + msg)}\n`);
+    process.stderr.write(`${indent}${c.red('✗ ' + msg)}\n`);
     return;
   }
 
@@ -306,7 +309,7 @@ function renderToolResult(data) {
   if (data._tool === 'write_file' || data._tool === 'edit_file') {
     const lint = data.lint;
     if (lint) {
-      process.stderr.write(`  ${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
+      process.stderr.write(`${indent}${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
     }
   }
 }
@@ -511,6 +514,7 @@ function renderEvent(event) {
 
     case 'sub_agent_start': {
       stopSpinner();
+      session.inSubAgent = true;
       const agentType = data?.type || 'sub-agent';
       const model = data?.model || '';
       const query = data?.query || '';
@@ -523,23 +527,17 @@ function renderEvent(event) {
     }
 
     case 'sub_agent_tool': {
+      // No separate display — the regular tool_call event shows full detail
+      // indented under the sub-agent block. Just update the spinner text.
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
-      if (tool) {
-        stopSpinner();
-        const icons = {
-          read_file: '📄', search_code: '🔍', list_files: '📁',
-          search_files: '🔍', get_file_info: 'ℹ️', analyze_code: '🔬',
-        };
-        const icon = icons[tool] || '🔧';
-        process.stderr.write(`     ${icon} ${c.dim(`${agentType} → ${tool}`)}\n`);
-        startSpinner(`${agentType}: ${tool}...`);
-      }
+      if (tool) updateSpinner(`${agentType} → ${tool}`);
       break;
     }
 
     case 'sub_agent_complete': {
       stopSpinner();
+      session.inSubAgent = false;
       const agentType = data?.type || 'sub-agent';
       const model = data?.model || '';
       const resultLen = data?.result_length || 0;
