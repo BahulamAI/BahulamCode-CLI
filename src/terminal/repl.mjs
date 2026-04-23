@@ -57,6 +57,7 @@ function safeCwd() {
 // ── Session State ──
 
 const session = {
+  id: `sess_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,  // persistent across turns
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
@@ -941,6 +942,7 @@ export async function startTerminalRepl() {
       token: creds.token,
       toolExecutor,
       approvalManager: approval,
+      sessionId: session.id,
     });
 
     let assistantContent = '';

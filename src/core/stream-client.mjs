@@ -47,13 +47,14 @@ export class TarangStreamClient {
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null }) {
+    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null, sessionId = null }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
         this.currentTaskId = null;
+        this.sessionId = sessionId;  // Persistent across turns — one REPL session = one DB session
         this._cancelled = false;
         this._paused = false;
     }
@@ -74,6 +75,7 @@ export class TarangStreamClient {
         const url = `${this.baseUrl}/api/execute`;
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
+        if (this.sessionId) body.session_id = this.sessionId;
 
         const headers = {
             'Accept': 'text/event-stream',
