@@ -171,15 +171,11 @@ function printPromptBlock() {
  * Print a turn summary after a response completes.
  * Shows only when there's something meaningful to report.
  */
-function printTurnSummary(toolCount, durationS, usage) {
+function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
-  if (usage) {
-    const inp = usage.total_input_tokens || usage.input_tokens || 0;
-    const out = usage.total_output_tokens || usage.output_tokens || 0;
-    if (inp + out > 0) parts.push(formatCost(inp, out));
-  }
+  if (turnCost > 0) parts.push(formatCostValue(turnCost));
   if (parts.length > 0) {
     process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
   }
@@ -547,9 +543,9 @@ function renderEvent(event) {
 
       session.lastTurnDuration = data?.duration_s || 0;
 
-      // Compact turn summary
+      // Compact turn summary — use the cost we just calculated
       const tools = data?.tool_calls || session.toolCalls || 0;
-      printTurnSummary(tools, data?.duration_s, usage);
+      printTurnSummary(tools, data?.duration_s, costResult.total);
       break;
     }
 
