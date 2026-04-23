@@ -1,21 +1,24 @@
 /**
  * Model Pricing — per-model cost calculation.
  *
- * All prices in USD per million tokens (MTok).
- * Cache pricing is Anthropic-specific; other providers fall back to input rate.
+ * Two sources of truth:
+ * 1. OpenRouter /api/v1/models endpoint (live pricing, fetched at startup)
+ * 2. Static fallback table (for non-OpenRouter providers: Anthropic, OpenAI, Google)
  *
- * PRD-028: Phase 1 — CLI-side pricing table with backend fallback.
+ * All prices in USD per million tokens (MTok).
+ *
+ * PRD-028: Phase 1 — CLI-side pricing with live OpenRouter fetch.
  */
 
-// ── Pricing Table (USD per MTok) ─────────────────────────────
+// ── Static Fallback Table (non-OpenRouter providers) ─────────
 
-const PRICING = {
-    // ── Anthropic ──
+const STATIC_PRICING = {
+    // ── Anthropic (direct API, not via OpenRouter) ──
     'claude-opus-4':              { input: 15,    output: 75,   cache_read: 1.50,  cache_write: 18.75 },
     'claude-sonnet-4':            { input: 3,     output: 15,   cache_read: 0.30,  cache_write: 3.75  },
     'claude-haiku-3-5':           { input: 0.80,  output: 4,    cache_read: 0.08,  cache_write: 1.0   },
 
-    // ── OpenAI ──
+    // ── OpenAI (direct API) ──
     'gpt-4o':                     { input: 2.50,  output: 10   },
     'gpt-4.1':                    { input: 2,     output: 8    },
     'gpt-4.1-mini':               { input: 0.40,  output: 1.60 },
@@ -24,32 +27,87 @@ const PRICING = {
     'o3-mini':                    { input: 1.10,  output: 4.40 },
     'o4-mini':                    { input: 1.10,  output: 4.40 },
 
-    // ── Google ──
+    // ── Google (direct API) ──
     'gemini-2.5-pro':             { input: 1.25,  output: 10   },
-    'gemini-2.5-flash':           { input: 0.15,  output: 0.60 },
+    'gemini-2.5-flash':           { input: 0.30,  output: 2.50 },
     'gemini-2.0-flash':           { input: 0.10,  output: 0.40 },
 
-    // ── Open-source (via OpenRouter / self-hosted) ──
-    'deepseek/deepseek-chat-v3':       { input: 0.27, output: 1.10 },
-    'deepseek/deepseek-chat-v3-0324':  { input: 0.27, output: 1.10 },
-    'deepseek/deepseek-reasoner':      { input: 0.55, output: 2.19 },
-    'xiaomi/mimo-v2-flash':            { input: 0,    output: 0    },
-    'xiaomi/mimo-v2-flash:free':       { input: 0,    output: 0    },
+    // ── Bedrock (Anthropic models via AWS) ──
+    'us.anthropic.claude-sonnet-4-6-20260401-v1:0': { input: 3, output: 15, cache_read: 0.30, cache_write: 3.75 },
+    'us.anthropic.claude-haiku-4-5-20251001-v1:0':  { input: 0.80, output: 4, cache_read: 0.08, cache_write: 1.0 },
 };
 
 const DEFAULT_PRICING = { input: 3, output: 15 };
+
+// ── Live OpenRouter Pricing Cache ────────────────────────────
+
+let _openRouterPricing = null;  // Map<model_id, { input, output }>
+let _fetchPromise = null;
+
+/**
+ * Fetch live pricing from OpenRouter's /api/v1/models endpoint.
+ * Called once at startup, cached for the session.
+ * Non-blocking — returns immediately, populates cache in background.
+ */
+export async function fetchOpenRouterPricing() {
+    if (_openRouterPricing) return _openRouterPricing;
+    if (_fetchPromise) return _fetchPromise;
+
+    _fetchPromise = (async () => {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+
+            const res = await fetch('https://openrouter.ai/api/v1/models', {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' },
+            });
+            clearTimeout(timeout);
+
+            if (!res.ok) return null;
+
+            const data = await res.json();
+            const models = data.data || [];
+            const pricing = new Map();
+
+            for (const m of models) {
+                const id = m.id;
+                const p = m.pricing;
+                if (!id || !p) continue;
+
+                // OpenRouter returns per-token prices as strings
+                const input = parseFloat(p.prompt || '0') * 1_000_000;   // convert to per-MTok
+                const output = parseFloat(p.completion || '0') * 1_000_000;
+
+                pricing.set(id, { input, output });
+            }
+
+            _openRouterPricing = pricing;
+            return pricing;
+        } catch {
+            // Network error, timeout, or parse error — fall back to static
+            return null;
+        } finally {
+            _fetchPromise = null;
+        }
+    })();
+
+    return _fetchPromise;
+}
+
+/**
+ * Start fetching OpenRouter pricing in the background.
+ * Call this at CLI startup — non-blocking.
+ */
+export function prefetchPricing() {
+    fetchOpenRouterPricing().catch(() => {});
+}
 
 // ── Model ID Normalization ───────────────────────────────────
 
 /**
  * Normalize a model ID for pricing lookup.
- * Strips version suffixes, date stamps, provider prefixes (openrouter/),
- * and tries progressively shorter matches.
- *
- * Examples:
- *   'claude-sonnet-4-20250514' → 'claude-sonnet-4'
- *   'openrouter/google/gemini-2.5-pro' → 'gemini-2.5-pro'
- *   'google/gemini-2.5-pro-preview-05-06' → 'gemini-2.5-pro'
+ * Strips version suffixes, date stamps, provider prefixes (openrouter/).
  */
 function normalizeModelId(model) {
     if (!model) return '';
@@ -67,27 +125,50 @@ function normalizeModelId(model) {
 
 /**
  * Look up pricing for a model ID.
- * Tries exact match, then normalized, then progressively shorter prefixes.
+ *
+ * Search order:
+ * 1. OpenRouter live pricing (exact match)
+ * 2. Static table (exact → normalized → provider-stripped)
+ * 3. Default fallback ($3/$15 Sonnet)
+ *
  * @param {string} model
  * @returns {{ input: number, output: number, cache_read?: number, cache_write?: number }}
  */
 export function lookupPricing(model) {
     if (!model) return DEFAULT_PRICING;
 
-    // Exact match
-    if (PRICING[model]) return PRICING[model];
+    // 1. OpenRouter live cache (exact match — OpenRouter IDs are canonical)
+    if (_openRouterPricing) {
+        const orPrice = _openRouterPricing.get(model);
+        if (orPrice) return orPrice;
+
+        // Try normalized
+        const normalized = normalizeModelId(model);
+        const orNorm = _openRouterPricing.get(normalized);
+        if (orNorm) return orNorm;
+    }
+
+    // 2. Static table — exact match
+    if (STATIC_PRICING[model]) return STATIC_PRICING[model];
 
     // Normalized match
     const normalized = normalizeModelId(model);
-    if (PRICING[normalized]) return PRICING[normalized];
+    if (STATIC_PRICING[normalized]) return STATIC_PRICING[normalized];
 
     // Try without provider prefix (e.g. 'google/gemini-2.5-pro' → 'gemini-2.5-pro')
     const withoutProvider = normalized.replace(/^[^/]+\//, '');
-    if (PRICING[withoutProvider]) return PRICING[withoutProvider];
+    if (STATIC_PRICING[withoutProvider]) return STATIC_PRICING[withoutProvider];
 
     // Try with common provider prefixes
-    for (const prefix of ['deepseek/', 'xiaomi/', 'google/', 'meta/']) {
-        if (PRICING[prefix + withoutProvider]) return PRICING[prefix + withoutProvider];
+    for (const prefix of ['deepseek/', 'xiaomi/', 'google/', 'meta/', 'qwen/', 'moonshotai/']) {
+        if (STATIC_PRICING[prefix + withoutProvider]) return STATIC_PRICING[prefix + withoutProvider];
+    }
+
+    // 3. OpenRouter fuzzy match (without provider prefix)
+    if (_openRouterPricing) {
+        for (const [id, price] of _openRouterPricing) {
+            if (id.endsWith('/' + withoutProvider)) return price;
+        }
     }
 
     return DEFAULT_PRICING;
@@ -106,12 +187,33 @@ export function lookupPricing(model) {
  *    { input_tokens, output_tokens }
  *
  * @param {Object} usage - Usage object from backend complete event
- * @returns {{ total: number, breakdown: Array<{ model: string, role: string, cost: number, input_tokens: number, output_tokens: number }>, accurate: boolean }}
+ * @returns {{ total: number, breakdown: Array, accurate: boolean }}
  */
 export function calculateCost(usage) {
     if (!usage) return { total: 0, breakdown: [], accurate: false };
 
-    // New format: per-model breakdown
+    // Best case: backend computed cost from live OpenRouter pricing
+    if (typeof usage.total_cost === 'number' && usage.models && usage.models.length > 0) {
+        const breakdown = usage.models.map(m => ({
+            model: m.model,
+            role: m.role || 'unknown',
+            input_tokens: m.input_tokens || 0,
+            output_tokens: m.output_tokens || 0,
+            cache_read_tokens: m.cache_read_tokens || 0,
+            cache_creation_tokens: m.cache_creation_tokens || 0,
+            cost: m.cost || 0,
+            free: (m.cost || 0) === 0 && (m.input_tokens || 0) > 0,
+            pricingSource: 'backend',
+        }));
+
+        return {
+            total: usage.total_cost,
+            breakdown,
+            accurate: true,
+        };
+    }
+
+    // Fallback: per-model breakdown without backend cost — CLI computes
     if (usage.models && usage.models.length > 0) {
         const breakdown = usage.models.map(m => {
             const pricing = lookupPricing(m.model);
@@ -120,6 +222,9 @@ export function calculateCost(usage) {
             const cacheReadCost = (m.cache_read_tokens || 0) * (pricing.cache_read || pricing.input) / 1_000_000;
             const cacheWriteCost = (m.cache_creation_tokens || 0) * (pricing.cache_write || pricing.input) / 1_000_000;
             const cost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+
+            const usedLivePricing = _openRouterPricing?.has(m.model) || false;
+            const usedStaticPricing = STATIC_PRICING[m.model] || STATIC_PRICING[normalizeModelId(m.model)];
 
             return {
                 model: m.model,
@@ -130,13 +235,16 @@ export function calculateCost(usage) {
                 cache_creation_tokens: m.cache_creation_tokens || 0,
                 cost,
                 free: pricing.input === 0 && pricing.output === 0,
+                pricingSource: usedLivePricing ? 'openrouter' : usedStaticPricing ? 'static' : 'default',
             };
         });
+
+        const allAccurate = breakdown.every(b => b.pricingSource !== 'default');
 
         return {
             total: breakdown.reduce((sum, b) => sum + b.cost, 0),
             breakdown,
-            accurate: true,
+            accurate: allAccurate,
         };
     }
 
@@ -154,8 +262,9 @@ export function calculateCost(usage) {
             output_tokens: outputTokens,
             cost: total,
             free: false,
+            pricingSource: 'default',
         }],
-        accurate: false,  // using fallback pricing
+        accurate: false,
     };
 }
 
@@ -194,9 +303,12 @@ export function isFreeModel(model) {
 }
 
 /**
- * Get the full pricing table (for /cost display).
- * @returns {Object}
+ * Get pricing status (for /status display).
+ * @returns {{ source: string, modelCount: number }}
  */
-export function getPricingTable() {
-    return { ...PRICING, _default: DEFAULT_PRICING };
+export function getPricingStatus() {
+    if (_openRouterPricing) {
+        return { source: 'openrouter-live', modelCount: _openRouterPricing.size };
+    }
+    return { source: 'static-fallback', modelCount: Object.keys(STATIC_PRICING).length };
 }
