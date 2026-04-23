@@ -52,6 +52,69 @@ export class ContextRetriever {
         return { fileCount: files.length, chunkCount: documents.length };
     }
 
+    /**
+     * Incrementally update index for a single changed file.
+     * Re-chunks the file and replaces its entries in the BM25 index.
+     * ~5-50ms per file — safe to call after every edit/write.
+     */
+    updateFile(filePath) {
+        if (!this.index) {
+            if (!this.loadIndex()) return false;
+        }
+
+        const absPath = path.resolve(filePath);
+        const relPath = path.relative(this.projectDir, absPath);
+
+        // Remove old chunks for this file
+        const oldIds = new Set();
+        for (const doc of this.index.docs) {
+            if (doc.id === relPath || doc.id.startsWith(relPath + ':')) {
+                oldIds.add(doc.id);
+            }
+        }
+
+        // Collect remaining documents (excluding old chunks for this file)
+        const remainingDocs = [];
+        for (const doc of this.index.docs) {
+            if (!oldIds.has(doc.id)) {
+                // Reconstruct text from tf map for rebuild
+                remainingDocs.push({ id: doc.id, text: this.chunkTexts.get(doc.id) || '' });
+            }
+        }
+
+        // Remove old chunk texts
+        for (const id of oldIds) this.chunkTexts.delete(id);
+
+        // Re-chunk if file still exists (delete = just remove)
+        const newChunks = [];
+        if (fs.existsSync(absPath)) {
+            try {
+                const content = fs.readFileSync(absPath, 'utf-8');
+                newChunks.push(...this._chunkFile(content, relPath));
+            } catch { /* skip unreadable */ }
+        }
+
+        // Rebuild index from remaining + new chunks
+        // This is fast (~5-20ms) because BM25 build is O(n) on token count
+        const allDocs = [...remainingDocs, ...newChunks];
+        this.index = new BM25Index();
+        this.index.buildIndex(allDocs);
+
+        // Update chunk texts
+        for (const chunk of newChunks) {
+            this.chunkTexts.set(chunk.id, chunk.text);
+        }
+
+        // Persist updated index
+        try {
+            if (!fs.existsSync(this.indexDir)) fs.mkdirSync(this.indexDir, { recursive: true });
+            fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
+            fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
+        } catch { /* best-effort persist */ }
+
+        return true;
+    }
+
     /** Load persisted index. */
     loadIndex() {
         const indexPath = path.join(this.indexDir, 'bm25.json');

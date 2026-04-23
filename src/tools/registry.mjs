@@ -29,6 +29,10 @@ import { CronDeleteTool } from './cron-delete.mjs';
 import { CronListTool } from './cron-list.mjs';
 import { LspTool } from './lsp.mjs';
 import { ReadMcpResourceTool } from './read-mcp-resource.mjs';
+import { ContextRetriever } from '../context/retriever.mjs';
+
+// Tools that modify files — trigger index update after success
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
 
 const BUILTIN_TOOLS = [
     BashTool,
@@ -78,7 +82,21 @@ export function createToolRegistry() {
             if (!tool) throw new Error(`Unknown tool: ${name}`);
             const errors = tool.validateInput?.(input) || [];
             if (errors.length > 0) return `Validation error: ${errors.join(', ')}`;
-            return tool.call(input);
+            const result = await tool.call(input);
+
+            // After successful file writes, update BM25 index incrementally
+            // so search stays fresh within the session (~5-50ms, non-blocking)
+            if (WRITE_TOOLS.has(name) && typeof result === 'string' && !result.startsWith('Error')) {
+                const filePath = input.file_path;
+                if (filePath) {
+                    try {
+                        const retriever = new ContextRetriever();
+                        retriever.updateFile(filePath);
+                    } catch { /* index update is best-effort */ }
+                }
+            }
+
+            return result;
         },
 
         register(tool) {
