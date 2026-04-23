@@ -57,7 +57,7 @@ function safeCwd() {
 // ── Session State ──
 
 const session = {
-  id: `sess_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,  // persistent across turns
+  id: crypto.randomUUID(),  // persistent across turns — must be valid UUID for Supabase
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
@@ -515,6 +515,7 @@ function renderEvent(event) {
 
       // Update session token counts
       const usage = data?.usage;
+      let turnCost = 0;
       if (usage) {
         const inp = usage.total_input_tokens || usage.input_tokens || 0;
         const out = usage.total_output_tokens || usage.output_tokens || 0;
@@ -523,6 +524,7 @@ function renderEvent(event) {
 
         // Model-aware cost calculation
         const costResult = calculateCost(usage);
+        turnCost = costResult.total;
         session.totalCost += costResult.total;
         session.costAccurate = costResult.accurate;
 
@@ -543,9 +545,9 @@ function renderEvent(event) {
 
       session.lastTurnDuration = data?.duration_s || 0;
 
-      // Compact turn summary — use the cost we just calculated
+      // Compact turn summary
       const tools = data?.tool_calls || session.toolCalls || 0;
-      printTurnSummary(tools, data?.duration_s, costResult.total);
+      printTurnSummary(tools, data?.duration_s, turnCost);
       break;
     }
 
