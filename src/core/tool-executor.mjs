@@ -240,6 +240,67 @@ export function createToolExecutor({ retriever } = {}) {
             return wrapped;
         },
 
+        // 3b. write_project → Batch write multiple files at once
+        write_project: async (args) => {
+            const files = args.files || [];
+            if (!files.length) {
+                return { success: false, output: 'Error: No files provided', _tool: 'write_project' };
+            }
+
+            const results = [];
+            const errors = [];
+
+            for (const file of files) {
+                const rawPath = file.path || file.file_path;
+                if (!rawPath) {
+                    errors.push('Missing path in file entry');
+                    continue;
+                }
+                const filePath = resolvePath(rawPath);
+                const content = file.content || '';
+
+                const writeCheck = validateWrite(filePath, content);
+                if (!writeCheck.safe) {
+                    errors.push(`${rawPath}: BLOCKED — ${writeCheck.reason}`);
+                    continue;
+                }
+
+                try {
+                    // Ensure parent directory exists
+                    const dir = path.dirname(filePath);
+                    fs.mkdirSync(dir, { recursive: true });
+
+                    // Read first if exists (OCC Write requirement)
+                    try {
+                        if (fs.existsSync(filePath)) {
+                            await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                        }
+                    } catch { /* file may not exist yet */ }
+
+                    await occRegistry.call('Write', { file_path: filePath, content });
+                    results.push(rawPath);
+                } catch (err) {
+                    errors.push(`${rawPath}: ${err.message}`);
+                }
+            }
+
+            const output = results.length > 0
+                ? `Created ${results.length} file(s):\n${results.map(f => `  ✓ ${f}`).join('\n')}`
+                : 'No files written';
+
+            if (errors.length > 0) {
+                return {
+                    success: results.length > 0,
+                    output: `${output}\n\nErrors:\n${errors.map(e => `  ✗ ${e}`).join('\n')}`,
+                    files_written: results,
+                    files_failed: errors,
+                    _tool: 'write_project',
+                };
+            }
+
+            return { success: true, output, files_written: results, _tool: 'write_project' };
+        },
+
         // 4. edit_file → Edit + auto-lint
         edit_file: async (args) => {
             const filePath = resolvePath(args.file_path || args.path);

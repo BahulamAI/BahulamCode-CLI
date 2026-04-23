@@ -19,7 +19,7 @@ import * as path from 'node:path';
 // ── Tool Classification ──
 
 const WRITE_TOOLS = new Set([
-    'shell', 'write_file', 'edit_file', 'delete_file',
+    'shell', 'write_file', 'write_project', 'edit_file', 'delete_file',
     'validate_build', 'lint_check',
 ]);
 
@@ -40,7 +40,7 @@ const RISK_LEVELS = {
     read_file: 'none', read_files: 'none', search_code: 'none',
     search_files: 'none', list_files: 'none', get_file_info: 'none',
     validate_file: 'none', validate_structure: 'none',
-    write_file: 'low', edit_file: 'low',
+    write_file: 'low', write_project: 'low', edit_file: 'low',
     lint_check: 'low', validate_build: 'medium',
     shell: 'medium',
     delete_file: 'high',
