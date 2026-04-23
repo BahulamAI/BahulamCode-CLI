@@ -28,7 +28,9 @@ import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
 
-const VERSION = '2.2.1';
+import { createRequire } from 'node:module';
+const __require = createRequire(import.meta.url);
+const VERSION = __require('../../package.json').version;
 
 // ── Safe CWD ──
 // If the working directory gets deleted (by a rogue tool call),
@@ -107,9 +109,20 @@ function printBanner(auth) {
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
 
+  const art = [
+    '   ██████╗ ██████╗  ██████╗ █████╗',
+    '  ██╔═══██╗██╔══██╗██╔════╝██╔══██╗',
+    '  ██║   ██║██████╔╝██║     ███████║',
+    '  ██║   ██║██╔══██╗██║     ██╔══██║',
+    '  ╚██████╔╝██║  ██║╚██████╗██║  ██║',
+    '   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝',
+  ];
   process.stderr.write('\n');
-  process.stderr.write(`  ${c.bold(c.cyan('orca'))} ${c.gray('v' + VERSION)}  ${c.dim('Orchestration of Composable Agents')}\n`);
-  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n`);
+  for (const line of art) {
+    process.stderr.write(c.cyan(line) + '\n');
+  }
+  process.stderr.write('\n');
+  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n`);
   process.stderr.write('\n');
 }
 
@@ -494,6 +507,52 @@ function renderEvent(event) {
       break;
     }
 
+    // ── Sub-Agent Activity ──
+
+    case 'sub_agent_start': {
+      stopSpinner();
+      const agentType = data?.type || 'sub-agent';
+      const model = data?.model || '';
+      const query = data?.query || '';
+      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
+      process.stderr.write(`\n  ${icon} ${c.bold(c.cyan(`${agentType} agent`))} ${c.dim('started')}\n`);
+      if (model) process.stderr.write(`     ${c.gray('model:')} ${c.dim(model)}\n`);
+      if (query) process.stderr.write(`     ${c.gray('query:')} ${c.dim(query)}\n`);
+      startSpinner(`${agentType}: working...`);
+      break;
+    }
+
+    case 'sub_agent_tool': {
+      const agentType = data?.type || 'sub-agent';
+      const tool = data?.tool || '';
+      if (tool) {
+        stopSpinner();
+        const icons = {
+          read_file: '📄', search_code: '🔍', list_files: '📁',
+          search_files: '🔍', get_file_info: 'ℹ️', analyze_code: '🔬',
+        };
+        const icon = icons[tool] || '🔧';
+        process.stderr.write(`     ${icon} ${c.dim(`${agentType} → ${tool}`)}\n`);
+        startSpinner(`${agentType}: ${tool}...`);
+      }
+      break;
+    }
+
+    case 'sub_agent_complete': {
+      stopSpinner();
+      const agentType = data?.type || 'sub-agent';
+      const model = data?.model || '';
+      const resultLen = data?.result_length || 0;
+      const usage = data?.usage || {};
+      const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const parts = [];
+      if (resultLen > 0) parts.push(`${resultLen} chars`);
+      if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
+      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
+      process.stderr.write(`  ${icon} ${c.green('✓')} ${c.dim(`${agentType} agent complete`)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n\n`);
+      break;
+    }
+
     case 'session_info': {
       if (data?.session_id) session.id = data.session_id;
       if (data?.model) session.model = data.model;
@@ -867,21 +926,55 @@ export async function startTerminalRepl() {
 
   printBanner(auth);
 
-  // Build BM25 index + project skeleton in background (non-blocking)
+  // ── Initialization with progress ──
+  // BM25 indexing is CPU-bound and blocks the event loop, so setInterval
+  // spinners won't tick during it. Instead, show a static "Initializing..."
+  // message, then yield to the event loop between phases so the spinner runs.
   let projectSkeleton = '';
-  retriever.buildIndex()
-    .then(({ fileCount, chunkCount }) => {
-      process.stderr.write(`  ${c.dim(`Indexed ${fileCount} files (${chunkCount} chunks)`)}\n`);
-      // Build skeleton after index (uses same file scan)
-      projectSkeleton = buildProjectSkeleton(safeCwd());
-      if (projectSkeleton) {
-        process.stderr.write(`  ${c.dim(`Project skeleton ready`)}\n`);
-      }
-    })
-    .catch(() => { /* index build failed — search_code falls back to grep */ });
 
-  // Fetch user profile in background
-  fetchUser(ctx);
+  // Phase 1: Show immediate feedback
+  process.stderr.write(`  ${c.cyan('⠋')} ${c.dim('Initializing...')}\r`);
+
+  // Fetch user in parallel (network I/O, won't block event loop)
+  const userPromise = fetchUser(ctx);
+
+  // Phase 2: BM25 index — CPU-bound, blocks event loop.
+  // Wrap in a microtask break so the initial message renders first.
+  const indexResult = await new Promise((resolve) => {
+    // Let the event loop flush stderr before blocking
+    setImmediate(async () => {
+      try {
+        process.stderr.write(`\r  ${c.cyan('⠹')} ${c.dim('Indexing project files...')}${' '.repeat(20)}\r`);
+        const result = await retriever.buildIndex();
+        resolve(result);
+      } catch {
+        resolve({ fileCount: 0, chunkCount: 0 });
+      }
+    });
+  });
+
+  // Phase 3: Build skeleton (fast, synchronous)
+  process.stderr.write(`\r  ${c.cyan('⠼')} ${c.dim('Building project skeleton...')}${' '.repeat(20)}\r`);
+  await new Promise(r => setImmediate(r)); // yield so message renders
+  projectSkeleton = buildProjectSkeleton(safeCwd());
+
+  // Wait for user fetch
+  await userPromise;
+
+  // Clear the spinner line
+  process.stderr.write(`\r${' '.repeat(60)}\r`);
+
+  // Show init summary
+  if (indexResult.fileCount > 0) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Indexed ${indexResult.fileCount} files (${indexResult.chunkCount} chunks)`)}\n`);
+  }
+  if (projectSkeleton) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Project skeleton ready')}\n`);
+  }
+  if (session.user) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
+  }
+  process.stderr.write(`\n  ${c.dim('Press')} ${c.cyan('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
   const PROMPT = `${c.cyan('orca')} ${c.dim('›')} `;
 
