@@ -23,6 +23,19 @@ const WRITE_TOOLS = new Set([
     'validate_build', 'lint_check',
 ]);
 
+/** Tools/commands that NEVER auto-approve, even with 'a' (approve all). */
+const NEVER_AUTO_APPROVE = new Set(['delete_file']);
+
+/** Shell patterns that always require explicit per-call approval. */
+const FORCE_APPROVAL_SHELL = [
+    /\brm\s/,          // any rm command
+    /\bunlink\s/,      // unlink
+    /\brmdir\s/,       // rmdir
+    /\bgit\s+clean/,   // git clean
+    /\bgit\s+reset/,   // git reset
+    /\bgit\s+push.*--force/, // force push
+];
+
 const RISK_LEVELS = {
     read_file: 'none', read_files: 'none', search_code: 'none',
     search_files: 'none', list_files: 'none', get_file_info: 'none',
@@ -159,6 +172,17 @@ export class ApprovalManager {
                 this.history.push({ tool: toolName, decision: 'auto-safe', time: Date.now() });
                 return { approved: true };
             }
+
+            // NEVER auto-approve destructive shell commands (rm, unlink, git clean, etc.)
+            const forcePrompt = FORCE_APPROVAL_SHELL.some(p => p.test(args.command || ''));
+            if (forcePrompt) {
+                return this._prompt(toolName, args);
+            }
+        }
+
+        // NEVER auto-approve destructive tool types (delete_file, etc.)
+        if (NEVER_AUTO_APPROVE.has(toolName)) {
+            return this._prompt(toolName, args);
         }
 
         // --yes flag or 'a' was pressed

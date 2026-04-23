@@ -115,6 +115,25 @@ export function createToolExecutor({ retriever } = {}) {
                 args._highRisk = true;
                 args._riskReason = shellCheck.reason;
             }
+
+            // Pre-check: if command is rm/unlink, verify targets exist first
+            const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
+            if (rmMatch) {
+                const targets = rmMatch[1].split(/\s+/).filter(t => !t.startsWith('-'));
+                const missing = targets.filter(t => {
+                    try { return !fs.existsSync(path.resolve(process.cwd(), t)); } catch { return true; }
+                });
+                if (missing.length > 0 && missing.length === targets.length) {
+                    return {
+                        success: true,
+                        output: `No action needed: ${missing.join(', ')} — file(s) do not exist. Do not retry.`,
+                        exit_code: 0,
+                        _tool: 'shell',
+                        _skipped: true,
+                    };
+                }
+            }
+
             const result = await occRegistry.call('Bash', {
                 command: args.command,
                 timeout: args.timeout,

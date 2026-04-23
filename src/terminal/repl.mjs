@@ -18,6 +18,7 @@
 import * as readline from 'node:readline';
 import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
+import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
@@ -71,6 +72,9 @@ const session = {
   phases: [],          // phase history: { name, time }
   filesChanged: [],    // files modified this session
   lastTurnDuration: 0,
+  costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
+  totalCost: 0,        // accumulated session cost (USD)
+  costAccurate: false, // true if backend provides per-model breakdown
 };
 
 // ── Commands ──
@@ -133,15 +137,12 @@ function printBanner(auth) {
  */
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
-  const ctxPct = Math.min(100, Math.round((totalTokens / 200000) * 100));
-  const ctxColor = ctxPct < 50 ? 'green' : ctxPct < 80 ? 'yellow' : 'red';
-  const cost = formatCost(session.inputTokens, session.outputTokens);
+  const cost = formatCostValue(session.totalCost);
   const elapsed = formatElapsed(session.startTime);
 
   // Right side — always shown
   const right = [
-    c[ctxColor](`ctx ${ctxPct}%`),
-    c.dim(`${(totalTokens / 1000).toFixed(1)}k tok`),
+    c.dim(`${formatTokens(totalTokens)} tok`),
     c.dim(cost),
     c.dim(elapsed),
   ].join(c.dim(' · '));
@@ -233,7 +234,7 @@ function renderToolCall(data) {
       detail = args.search ? `"${args.search.slice(0, 30)}${args.search.length > 30 ? '...' : ''}"` : '';
       break;
     case 'shell':
-      desc = (args.command || '').slice(0, 70);
+      desc = args.command || '';
       detail = '';
       break;
     case 'search_code':
@@ -522,6 +523,25 @@ function renderEvent(event) {
         const out = usage.total_output_tokens || usage.output_tokens || 0;
         session.inputTokens += inp;
         session.outputTokens += out;
+
+        // Model-aware cost calculation
+        const costResult = calculateCost(usage);
+        session.totalCost += costResult.total;
+        session.costAccurate = costResult.accurate;
+
+        // Accumulate per-model breakdown
+        for (const entry of costResult.breakdown) {
+          const existing = session.costBreakdown.find(b => b.model === entry.model);
+          if (existing) {
+            existing.input_tokens += entry.input_tokens;
+            existing.output_tokens += entry.output_tokens;
+            existing.cache_read_tokens += entry.cache_read_tokens || 0;
+            existing.cache_creation_tokens += entry.cache_creation_tokens || 0;
+            existing.cost += entry.cost;
+          } else {
+            session.costBreakdown.push({ ...entry });
+          }
+        }
       }
 
       session.lastTurnDuration = data?.duration_s || 0;
@@ -612,7 +632,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
-      process.stderr.write(`  ${c.dim('Cost')}         ${formatCost(session.inputTokens, session.outputTokens)}\n`);
+      process.stderr.write(`  ${c.dim('Cost')}         ${formatCostValue(session.totalCost)}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
 
       // Permissions
@@ -680,16 +700,52 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
       process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
       process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
-      process.stderr.write(`  ${c.gray('Cost:')}      ${formatCost(session.inputTokens, session.outputTokens)}\n`);
+      process.stderr.write(`  ${c.gray('Cost:')}      ${formatCostValue(session.totalCost)}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
       process.stderr.write(`  ${c.gray('Elapsed:')}  ${formatElapsed(session.startTime)}\n\n`);
       return;
     }
 
-    case '/cost':
-      process.stderr.write(`  ${c.gray('Input:')}  ${session.inputTokens.toLocaleString()} tokens\n`);
-      process.stderr.write(`  ${c.gray('Output:')} ${session.outputTokens.toLocaleString()} tokens\n`);
-      process.stderr.write(`  ${c.gray('Cost:')}   ${formatCost(session.inputTokens, session.outputTokens)}\n`);
+    case '/cost': {
+      process.stderr.write(`\n  ${c.bold('Session Cost')}`);
+      if (!session.costAccurate) {
+        process.stderr.write(`  ${c.yellow('(estimated — backend not sending model breakdown)')}`);
+      }
+      process.stderr.write('\n');
+      process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
+
+      if (session.costBreakdown.length > 0) {
+        // Header
+        process.stderr.write(`  ${c.dim('Model'.padEnd(36))}${c.dim('Input'.padStart(10))}${c.dim('Output'.padStart(10))}${c.dim('Cache'.padStart(10))}${c.dim('Cost'.padStart(10))}\n`);
+        process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
+
+        for (const b of session.costBreakdown) {
+          const modelLabel = b.model === 'unknown' ? c.yellow('unknown model') : b.model;
+          const roleTag = b.role && b.role !== 'unknown' ? ` ${c.dim(`(${b.role})`)}` : '';
+          const cacheTokens = (b.cache_read_tokens || 0) + (b.cache_creation_tokens || 0);
+          const costStr = b.free ? c.green('free') : formatCostValue(b.cost);
+
+          process.stderr.write(
+            `  ${(modelLabel + roleTag).padEnd(36)}` +
+            `${formatTokens(b.input_tokens).padStart(10)}` +
+            `${formatTokens(b.output_tokens).padStart(10)}` +
+            `${(cacheTokens > 0 ? formatTokens(cacheTokens) : '—').padStart(10)}` +
+            `${costStr.padStart(10)}\n`
+          );
+        }
+
+        process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
+      }
+
+      process.stderr.write(
+        `  ${c.bold('Total'.padEnd(36))}` +
+        `${formatTokens(session.inputTokens).padStart(10)}` +
+        `${formatTokens(session.outputTokens).padStart(10)}` +
+        `${''.padStart(10)}` +
+        `${formatCostValue(session.totalCost).padStart(10)}\n`
+      );
+      process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}`)}\n\n`);
       return;
+    }
 
     case '/history':
       if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
@@ -842,9 +898,10 @@ export async function startTerminalRepl() {
   // Give approval manager access to readline for pause/resume
   approval.setReadline(rl);
 
-  // Helper: show prompt with separator
+  // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
     printPromptBlock();
+    process.stderr.write('\n');  // half-inch vertical gap above input line
     rl.prompt();
   }
 

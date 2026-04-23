@@ -61,6 +61,9 @@ const DANGEROUS_SHELL_PATTERNS = [
 
 /** Commands that need extra scrutiny — require approval even if auto-approved. */
 const HIGH_RISK_COMMANDS = [
+  /\brm\s/,                    // ALL rm commands require explicit approval
+  /\bunlink\s/,                // unlink
+  /\brmdir\s/,                 // rmdir
   /git\s+push\s+--force/,
   /git\s+reset\s+--hard/,
   /git\s+clean\s+-[fd]/,

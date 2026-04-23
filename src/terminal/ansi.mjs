@@ -312,8 +312,23 @@ export function formatElapsed(startMs) {
 
 // ── Format Cost ──
 
-export function formatCost(inputTokens, outputTokens) {
-  // Default: Sonnet pricing ($3/$15 per MTok)
-  const cost = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
-  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
+import { calculateCost, formatCostValue } from '../core/pricing.mjs';
+
+/**
+ * Format cost from token counts.
+ * Accepts either (inputTokens, outputTokens) for legacy calls,
+ * or a single usage object with optional per-model breakdown.
+ */
+export function formatCost(inputOrUsage, outputTokens) {
+  // New API: pass a usage object directly
+  if (typeof inputOrUsage === 'object' && inputOrUsage !== null) {
+    const { total } = calculateCost(inputOrUsage);
+    return formatCostValue(total);
+  }
+  // Legacy API: flat input/output token counts, default pricing
+  const { total } = calculateCost({
+    input_tokens: inputOrUsage || 0,
+    output_tokens: outputTokens || 0,
+  });
+  return formatCostValue(total);
 }

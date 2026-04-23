@@ -26,6 +26,7 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
         model,
         tools,
         _contextManager: contextManager,
+        _recentToolCalls: [],  // stagnation detection
     };
 
     async function* run(userMessage, options = {}) {
@@ -126,6 +127,25 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
             const toolResults = [];
 
             for (const block of toolUseBlocks) {
+                // ── Stagnation detection ──
+                // If the same tool+args have been called 3+ times, block and tell the model
+                const callSig = JSON.stringify({ name: block.name, input: block.input });
+                state._recentToolCalls.push(callSig);
+                // Keep only last 20 calls
+                if (state._recentToolCalls.length > 20) state._recentToolCalls.shift();
+                const repeatCount = state._recentToolCalls.filter(s => s === callSig).length;
+                if (repeatCount >= 3) {
+                    yield { type: 'stagnation', tool: block.name, count: repeatCount };
+                    toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: block.id,
+                        content: `STAGNATION DETECTED: Tool "${block.name}" called ${repeatCount} times with identical arguments. ` +
+                                 `The previous calls already succeeded or the target does not exist. ` +
+                                 `Do NOT retry this call. Try a different approach or move on to the next step.`,
+                    });
+                    continue;
+                }
+
                 // Run pre-tool hooks
                 if (hooks) {
                     const hookResult = await hooks.runPreToolUse(block.name, block.input);
