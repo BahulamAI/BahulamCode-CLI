@@ -43,7 +43,7 @@ await test('listTools returns 14 tools', async () => {
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
-    assert.ok(result.content.includes('@axplusb/orca'));
+    assert.ok(result.content.includes('@devtarang/orca'));
 });
 
 // Test 3: read_file on missing file returns error

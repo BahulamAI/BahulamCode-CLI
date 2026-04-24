@@ -1,17 +1,17 @@
-# @axplusb/orca
+# @devtarang/orca
 
 Orca (Orchestration of Composable Agents) — AI coding agent CLI with hybrid local/remote multi-agent orchestration. Powered by the Tarang platform.
 
 ## Install
 
 ```bash
-npm install -g @axplusb/orca
+npm install -g @devtarang/orca
 ```
 
 Or run without installing:
 
 ```bash
-npx @axplusb/orca "add user authentication"
+npx @devtarang/orca "add user authentication"
 ```
 
 ## Quick Start
