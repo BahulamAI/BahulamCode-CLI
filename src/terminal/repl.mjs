@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
@@ -100,6 +101,7 @@ const COMMANDS = {
   '/review':   'Code review agent',
   '/architect':'Feature architect agent',
   '/safety':   'Show safety guardrail status',
+  '/revoke':   'Revoke auto-approvals',
   '/exit':     'Exit CLI',
 };
 
@@ -846,13 +848,26 @@ async function handleCommand(input, ctx) {
     case '/safety': {
       const { getSafetyRules } = await import('../core/safety.mjs');
       const rules = getSafetyRules();
+      const summary = ctx.approval.getSummary();
       process.stderr.write(`\n  ${c.bold('Safety Guardrails')} ${c.green('ACTIVE')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
+      process.stderr.write(`  ${c.gray('Approval mode:')}  ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.gray('Approved:')}       ${summary.approved}  ${c.gray('Denied:')} ${summary.denied}\n`);
       process.stderr.write(`  ${c.gray('Protected files:')} ${rules.protectedNames.join(', ')}\n`);
       process.stderr.write(`  ${c.gray('Source dirs:')}     ${rules.sourceDirs.join(', ')}\n`);
       process.stderr.write(`  ${c.gray('Blocked patterns:')} ${rules.blockedPatterns}\n`);
       process.stderr.write(`  ${c.gray('High-risk patterns:')} ${rules.highRiskPatterns}\n`);
       process.stderr.write(`  ${c.gray('Ops blocked:')}     ${session.blockedOps}\n\n`);
+      return;
+    }
+
+    case '/revoke': {
+      const wasActive = ctx.approval.revoke();
+      if (wasActive) {
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto-approvals revoked. All tool calls will prompt again.')}\n`);
+      } else {
+        process.stderr.write(`  ${c.gray('No auto-approvals were active.')}\n`);
+      }
       return;
     }
 
@@ -917,10 +932,13 @@ export async function startTerminalRepl() {
   const toolExecutor = createToolExecutor({ retriever });
   const approval = new ApprovalManager({ autoApprove: false });
 
+  // Local JSONL writer — writes cc-lens compatible session data to ~/.orca/
+  const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter };
 
   printBanner(auth);
 
@@ -1021,6 +1039,10 @@ export async function startTerminalRepl() {
     session.turns++;
     session.toolCalls = 0;
 
+    // Local JSONL: write user turn + history
+    jsonlWriter.writeUserTurn(input);
+    jsonlWriter.writeHistory(input);
+
     const creds = auth.loadCredentials();
     if (!creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
@@ -1044,6 +1066,70 @@ export async function startTerminalRepl() {
 
     let assistantContent = '';
 
+    // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
+    let executionPaused = false;
+    let keypressCleanup = null;
+    let execListenerActive = false;
+
+    if (process.stdin.isTTY) {
+      rl.pause();
+      const wasRaw = process.stdin.isRaw;
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      execListenerActive = true;
+
+      const onData = (data) => {
+        if (!execListenerActive) return; // paused for approval menu
+        const bytes = [...data];
+
+        // Esc key (single byte 0x1b, not part of arrow sequence)
+        if (bytes.length === 1 && bytes[0] === 0x1b) {
+          stopSpinner();
+          process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelling...')}\n`);
+          client.cancel();
+          return;
+        }
+
+        // Space — toggle pause/resume
+        if (bytes.length === 1 && bytes[0] === 0x20) {
+          if (executionPaused) {
+            executionPaused = false;
+            process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
+            client.resume();
+          } else {
+            executionPaused = true;
+            stopSpinner();
+            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
+            client.pause();
+          }
+          return;
+        }
+
+        // Ctrl+C during execution
+        if (bytes[0] === 0x03) {
+          stopSpinner();
+          client.cancel();
+          process.exit(0);
+        }
+      };
+
+      process.stdin.on('data', onData);
+
+      // Let approval manager pause/resume this listener
+      approval.setExecutionHooks({
+        onPause: () => { execListenerActive = false; },
+        onResume: () => { execListenerActive = true; },
+      });
+
+      keypressCleanup = () => {
+        process.stdin.removeListener('data', onData);
+        process.stdin.setRawMode(wasRaw || false);
+        execListenerActive = false;
+        approval.setExecutionHooks({}); // clear hooks
+        rl.resume();
+      };
+    }
+
     try {
       startContentStream();
 
@@ -1056,6 +1142,31 @@ export async function startTerminalRepl() {
         if (event.type === 'content' || event.type === 'content_partial') {
           const text = event.data?.text || '';
           if (text) assistantContent = text;
+          // Local JSONL: accumulate content
+          jsonlWriter.accumulateContent(text);
+        }
+
+        // Local JSONL: capture session ID from backend
+        if (event.type === 'session_info' && event.data?.session_id) {
+          jsonlWriter.setSessionId(event.data.session_id);
+        }
+
+        // Local JSONL: accumulate tool calls
+        if (event.type === 'tool_call' || event.type === 'tool_request') {
+          const d = event.data || {};
+          jsonlWriter.accumulateToolCall(d.call_id || d.request_id, d.tool, d.args);
+        }
+
+        // Local JSONL: record tool results
+        if (event.type === 'tool_done' || event.type === 'tool_result') {
+          const d = event.data || {};
+          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false);
+        }
+
+        // Local JSONL: flush assistant turn on complete
+        if (event.type === 'complete') {
+          jsonlWriter.setTurnUsage(event.data?.usage, session.model);
+          jsonlWriter.flushAssistantTurn();
         }
       }
 
@@ -1064,6 +1175,9 @@ export async function startTerminalRepl() {
       inPlace('');
       flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
+    } finally {
+      // Clean up execution keypress listener
+      if (keypressCleanup) keypressCleanup();
     }
 
     if (assistantContent) {
@@ -1073,8 +1187,9 @@ export async function startTerminalRepl() {
     showPrompt();
   });
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
     stopSpinner();
+    await jsonlWriter.close();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);
     process.exit(0);
   });
