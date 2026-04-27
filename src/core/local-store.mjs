@@ -10,8 +10,45 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as readline from 'node:readline';
 
-const ORCA_DIR = path.join(os.homedir(), '.orca');
+const ORCA_DIR = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
 const PROJECTS_DIR = path.join(ORCA_DIR, 'projects');
+
+function normalizeBlock(block) {
+  if (!block || typeof block !== 'object') {
+    return { type: 'unknown', value: String(block ?? '') };
+  }
+  if (block.type === 'text') {
+    return { type: 'text', text: block.text || '' };
+  }
+  if (block.type === 'tool_use') {
+    return {
+      type: 'tool_use',
+      id: block.id || null,
+      name: block.name || 'unknown',
+      input: block.input || {},
+    };
+  }
+  if (block.type === 'tool_result') {
+    return {
+      type: 'tool_result',
+      tool_use_id: block.tool_use_id || null,
+      content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || ''),
+      is_error: !!block.is_error,
+    };
+  }
+  return { ...block };
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map(normalizeBlock);
+  if (content == null) return '';
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}
 
 /**
  * List all session JSONL files across all projects.
@@ -39,6 +76,10 @@ function listSessionFiles() {
   } catch { /* projects dir may not exist yet */ }
   results.sort((a, b) => b.mtime - a.mtime);
   return results;
+}
+
+function findSessionFile(sessionId) {
+  return listSessionFiles().find((entry) => entry.sessionId === sessionId) || null;
 }
 
 /**
@@ -148,6 +189,52 @@ export async function getRecentSessions(n = 10) {
 }
 
 /**
+ * Return normalized entries for a single session transcript.
+ * @param {string} sessionId
+ */
+export async function getSessionDetail(sessionId) {
+  const file = findSessionFile(sessionId);
+  if (!file) return null;
+
+  const entries = [];
+  const fileStream = fs.createReadStream(file.filePath, { encoding: 'utf-8' });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const message = obj.message || {};
+    entries.push({
+      type: obj.type || null,
+      timestamp: obj.timestamp || null,
+      cwd: obj.cwd || null,
+      role: message.role || null,
+      model: message.model || null,
+      usage: message.usage || null,
+      content: normalizeMessageContent(message.content),
+      uuid: obj.uuid || null,
+      parentUuid: obj.parentUuid || null,
+    });
+  }
+
+  const meta = await parseSessionMeta(file.filePath);
+  return {
+    sessionId: file.sessionId,
+    slug: file.slug,
+    filePath: file.filePath,
+    mtime: file.mtime,
+    meta,
+    entries,
+  };
+}
+
+/**
  * Aggregate stats across sessions within a date range.
  * @param {number} days — look back this many days (0 = all time)
  */
@@ -227,4 +314,12 @@ export function getHistory(n = 50) {
   } catch {
     return [];
   }
+}
+
+export function getStorePaths() {
+  return {
+    orcaDir: ORCA_DIR,
+    projectsDir: PROJECTS_DIR,
+    historyPath: path.join(ORCA_DIR, 'history.jsonl'),
+  };
 }

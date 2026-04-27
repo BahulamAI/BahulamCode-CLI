@@ -17,7 +17,7 @@ import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
 
-const ORCA_DIR = path.join(os.homedir(), '.orca');
+const ORCA_DIR = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
 const FLUSH_INTERVAL_MS = 500;
 
 /**
@@ -27,6 +27,17 @@ const FLUSH_INTERVAL_MS = 500;
  */
 function sanitizePath(p) {
   return p.replace(/\//g, '-').replace(/^-/, '-');
+}
+
+function normalizeToolResultContent(output) {
+  if (typeof output === 'string') return output;
+  if (output == null) return '';
+  try {
+    const serialized = JSON.stringify(output);
+    return typeof serialized === 'string' ? serialized : String(output);
+  } catch {
+    return String(output);
+  }
 }
 
 export class JsonlWriter {
@@ -47,6 +58,7 @@ export class JsonlWriter {
     // Write buffer
     this._buffer = [];
     this._flushTimer = null;
+    this._flushPromise = null;
     this._transcriptPath = null; // set when sessionId is known
     this._ready = false;
 
@@ -139,7 +151,7 @@ export class JsonlWriter {
   recordToolResult(callId, output, isError) {
     this._turnToolResults.push({
       tool_use_id: callId,
-      content: typeof output === 'string' ? output : JSON.stringify(output),
+      content: normalizeToolResultContent(output),
       is_error: !!isError,
     });
   }
@@ -250,6 +262,9 @@ export class JsonlWriter {
       this._flushTimer = null;
     }
     await this._flush();
+    if (this._flushPromise) {
+      await this._flushPromise;
+    }
   }
 
   // ── Internal ──
@@ -274,20 +289,35 @@ export class JsonlWriter {
       clearTimeout(this._flushTimer);
       this._flushTimer = null;
     }
-    if (this._buffer.length === 0) return;
+    if (this._buffer.length === 0) {
+      return this._flushPromise;
+    }
     if (!this._transcriptPath) return; // no session ID yet, keep buffered
 
     const lines = this._buffer.join('\n') + '\n';
     this._buffer = [];
-    try {
-      await fs.promises.appendFile(this._transcriptPath, lines, { mode: 0o600 });
-    } catch (err) {
-      // If directory was deleted, try re-creating
+
+    const pending = this._flushPromise || Promise.resolve();
+    const writePromise = pending.then(async () => {
       try {
-        await this._ensureDirAsync();
         await fs.promises.appendFile(this._transcriptPath, lines, { mode: 0o600 });
       } catch {
-        // silent — local logging is best-effort
+        // If directory was deleted, try re-creating
+        try {
+          await this._ensureDirAsync();
+          await fs.promises.appendFile(this._transcriptPath, lines, { mode: 0o600 });
+        } catch {
+          // silent — local logging is best-effort
+        }
+      }
+    });
+
+    this._flushPromise = writePromise;
+    try {
+      await writePromise;
+    } finally {
+      if (this._flushPromise === writePromise) {
+        this._flushPromise = null;
       }
     }
   }

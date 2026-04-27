@@ -178,97 +178,10 @@ async function executeInstruction(executor, instruction, formatter, sessionMgr) 
 
 // ── REPL ────────────────────────────────────────────────────
 
-async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
-    const readline = await import('node:readline');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: '\x1b[36morca>\x1b[0m ' });
-    const ctx = { formatter, auth, model: null, sessionMgr };
+// Inline REPL removed — now delegates to startTerminalRepl() from terminal/repl.mjs
+// which has full markdown rendering, turn summaries, cost display, and ANSI UI.
 
-    // Conversation history — accumulates across turns in this REPL session
-    const conversationHistory = [];
-
-    // Branded startup
-    printBanner();
-    printProjectInfo(VERSION);
-    process.stderr.write('\n');
-
-    // Show auth status on startup
-    const creds = auth.loadCredentials();
-    printAuthStatus(creds);
-
-    // Guided first-run: prompt login if not authenticated
-    if (!creds.token && !creds.openRouterKey && !creds.anthropicKey) {
-        process.stderr.write('\x1b[33mFirst time? Get started:\x1b[0m\n');
-        process.stderr.write('  1. \x1b[36morca login\x1b[0m              Authenticate via GitHub\n');
-        process.stderr.write('  2. \x1b[36morca config -k KEY\x1b[0m     Set your OpenRouter API key\n');
-        process.stderr.write('  3. \x1b[36morca "your instruction"\x1b[0m Start coding!\n');
-        process.stderr.write('\n');
-    }
-
-    printHints();
-    rl.prompt();
-
-    rl.on('line', async (line) => {
-        const input = line.trim();
-        if (!input) { rl.prompt(); return; }
-        if (input.startsWith('/')) {
-            if (input === '/clear') {
-                conversationHistory.length = 0;
-                process.stderr.write('\x1b[2mConversation cleared.\x1b[0m\n');
-                rl.prompt();
-                return;
-            }
-            handleSlashCommand(input, ctx);
-            rl.prompt();
-            return;
-        }
-
-        try {
-            // Add user message to history
-            conversationHistory.push({ role: 'user', content: input });
-
-            const exec = await createExecutor(input, conversationHistory);
-            let assistantContent = '';
-            for await (const event of exec) {
-                formatter.render(event);
-                if (event.type === 'session_info') sessionMgr.setSessionInfo(event.data);
-                if (event.type === 'tool_call' || event.type === 'tool_request') sessionMgr.recordToolCall(event.data?.tool);
-                if (event.type === 'complete') sessionMgr.complete(event.data?.summary);
-                if (event.type === 'error' && event.data?.fatal) sessionMgr.fail(event.data?.message);
-                if (event.type === 'cancelled') sessionMgr.cancel();
-                if (event.type === 'paused') sessionMgr.pause();
-                // Capture assistant response for history
-                if (event.type === 'content' || event.type === 'content_partial') {
-                    const text = event.data?.text || '';
-                    if (text && text !== assistantContent) assistantContent = text;
-                }
-            }
-
-            // Add assistant response to history
-            if (assistantContent) {
-                conversationHistory.push({ role: 'assistant', content: assistantContent });
-            }
-
-            // Reset formatter for next turn
-            formatter.toolCount = 0;
-            formatter.toolCalls = [];
-            formatter.changes = [];
-            formatter._hasContent = false;
-            formatter._lastContent = '';
-            formatter._completed = false;
-            formatter._seenCallIds = new Set();
-            formatter._spinnerFrame = 0;
-        } catch (err) {
-            process.stderr.write(`\x1b[31mError: ${err.message}\x1b[0m\n`);
-        }
-        process.stdout.write('\n');
-        rl.prompt();
-    });
-
-    rl.on('close', () => {
-        printGoodbye();
-        process.exit(0);
-    });
-}
+import { startTerminalRepl } from './terminal/repl.mjs';
 
 // ── Main ────────────────────────────────────────────────────
 
@@ -449,7 +362,7 @@ async function main() {
         process.exit(0);
     }
 
-    await startRepl(createExecutor, formatter, sessionMgr, auth, args);
+    await startTerminalRepl();
 }
 
 main().catch(err => { process.stderr.write(`\x1b[31mFatal: ${err.message}\x1b[0m\n`); process.exit(1); });
