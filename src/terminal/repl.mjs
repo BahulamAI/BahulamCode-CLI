@@ -363,9 +363,11 @@ function stopSpinner() {
 
 let _streamBuffer = '';
 let _streamTimer = null;
+let _renderedContentThisTurn = false;
 
 function startContentStream() {
   _streamBuffer = '';
+  _renderedContentThisTurn = false;
   stopSpinner();
 }
 
@@ -388,6 +390,7 @@ function flushContent() {
     process.stdout.write(`  ${line}\n`);
   }
   _streamBuffer = '';
+  _renderedContentThisTurn = true;
 }
 
 // ── Event Renderer ──
@@ -420,6 +423,7 @@ function renderEvent(event) {
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
+        _renderedContentThisTurn = true;
       }
       break;
     }
@@ -572,6 +576,15 @@ function renderEvent(event) {
     case 'complete': {
       stopSpinner();
       flushContent();
+
+      const summary = data?.summary || '';
+      if (summary && !_renderedContentThisTurn) {
+        const rendered = renderMarkdown(summary);
+        for (const line of rendered.split('\n')) {
+          process.stdout.write(`  ${line}\n`);
+        }
+        _renderedContentThisTurn = true;
+      }
 
       // Update session token counts
       const usage = data?.usage;
