@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
@@ -28,7 +29,9 @@ import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
 
-const VERSION = '2.2.1';
+import { createRequire } from 'node:module';
+const __require = createRequire(import.meta.url);
+const VERSION = __require('../../package.json').version;
 
 // ── Safe CWD ──
 // If the working directory gets deleted (by a rogue tool call),
@@ -71,6 +74,7 @@ const session = {
   blockedOps: 0,       // safety guardrail blocks
   delegations: [],     // agent delegation events: { from, to, time }
   phases: [],          // phase history: { name, time }
+  inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
   filesChanged: [],    // files modified this session
   lastTurnDuration: 0,
   costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
@@ -97,6 +101,7 @@ const COMMANDS = {
   '/review':   'Code review agent',
   '/architect':'Feature architect agent',
   '/safety':   'Show safety guardrail status',
+  '/revoke':   'Revoke auto-approvals',
   '/exit':     'Exit CLI',
 };
 
@@ -107,9 +112,20 @@ function printBanner(auth) {
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
 
+  const art = [
+    '   ██████╗ ██████╗  ██████╗ █████╗',
+    '  ██╔═══██╗██╔══██╗██╔════╝██╔══██╗',
+    '  ██║   ██║██████╔╝██║     ███████║',
+    '  ██║   ██║██╔══██╗██║     ██╔══██║',
+    '  ╚██████╔╝██║  ██║╚██████╗██║  ██║',
+    '   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝',
+  ];
   process.stderr.write('\n');
-  process.stderr.write(`  ${c.bold(c.cyan('orca'))} ${c.gray('v' + VERSION)}  ${c.dim('Orchestration of Composable Agents')}\n`);
-  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n`);
+  for (const line of art) {
+    process.stderr.write(c.cyan(line) + '\n');
+  }
+  process.stderr.write('\n');
+  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n`);
   process.stderr.write('\n');
 }
 
@@ -268,7 +284,8 @@ function renderToolCall(data) {
   }
 
   const detailStr = detail ? `  ${c.gray(detail)}` : '';
-  process.stderr.write(`  ${icon} ${c.dim(desc)}${detailStr}\n`);
+  const indent = session.inSubAgent ? '     ' : '  ';
+  process.stderr.write(`${indent}${icon} ${c.dim(desc)}${detailStr}\n`);
 }
 
 /**
@@ -276,16 +293,17 @@ function renderToolCall(data) {
  */
 function renderToolResult(data) {
   if (!data) return;
+  const indent = session.inSubAgent ? '     ' : '  ';
 
   if (data._blocked) {
     session.blockedOps++;
-    process.stderr.write(`  ${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
+    process.stderr.write(`${indent}${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
     return;
   }
 
   if (data.success === false) {
     const msg = (data.output || data.message || 'Failed').slice(0, 120);
-    process.stderr.write(`  ${c.red('✗ ' + msg)}\n`);
+    process.stderr.write(`${indent}${c.red('✗ ' + msg)}\n`);
     return;
   }
 
@@ -293,7 +311,7 @@ function renderToolResult(data) {
   if (data._tool === 'write_file' || data._tool === 'edit_file') {
     const lint = data.lint;
     if (lint) {
-      process.stderr.write(`  ${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
+      process.stderr.write(`${indent}${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
     }
   }
 }
@@ -491,6 +509,47 @@ function renderEvent(event) {
         process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
+      break;
+    }
+
+    // ── Sub-Agent Activity ──
+
+    case 'sub_agent_start': {
+      stopSpinner();
+      session.inSubAgent = true;
+      const agentType = data?.type || 'sub-agent';
+      const model = data?.model || '';
+      const query = data?.query || '';
+      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
+      process.stderr.write(`\n  ${icon} ${c.bold(c.cyan(`${agentType} agent`))} ${c.dim('started')}\n`);
+      if (model) process.stderr.write(`     ${c.gray('model:')} ${c.dim(model)}\n`);
+      if (query) process.stderr.write(`     ${c.gray('query:')} ${c.dim(query)}\n`);
+      startSpinner(`${agentType}: working...`);
+      break;
+    }
+
+    case 'sub_agent_tool': {
+      // No separate display — the regular tool_call event shows full detail
+      // indented under the sub-agent block. Just update the spinner text.
+      const agentType = data?.type || 'sub-agent';
+      const tool = data?.tool || '';
+      if (tool) updateSpinner(`${agentType} → ${tool}`);
+      break;
+    }
+
+    case 'sub_agent_complete': {
+      stopSpinner();
+      session.inSubAgent = false;
+      const agentType = data?.type || 'sub-agent';
+      const model = data?.model || '';
+      const resultLen = data?.result_length || 0;
+      const usage = data?.usage || {};
+      const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const parts = [];
+      if (resultLen > 0) parts.push(`${resultLen} chars`);
+      if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
+      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
+      process.stderr.write(`  ${icon} ${c.green('✓')} ${c.dim(`${agentType} agent complete`)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n\n`);
       break;
     }
 
@@ -789,13 +848,26 @@ async function handleCommand(input, ctx) {
     case '/safety': {
       const { getSafetyRules } = await import('../core/safety.mjs');
       const rules = getSafetyRules();
+      const summary = ctx.approval.getSummary();
       process.stderr.write(`\n  ${c.bold('Safety Guardrails')} ${c.green('ACTIVE')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
+      process.stderr.write(`  ${c.gray('Approval mode:')}  ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.gray('Approved:')}       ${summary.approved}  ${c.gray('Denied:')} ${summary.denied}\n`);
       process.stderr.write(`  ${c.gray('Protected files:')} ${rules.protectedNames.join(', ')}\n`);
       process.stderr.write(`  ${c.gray('Source dirs:')}     ${rules.sourceDirs.join(', ')}\n`);
       process.stderr.write(`  ${c.gray('Blocked patterns:')} ${rules.blockedPatterns}\n`);
       process.stderr.write(`  ${c.gray('High-risk patterns:')} ${rules.highRiskPatterns}\n`);
       process.stderr.write(`  ${c.gray('Ops blocked:')}     ${session.blockedOps}\n\n`);
+      return;
+    }
+
+    case '/revoke': {
+      const wasActive = ctx.approval.revoke();
+      if (wasActive) {
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto-approvals revoked. All tool calls will prompt again.')}\n`);
+      } else {
+        process.stderr.write(`  ${c.gray('No auto-approvals were active.')}\n`);
+      }
       return;
     }
 
@@ -860,28 +932,65 @@ export async function startTerminalRepl() {
   const toolExecutor = createToolExecutor({ retriever });
   const approval = new ApprovalManager({ autoApprove: false });
 
+  // Local JSONL writer — writes cc-lens compatible session data to ~/.orca/
+  const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter };
 
   printBanner(auth);
 
-  // Build BM25 index + project skeleton in background (non-blocking)
+  // ── Initialization with progress ──
+  // BM25 indexing is CPU-bound and blocks the event loop, so setInterval
+  // spinners won't tick during it. Instead, show a static "Initializing..."
+  // message, then yield to the event loop between phases so the spinner runs.
   let projectSkeleton = '';
-  retriever.buildIndex()
-    .then(({ fileCount, chunkCount }) => {
-      process.stderr.write(`  ${c.dim(`Indexed ${fileCount} files (${chunkCount} chunks)`)}\n`);
-      // Build skeleton after index (uses same file scan)
-      projectSkeleton = buildProjectSkeleton(safeCwd());
-      if (projectSkeleton) {
-        process.stderr.write(`  ${c.dim(`Project skeleton ready`)}\n`);
-      }
-    })
-    .catch(() => { /* index build failed — search_code falls back to grep */ });
 
-  // Fetch user profile in background
-  fetchUser(ctx);
+  // Phase 1: Show immediate feedback
+  process.stderr.write(`  ${c.cyan('⠋')} ${c.dim('Initializing...')}\r`);
+
+  // Fetch user in parallel (network I/O, won't block event loop)
+  const userPromise = fetchUser(ctx);
+
+  // Phase 2: BM25 index — CPU-bound, blocks event loop.
+  // Wrap in a microtask break so the initial message renders first.
+  const indexResult = await new Promise((resolve) => {
+    // Let the event loop flush stderr before blocking
+    setImmediate(async () => {
+      try {
+        process.stderr.write(`\r  ${c.cyan('⠹')} ${c.dim('Indexing project files...')}${' '.repeat(20)}\r`);
+        const result = await retriever.buildIndex();
+        resolve(result);
+      } catch {
+        resolve({ fileCount: 0, chunkCount: 0 });
+      }
+    });
+  });
+
+  // Phase 3: Build skeleton (fast, synchronous)
+  process.stderr.write(`\r  ${c.cyan('⠼')} ${c.dim('Building project skeleton...')}${' '.repeat(20)}\r`);
+  await new Promise(r => setImmediate(r)); // yield so message renders
+  projectSkeleton = buildProjectSkeleton(safeCwd());
+
+  // Wait for user fetch
+  await userPromise;
+
+  // Clear the spinner line
+  process.stderr.write(`\r${' '.repeat(60)}\r`);
+
+  // Show init summary
+  if (indexResult.fileCount > 0) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Indexed ${indexResult.fileCount} files (${indexResult.chunkCount} chunks)`)}\n`);
+  }
+  if (projectSkeleton) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Project skeleton ready')}\n`);
+  }
+  if (session.user) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
+  }
+  process.stderr.write(`\n  ${c.dim('Press')} ${c.cyan('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
   const PROMPT = `${c.cyan('orca')} ${c.dim('›')} `;
 
@@ -930,6 +1039,10 @@ export async function startTerminalRepl() {
     session.turns++;
     session.toolCalls = 0;
 
+    // Local JSONL: write user turn + history
+    jsonlWriter.writeUserTurn(input);
+    jsonlWriter.writeHistory(input);
+
     const creds = auth.loadCredentials();
     if (!creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
@@ -953,6 +1066,70 @@ export async function startTerminalRepl() {
 
     let assistantContent = '';
 
+    // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
+    let executionPaused = false;
+    let keypressCleanup = null;
+    let execListenerActive = false;
+
+    if (process.stdin.isTTY) {
+      rl.pause();
+      const wasRaw = process.stdin.isRaw;
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      execListenerActive = true;
+
+      const onData = (data) => {
+        if (!execListenerActive) return; // paused for approval menu
+        const bytes = [...data];
+
+        // Esc key (single byte 0x1b, not part of arrow sequence)
+        if (bytes.length === 1 && bytes[0] === 0x1b) {
+          stopSpinner();
+          process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelling...')}\n`);
+          client.cancel();
+          return;
+        }
+
+        // Space — toggle pause/resume
+        if (bytes.length === 1 && bytes[0] === 0x20) {
+          if (executionPaused) {
+            executionPaused = false;
+            process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
+            client.resume();
+          } else {
+            executionPaused = true;
+            stopSpinner();
+            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
+            client.pause();
+          }
+          return;
+        }
+
+        // Ctrl+C during execution
+        if (bytes[0] === 0x03) {
+          stopSpinner();
+          client.cancel();
+          process.exit(0);
+        }
+      };
+
+      process.stdin.on('data', onData);
+
+      // Let approval manager pause/resume this listener
+      approval.setExecutionHooks({
+        onPause: () => { execListenerActive = false; },
+        onResume: () => { execListenerActive = true; },
+      });
+
+      keypressCleanup = () => {
+        process.stdin.removeListener('data', onData);
+        process.stdin.setRawMode(wasRaw || false);
+        execListenerActive = false;
+        approval.setExecutionHooks({}); // clear hooks
+        rl.resume();
+      };
+    }
+
     try {
       startContentStream();
 
@@ -965,6 +1142,31 @@ export async function startTerminalRepl() {
         if (event.type === 'content' || event.type === 'content_partial') {
           const text = event.data?.text || '';
           if (text) assistantContent = text;
+          // Local JSONL: accumulate content
+          jsonlWriter.accumulateContent(text);
+        }
+
+        // Local JSONL: capture session ID from backend
+        if (event.type === 'session_info' && event.data?.session_id) {
+          jsonlWriter.setSessionId(event.data.session_id);
+        }
+
+        // Local JSONL: accumulate tool calls
+        if (event.type === 'tool_call' || event.type === 'tool_request') {
+          const d = event.data || {};
+          jsonlWriter.accumulateToolCall(d.call_id || d.request_id, d.tool, d.args);
+        }
+
+        // Local JSONL: record tool results
+        if (event.type === 'tool_done' || event.type === 'tool_result') {
+          const d = event.data || {};
+          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false);
+        }
+
+        // Local JSONL: flush assistant turn on complete
+        if (event.type === 'complete') {
+          jsonlWriter.setTurnUsage(event.data?.usage, session.model);
+          jsonlWriter.flushAssistantTurn();
         }
       }
 
@@ -973,6 +1175,9 @@ export async function startTerminalRepl() {
       inPlace('');
       flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
+    } finally {
+      // Clean up execution keypress listener
+      if (keypressCleanup) keypressCleanup();
     }
 
     if (assistantContent) {
@@ -982,8 +1187,9 @@ export async function startTerminalRepl() {
     showPrompt();
   });
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
     stopSpinner();
+    await jsonlWriter.close();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);
     process.exit(0);
   });

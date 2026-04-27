@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @axplusb/orca v1.0.1 — Orca AI Coding Agent CLI
+ * @devtarang/orca v1.0.1 — Orca AI Coding Agent CLI
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
@@ -274,7 +274,7 @@ async function startRepl(createExecutor, formatter, sessionMgr, auth, args) {
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (args.version) { console.log(`@axplusb/orca ${VERSION}`); process.exit(0); }
+    if (args.version) { console.log(`@devtarang/orca ${VERSION}`); process.exit(0); }
     if (args.help) { printUsage(); process.exit(0); }
 
     const auth = new TarangAuth();
