@@ -181,6 +181,21 @@ function openBrowser(url) {
   }
 }
 
+export async function runSessionsCommand(args = []) {
+  const limit = parseNumber(readOption(args, '--limit', '20'), 20);
+  const sessions = getRecentSessions(limit);
+  process.stdout.write(formatSessionsReport(sessions, limit));
+}
+
+export async function runStatsCommand(args = []) {
+  const days = parseNumber(readOption(args, '--days', '30'), 30);
+  const stats = getSessionStats(days);
+  const tools = getToolBreakdown(days);
+  const models = getModelBreakdown(days);
+  const paths = getStorePaths();
+  process.stdout.write(formatStatsReport(stats, tools, models, days, paths));
+}
+
 export async function runHistoryCommand(args = []) {
   const limit = parseNumber(readOption(args, '--limit', '50'), 50);
   const history = getHistory(limit);
