@@ -24,6 +24,7 @@ export const COMMANDS = {
     '/cost':     { description: 'Show session cost', handler: cmdCost },
     '/config':   { description: 'Open settings in browser', handler: cmdConfig },
     '/login':    { description: 'Re-authenticate via browser', handler: cmdLogin },
+    '/refresh':  { description: 'Reload credentials from disk', handler: cmdRefresh },
     '/sync':     { description: 'Sync settings from web', handler: cmdSync },
     '/whoami':   { description: 'Show logged-in user', handler: cmdWhoami },
 };
@@ -178,6 +179,23 @@ function cmdLogin(ctx) {
             process.stderr.write(`\x1b[31m✗ Login failed: ${err.message}\x1b[0m\n`);
         });
     }
+}
+
+function cmdRefresh(ctx) {
+    if (!ctx.auth) {
+        process.stderr.write('\x1b[31mNo auth module available.\x1b[0m\n');
+        return;
+    }
+    // Force re-read from ~/.orca/config.json
+    ctx.auth._config = null;
+    const creds = ctx.auth.loadCredentials();
+    const GREEN = '\x1b[32m', DIM = '\x1b[2m', CYAN = '\x1b[36m', RESET = '\x1b[0m';
+    process.stderr.write(`\n${GREEN}✓ Credentials reloaded${RESET}\n`);
+    process.stderr.write(`  ${DIM}Auth:${RESET}     ${creds.token ? 'logged in' : 'not logged in'}\n`);
+    process.stderr.write(`  ${DIM}Gateway:${RESET}  ${creds.gatewayType}\n`);
+    process.stderr.write(`  ${DIM}Backend:${RESET}  ${creds.backendUrl}\n`);
+    if (creds.models?.orchestrator) process.stderr.write(`  ${DIM}Model:${RESET}    ${creds.models.orchestrator}\n`);
+    process.stderr.write(`\n  ${DIM}Next prompt will use updated credentials.${RESET}\n\n`);
 }
 
 function cmdSync(ctx) {
