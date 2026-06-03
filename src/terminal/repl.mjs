@@ -106,6 +106,8 @@ const COMMANDS = {
   '/architect':'Feature architect agent',
   '/safety':   'Show safety guardrail status',
   '/revoke':   'Revoke auto-approvals',
+  '/resume':   'Resume a previous session',
+  '/sessions': 'List resumable sessions',
   '/exit':     'Exit CLI',
 };
 
@@ -701,6 +703,7 @@ async function handleCommand(input, ctx) {
 
       process.stderr.write(`\n  ${c.bold('Session')}\n`);
       process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
+      process.stderr.write(`  ${c.dim('ID')}           ${session.id || c.dim('(not assigned yet)')}\n`);
       process.stderr.write(`  ${c.dim('User')}         ${session.user?.github_username || '—'}\n`);
       process.stderr.write(`  ${c.dim('Model')}        ${session.model || 'backend default'}\n`);
       if (env === 'local') {
@@ -890,6 +893,99 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/sessions': {
+      const resumable = ctx.sessionMgr.listResumable(10);
+      if (resumable.length === 0) {
+        process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Resumable Sessions')}\n`);
+      process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+      for (const s of resumable) {
+        const date = s.startedAt ? new Date(s.startedAt).toLocaleDateString() : '?';
+        const instr = s.instruction ? s.instruction.slice(0, 40) : '(no instruction)';
+        process.stderr.write(`  ${c.cyan(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+      }
+      process.stderr.write(`\n  ${c.dim('Resume with:')} orca --resume <sessionId>\n`);
+      return;
+    }
+
+    case '/resume': {
+      const parts = input.split(/\s+/);
+      const targetId = parts[1]; // /resume <sessionId>
+
+      if (targetId) {
+        // Direct resume by ID
+        const messages = ctx.sessionMgr.loadMessages(targetId);
+        if (messages.length === 0) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + targetId)}\n`);
+          return;
+        }
+        session.history = messages;
+        session.id = targetId;
+        session.turns = Math.floor(messages.length / 2);
+        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}\n`);
+        return;
+      }
+
+      // No ID given — list sessions and let user pick by number
+      const resumable = ctx.sessionMgr.listResumable(10);
+      if (resumable.length === 0) {
+        process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
+        return;
+      }
+
+      process.stderr.write(`\n  ${c.bold('Pick a session to resume:')}\n\n`);
+      for (let i = 0; i < resumable.length; i++) {
+        const s = resumable[i];
+        const date = s.startedAt ? new Date(s.startedAt).toLocaleString() : '?';
+        const instr = s.instruction ? s.instruction.slice(0, 45) : '(no instruction)';
+        const num = `[${i + 1}]`;
+        process.stderr.write(`  ${c.cyan(num)} ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+      }
+      process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
+
+      // Read single key for selection
+      const rl = ctx._rl || null;
+      if (rl) rl.pause();
+      const choice = await new Promise((resolve) => {
+        if (!process.stdin.isTTY) { resolve(null); return; }
+        const wasRaw = process.stdin.isRaw;
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.once('data', (data) => {
+          process.stdin.setRawMode(wasRaw || false);
+          if (rl) rl.resume();
+          const bytes = [...data];
+          if (bytes[0] === 0x1b || bytes[0] === 0x03) { resolve(null); return; }
+          const num = parseInt(data.toString(), 10);
+          resolve(isNaN(num) ? null : num);
+        });
+      });
+
+      if (!choice || choice < 1 || choice > resumable.length) {
+        process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
+        return;
+      }
+
+      const picked = resumable[choice - 1];
+      const messages = ctx.sessionMgr.loadMessages(picked.sessionId);
+      if (messages.length === 0) {
+        process.stderr.write(`\n  ${c.yellow('!')} ${c.dim('No messages in that session.')}\n`);
+        return;
+      }
+
+      session.history = messages;
+      session.id = picked.sessionId;
+      session.turns = Math.floor(messages.length / 2);
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}`);
+      if (picked.instruction) {
+        process.stderr.write(` ${c.dim('—')} ${c.dim(picked.instruction.slice(0, 50))}`);
+      }
+      process.stderr.write('\n');
+      return;
+    }
+
     case '/agents':
       process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
@@ -1059,6 +1155,7 @@ export async function startTerminalRepl() {
 
   // Give approval manager access to readline for pause/resume
   approval.setReadline(rl);
+  ctx._rl = rl; // expose to /resume command for readline pause
 
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
