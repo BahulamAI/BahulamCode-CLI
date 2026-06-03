@@ -5,11 +5,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { projectHooksPath, globalHooksPath } from './paths.mjs';
 
 export class HooksManager {
     constructor(projectDir = process.cwd()) {
-        this.projectHooksPath = path.join(projectDir, '.orca', 'hooks.json');
-        this.globalHooksPath = path.join(process.env.HOME || '', '.orca', 'hooks.json');
+        this.projectHooksPath = projectHooksPath(projectDir);
+        this.globalHooksPath = globalHooksPath();
         this.hooks = this._loadHooks();
         this.firedHooks = [];
     }

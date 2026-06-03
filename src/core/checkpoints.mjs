@@ -3,12 +3,13 @@
  *
  * Before any file edit, a checkpoint is created containing the
  * original file content. The /undo command restores the last checkpoint.
- * Checkpoints are stored in .orca/checkpoints/
+ * Checkpoints are stored in ~/.orca/projects/{hash}/checkpoints/
  */
 
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { checkpointsDir } from './paths.mjs';
 
 export class CheckpointManager {
     /**
@@ -16,7 +17,7 @@ export class CheckpointManager {
      */
     constructor(baseDir = process.cwd()) {
         this.baseDir = baseDir;
-        this.checkpointDir = path.join(baseDir, '.orca', 'checkpoints');
+        this.checkpointDir = checkpointsDir(baseDir);
         this.history = []; // Stack of checkpoint IDs
         this.maxCheckpoints = 50;
     }
