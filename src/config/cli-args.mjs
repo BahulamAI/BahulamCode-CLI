@@ -30,6 +30,7 @@ export function parseArgs(args) {
         disallowedTools: null,
         resume: false,
         resumeSessionId: null,
+        headless: false,
         verbose: false,
         debug: false,
         showVersion: false,
@@ -91,6 +92,10 @@ export function parseArgs(args) {
                 break;
             }
 
+            case '--headless':
+                result.headless = true;
+                break;
+
             case '--verbose':
             case '-v':
                 result.verbose = true;
@@ -142,6 +147,7 @@ Options:
   --disallowedTools <tools>  Comma-separated list of denied tools
   --resume, -r [sessionId]   Resume last session (or specific session)
   --continue                 Alias for --resume
+  --headless                 Non-interactive mode: auto-approve, JSONL output
   --verbose, -v              Verbose output
   --debug, -d                Debug mode
   --version                  Show version

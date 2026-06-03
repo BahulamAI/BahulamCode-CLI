@@ -61,6 +61,8 @@ function safeCwd() {
 
 // ── Session State ──
 
+let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
+
 const session = {
   id: null,                  // set by backend on first turn via session_info event
   startTime: Date.now(),
@@ -561,7 +563,7 @@ function renderEvent(event) {
       if (data?.session_id) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
-        sessionMgr.setSessionInfo({ session_id: data.session_id });
+        if (_sessionMgr) _sessionMgr.setSessionInfo({ session_id: data.session_id });
       }
       if (data?.model) session.model = data.model;
       if (data?.user) session.user = { ...session.user, ...data.user };
@@ -952,6 +954,7 @@ export async function startTerminalRepl() {
 
   // Session manager — persists conversation messages to .orca/conversations/
   const sessionMgr = new SessionManager(safeCwd());
+  _sessionMgr = sessionMgr; // expose to renderEvent
 
   // Local JSONL writer — writes cc-lens compatible session data to ~/.orca/
   const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
