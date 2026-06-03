@@ -28,6 +28,8 @@ export function parseArgs(args) {
         maxTurns: null,
         allowedTools: null,
         disallowedTools: null,
+        resume: false,
+        resumeSessionId: null,
         verbose: false,
         debug: false,
         showVersion: false,
@@ -75,6 +77,19 @@ export function parseArgs(args) {
             case '--disallowedTools':
                 result.disallowedTools = args[++i]?.split(',').map(s => s.trim());
                 break;
+
+            case '--resume':
+            case '--continue':
+            case '-r': {
+                result.resume = true;
+                // Optional: --resume <sessionId>
+                const next = args[i + 1];
+                if (next && !next.startsWith('-')) {
+                    result.resumeSessionId = next;
+                    i++;
+                }
+                break;
+            }
 
             case '--verbose':
             case '-v':
@@ -125,6 +140,8 @@ Options:
   --max-turns <n>            Maximum conversation turns
   --allowedTools <tools>     Comma-separated list of allowed tools
   --disallowedTools <tools>  Comma-separated list of denied tools
+  --resume, -r [sessionId]   Resume last session (or specific session)
+  --continue                 Alias for --resume
   --verbose, -v              Verbose output
   --debug, -d                Debug mode
   --version                  Show version

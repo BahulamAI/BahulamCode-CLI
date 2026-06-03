@@ -28,6 +28,8 @@ import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
+import { SessionManager } from '../core/session-manager.mjs';
+import { parseArgs } from '../config/cli-args.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -556,7 +558,11 @@ function renderEvent(event) {
     }
 
     case 'session_info': {
-      if (data?.session_id) session.id = data.session_id;
+      if (data?.session_id) {
+        session.id = data.session_id;
+        // Track in session manager so conversations save to the right file
+        sessionMgr.setSessionInfo({ session_id: data.session_id });
+      }
       if (data?.model) session.model = data.model;
       if (data?.user) session.user = { ...session.user, ...data.user };
       break;
@@ -936,6 +942,7 @@ async function fetchUser(ctx) {
 export async function startTerminalRepl() {
   _cachedCwd = process.cwd(); // Cache startup CWD for recovery
 
+  const cliArgs = parseArgs(process.argv.slice(2));
   const auth = new TarangAuth();
 
   // BM25 retriever — indexes project files for search_code tool
@@ -943,13 +950,16 @@ export async function startTerminalRepl() {
   const toolExecutor = createToolExecutor({ retriever });
   const approval = new ApprovalManager({ autoApprove: false });
 
+  // Session manager — persists conversation messages to .orca/conversations/
+  const sessionMgr = new SessionManager(safeCwd());
+
   // Local JSONL writer — writes cc-lens compatible session data to ~/.orca/
   const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr };
 
   printBanner(auth);
 
@@ -1001,6 +1011,31 @@ export async function startTerminalRepl() {
   if (session.user) {
     process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
   }
+  // ── Resume previous session ──
+  if (cliArgs.resume) {
+    const lastSession = cliArgs.resumeSessionId
+        ? { sessionId: cliArgs.resumeSessionId }
+        : sessionMgr.getLastSession();
+
+    if (lastSession) {
+      const messages = sessionMgr.loadMessages(lastSession.sessionId);
+      if (messages.length > 0) {
+        session.history = messages;
+        session.id = lastSession.sessionId;
+        session.turns = Math.floor(messages.length / 2);
+        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messages.length} messages`)}`);
+        if (lastSession.instruction) {
+          process.stderr.write(` ${c.dim('—')} ${c.dim(lastSession.instruction.slice(0, 50))}`);
+        }
+        process.stderr.write('\n');
+      } else {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + lastSession.sessionId)}\n`);
+      }
+    } else {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
+    }
+  }
+
   process.stderr.write(`\n  ${c.dim('Press')} ${c.cyan('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
   const PROMPT = `${c.cyan('orca')} ${c.dim('›')} `;
@@ -1049,6 +1084,12 @@ export async function startTerminalRepl() {
     session.history.push({ role: 'user', content: input });
     session.turns++;
     session.toolCalls = 0;
+
+    // Start session tracking on first turn
+    if (session.turns === 1) {
+      sessionMgr.start(input);
+    }
+    sessionMgr.saveMessage('user', input);
 
     // Local JSONL: write user turn + history
     jsonlWriter.writeUserTurn(input);
@@ -1193,6 +1234,7 @@ export async function startTerminalRepl() {
 
     if (assistantContent) {
       session.history.push({ role: 'assistant', content: assistantContent });
+      sessionMgr.saveMessage('assistant', assistantContent);
     }
 
     showPrompt();
