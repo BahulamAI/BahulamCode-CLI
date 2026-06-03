@@ -1,14 +1,26 @@
 /**
- * Session Manager — T13: persist session state and history.
- * Saves to .orca/state.json and .orca/sessions/.
+ * Session Manager — persist session state, history, and conversation messages.
+ *
+ * Storage layout:
+ *   .orca/
+ *     state.json                        — current session metadata
+ *     sessions/
+ *       2026-06-03T21-30-00-000Z.json   — session metadata archive
+ *     conversations/
+ *       sess_abc123.jsonl               — conversation messages (JSONL)
+ *
+ * Messages are appended per-turn as JSONL for crash safety.
+ * --resume loads the last session's conversation back into memory.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 
 const ORCA_DIR = '.orca';
 const STATE_FILE = 'state.json';
 const SESSIONS_DIR = 'sessions';
+const CONVERSATIONS_DIR = 'conversations';
 const MAX_SESSIONS = 100;
 
 export class SessionManager {
@@ -17,12 +29,14 @@ export class SessionManager {
         this.orcaDir = path.join(projectDir, ORCA_DIR);
         this.statePath = path.join(this.orcaDir, STATE_FILE);
         this.sessionsDir = path.join(this.orcaDir, SESSIONS_DIR);
+        this.conversationsDir = path.join(this.orcaDir, CONVERSATIONS_DIR);
         this.currentState = null;
     }
 
     _ensureDirs() {
         if (!fs.existsSync(this.orcaDir)) fs.mkdirSync(this.orcaDir, { recursive: true });
         if (!fs.existsSync(this.sessionsDir)) fs.mkdirSync(this.sessionsDir, { recursive: true });
+        if (!fs.existsSync(this.conversationsDir)) fs.mkdirSync(this.conversationsDir, { recursive: true });
     }
 
     /** Start tracking a new session. */
@@ -36,6 +50,7 @@ export class SessionManager {
             job_id: null,
             session_id: null,
             tool_count: 0,
+            turn_count: 0,
             events: [],
         };
         this._writeState();
@@ -120,6 +135,134 @@ export class SessionManager {
                     return { file, status: 'unreadable' };
                 }
             });
+    }
+
+    // ── Conversation Persistence ──
+
+    /**
+     * Get the JSONL file path for a session's conversation.
+     * @param {string} [sessionId] - defaults to current session
+     */
+    _conversationPath(sessionId) {
+        const id = sessionId || this.currentState?.session_id || this.currentState?.task_id || 'unknown';
+        return path.join(this.conversationsDir, `${id}.jsonl`);
+    }
+
+    /**
+     * Append a message to the conversation JSONL file.
+     * Called after each user input and assistant response.
+     * @param {string} role - 'user' or 'assistant'
+     * @param {string} content - message content
+     * @param {object} [meta] - optional metadata (tokens, cost, tools)
+     */
+    saveMessage(role, content, meta = {}) {
+        if (!this.currentState) return;
+        this._ensureDirs();
+
+        const entry = {
+            role,
+            content,
+            timestamp: new Date().toISOString(),
+            turn: this.currentState.turn_count || 0,
+            ...meta,
+        };
+
+        const line = JSON.stringify(entry) + '\n';
+        fs.appendFileSync(this._conversationPath(), line);
+    }
+
+    /**
+     * Load all messages from a session's conversation file.
+     * @param {string} sessionId - session to load
+     * @returns {{ role: string, content: string }[]}
+     */
+    loadMessages(sessionId) {
+        const filePath = this._conversationPath(sessionId);
+        if (!fs.existsSync(filePath)) return [];
+
+        const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+        return lines.map(line => {
+            try {
+                const entry = JSON.parse(line);
+                return { role: entry.role, content: entry.content };
+            } catch {
+                return null;
+            }
+        }).filter(Boolean);
+    }
+
+    /**
+     * Get the most recent session ID that has a conversation file.
+     * @returns {{ sessionId: string, instruction: string, startedAt: string }|null}
+     */
+    getLastSession() {
+        // Check state.json first
+        const state = this.loadState();
+        if (state?.session_id) {
+            const convPath = this._conversationPath(state.session_id);
+            if (fs.existsSync(convPath)) {
+                return {
+                    sessionId: state.session_id,
+                    instruction: state.instruction || '',
+                    startedAt: state.started_at || '',
+                    status: state.status || 'unknown',
+                };
+            }
+        }
+
+        // Fall back to most recent conversation file
+        if (!fs.existsSync(this.conversationsDir)) return null;
+        const files = fs.readdirSync(this.conversationsDir)
+            .filter(f => f.endsWith('.jsonl'))
+            .sort()
+            .reverse();
+
+        if (files.length === 0) return null;
+        const sessionId = files[0].replace('.jsonl', '');
+
+        // Try to find matching session metadata
+        const sessions = this.listSessions(50);
+        const match = sessions.find(s => s.session_id === sessionId);
+
+        return {
+            sessionId,
+            instruction: match?.instruction || '',
+            startedAt: match?.started_at || '',
+            status: match?.status || 'unknown',
+        };
+    }
+
+    /**
+     * List sessions that have conversation history (resumable).
+     * @param {number} [limit=10]
+     * @returns {Array<{ sessionId, instruction, startedAt, messageCount }>}
+     */
+    listResumable(limit = 10) {
+        if (!fs.existsSync(this.conversationsDir)) return [];
+
+        const files = fs.readdirSync(this.conversationsDir)
+            .filter(f => f.endsWith('.jsonl'))
+            .sort()
+            .reverse()
+            .slice(0, limit);
+
+        return files.map(f => {
+            const sessionId = f.replace('.jsonl', '');
+            const convPath = path.join(this.conversationsDir, f);
+            const lineCount = fs.readFileSync(convPath, 'utf-8').split('\n').filter(Boolean).length;
+
+            // Find matching metadata
+            const sessions = this.listSessions(100);
+            const match = sessions.find(s => s.session_id === sessionId);
+
+            return {
+                sessionId,
+                instruction: match?.instruction || '',
+                startedAt: match?.started_at || '',
+                status: match?.status || 'completed',
+                messageCount: lineCount,
+            };
+        });
     }
 
     _writeState() {
