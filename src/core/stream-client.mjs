@@ -9,7 +9,7 @@
  * Phase 2: handles all 22 event types. Approval flow integrated.
  */
 
-import { sendCallback, sendSkippedCallback } from './callback-client.mjs';
+import { sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
 
 export const EVENT_TYPES = Object.freeze({
@@ -37,6 +37,10 @@ export const EVENT_TYPES = Object.freeze({
     PAUSED: 'paused',
     RESUMED: 'resumed',
     PAUSE_INSTRUCTION: 'pause_instruction',
+    // HITL approval events (from framework)
+    APPROVAL_REQUIRED: 'approval_required',
+    APPROVAL_GRANTED: 'approval_granted',
+    APPROVAL_DENIED: 'approval_denied',
 });
 
 export class TarangStreamClient {
@@ -120,7 +124,24 @@ export class TarangStreamClient {
                 this.sessionId = data.session_id;
             }
 
+            // Framework HITL: approval_required — show menu, POST decision
+            if (event === EVENT_TYPES.APPROVAL_REQUIRED) {
+                yield { type: event, data }; // Show to user (renders "Approval needed: write_file")
+                const approvalEvent = await this._handleApprovalRequired(data);
+                if (approvalEvent) yield approvalEvent;
+                continue;
+            }
+
+            // Framework HITL: approval result events — yield for rendering
+            if (event === EVENT_TYPES.APPROVAL_GRANTED || event === EVENT_TYPES.APPROVAL_DENIED) {
+                yield { type: event, data };
+                continue;
+            }
+
             // Tool requests — show to user, then execute locally and POST callback
+            // NOTE: With framework HITL enabled, tool_call events no longer carry
+            // require_approval — the framework handles that via approval_required above.
+            // This path remains for backwards compatibility with older backends.
             if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
                 yield { type: event, data }; // Show tool call to user first
                 const toolEvent = await this._handleToolRequest(data);
@@ -197,13 +218,16 @@ export class TarangStreamClient {
     }
 
     /**
-     * Handle a tool_request or tool_call event:
-     * execute tool locally, POST result via callback.
-     * @param {Object} data - { call_id, tool, args, require_approval, description }
+     * Handle a tool_call event: execute tool locally, POST result via callback.
+     *
+     * Approval is handled by the framework (HITL) BEFORE this is called.
+     * By the time a tool_call arrives here, it's already approved.
+     *
+     * @param {Object} data - { call_id, tool, args }
      * @returns {Object|null} optional status event to yield
      */
     async _handleToolRequest(data) {
-        const { call_id, request_id, tool, args, require_approval } = data;
+        const { call_id, request_id, tool, args } = data;
         const callId = call_id || request_id;
         const toolName = tool;
 
@@ -211,16 +235,7 @@ export class TarangStreamClient {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
         }
 
-        // Phase 2: approval flow
-        const { approved, reason } = await this.approval.check(toolName, args || {}, require_approval);
-        if (!approved) {
-            if (this.currentTaskId && callId) {
-                await sendSkippedCallback(this.baseUrl, this.token, this.currentTaskId, callId, reason);
-            }
-            return { type: EVENT_TYPES.STATUS, data: { message: `Skipped ${toolName}: ${reason || 'rejected'}` } };
-        }
-
-        // Execute tool locally via the tool executor bridge
+        // Execute tool locally — framework already approved this
         const startTime = Date.now();
         let result;
         try {
@@ -241,6 +256,59 @@ export class TarangStreamClient {
         }
 
         return null;
+    }
+
+    /**
+     * Handle framework HITL approval_required event.
+     * Shows the same approval menu as tool_call, but POSTs the decision
+     * to /api/approval_callback instead of skipping the tool.
+     *
+     * @param {Object} data - { tool_id, tool, args, risk, reason }
+     * @returns {Object|null} optional status event to yield
+     */
+    async _handleApprovalRequired(data) {
+        const { tool_id, tool, args, risk, reason } = data;
+
+        if (this.verbose) {
+            process.stderr.write(`\x1b[2m[hitl] Approval needed: ${tool} (${risk})\x1b[0m\n`);
+        }
+
+        // Use the same ApprovalManager for consistent UX
+        const { approved, reason: denyReason } = await this.approval.check(tool, args || {}, true);
+
+        // Map ApprovalManager decision to framework scope
+        let decision, scope;
+        if (approved) {
+            decision = 'grant';
+            // Determine scope from ApprovalManager state
+            if (this.approval.approveAll) {
+                scope = 'all';
+            } else if (this.approval.approvedToolTypes.has(tool)) {
+                scope = 'type';
+            } else {
+                scope = 'once';
+            }
+        } else {
+            decision = 'deny';
+            scope = 'once';
+        }
+
+        // POST decision to backend
+        if (this.currentTaskId && tool_id) {
+            await sendApprovalDecision(
+                this.baseUrl, this.token, this.currentTaskId,
+                tool_id, decision, scope, denyReason || '',
+            );
+        }
+
+        if (!approved) {
+            return {
+                type: EVENT_TYPES.STATUS,
+                data: { message: `Denied ${tool}: ${denyReason || 'rejected'}` },
+            };
+        }
+
+        return null; // Approved — framework continues with tool execution
     }
 
     /** Cancel the current stream. */

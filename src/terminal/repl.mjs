@@ -210,82 +210,58 @@ function updateStatusBar() {
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
+  const indent = session.inSubAgent ? '     ' : '  ';
 
-  // Tool icon based on type
-  const icons = {
-    read_file: '📄', read_files: '📄', search_code: '🔍', search_files: '🔍',
-    list_files: '📁', get_file_info: 'ℹ️', analyze_code: '🔬',
-    write_file: '✏️', edit_file: '✏️', delete_file: '🗑️',
-    shell: '⚡', validate_file: '✅', validate_build: '🔨',
-    lint_check: '🧹', run_tests: '🧪', git_diff: '📊', git_status: '📊',
-  };
-  const icon = icons[tool] || '🔧';
-
-  // Build description
-  let desc, detail;
+  // Build summary string (what the tool will do)
+  let summary;
   switch (tool) {
-    case 'read_file':
-      desc = shortPath(args.file_path || args.path || '');
-      if (!desc) desc = `(no path! keys: ${Object.keys(args).join(', ')})`;
-      if (args.start_line && args.end_line) {
-        detail = `lines ${args.start_line}-${args.end_line}`;
-      } else if (args.start_line) {
-        detail = `from line ${args.start_line}`;
-      } else if (args.offset) {
-        detail = `lines ${args.offset}-${(args.offset || 0) + (args.limit || 100)}`;
-      } else {
-        detail = '';
-      }
+    case 'read_file': {
+      const fp = shortPath(args.file_path || args.path || '');
+      const range = args.start_line && args.end_line
+        ? ` lines ${args.start_line}-${args.end_line}`
+        : args.start_line ? ` from line ${args.start_line}` : '';
+      summary = `${fp}${range}`;
       break;
-    case 'write_file':
-      desc = shortPath(args.file_path || args.path || '');
-      if (!desc) desc = `(no path! keys: ${Object.keys(args).join(', ')})`;
-      detail = args.content ? `${args.content.split('\n').length} lines` : '';
+    }
+    case 'write_file': {
+      const fp = shortPath(args.file_path || args.path || '');
+      const lines = args.content ? `, ${args.content.split('\n').length} lines` : '';
+      summary = `${fp}${lines}`;
       break;
-    case 'edit_file':
-      desc = shortPath(args.file_path || args.path || 'file');
-      detail = args.search ? `"${args.search.slice(0, 30)}${args.search.length > 30 ? '...' : ''}"` : '';
+    }
+    case 'edit_file': {
+      const fp = shortPath(args.file_path || args.path || '');
+      const search = args.search ? `, "${(args.search || '').slice(0, 30)}..."` : '';
+      summary = `${fp}${search}`;
       break;
+    }
     case 'shell':
-      desc = args.command || '';
-      detail = '';
+      summary = args.command || '';
       break;
     case 'search_code':
-      desc = `"${args.query || args.pattern || ''}"`;
-      detail = args.path ? `in ${shortPath(args.path)}` : '';
-      break;
-    case 'analyze_code':
-      desc = shortPath(args.file_path || args.path || 'file');
-      detail = '';
-      break;
-    case 'run_tests':
-      desc = args.command || 'npm test';
-      detail = '';
-      break;
-    case 'git_diff':
-      desc = args.file_path ? shortPath(args.file_path) : 'all changes';
-      detail = '';
-      break;
-    case 'git_status':
-      desc = '';
-      detail = '';
+      summary = `"${args.query || args.pattern || ''}"`;
       break;
     case 'list_files':
-      desc = args.pattern || '**/*';
-      detail = args.path ? `in ${shortPath(args.path)}` : '';
+      summary = `${args.pattern || '*'}${args.path ? ` in ${shortPath(args.path)}` : ''}`;
       break;
     case 'delete_file':
-      desc = shortPath(args.file_path || args.path || 'file');
-      detail = '';
+      summary = shortPath(args.file_path || args.path || '');
       break;
+    case 'read_files':
+      summary = (args.file_paths || args.paths || []).map(shortPath).join(', ');
+      break;
+    case 'write_project': {
+      const files = (args.files || []).map(f => shortPath(f.path || f.file_path || ''));
+      summary = files.length > 0 ? files.join(', ') : '';
+      break;
+    }
     default:
-      desc = tool;
-      detail = Object.keys(args).slice(0, 2).join(', ');
+      summary = Object.values(args || {}).filter(v => typeof v === 'string').join(', ').slice(0, 60);
   }
 
-  const detailStr = detail ? `  ${c.gray(detail)}` : '';
-  const indent = session.inSubAgent ? '     ' : '  ';
-  process.stderr.write(`${indent}${icon} ${c.dim(desc)}${detailStr}\n`);
+  // Render: ⏺ ToolName(summary)
+  const summaryStr = summary ? `(${summary.slice(0, 80)})` : '';
+  process.stderr.write(`\n${indent}${c.cyan('⏺')} ${c.bold(tool)}${c.dim(summaryStr)}\n`);
 }
 
 /**
@@ -294,24 +270,25 @@ function renderToolCall(data) {
 function renderToolResult(data) {
   if (!data) return;
   const indent = session.inSubAgent ? '     ' : '  ';
+  const gutter = `${indent}${c.dim('⎿')}  `;
 
   if (data._blocked) {
     session.blockedOps++;
-    process.stderr.write(`${indent}${c.red('🛡️ ' + (data.output || 'Blocked by safety guardrails'))}\n`);
+    process.stderr.write(`${gutter}${c.red(data.output || 'Blocked by safety guardrails')}\n`);
     return;
   }
 
   if (data.success === false) {
     const msg = (data.output || data.message || 'Failed').slice(0, 120);
-    process.stderr.write(`${indent}${c.red('✗ ' + msg)}\n`);
+    process.stderr.write(`${gutter}${c.red(msg)}\n`);
     return;
   }
 
-  // For writes, show the change
+  // For writes, show lint warnings
   if (data._tool === 'write_file' || data._tool === 'edit_file') {
     const lint = data.lint;
     if (lint) {
-      process.stderr.write(`${indent}${c.yellow('⚠ Lint: ' + lint.split('\n')[0].slice(0, 80))}\n`);
+      process.stderr.write(`${gutter}${c.yellow('⚠ ' + lint.split('\n')[0].slice(0, 80))}\n`);
     }
   }
 }
@@ -442,9 +419,30 @@ function renderEvent(event) {
       session.toolCalls++;
       session.totalToolCalls++;
       stopSpinner();
+      flushContent();
       renderToolCall(data);
-      // Don't start spinner here — approval prompt may follow.
-      // Spinner resumes from 'status' or 'thinking' events after tool completes.
+      break;
+    }
+
+    // ── HITL: Framework-level approval events ──
+
+    case 'approval_required': {
+      stopSpinner();
+      flushContent();
+      break;
+    }
+
+    case 'approval_granted': {
+      // approval.mjs _prompt already rendered the result line for human approvals.
+      // Nothing extra needed here — avoid duplicate output.
+      break;
+    }
+
+    case 'approval_denied': {
+      const reason = data?.reason || 'User denied';
+      const toolName = data?.tool || '';
+      const indent = session.inSubAgent ? '     ' : '  ';
+      process.stderr.write(`${indent}${c.red('✗')} ${c.dim(`Denied ${toolName}: ${reason}`)}\n`);
       break;
     }
 
