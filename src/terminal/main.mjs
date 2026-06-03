@@ -10,6 +10,7 @@ import {
   runStatsCommand,
   runHistoryCommand,
 } from './analytics.mjs';
+import { parseArgs } from '../config/cli-args.mjs';
 
 // ── Subcommands ──
 
@@ -73,7 +74,9 @@ async function main() {
 
   \x1b[1mUsage:\x1b[0m
     orca                    Start interactive REPL
-    orca "instruction"      Run a single instruction and exit
+    orca "instruction"      Run a single instruction
+    orca --headless -p "x"  Non-interactive: auto-approve, JSONL output
+    orca --resume            Resume last conversation
     orca dashboard          Open Orca Pulse analytics dashboard
     orca login              Sign in via browser
     orca version            Show version
@@ -109,6 +112,19 @@ async function main() {
 
   \x1b[2mDocs: https://devtarang.ai/docs\x1b[0m
 `);
+    return;
+  }
+
+  // ── Headless mode (benchmarks, automation) ──
+  const args = parseArgs(process.argv.slice(2));
+  if (args.prompt && (process.argv.includes('--headless') || !process.stdin.isTTY)) {
+    const { runHeadless } = await import('../core/headless.mjs');
+    await runHeadless({
+      instruction: args.prompt,
+      model: args.model,
+      timeout: args.maxTurns ? args.maxTurns * 60 : 300,
+      verbose: args.verbose,
+    });
     return;
   }
 

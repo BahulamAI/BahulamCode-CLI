@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""
+SWE-bench Harness — run Orca against SWE-bench instances and score results.
+
+Usage:
+    python harness.py --dataset lite --model deepseek/deepseek-chat-v3-0324
+    python harness.py --dataset verified --model anthropic/claude-sonnet-4-20250514 --limit 10
+    python harness.py --instance django__django-16527
+
+Flow per instance:
+    1. Clone repo at base_commit
+    2. Apply test patch (the failing test)
+    3. Run: orca --headless -p "Fix: {problem_statement}"
+    4. Collect file changes (git diff)
+    5. Run test suite
+    6. Score: PASS (tests pass) or FAIL
+    7. Record results to benchmark/results/
+
+Requires: pip install swebench datasets
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+RESULTS_DIR = Path(__file__).parent.parent / "results"
+WORKDIR = Path("/tmp/orca-swe-bench")
+
+
+def load_dataset(dataset_name: str, limit: int = None):
+    """Load SWE-bench dataset from HuggingFace."""
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("Install datasets: pip install datasets", file=sys.stderr)
+        sys.exit(1)
+
+    if dataset_name == "lite":
+        ds = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+    elif dataset_name == "verified":
+        ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+    else:
+        ds = load_dataset("princeton-nlp/SWE-bench", split="test")
+
+    instances = list(ds)
+    if limit:
+        instances = instances[:limit]
+
+    print(f"Loaded {len(instances)} instances from SWE-bench {dataset_name}", file=sys.stderr)
+    return instances
+
+
+def setup_repo(instance: dict) -> Path:
+    """Clone repo and checkout base commit."""
+    repo = instance["repo"]
+    base_commit = instance["base_commit"]
+
+    repo_dir = WORKDIR / repo.replace("/", "__") / base_commit[:8]
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir)
+
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clone
+    subprocess.run(
+        ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(repo_dir)],
+        capture_output=True, timeout=120,
+    )
+
+    # Fetch specific commit
+    subprocess.run(
+        ["git", "fetch", "--depth", "1", "origin", base_commit],
+        capture_output=True, cwd=repo_dir, timeout=60,
+    )
+    subprocess.run(
+        ["git", "checkout", base_commit],
+        capture_output=True, cwd=repo_dir, timeout=30,
+    )
+
+    return repo_dir
+
+
+def apply_test_patch(repo_dir: Path, instance: dict) -> bool:
+    """Apply the test patch (failing test to verify the fix)."""
+    test_patch = instance.get("test_patch", "")
+    if not test_patch:
+        return True
+
+    patch_file = repo_dir / "test_patch.diff"
+    patch_file.write_text(test_patch)
+
+    result = subprocess.run(
+        ["git", "apply", "--check", str(patch_file)],
+        capture_output=True, cwd=repo_dir,
+    )
+
+    if result.returncode != 0:
+        # Try with more relaxed options
+        result = subprocess.run(
+            ["git", "apply", "--3way", str(patch_file)],
+            capture_output=True, cwd=repo_dir,
+        )
+
+    if result.returncode != 0:
+        return False
+
+    subprocess.run(
+        ["git", "apply", str(patch_file)],
+        capture_output=True, cwd=repo_dir,
+    )
+    return True
+
+
+def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300) -> dict:
+    """Run Orca in headless mode on the instance."""
+    problem = instance["problem_statement"]
+    instruction = f"Fix the following issue:\n\n{problem}"
+
+    cmd = [
+        "orca", "--headless",
+        "-p", instruction,
+    ]
+    if model:
+        cmd.extend(["-m", model])
+
+    start = time.time()
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_dir),
+            timeout=timeout,
+            env={**os.environ, "TARANG_ENV": os.environ.get("TARANG_ENV", "local")},
+        )
+        duration = time.time() - start
+
+        # Parse JSONL output
+        events = []
+        for line in result.stdout.strip().split("\n"):
+            if line.strip():
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+        # Extract metrics from events
+        complete_event = next((e for e in events if e.get("type") == "complete"), {})
+
+        return {
+            "success": result.returncode == 0,
+            "duration_s": round(duration, 1),
+            "cost_usd": complete_event.get("cost_usd", 0),
+            "tools": complete_event.get("tools", 0),
+            "events": events,
+            "stderr": result.stderr[-500:] if result.stderr else "",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "duration_s": timeout,
+            "cost_usd": 0,
+            "tools": 0,
+            "events": [],
+            "stderr": "Timeout",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "duration_s": time.time() - start,
+            "cost_usd": 0,
+            "tools": 0,
+            "events": [],
+            "stderr": str(e),
+        }
+
+
+def collect_patch(repo_dir: Path) -> str:
+    """Collect the git diff of Orca's changes."""
+    result = subprocess.run(
+        ["git", "diff"],
+        capture_output=True, text=True, cwd=repo_dir,
+    )
+    return result.stdout
+
+
+def run_tests(repo_dir: Path, instance: dict) -> dict:
+    """Run the test suite to verify the fix."""
+    test_cmd = instance.get("test_cmd", "")
+    if not test_cmd:
+        # Try common test commands
+        if (repo_dir / "setup.py").exists():
+            test_cmd = "python -m pytest -x --timeout=60"
+        elif (repo_dir / "package.json").exists():
+            test_cmd = "npm test"
+        else:
+            test_cmd = "python -m pytest -x --timeout=60"
+
+    try:
+        result = subprocess.run(
+            test_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_dir),
+            timeout=120,
+        )
+
+        return {
+            "passed": result.returncode == 0,
+            "exit_code": result.returncode,
+            "stdout": result.stdout[-1000:] if result.stdout else "",
+            "stderr": result.stderr[-1000:] if result.stderr else "",
+        }
+    except subprocess.TimeoutExpired:
+        return {"passed": False, "exit_code": -1, "stdout": "", "stderr": "Test timeout"}
+    except Exception as e:
+        return {"passed": False, "exit_code": -1, "stdout": "", "stderr": str(e)}
+
+
+def run_instance(instance: dict, model: str, timeout: int = 300) -> dict:
+    """Run a single SWE-bench instance end-to-end."""
+    instance_id = instance["instance_id"]
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"Instance: {instance_id}", file=sys.stderr)
+    print(f"{'='*60}", file=sys.stderr)
+
+    result = {
+        "instance_id": instance_id,
+        "repo": instance["repo"],
+        "model": model,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    # 1. Setup repo
+    print("  [1/5] Cloning repo...", file=sys.stderr)
+    try:
+        repo_dir = setup_repo(instance)
+    except Exception as e:
+        result.update({"status": "error", "error": f"Clone failed: {e}"})
+        return result
+
+    # 2. Apply test patch
+    print("  [2/5] Applying test patch...", file=sys.stderr)
+    if not apply_test_patch(repo_dir, instance):
+        result.update({"status": "error", "error": "Test patch failed"})
+        return result
+
+    # 3. Run Orca
+    print(f"  [3/5] Running Orca (model={model}, timeout={timeout}s)...", file=sys.stderr)
+    orca_result = run_orca(repo_dir, instance, model, timeout)
+    result["orca"] = {
+        "success": orca_result["success"],
+        "duration_s": orca_result["duration_s"],
+        "cost_usd": orca_result["cost_usd"],
+        "tools": orca_result["tools"],
+    }
+
+    if not orca_result["success"]:
+        result.update({"status": "orca_failed", "error": orca_result["stderr"][:200]})
+        return result
+
+    # 4. Collect patch
+    print("  [4/5] Collecting changes...", file=sys.stderr)
+    patch = collect_patch(repo_dir)
+    result["patch_lines"] = len(patch.split("\n")) if patch else 0
+
+    if not patch.strip():
+        result.update({"status": "no_changes", "error": "Orca made no file changes"})
+        return result
+
+    # 5. Run tests
+    print("  [5/5] Running tests...", file=sys.stderr)
+    test_result = run_tests(repo_dir, instance)
+    result["tests"] = {
+        "passed": test_result["passed"],
+        "exit_code": test_result["exit_code"],
+    }
+
+    result["status"] = "PASS" if test_result["passed"] else "FAIL"
+
+    icon = "✓" if result["status"] == "PASS" else "✗"
+    cost = f"${orca_result['cost_usd']:.3f}" if orca_result["cost_usd"] else "?"
+    print(f"  {icon} {result['status']}  ({orca_result['duration_s']}s, {cost})", file=sys.stderr)
+
+    # Cleanup
+    try:
+        shutil.rmtree(repo_dir)
+    except Exception:
+        pass
+
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Orca SWE-bench Harness")
+    parser.add_argument("--dataset", default="lite", choices=["lite", "verified", "full"])
+    parser.add_argument("--model", default="deepseek/deepseek-chat-v3-0324")
+    parser.add_argument("--limit", type=int, help="Max instances to run")
+    parser.add_argument("--instance", help="Run a specific instance ID")
+    parser.add_argument("--timeout", type=int, default=300, help="Timeout per instance (seconds)")
+    parser.add_argument("--output", help="Output file (default: results/<model>_<dataset>.json)")
+    args = parser.parse_args()
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    WORKDIR.mkdir(parents=True, exist_ok=True)
+
+    # Load dataset
+    instances = load_dataset(args.dataset, args.limit)
+
+    if args.instance:
+        instances = [i for i in instances if i["instance_id"] == args.instance]
+        if not instances:
+            print(f"Instance not found: {args.instance}", file=sys.stderr)
+            sys.exit(1)
+
+    # Run all instances
+    results = []
+    passed = 0
+    failed = 0
+    errors = 0
+
+    for i, instance in enumerate(instances):
+        print(f"\n[{i+1}/{len(instances)}]", file=sys.stderr)
+        result = run_instance(instance, args.model, args.timeout)
+        results.append(result)
+
+        if result["status"] == "PASS":
+            passed += 1
+        elif result["status"] == "FAIL":
+            failed += 1
+        else:
+            errors += 1
+
+    # Summary
+    total = len(results)
+    pass_rate = (passed / total * 100) if total > 0 else 0
+    total_cost = sum(r.get("orca", {}).get("cost_usd", 0) for r in results)
+    avg_cost = total_cost / total if total > 0 else 0
+
+    summary = {
+        "benchmark": f"swe-bench-{args.dataset}",
+        "model": args.model,
+        "timestamp": datetime.now().isoformat(),
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "pass_rate": round(pass_rate, 1),
+        "total_cost_usd": round(total_cost, 3),
+        "avg_cost_usd": round(avg_cost, 3),
+        "results": results,
+    }
+
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"RESULTS: {passed}/{total} passed ({pass_rate:.1f}%)", file=sys.stderr)
+    print(f"COST: ${total_cost:.3f} total, ${avg_cost:.3f} avg per instance", file=sys.stderr)
+    print(f"MODEL: {args.model}", file=sys.stderr)
+    print(f"{'='*60}", file=sys.stderr)
+
+    # Save results
+    model_slug = args.model.replace("/", "_")
+    output_path = args.output or str(RESULTS_DIR / f"{model_slug}_{args.dataset}.json")
+    with open(output_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Results saved to: {output_path}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
