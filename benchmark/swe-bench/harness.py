@@ -120,13 +120,13 @@ def apply_test_patch(repo_dir: Path, instance: dict) -> bool:
 ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
 
 
-def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300) -> dict:
+def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300, debug: bool = False) -> dict:
     """Run Orca in headless mode on the instance."""
     problem = instance["problem_statement"]
     instruction = f"Fix the following issue. Use tools (read_file, edit_file, search_code) to investigate and fix the code.\n\n{problem}"
 
     cmd = [
-        "node", str(ORCA_MAIN), "--headless",
+        "node", str(ORCA_MAIN), "--headless", "--verbose",
         "-p", instruction,
     ]
     if model:
@@ -156,6 +156,15 @@ def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300) -> 
 
         # Extract metrics from events
         complete_event = next((e for e in events if e.get("type") == "complete"), {})
+
+        # Save debug output
+        if debug:
+            debug_dir = RESULTS_DIR / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            instance_id = instance["instance_id"].replace("/", "__")
+            (debug_dir / f"{instance_id}_stdout.txt").write_text(result.stdout or "")
+            (debug_dir / f"{instance_id}_stderr.txt").write_text(result.stderr or "")
+            print(f"  [DEBUG] Saved to {debug_dir / instance_id}_*.txt", file=sys.stderr)
 
         return {
             "success": result.returncode == 0,
@@ -228,7 +237,7 @@ def run_tests(repo_dir: Path, instance: dict) -> dict:
         return {"passed": False, "exit_code": -1, "stdout": "", "stderr": str(e)}
 
 
-def run_instance(instance: dict, model: str, timeout: int = 300) -> dict:
+def run_instance(instance: dict, model: str, timeout: int = 300, debug: bool = False) -> dict:
     """Run a single SWE-bench instance end-to-end."""
     instance_id = instance["instance_id"]
     print(f"\n{'='*60}", file=sys.stderr)
@@ -258,7 +267,7 @@ def run_instance(instance: dict, model: str, timeout: int = 300) -> dict:
 
     # 3. Run Orca
     print(f"  [3/5] Running Orca (model={model}, timeout={timeout}s)...", file=sys.stderr)
-    orca_result = run_orca(repo_dir, instance, model, timeout)
+    orca_result = run_orca(repo_dir, instance, model, timeout, debug=debug)
     result["orca"] = {
         "success": orca_result["success"],
         "duration_s": orca_result["duration_s"],
@@ -311,6 +320,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per instance (seconds)")
     parser.add_argument("--output", help="Output file (default: results/<model>_<dataset>.json)")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel instances (default: 1)")
+    parser.add_argument("--debug", action="store_true", help="Save raw agent output for debugging")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -338,7 +348,7 @@ def main():
 
         with ProcessPoolExecutor(max_workers=args.parallel) as executor:
             future_to_instance = {
-                executor.submit(run_instance, inst, args.model, args.timeout): inst
+                executor.submit(run_instance, inst, args.model, args.timeout, args.debug): inst
                 for inst in instances
             }
             for i, future in enumerate(as_completed(future_to_instance)):
@@ -359,7 +369,7 @@ def main():
         # Sequential execution
         for i, instance in enumerate(instances):
             print(f"\n[{i+1}/{len(instances)}]", file=sys.stderr)
-            result = run_instance(instance, args.model, args.timeout)
+            result = run_instance(instance, args.model, args.timeout, debug=args.debug)
             results.append(result)
 
             if result["status"] == "PASS":

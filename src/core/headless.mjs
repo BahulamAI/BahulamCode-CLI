@@ -46,13 +46,18 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.exit(1);
     }
 
-    // ── Index project ──
+    // ── Index project (with timeout — large repos can take minutes) ──
     log('Indexing project...');
     const retriever = new ContextRetriever(process.cwd());
     try {
-        await retriever.buildIndex();
-    } catch {
-        log('Index failed, continuing without BM25');
+        const indexPromise = retriever.buildIndex();
+        const indexTimeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Index timeout')), 15000)
+        );
+        await Promise.race([indexPromise, indexTimeout]);
+        log('Index ready');
+    } catch (e) {
+        log(`Index skipped: ${e.message || 'failed'}`);
     }
 
     const skeleton = buildProjectSkeleton(process.cwd());

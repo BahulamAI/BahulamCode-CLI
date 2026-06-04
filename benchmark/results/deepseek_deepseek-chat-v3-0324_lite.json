@@ -1,55 +1,23 @@
 {
   "benchmark": "swe-bench-lite",
   "model": "deepseek/deepseek-chat-v3-0324",
-  "timestamp": "2026-06-04T07:13:46.078402",
-  "total": 3,
+  "timestamp": "2026-06-04T13:15:30.304923",
+  "total": 1,
   "passed": 0,
-  "failed": 1,
-  "errors": 2,
+  "failed": 0,
+  "errors": 1,
   "pass_rate": 0.0,
   "total_cost_usd": 0,
   "avg_cost_usd": 0.0,
   "results": [
     {
-      "instance_id": "astropy__astropy-12907",
-      "repo": "astropy/astropy",
+      "instance_id": "django__django-11001",
+      "repo": "django/django",
       "model": "deepseek/deepseek-chat-v3-0324",
-      "timestamp": "2026-06-04T07:04:39.550980",
+      "timestamp": "2026-06-04T13:10:19.981755",
       "orca": {
         "success": false,
-        "duration_s": 180,
-        "cost_usd": 0,
-        "tools": 0
-      },
-      "status": "orca_failed",
-      "error": "Timeout"
-    },
-    {
-      "instance_id": "astropy__astropy-14182",
-      "repo": "astropy/astropy",
-      "model": "deepseek/deepseek-chat-v3-0324",
-      "timestamp": "2026-06-04T07:07:43.965338",
-      "orca": {
-        "success": true,
-        "duration_s": 172.9,
-        "cost_usd": 0,
-        "tools": 18
-      },
-      "patch_lines": 67,
-      "tests": {
-        "passed": false,
-        "exit_code": 4
-      },
-      "status": "FAIL"
-    },
-    {
-      "instance_id": "astropy__astropy-14365",
-      "repo": "astropy/astropy",
-      "model": "deepseek/deepseek-chat-v3-0324",
-      "timestamp": "2026-06-04T07:10:42.233860",
-      "orca": {
-        "success": false,
-        "duration_s": 180,
+        "duration_s": 300,
         "cost_usd": 0,
         "tools": 0
       },
