@@ -67,21 +67,33 @@ def setup_repo(instance: dict) -> Path:
 
     repo_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clone
-    subprocess.run(
-        ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(repo_dir)],
-        capture_output=True, timeout=120,
+    # Clone full repo (shallow clone misses old commits)
+    result = subprocess.run(
+        ["git", "clone", f"https://github.com/{repo}.git", str(repo_dir)],
+        capture_output=True, timeout=300,
     )
+    if result.returncode != 0:
+        # Fallback to shallow clone + fetch
+        subprocess.run(
+            ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(repo_dir)],
+            capture_output=True, timeout=120,
+        )
+        subprocess.run(
+            ["git", "fetch", "--depth", "100", "origin", base_commit],
+            capture_output=True, cwd=repo_dir, timeout=120,
+        )
 
-    # Fetch specific commit
-    subprocess.run(
-        ["git", "fetch", "--depth", "1", "origin", base_commit],
-        capture_output=True, cwd=repo_dir, timeout=60,
-    )
-    subprocess.run(
+    # Checkout the specific base commit
+    checkout = subprocess.run(
         ["git", "checkout", base_commit],
         capture_output=True, cwd=repo_dir, timeout=30,
     )
+    if checkout.returncode != 0:
+        print(f"  WARNING: git checkout {base_commit[:8]} failed", file=sys.stderr)
+
+    # Verify files exist
+    py_count = len(list(repo_dir.rglob("*.py")))
+    print(f"  Repo ready: {py_count} .py files", file=sys.stderr)
 
     return repo_dir
 
