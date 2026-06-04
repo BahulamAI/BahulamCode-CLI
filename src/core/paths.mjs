@@ -17,6 +17,7 @@
  *     projects.json            — slug → project path mapping
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
@@ -28,8 +29,15 @@ const ORCA_HOME = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
  * Uses first 16 chars of SHA-256 (same as Claude Code).
  */
 export function projectHash(projectDir) {
+    // Resolve symlinks (macOS: /tmp → /private/tmp) so the hash is stable
+    let resolved = projectDir;
+    try {
+        resolved = fs.realpathSync(projectDir);
+    } catch {
+        // realpathSync fails if path doesn't exist yet — use as-is
+    }
     return crypto.createHash('sha256')
-        .update(projectDir)
+        .update(resolved)
         .digest('hex')
         .slice(0, 16);
 }
