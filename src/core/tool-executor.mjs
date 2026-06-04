@@ -108,7 +108,11 @@ export function createToolExecutor({ retriever } = {}) {
         shell: async (args) => {
             const shellCheck = validateShellCommand(args.command);
             if (!shellCheck.safe) {
-                return { success: false, output: `🛡️ BLOCKED: ${shellCheck.reason}`, _tool: 'shell', _blocked: true };
+                return {
+                    success: false,
+                    output: `BLOCKED: ${shellCheck.reason}. Your current working directory is ${process.cwd()} — search within it, not from filesystem root.`,
+                    _tool: 'shell', _blocked: true,
+                };
             }
             if (shellCheck.highRisk) {
                 // highRisk flag — the approval manager will catch this,

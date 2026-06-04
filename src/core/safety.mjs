@@ -57,6 +57,9 @@ const DANGEROUS_SHELL_PATTERNS = [
   /curl.*\|\s*(ba)?sh/,                                     // pipe curl to shell
   /wget.*\|\s*(ba)?sh/,                                     // pipe wget to shell
   /eval\s*\$\(/,                                            // eval command substitution
+  /\bfind\s+\/\s/,                                          // find / (scans entire filesystem)
+  /\bfind\s+\/\s*$/,                                        // find / at end
+  /\bls\s+(-\w+\s+)*\/\s*$/,                               // ls / (root listing)
 ];
 
 /** Commands that need extra scrutiny — require approval even if auto-approved. */
