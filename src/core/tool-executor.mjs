@@ -380,6 +380,24 @@ export function createToolExecutor({ retriever } = {}) {
             }
 
             // Fallback to grep (always, when BM25 has no results)
+            // Use shell grep directly — more reliable than Grep tool for large repos
+            try {
+                const searchPath = args.path ? resolvePath(args.path) : process.cwd();
+                const safeQuery = query.replace(/"/g, '\\"');
+                const grepCmd = `rg -n -C 1 --max-count 5 --max-filesize 500K "${safeQuery}" "${searchPath}" 2>/dev/null | head -50`;
+                const grepResult = execSync(grepCmd, { encoding: 'utf-8', timeout: 10000 }).trim();
+
+                if (grepResult) {
+                    return {
+                        success: true,
+                        output: grepResult,
+                        _tool: 'search_code',
+                        _method: 'grep',
+                    };
+                }
+            } catch { /* grep failed or timeout */ }
+
+            // Also try with simpler grep if rg not available
             try {
                 const result = await occRegistry.call('Grep', {
                     pattern: query,
