@@ -310,6 +310,7 @@ def main():
     parser.add_argument("--instance", help="Run a specific instance ID")
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per instance (seconds)")
     parser.add_argument("--output", help="Output file (default: results/<model>_<dataset>.json)")
+    parser.add_argument("--parallel", type=int, default=1, help="Number of parallel instances (default: 1)")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -324,23 +325,49 @@ def main():
             print(f"Instance not found: {args.instance}", file=sys.stderr)
             sys.exit(1)
 
-    # Run all instances
+    # Run instances (sequential or parallel)
     results = []
     passed = 0
     failed = 0
     errors = 0
 
-    for i, instance in enumerate(instances):
-        print(f"\n[{i+1}/{len(instances)}]", file=sys.stderr)
-        result = run_instance(instance, args.model, args.timeout)
-        results.append(result)
+    if args.parallel > 1:
+        # Parallel execution
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        print(f"\nRunning {len(instances)} instances with {args.parallel} workers...", file=sys.stderr)
 
-        if result["status"] == "PASS":
-            passed += 1
-        elif result["status"] == "FAIL":
-            failed += 1
-        else:
-            errors += 1
+        with ProcessPoolExecutor(max_workers=args.parallel) as executor:
+            future_to_instance = {
+                executor.submit(run_instance, inst, args.model, args.timeout): inst
+                for inst in instances
+            }
+            for i, future in enumerate(as_completed(future_to_instance)):
+                result = future.result()
+                results.append(result)
+                status = result.get("status", "?")
+                icon = "✓" if status == "PASS" else "✗"
+                cost = result.get("orca", {}).get("cost_usd", 0)
+                print(f"  [{i+1}/{len(instances)}] {icon} {result['instance_id']}  ({status}, ${cost:.3f})", file=sys.stderr)
+
+                if status == "PASS":
+                    passed += 1
+                elif status == "FAIL":
+                    failed += 1
+                else:
+                    errors += 1
+    else:
+        # Sequential execution
+        for i, instance in enumerate(instances):
+            print(f"\n[{i+1}/{len(instances)}]", file=sys.stderr)
+            result = run_instance(instance, args.model, args.timeout)
+            results.append(result)
+
+            if result["status"] == "PASS":
+                passed += 1
+            elif result["status"] == "FAIL":
+                failed += 1
+            else:
+                errors += 1
 
     # Summary
     total = len(results)
