@@ -316,7 +316,7 @@ export function createToolExecutor({ retriever } = {}) {
             return { success: true, output, files_written: results, _tool: 'write_project' };
         },
 
-        // 4. edit_file → Edit + auto-lint
+        // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
             const filePath = resolvePath(rawPath);
@@ -324,12 +324,39 @@ export function createToolExecutor({ retriever } = {}) {
             try {
                 await occRegistry.call('Read', { file_path: filePath, limit: 1 });
             } catch { /* best effort */ }
-            const result = await occRegistry.call('Edit', {
-                file_path: filePath,
-                old_string: args.search,
-                new_string: args.replace,
-                replace_all: args.replace_all || false,
-            });
+
+            let result;
+            try {
+                result = await occRegistry.call('Edit', {
+                    file_path: filePath,
+                    old_string: args.search,
+                    new_string: args.replace,
+                    replace_all: args.replace_all || false,
+                });
+            } catch (editErr) {
+                // OCC Edit failed (string not found) — fallback to Python replacement
+                try {
+                    const search = args.search.replace(/'/g, "\\'").replace(/\n/g, "\\n");
+                    const replace = args.replace.replace(/'/g, "\\'").replace(/\n/g, "\\n");
+                    const pyCmd = `python3 -c "
+import sys
+with open('${filePath}', 'r') as f: content = f.read()
+old = '''${args.search}'''
+new = '''${args.replace}'''
+if old not in content:
+    print('ERROR: search string not found in file', file=sys.stderr)
+    sys.exit(1)
+content = content.replace(old, new, 1)
+with open('${filePath}', 'w') as f: f.write(content)
+print('OK: replaced')
+"`;
+                    const fallbackResult = execSync(pyCmd, { encoding: 'utf-8', timeout: 5000, cwd: PROJECT_CWD });
+                    result = `Edited ${filePath} (via fallback): ${fallbackResult.trim()}`;
+                } catch (sedErr) {
+                    return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${sedErr?.message || 'unknown'}. Try shell(sed) manually.`, _tool: 'edit_file' };
+                }
+            }
+
             const wrapped = wrapResult(result, 'edit_file');
 
             // Auto-lint the edited file
@@ -444,6 +471,29 @@ export function createToolExecutor({ retriever } = {}) {
                 files: output.split('\n').filter(Boolean),
                 output,
                 _tool: 'search_files',
+            };
+        },
+
+        // 7b. grep → dedicated ripgrep tool (fast text/regex search)
+        grep: async (args) => {
+            const pattern = args.pattern;
+            if (!pattern) return { success: false, output: 'pattern required', _tool: 'grep' };
+
+            const searchPath = args.path ? resolvePath(args.path) : PROJECT_CWD;
+            const includeFlag = args.include ? `--glob "${args.include}"` : '';
+
+            try {
+                const cmd = `rg -n -C 2 --max-count 10 --max-filesize 500K ${includeFlag} -e ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -80`;
+                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: PROJECT_CWD }).trim();
+                if (output) {
+                    return { success: true, output, _tool: 'grep' };
+                }
+            } catch { /* no results or rg not found */ }
+
+            return {
+                success: true,
+                output: `No matches for "${pattern}" in ${searchPath}`,
+                _tool: 'grep',
             };
         },
 
