@@ -355,75 +355,54 @@ export function createToolExecutor({ retriever } = {}) {
             };
         },
 
-        // 6. search_code → BM25 retriever (semantic chunks) with grep fallback
+        // 6. search_code → rg (ripgrep) primary, BM25 secondary
         search_code: async (args) => {
             _searchCodeUsed = true;
             const query = args.query || args.pattern;
             if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
 
-            // Try BM25 retriever first (returns code chunks, not grep lines)
+            const searchPath = args.path ? resolvePath(args.path) : process.cwd();
+
+            // Primary: ripgrep — fast, reliable, always works
+            try {
+                const safeQuery = query.replace(/['"\\]/g, '\\$&');
+                const cmd = `rg -n -C 1 --max-count 5 --max-filesize 500K -e ${JSON.stringify(query)} ${JSON.stringify(searchPath)} 2>/dev/null | head -60`;
+                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
+                if (output) {
+                    return { success: true, output, _tool: 'search_code', _method: 'rg' };
+                }
+            } catch { /* rg not found or no results */ }
+
+            // Secondary: BM25 retriever (if indexed)
             if (retriever) {
+                if (!retriever.index) retriever.loadIndex();
                 const chunks = retriever.retrieve(query, 8);
                 if (chunks.length > 0) {
                     const output = chunks.map(c => {
                         const score = c.score?.toFixed(2) || '?';
                         return `── ${c.id} (score: ${score}) ──\n${c.text}`;
                     }).join('\n\n');
-                    return {
-                        success: true,
-                        output,
-                        chunks: chunks.length,
-                        _tool: 'search_code',
-                        _method: 'bm25',
-                    };
+                    return { success: true, output, chunks: chunks.length, _tool: 'search_code', _method: 'bm25' };
                 }
             }
 
-            // Fallback to grep (always, when BM25 has no results)
-            // Use shell grep directly — more reliable than Grep tool for large repos
-            try {
-                const searchPath = args.path ? resolvePath(args.path) : process.cwd();
-                const safeQuery = query.replace(/"/g, '\\"');
-                const grepCmd = `rg -n -C 1 --max-count 5 --max-filesize 500K "${safeQuery}" "${searchPath}" 2>/dev/null | head -50`;
-                const grepResult = execSync(grepCmd, { encoding: 'utf-8', timeout: 10000 }).trim();
-
-                if (grepResult) {
-                    return {
-                        success: true,
-                        output: grepResult,
-                        _tool: 'search_code',
-                        _method: 'grep',
-                    };
-                }
-            } catch { /* grep failed or timeout */ }
-
-            // Also try with simpler grep if rg not available
+            // Tertiary: OCC Grep tool
             try {
                 const result = await occRegistry.call('Grep', {
-                    pattern: query,
-                    path: args.path ? resolvePath(args.path) : process.cwd(),
-                    output_mode: 'content',
-                    '-n': true,
-                    head_limit: 30,
+                    pattern: query, path: searchPath, output_mode: 'content', '-n': true, head_limit: 30,
                 });
                 const output = typeof result === 'string' ? result : String(result);
-                if (output && output.trim() && !output.includes('No matches found')) {
-                    return {
-                        success: true,
-                        output,
-                        _tool: 'search_code',
-                        _method: 'grep',
-                    };
+                if (output?.trim() && !output.includes('No matches found')) {
+                    return { success: true, output, _tool: 'search_code', _method: 'grep' };
                 }
-            } catch { /* grep failed, fall through */ }
+            } catch { /* fall through */ }
 
-            // Both BM25 and grep returned nothing
+            // Nothing found — give actionable hint
+            const firstWord = query.split(/\s+/)[0];
             return {
                 success: true,
-                output: `No results found for "${query}". Try:\n` +
-                    `- shell(grep -rn "${query.split(' ')[0]}" . --include="*.py" | head -20)\n` +
-                    `- shell(find . -name "*.py" -path "*${query.split(' ')[0].toLowerCase()}*")\n` +
-                    `- list_files with a targeted pattern`,
+                output: `No results for "${query}" in ${searchPath}.\n` +
+                    `Try: shell(grep -rn "${firstWord}" . --include="*.py" | head -20)`,
                 _tool: 'search_code',
                 _method: 'none',
             };
