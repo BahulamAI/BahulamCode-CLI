@@ -365,7 +365,6 @@ export function createToolExecutor({ retriever } = {}) {
             if (retriever) {
                 const chunks = retriever.retrieve(query, 8);
                 if (chunks.length > 0) {
-                    // Format as structured output: file path + code
                     const output = chunks.map(c => {
                         const score = c.score?.toFixed(2) || '?';
                         return `── ${c.id} (score: ${score}) ──\n${c.text}`;
@@ -380,17 +379,35 @@ export function createToolExecutor({ retriever } = {}) {
                 }
             }
 
-            // Fallback to grep if no BM25 index or no results
-            const result = await occRegistry.call('Grep', {
-                pattern: query,
-                path: args.path ? resolvePath(args.path) : undefined,
-                output_mode: args.output_mode || 'content',
-            });
+            // Fallback to grep (always, when BM25 has no results)
+            try {
+                const result = await occRegistry.call('Grep', {
+                    pattern: query,
+                    path: args.path ? resolvePath(args.path) : process.cwd(),
+                    output_mode: 'content',
+                    '-n': true,
+                    head_limit: 30,
+                });
+                const output = typeof result === 'string' ? result : String(result);
+                if (output && output.trim() && !output.includes('No matches found')) {
+                    return {
+                        success: true,
+                        output,
+                        _tool: 'search_code',
+                        _method: 'grep',
+                    };
+                }
+            } catch { /* grep failed, fall through */ }
+
+            // Both BM25 and grep returned nothing
             return {
                 success: true,
-                output: typeof result === 'string' ? result : String(result),
+                output: `No results found for "${query}". Try:\n` +
+                    `- shell(grep -rn "${query.split(' ')[0]}" . --include="*.py" | head -20)\n` +
+                    `- shell(find . -name "*.py" -path "*${query.split(' ')[0].toLowerCase()}*")\n` +
+                    `- list_files with a targeted pattern`,
                 _tool: 'search_code',
-                _method: 'grep',
+                _method: 'none',
             };
         },
 
