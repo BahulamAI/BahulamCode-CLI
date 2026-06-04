@@ -60,6 +60,18 @@ async function main() {
     }
   }
 
+  if (subcommand === 'logout') {
+    const { TarangAuth } = await import('../auth/tarang-auth.mjs');
+    const auth = new TarangAuth();
+    const success = auth.logout();
+    if (success) {
+      process.stderr.write('\x1b[32m✓ Signed out. Credentials cleared.\x1b[0m\n');
+    } else {
+      process.stderr.write('\x1b[33m! No credentials to clear.\x1b[0m\n');
+    }
+    return;
+  }
+
   if (subcommand === 'version' || subcommand === '--version' || subcommand === '-v') {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
@@ -79,6 +91,7 @@ async function main() {
     orca --resume            Resume last conversation
     orca dashboard          Open Orca Pulse analytics dashboard
     orca login              Sign in via browser
+    orca logout             Sign out and clear credentials
     orca version            Show version
 
   \x1b[1mAnalytics:\x1b[0m

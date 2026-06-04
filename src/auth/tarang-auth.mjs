@@ -58,6 +58,19 @@ export class TarangAuth {
         return this._config || {};
     }
 
+    /** Clear credentials — remove token and keys from config. */
+    logout() {
+        try {
+            if (fs.existsSync(CONFIG_PATH)) {
+                fs.unlinkSync(CONFIG_PATH);
+            }
+            this._config = null;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     /** Save credentials atomically (temp-file + rename). */
     saveCredentials(updates) {
         this._ensureConfigDir();

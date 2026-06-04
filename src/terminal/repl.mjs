@@ -108,6 +108,7 @@ const COMMANDS = {
   '/revoke':   'Revoke auto-approvals',
   '/resume':   'Resume a previous session',
   '/sessions': 'List resumable sessions',
+  '/logout':   'Sign out and clear credentials',
   '/exit':     'Exit CLI',
 };
 
@@ -939,9 +940,11 @@ async function handleCommand(input, ctx) {
       for (let i = 0; i < resumable.length; i++) {
         const s = resumable[i];
         const date = s.startedAt ? new Date(s.startedAt).toLocaleString() : '?';
-        const instr = s.instruction ? s.instruction.slice(0, 45) : '(no instruction)';
+        const instr = (s.instruction || '(no instruction)').slice(0, 45);
+        const proj = s.project ? c.cyan(s.project) + ' ' : '';
         const num = `[${i + 1}]`;
-        process.stderr.write(`  ${c.cyan(num)} ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+        process.stderr.write(`  ${c.cyan(num)} ${proj}${c.dim(date)}  ${s.messageCount} msgs\n`);
+        process.stderr.write(`      ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
 
@@ -1006,6 +1009,17 @@ async function handleCommand(input, ctx) {
         return;
       }
       return await runAgent(cmd.slice(1), rest, ctx, session, renderEvent);
+    }
+
+    case '/logout': {
+      const success = ctx.auth.logout();
+      if (success) {
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.orca/config.json')}\n`);
+        process.stderr.write(`  ${c.dim('Run /login to sign in again.')}\n`);
+      } else {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No credentials to clear.')}\n`);
+      }
+      return;
     }
 
     case '/exit':
