@@ -223,17 +223,49 @@ def collect_patch(repo_dir: Path) -> str:
 
 def run_tests(repo_dir: Path, instance: dict) -> dict:
     """Run the test suite to verify the fix."""
-    test_cmd = instance.get("test_cmd", "")
-    if not test_cmd:
-        # Try common test commands
-        if (repo_dir / "setup.py").exists():
-            test_cmd = "python -m pytest -x --timeout=60"
-        elif (repo_dir / "package.json").exists():
-            test_cmd = "npm test"
+    # Use FAIL_TO_PASS tests from SWE-bench — these are the tests that should pass after fix
+    fail_to_pass = instance.get("FAIL_TO_PASS", "")
+    if isinstance(fail_to_pass, str):
+        try:
+            import json as _json
+            fail_to_pass = _json.loads(fail_to_pass)
+        except Exception:
+            fail_to_pass = []
+
+    repo = instance.get("repo", "")
+
+    # Django uses its own test runner
+    if "django" in repo:
+        if fail_to_pass:
+            # Extract test module path from "test_name (module.path.TestClass)"
+            test_labels = []
+            for t in fail_to_pass:
+                # "test_foo (bar.tests.BazTests)" → "bar.tests"
+                if "(" in t:
+                    module = t.split("(")[1].rstrip(")")
+                    # Use the full dotted path as test label
+                    test_labels.append(module.rsplit(".", 1)[0])
+                else:
+                    test_labels.append(t)
+            test_labels = list(set(test_labels))
+            test_cmd = f"python tests/runtests.py {' '.join(test_labels)}"
         else:
-            test_cmd = "python -m pytest -x --timeout=60"
+            test_cmd = "python tests/runtests.py"
+    else:
+        test_cmd = instance.get("test_cmd", "")
+        if not test_cmd:
+            if (repo_dir / "setup.py").exists():
+                test_cmd = "python -m pytest -x --timeout=60"
+            elif (repo_dir / "package.json").exists():
+                test_cmd = "npm test"
+            else:
+                test_cmd = "python -m pytest -x --timeout=60"
+
+    print(f"  Test cmd: {test_cmd[:80]}", file=sys.stderr)
 
     try:
+        # Ensure the repo's code is used, not system-installed packages
+        test_env = {**os.environ, "PYTHONPATH": str(repo_dir)}
         result = subprocess.run(
             test_cmd,
             shell=True,
@@ -241,10 +273,15 @@ def run_tests(repo_dir: Path, instance: dict) -> dict:
             text=True,
             cwd=str(repo_dir),
             timeout=120,
+            env=test_env,
         )
 
+        passed = result.returncode == 0
+        test_out = (result.stderr or result.stdout or "")[-1000:]
+        if not passed:
+            print(f"  Test output: {test_out[-200:]}", file=sys.stderr)
         return {
-            "passed": result.returncode == 0,
+            "passed": passed,
             "exit_code": result.returncode,
             "stdout": result.stdout[-1000:] if result.stdout else "",
             "stderr": result.stderr[-1000:] if result.stderr else "",

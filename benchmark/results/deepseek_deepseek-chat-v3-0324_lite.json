@@ -1,30 +1,30 @@
 {
   "benchmark": "swe-bench-lite",
   "model": "deepseek/deepseek-chat-v3-0324",
-  "timestamp": "2026-06-04T15:11:49.571063",
+  "timestamp": "2026-06-04T18:58:45.742385",
   "total": 1,
   "passed": 0,
   "failed": 1,
   "errors": 0,
   "pass_rate": 0.0,
-  "total_cost_usd": 0.016,
-  "avg_cost_usd": 0.016,
+  "total_cost_usd": 0.023,
+  "avg_cost_usd": 0.023,
   "results": [
     {
-      "instance_id": "django__django-11001",
+      "instance_id": "django__django-10914",
       "repo": "django/django",
       "model": "deepseek/deepseek-chat-v3-0324",
-      "timestamp": "2026-06-04T15:10:49.433301",
+      "timestamp": "2026-06-04T18:57:08.038291",
       "orca": {
         "success": true,
-        "duration_s": 52.8,
-        "cost_usd": 0.016303,
-        "tools": 12
+        "duration_s": 81.0,
+        "cost_usd": 0.023449,
+        "tools": 6
       },
-      "patch_lines": 35,
+      "patch_lines": 27,
       "tests": {
         "passed": false,
-        "exit_code": 4
+        "exit_code": 1
       },
       "status": "FAIL"
     }
