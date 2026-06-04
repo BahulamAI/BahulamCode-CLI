@@ -225,15 +225,6 @@ export function createToolExecutor({ retriever } = {}) {
             if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
                 return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Use an ABSOLUTE path like "${process.cwd()}/src/main.py"`, _tool: 'write_file' };
             }
-            // Warn if relative path — LLM should use absolute paths
-            if (!rawPath.startsWith('/')) {
-                const resolved = path.resolve(process.cwd(), rawPath);
-                return {
-                    success: false,
-                    output: `Error: Relative path "${rawPath}" is not allowed. Use the absolute path: "${resolved}". Always use absolute paths for write_file.`,
-                    _tool: 'write_file',
-                };
-            }
             const filePath = resolvePath(rawPath);
             const writeCheck = validateWrite(filePath, args.content);
             if (!writeCheck.safe) {
@@ -325,14 +316,6 @@ export function createToolExecutor({ retriever } = {}) {
         // 4. edit_file → Edit + auto-lint
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
-            if (rawPath && !rawPath.startsWith('/')) {
-                const resolved = path.resolve(process.cwd(), rawPath);
-                return {
-                    success: false,
-                    output: `Error: Relative path "${rawPath}" is not allowed. Use the absolute path: "${resolved}".`,
-                    _tool: 'edit_file',
-                };
-            }
             const filePath = resolvePath(rawPath);
             // OCC Edit requires Read first
             try {
