@@ -25,6 +25,7 @@ import { execSync } from 'node:child_process';
  */
 export function createToolExecutor({ retriever } = {}) {
     const occRegistry = createToolRegistry();
+    let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
 
     /**
      * Resolve a path relative to CWD, with traversal protection.
@@ -161,6 +162,13 @@ export function createToolExecutor({ retriever } = {}) {
             const filePath = resolvePath(args.file_path || args.path);
             const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
 
+            // Nudge: if reading shallow overview files, remind agent to search deeper
+            const basename = path.basename(filePath).toLowerCase();
+            const isShallowFile = ['readme.md', 'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod'].includes(basename);
+            const nudge = isShallowFile && !_searchCodeUsed
+                ? '\n\nNOTE: You read a top-level overview file. Use search_code(query) to find actual implementations before drawing conclusions. READMEs and package.json do NOT show what features exist in the codebase.'
+                : '';
+
             // If no line range specified, auto-truncate and return AST summary
             if (!hasLineRange) {
                 try {
@@ -175,7 +183,7 @@ export function createToolExecutor({ retriever } = {}) {
                         return {
                             success: true,
                             output: `${analysis.summary}\n\n` +
-                                    `## First 20 lines\n${firstLines}`,
+                                    `## First 20 lines\n${firstLines}${nudge}`,
                             _tool: 'read_file',
                             _truncated: true,
                             _total_lines: lines,
@@ -201,7 +209,7 @@ export function createToolExecutor({ retriever } = {}) {
             return {
                 success: !isError(output),
                 content,
-                output,
+                output: output + nudge,
                 _tool: 'read_file',
                 _output_type: 'file_content',
             };
@@ -362,6 +370,7 @@ export function createToolExecutor({ retriever } = {}) {
 
         // 6. search_code → BM25 retriever (semantic chunks) with grep fallback
         search_code: async (args) => {
+            _searchCodeUsed = true;
             const query = args.query || args.pattern;
             if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
 

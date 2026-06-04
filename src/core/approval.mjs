@@ -142,6 +142,11 @@ export class ApprovalManager {
         if (this.planMode && WRITE_TOOLS.has(toolName)) {
             return { approved: false, reason: `Blocked by plan mode: ${toolName}` };
         }
+        // Auto-approve everything in headless/autoApprove mode (no TTY prompts)
+        if (this.autoApprove) {
+            this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
+            return { approved: true };
+        }
         if (!WRITE_TOOLS.has(toolName) && !requireApproval) {
             return { approved: true };
         }
@@ -158,7 +163,7 @@ export class ApprovalManager {
         if (NEVER_AUTO_APPROVE.has(toolName)) {
             return this._prompt(toolName, args);
         }
-        if (this.autoApprove || this.approveAll) {
+        if (this.approveAll) {
             this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
             return { approved: true };
         }

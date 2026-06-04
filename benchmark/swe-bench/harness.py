@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/sree/Sites/Tarang Orca/tarang-backend/.venv/bin/python
 """
 SWE-bench Harness — run Orca against SWE-bench instances and score results.
 
@@ -117,13 +117,16 @@ def apply_test_patch(repo_dir: Path, instance: dict) -> bool:
     return True
 
 
+ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
+
+
 def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300) -> dict:
     """Run Orca in headless mode on the instance."""
     problem = instance["problem_statement"]
-    instruction = f"Fix the following issue:\n\n{problem}"
+    instruction = f"Fix the following issue. Use tools (read_file, edit_file, search_code) to investigate and fix the code.\n\n{problem}"
 
     cmd = [
-        "orca", "--headless",
+        "node", str(ORCA_MAIN), "--headless",
         "-p", instruction,
     ]
     if model:

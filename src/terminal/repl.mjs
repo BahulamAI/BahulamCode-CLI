@@ -267,7 +267,14 @@ function renderToolCall(data) {
   }
 
   // Render: ⏺ ToolName(summary)
-  const summaryStr = summary ? `(${summary.slice(0, 80)})` : '';
+  // Use terminal width minus tool name and padding, minimum 60
+  const cols = process.stderr.columns || 120;
+  const maxSummary = Math.max(60, cols - tool.length - 10);
+  let displaySummary = summary || '';
+  if (displaySummary.length > maxSummary) {
+    displaySummary = '...' + displaySummary.slice(-(maxSummary - 3));
+  }
+  const summaryStr = displaySummary ? `(${displaySummary})` : '';
   process.stderr.write(`\n${indent}${c.cyan('⏺')} ${c.bold(tool)}${c.dim(summaryStr)}\n`);
 }
 
@@ -1060,7 +1067,8 @@ export async function startTerminalRepl() {
   // BM25 retriever — indexes project files for search_code tool
   const retriever = new ContextRetriever(safeCwd());
   const toolExecutor = createToolExecutor({ retriever });
-  const approval = new ApprovalManager({ autoApprove: false });
+  const skipPerms = cliArgs.dangerouslySkipPermissions;
+  const approval = new ApprovalManager({ autoApprove: skipPerms });
 
   // Session manager — persists conversation messages to .orca/conversations/
   const sessionMgr = new SessionManager(safeCwd());
@@ -1300,6 +1308,7 @@ export async function startTerminalRepl() {
       startContentStream();
 
       const execContext = { cwd: safeCwd() };
+      if (skipPerms) execContext.dangerously_skip_permissions = true;
       if (projectSkeleton) execContext.project_skeleton = projectSkeleton;
 
       for await (const event of client.execute(input, execContext, session.history)) {
