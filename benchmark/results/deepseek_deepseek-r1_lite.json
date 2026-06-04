@@ -1,0 +1,32 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "deepseek/deepseek-r1",
+  "timestamp": "2026-06-04T19:46:11.644987",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "errors": 0,
+  "pass_rate": 0.0,
+  "total_cost_usd": 0.029,
+  "avg_cost_usd": 0.029,
+  "results": [
+    {
+      "instance_id": "django__django-10914",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-r1",
+      "timestamp": "2026-06-04T19:44:48.380941",
+      "orca": {
+        "success": true,
+        "duration_s": 65.4,
+        "cost_usd": 0.029439,
+        "tools": 6
+      },
+      "patch_lines": 27,
+      "tests": {
+        "passed": false,
+        "exit_code": 1
+      },
+      "status": "FAIL"
+    }
+  ]
+}

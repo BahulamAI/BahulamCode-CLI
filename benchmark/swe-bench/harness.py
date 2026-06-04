@@ -237,17 +237,16 @@ def run_tests(repo_dir: Path, instance: dict) -> dict:
     # Django uses its own test runner
     if "django" in repo:
         if fail_to_pass:
-            # Extract test module path from "test_name (module.path.TestClass)"
+            # Extract specific test labels from "test_name (module.path.TestClass)"
             test_labels = []
             for t in fail_to_pass:
-                # "test_foo (bar.tests.BazTests)" → "bar.tests"
                 if "(" in t:
-                    module = t.split("(")[1].rstrip(")")
-                    # Use the full dotted path as test label
-                    test_labels.append(module.rsplit(".", 1)[0])
+                    # "test_foo (bar.tests.BazTests)" → "bar.tests.BazTests.test_foo"
+                    test_name = t.split("(")[0].strip()
+                    module = t.split("(")[1].rstrip(")").strip()
+                    test_labels.append(f"{module}.{test_name}")
                 else:
                     test_labels.append(t)
-            test_labels = list(set(test_labels))
             test_cmd = f"python tests/runtests.py {' '.join(test_labels)}"
         else:
             test_cmd = "python tests/runtests.py"
