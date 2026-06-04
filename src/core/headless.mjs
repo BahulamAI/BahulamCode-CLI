@@ -80,7 +80,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
-    const execContext = { cwd: process.cwd(), dangerously_skip_permissions: true };
+    const execContext = { cwd: process.cwd(), freeswim: true };
     if (skeleton) execContext.project_skeleton = skeleton;
     if (model) execContext.model_override = model;
 

@@ -31,7 +31,7 @@ export function parseArgs(args) {
         resume: false,
         resumeSessionId: null,
         headless: false,
-        dangerouslySkipPermissions: false,
+        freeswim: false,
         verbose: false,
         debug: false,
         showVersion: false,
@@ -95,12 +95,13 @@ export function parseArgs(args) {
 
             case '--headless':
                 result.headless = true;
-                result.dangerouslySkipPermissions = true; // headless implies skip permissions
+                result.freeswim = true; // headless implies skip permissions
                 break;
 
-            case '--dangerously-skip-permissions':
+            case '--freeswim-open-waters':
+            case '--freeswim':
             case '--yes':
-                result.dangerouslySkipPermissions = true;
+                result.freeswim = true;
                 break;
 
             case '--verbose':
@@ -155,8 +156,9 @@ Options:
   --resume, -r [sessionId]   Resume last session (or specific session)
   --continue                 Alias for --resume
   --headless                 Non-interactive mode: auto-approve, JSONL output
-  --dangerously-skip-permissions  Skip all approval prompts (auto-approve everything)
-  --yes                      Alias for --dangerously-skip-permissions
+  --freeswim-open-waters     Skip all approval prompts (no boundaries)
+  --freeswim                 Alias for --freeswim-open-waters
+  --yes                      Alias for --freeswim-open-waters
   --verbose, -v              Verbose output
   --debug, -d                Debug mode
   --version                  Show version

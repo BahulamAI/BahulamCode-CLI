@@ -1067,7 +1067,7 @@ export async function startTerminalRepl() {
   // BM25 retriever — indexes project files for search_code tool
   const retriever = new ContextRetriever(safeCwd());
   const toolExecutor = createToolExecutor({ retriever });
-  const skipPerms = cliArgs.dangerouslySkipPermissions;
+  const skipPerms = cliArgs.freeswim;
   const approval = new ApprovalManager({ autoApprove: skipPerms });
 
   // Session manager — persists conversation messages to .orca/conversations/
@@ -1308,7 +1308,7 @@ export async function startTerminalRepl() {
       startContentStream();
 
       const execContext = { cwd: safeCwd() };
-      if (skipPerms) execContext.dangerously_skip_permissions = true;
+      if (skipPerms) execContext.freeswim = true;
       if (projectSkeleton) execContext.project_skeleton = projectSkeleton;
 
       for await (const event of client.execute(input, execContext, session.history)) {
