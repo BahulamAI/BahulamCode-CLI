@@ -358,56 +358,48 @@ export function createToolExecutor({ retriever } = {}) {
             };
         },
 
-        // 6. search_code → rg (ripgrep) primary, BM25 secondary
+        // 6. search_code → combined rg + BM25 for best results
         search_code: async (args) => {
             _searchCodeUsed = true;
             const query = args.query || args.pattern;
             if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
 
             const searchPath = args.path ? resolvePath(args.path) : PROJECT_CWD;
+            const parts = [];
 
-            // DEBUG: log what search_code receives and executes
-            const debugInfo = `[search_code DEBUG] query="${query}" searchPath="${searchPath}" PROJECT_CWD="${PROJECT_CWD}" process.cwd="${process.cwd()}"`;
-            process.stderr.write(`${debugInfo}\n`);
-
-            // Primary: ripgrep — fast, reliable, always works
+            // Layer 1: ripgrep — exact text matches with context
             try {
                 const cmd = `rg -n -C 1 --max-count 5 --max-filesize 500K -e ${JSON.stringify(query)} ${JSON.stringify(searchPath)} 2>/dev/null | head -60`;
-                process.stderr.write(`[search_code DEBUG] cmd: ${cmd.slice(0, 120)}\n`);
-                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
-                process.stderr.write(`[search_code DEBUG] rg output: ${output ? output.slice(0, 80) + '...' : 'EMPTY'}\n`);
-                if (output) {
-                    return { success: true, output, _tool: 'search_code', _method: 'rg' };
+                const rgOutput = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
+                if (rgOutput) {
+                    parts.push(`## Exact matches (rg)\n${rgOutput}`);
                 }
             } catch { /* rg not found or no results */ }
 
-            // Secondary: BM25 retriever (if indexed)
+            // Layer 2: BM25 — semantic relevance (finds related code even without exact match)
             if (retriever) {
                 if (!retriever.index) retriever.loadIndex();
-                process.stderr.write(`[search_code DEBUG] BM25: hasIndex=${!!retriever.index} chunks=${retriever.chunkTexts?.size || 0} indexDir=${retriever.indexDir}\n`);
-                const chunks = retriever.retrieve(query, 8);
+                const chunks = retriever.retrieve(query, 5);
                 if (chunks.length > 0) {
-                    const output = chunks.map(c => {
+                    const bm25Output = chunks.map(c => {
                         const score = c.score?.toFixed(2) || '?';
                         return `── ${c.id} (score: ${score}) ──\n${c.text}`;
                     }).join('\n\n');
-                    return { success: true, output, chunks: chunks.length, _tool: 'search_code', _method: 'bm25' };
+                    parts.push(`## Related code (BM25)\n${bm25Output}`);
                 }
             }
 
-            // Tertiary: OCC Grep tool
-            try {
-                const result = await occRegistry.call('Grep', {
-                    pattern: query, path: searchPath, output_mode: 'content', '-n': true, head_limit: 30,
-                });
-                const output = typeof result === 'string' ? result : String(result);
-                if (output?.trim() && !output.includes('No matches found')) {
-                    return { success: true, output, _tool: 'search_code', _method: 'grep' };
-                }
-            } catch { /* fall through */ }
+            // Return combined results
+            if (parts.length > 0) {
+                return {
+                    success: true,
+                    output: parts.join('\n\n'),
+                    _tool: 'search_code',
+                    _method: parts.length > 1 ? 'rg+bm25' : (parts[0].startsWith('## Exact') ? 'rg' : 'bm25'),
+                };
+            }
 
-            // Nothing found
-            process.stderr.write(`[search_code DEBUG] ALL METHODS FAILED for "${query}" in "${searchPath}"\n`);
+            // Nothing found — actionable hint
             const firstWord = query.split(/\s+/)[0];
             return {
                 success: true,
