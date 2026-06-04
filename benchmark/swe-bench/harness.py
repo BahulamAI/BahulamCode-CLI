@@ -123,7 +123,13 @@ ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs
 def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300, debug: bool = False) -> dict:
     """Run Orca in headless mode on the instance."""
     problem = instance["problem_statement"]
-    instruction = f"Fix the following issue. Use tools (read_file, edit_file, search_code) to investigate and fix the code.\n\n{problem}"
+    repo_abs = str(repo_dir.resolve())
+    instruction = (
+        f"Fix the following issue in the code at {repo_abs}. "
+        f"Use search_code to find the relevant file, read_file to understand the code, "
+        f"then edit_file with ABSOLUTE paths to fix it. You MUST call edit_file.\n\n"
+        f"{problem}"
+    )
 
     cmd = [
         "node", str(ORCA_MAIN), "--headless", "--verbose",
