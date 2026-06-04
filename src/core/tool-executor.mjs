@@ -27,12 +27,15 @@ export function createToolExecutor({ retriever } = {}) {
     const occRegistry = createToolRegistry();
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
 
+    // Capture CWD at creation time — OCC Bash tool mutates process.cwd() after shell commands
+    const PROJECT_CWD = process.cwd();
+
     /**
-     * Resolve a path relative to CWD, with traversal protection.
+     * Resolve a path relative to project CWD, with traversal protection.
      */
     function resolvePath(p) {
-        if (!p) return process.cwd();
-        const resolved = path.resolve(process.cwd(), p);
+        if (!p) return PROJECT_CWD;
+        const resolved = path.resolve(PROJECT_CWD, p);
         // Prevent path traversal outside CWD's parent
         const cwd = process.cwd();
         const cwdParent = path.dirname(cwd);
@@ -361,13 +364,18 @@ export function createToolExecutor({ retriever } = {}) {
             const query = args.query || args.pattern;
             if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
 
-            const searchPath = args.path ? resolvePath(args.path) : process.cwd();
+            const searchPath = args.path ? resolvePath(args.path) : PROJECT_CWD;
+
+            // DEBUG: log what search_code receives and executes
+            const debugInfo = `[search_code DEBUG] query="${query}" searchPath="${searchPath}" PROJECT_CWD="${PROJECT_CWD}" process.cwd="${process.cwd()}"`;
+            process.stderr.write(`${debugInfo}\n`);
 
             // Primary: ripgrep — fast, reliable, always works
             try {
-                const safeQuery = query.replace(/['"\\]/g, '\\$&');
                 const cmd = `rg -n -C 1 --max-count 5 --max-filesize 500K -e ${JSON.stringify(query)} ${JSON.stringify(searchPath)} 2>/dev/null | head -60`;
+                process.stderr.write(`[search_code DEBUG] cmd: ${cmd.slice(0, 120)}\n`);
                 const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
+                process.stderr.write(`[search_code DEBUG] rg output: ${output ? output.slice(0, 80) + '...' : 'EMPTY'}\n`);
                 if (output) {
                     return { success: true, output, _tool: 'search_code', _method: 'rg' };
                 }
@@ -376,6 +384,7 @@ export function createToolExecutor({ retriever } = {}) {
             // Secondary: BM25 retriever (if indexed)
             if (retriever) {
                 if (!retriever.index) retriever.loadIndex();
+                process.stderr.write(`[search_code DEBUG] BM25: hasIndex=${!!retriever.index} chunks=${retriever.chunkTexts?.size || 0} indexDir=${retriever.indexDir}\n`);
                 const chunks = retriever.retrieve(query, 8);
                 if (chunks.length > 0) {
                     const output = chunks.map(c => {
@@ -397,7 +406,8 @@ export function createToolExecutor({ retriever } = {}) {
                 }
             } catch { /* fall through */ }
 
-            // Nothing found — give actionable hint
+            // Nothing found
+            process.stderr.write(`[search_code DEBUG] ALL METHODS FAILED for "${query}" in "${searchPath}"\n`);
             const firstWord = query.split(/\s+/)[0];
             return {
                 success: true,
