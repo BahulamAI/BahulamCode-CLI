@@ -1,0 +1,40 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_code
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: analyze_code
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: grep
+[headless] Tool: run_tests
+[headless] Tool: git_diff
+[headless] Done: 19 tools, 227.3s, $0.074
+
+--- Response ---
+## Summary
+
+The bug was that `RawSQL` expressions used in `order_by()` with multiline SQL (containing newline characters `\n`) caused duplicate entries in the generated SQL query.
+
+**Root cause:** The regex `re.compile(r'(.*)\s(ASC|DESC)(.*)')` uses `.` which does NOT match newline characters. For multiline SQL, only the last line was captured, causing different SQL expressions to appear identical after stripping the `ASC`/`DESC` suffix — so the deduplication logic failed to recognize them as distinct.
+
+**Fix:** Replace newlines and carriage returns with spaces before applying the regex in both locations in `compiler.py` (the `get_order_by()` and `get_extra_select()` methods). Changed:
+
+```python
+# Before
+without_ordering = self.ordering_parts.search(sql).group(1)
+# After
+without_ordering = self.ordering_parts.search(sql.replace('\n', ' ').replace('\r', ' ')).group(1)
+```
+
+All existing tests pass.

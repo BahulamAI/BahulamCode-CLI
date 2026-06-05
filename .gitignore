@@ -7,3 +7,4 @@ node_modules/
 .tarang/*
 
 .npmrc
+benchmark/.venv/

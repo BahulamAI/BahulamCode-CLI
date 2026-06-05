@@ -1,32 +1,28 @@
 {
   "benchmark": "swe-bench-lite",
   "model": "deepseek/deepseek-chat-v3-0324",
-  "timestamp": "2026-06-04T19:51:34.206864",
+  "timestamp": "2026-06-04T20:16:04.694456",
   "total": 1,
-  "passed": 1,
+  "passed": 0,
   "failed": 0,
-  "errors": 0,
-  "pass_rate": 100.0,
-  "total_cost_usd": 0.024,
-  "avg_cost_usd": 0.024,
+  "errors": 1,
+  "pass_rate": 0.0,
+  "total_cost_usd": 0,
+  "avg_cost_usd": 0.0,
   "results": [
     {
-      "instance_id": "django__django-10914",
+      "instance_id": "django__django-11039",
       "repo": "django/django",
       "model": "deepseek/deepseek-chat-v3-0324",
-      "timestamp": "2026-06-04T19:50:26.688569",
+      "timestamp": "2026-06-04T20:10:48.395782",
       "orca": {
-        "success": true,
-        "duration_s": 50.8,
-        "cost_usd": 0.024205,
-        "tools": 6
+        "success": false,
+        "duration_s": 302.3,
+        "cost_usd": 0,
+        "tools": 0
       },
-      "patch_lines": 27,
-      "tests": {
-        "passed": true,
-        "exit_code": 0
-      },
-      "status": "PASS"
+      "status": "orca_failed",
+      "error": "Tool: git_diff\n[headless] Tool: read_file\n[headless] Tool: read_file\n[headless] Tool: read_file\n[headless] Tool: shell\n[headless] Tool: read_file\n[headless] Tool: read_file\n[headless] Tool: read_file\n"
     }
   ]
 }
