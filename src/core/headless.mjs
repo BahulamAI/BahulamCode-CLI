@@ -41,18 +41,9 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Auth ──
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
-    // In headless mode, allow ORCA_AUTH_TOKEN env var or skip auth entirely for local benchmarks
     if (!creds.token) {
-        const envToken = process.env.ORCA_AUTH_TOKEN || process.env.TARANG_AUTH_TOKEN;
-        if (envToken) {
-            creds.token = envToken;
-        } else if (process.env.TARANG_ENV === 'local' || process.env.ORCA_SKIP_AUTH === '1') {
-            creds.token = 'benchmark-local';
-            log('Auth skipped (local/benchmark mode)');
-        } else {
-            emit({ type: 'error', error: 'Not logged in. Run: orca login, or set ORCA_SKIP_AUTH=1 for local benchmarks' });
-            process.exit(1);
-        }
+        emit({ type: 'error', error: 'Not logged in. Run: orca login' });
+        process.exit(1);
     }
 
     // ── Index project (with timeout — large repos can take minutes) ──
