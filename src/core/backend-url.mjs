@@ -8,7 +8,7 @@
  */
 
 const BACKEND_URLS = {
-    local:       'http://localhost:8000',
+    local:       'http://127.0.0.1:8000',
     development: 'https://tarang-backend-development.up.railway.app',
     production:  'https://tarang-backend-intl-web-app-production.up.railway.app',
 };
