@@ -65,11 +65,18 @@ class OrcaAgent:
         problem = instance.get("problem_statement", "")
 
         instruction = (
-            f"Fix the following issue in the code at {repo_dir}. "
-            f"Use search_code or grep to find the relevant file, "
-            f"read_file to understand the code, then edit_file to fix it. "
-            f"You MUST call edit_file to make changes.\n\n"
-            f"{problem}"
+            f"Fix the following issue in the repository at {repo_dir}.\n\n"
+            f"WORKFLOW:\n"
+            f"1. Use grep to find the relevant source file (NOT test files)\n"
+            f"2. read_file the specific function/method mentioned in the issue\n"
+            f"3. Understand the ROOT CAUSE — why does the current code fail?\n"
+            f"4. edit_file to fix the source code. You MUST call edit_file.\n"
+            f"5. Do NOT edit test files. Fix the SOURCE code only.\n\n"
+            f"RULES:\n"
+            f"- Maximum 3 reads of the same file. After that, EDIT.\n"
+            f"- Do NOT search endlessly. After finding the file, READ and EDIT.\n"
+            f"- Think about what the code does wrong BEFORE editing.\n\n"
+            f"ISSUE:\n{problem}"
         )
 
         cmd = [
