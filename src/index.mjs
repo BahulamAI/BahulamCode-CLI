@@ -315,6 +315,8 @@ async function main() {
                 cwd: process.cwd(),
                 systemPromptOverride: args.systemPrompt,
                 maxTurns: args.maxTurns,
+                stagnationDetection: settings.stagnationDetection,
+                stagnationThreshold: settings.stagnationThreshold,
             }).execute(instruction, { cwd: process.cwd() });
         } else {
             if (args.verbose) process.stderr.write('\x1b[2m[mode] remote\x1b[0m\n');

@@ -5,6 +5,7 @@
 import { streamResponse, accumulateStream } from './streaming.mjs';
 import { ContextManager } from './context-manager.mjs';
 import { buildSystemPrompt } from './system-prompt.mjs';
+import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
 import fs from 'fs';
 import path from 'path';
 export function createAgentLoop({ model, tools, permissions, settings, hooks }) {
@@ -26,8 +27,11 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
         model,
         tools,
         _contextManager: contextManager,
-        _recentToolCalls: [],  // stagnation detection
     };
+    const stagnation = createStagnationTracker({
+        enabled: settings.stagnationDetection === true,
+        threshold: settings.stagnationThreshold,
+    });
 
     async function* run(userMessage, options = {}) {
         // Add user message (skip for continuation turns)
@@ -127,21 +131,15 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
             const toolResults = [];
 
             for (const block of toolUseBlocks) {
-                // ── Stagnation detection ──
-                // If the same tool+args have been called 3+ times, block and tell the model
-                const callSig = JSON.stringify({ name: block.name, input: block.input });
-                state._recentToolCalls.push(callSig);
-                // Keep only last 20 calls
-                if (state._recentToolCalls.length > 20) state._recentToolCalls.shift();
-                const repeatCount = state._recentToolCalls.filter(s => s === callSig).length;
-                if (repeatCount >= 3) {
-                    yield { type: 'stagnation', tool: block.name, count: repeatCount };
+                // Only consecutive identical calls indicate a loop. The same read or
+                // validation later in a task can be legitimate progress verification.
+                const stagnationResult = stagnation.record(block.name, block.input);
+                if (stagnationResult.detected) {
+                    yield { type: 'stagnation', tool: block.name, count: stagnationResult.count };
                     toolResults.push({
                         type: 'tool_result',
                         tool_use_id: block.id,
-                        content: `STAGNATION DETECTED: Tool "${block.name}" called ${repeatCount} times with identical arguments. ` +
-                                 `The previous calls already succeeded or the target does not exist. ` +
-                                 `Do NOT retry this call. Try a different approach or move on to the next step.`,
+                        content: stagnationMessage(block.name, stagnationResult.count),
                     });
                     continue;
                 }

@@ -84,7 +84,17 @@ export const AgentTool = {
             model,
             tools,
             permissions,
-            settings: { stream: false },
+            settings: {
+                stream: false,
+                stagnationDetection: !['0', 'false', 'no', 'off'].includes(
+                    (process.env.ORCA_STAGNATION_DETECTION ?? '0').toLowerCase(),
+                ),
+                stagnationThreshold: Number.parseInt(
+                    process.env.ORCA_STAGNATION_THRESHOLD
+                    ?? '3',
+                    10,
+                ),
+            },
         });
 
         if (input.run_in_background) {

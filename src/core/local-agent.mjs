@@ -5,9 +5,9 @@
  */
 
 import { ContextRetriever } from '../context/retriever.mjs';
+import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
 
 const MAX_ITERATIONS = 50;
-const STAGNATION_THRESHOLD = 3;
 
 /** Tool schemas for the LLM — proper parameter definitions. */
 const TOOL_SCHEMAS = [
@@ -185,7 +185,18 @@ const TOOL_SCHEMAS = [
 ];
 
 export class LocalAgent {
-    constructor({ apiKey, model, toolExecutor, verbose = false, openRouterKey = null, cwd = null, systemPromptOverride = null, maxTurns = null }) {
+    constructor({
+        apiKey,
+        model,
+        toolExecutor,
+        verbose = false,
+        openRouterKey = null,
+        cwd = null,
+        systemPromptOverride = null,
+        maxTurns = null,
+        stagnationDetection = false,
+        stagnationThreshold = 3,
+    }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
         this.model = model || 'claude-sonnet-4-20250514';
@@ -195,6 +206,8 @@ export class LocalAgent {
         this.retriever = new ContextRetriever(this.cwd);
         this.systemPromptOverride = systemPromptOverride;
         this.maxTurns = maxTurns || MAX_ITERATIONS;
+        this.stagnationDetection = stagnationDetection;
+        this.stagnationThreshold = stagnationThreshold;
         this._cancelled = false;
     }
 
@@ -220,7 +233,10 @@ export class LocalAgent {
         const systemPrompt = this._buildSystemPrompt(context, retrievedContext);
         const messages = [{ role: 'user', content: instruction }];
 
-        const recentCalls = []; // for stagnation detection
+        const stagnation = createStagnationTracker({
+            enabled: this.stagnationDetection,
+            threshold: this.stagnationThreshold,
+        });
 
         for (let i = 0; i < this.maxTurns; i++) {
             if (this._cancelled) {
@@ -251,14 +267,17 @@ export class LocalAgent {
                     toolCount++;
                     const { id, name, input } = block;
 
-                    // Stagnation check
-                    const callSig = `${name}:${JSON.stringify(input)}`;
-                    recentCalls.push(callSig);
-                    const repeats = recentCalls.filter(c => c === callSig).length;
-                    if (repeats >= STAGNATION_THRESHOLD) {
-                        yield { type: 'error', data: { message: `Stagnation detected: ${name} called ${repeats} times with same args. Aborting.` } };
-                        yield { type: 'complete', data: { summary: 'Aborted (stagnation)', changes: 0, duration_s: (Date.now() - startTime) / 1000 } };
-                        return;
+                    const stagnationResult = stagnation.record(name, input);
+                    if (stagnationResult.detected) {
+                        const message = stagnationMessage(name, stagnationResult.count);
+                        yield { type: 'stagnation', data: { tool: name, count: stagnationResult.count, message } };
+                        assistantContent.push(block);
+                        messages.push({ role: 'assistant', content: assistantContent.slice() });
+                        messages.push({
+                            role: 'user',
+                            content: [{ type: 'tool_result', tool_use_id: id, content: message }],
+                        });
+                        continue;
                     }
 
                     yield { type: 'tool_call', data: { call_id: id, tool: name, args: input } };

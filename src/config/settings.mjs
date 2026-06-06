@@ -45,6 +45,8 @@ export const SETTINGS_SCHEMA = {
     thinkingBudget: 10000,
     compactThreshold: 0.8,
     stream: true,
+    stagnationDetection: false,
+    stagnationThreshold: 3,
     mcpServers: {},
     theme: 'auto',
     showThinking: false,
@@ -116,4 +118,15 @@ function applyEnvOverrides(settings) {
     if (process.env.CLAUDE_CODE_THINKING === '1') settings.alwaysThinkingEnabled = true;
     if (process.env.CLAUDE_CODE_DISABLE_CRON === '1') settings.cronEnabled = false;
     if (process.env.CLAUDE_CODE_ENABLE_TASKS === '1') settings.enableTeams = true;
+    const stagnationEnabled = process.env.ORCA_STAGNATION_DETECTION;
+    if (stagnationEnabled !== undefined) {
+        settings.stagnationDetection = ['1', 'true', 'yes', 'on'].includes(
+            stagnationEnabled.toLowerCase(),
+        );
+    }
+    const stagnationThreshold = process.env.ORCA_STAGNATION_THRESHOLD;
+    if (stagnationThreshold) {
+        const n = parseInt(stagnationThreshold, 10);
+        if (Number.isInteger(n) && n >= 2) settings.stagnationThreshold = n;
+    }
 }

@@ -1,0 +1,40 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: edit_file
+[headless] Tool: git_diff
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: read_file
+[headless] Done: 14 tools, 51.2s, $0.158
+
+--- Response ---
+Perfect! The fix is complete. Here's a summary of what was done:
+
+## Summary
+
+I've successfully fixed the issue to prevent using `__isnull` lookup with non-boolean values. The changes made:
+
+1. **Added imports** to `/private/tmp/orca-swe-bench/django__django/2f72480f/django/db/models/lookups.py`:
+   - `import warnings` - for issuing deprecation warnings
+   - `from django.utils.deprecation import RemovedInDjango40Warning` - for the specific warning type
+
+2. **Added validation to the `IsNull` class** by overriding the `get_prep_lookup()` method:
+   - Checks if the RHS value is a boolean using `isinstance(self.rhs, bool)`
+   - If not a boolean (and not an expression), issues a `RemovedInDjango40Warning` deprecation warning
+   - The warning message tells users to use `True` or `False` instead
+   - Allows expressions (values with `resolve_expression` method) to pass through without warning
+
+The fix:
+- ✅ Issues a deprecation warning when non-boolean values are used with `__isnull`
+- ✅ Maintains backward compatibility (doesn't raise an error yet, just warns)
+- ✅ Passes all existing tests
+- ✅ Passes the new test `test_isnull_non_boolean_value` that checks for the warning
