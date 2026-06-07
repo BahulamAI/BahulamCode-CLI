@@ -1,0 +1,17 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: read_file
+[headless] Tool: search_files
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: git_diff
+[headless] Tool: run_tests
+[headless] Done: 11 tools, 93.3s, $0.075
+
+--- Response ---
+The fix is in place. The change adds an `assert "." not in name` check in `Blueprint.__init__`, matching the same pattern already used for endpoint names on line 364. This raises an error when a blueprint name contains a dot, which is necessary since dots are now significant for nested blueprints.

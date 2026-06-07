@@ -11,6 +11,7 @@
 import { createToolRegistry } from '../tools/registry.mjs';
 import { filterOutput } from './output-filter.mjs';
 import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
+import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
 import * as fs from 'node:fs';
@@ -107,8 +108,9 @@ export function createToolExecutor({ retriever } = {}) {
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
-        // 1. shell → Bash + smart output filtering + safety check
+        // 1. shell → Bash + classification + smart output filtering
         shell: async (args) => {
+            // Phase 1: legacy safety check (kept for backward compat)
             const shellCheck = validateShellCommand(args.command);
             if (!shellCheck.safe) {
                 return {
@@ -117,12 +119,23 @@ export function createToolExecutor({ retriever } = {}) {
                     _tool: 'shell', _blocked: true,
                 };
             }
-            if (shellCheck.highRisk) {
-                // highRisk flag — the approval manager will catch this,
-                // but tag it so the REPL can show a warning
-                args._highRisk = true;
-                args._riskReason = shellCheck.reason;
+
+            // Phase 2: command classifier (PRD-050)
+            const classification = classifyCommand(args.command);
+            if (classification.classification === 'blocked') {
+                return {
+                    success: false,
+                    output: `BLOCKED: ${classification.reason}`,
+                    _tool: 'shell', _blocked: true,
+                };
             }
+
+            // Tag for approval/sandbox routing
+            if (classification.highRisk || shellCheck.highRisk) {
+                args._highRisk = true;
+                args._riskReason = classification.reason || shellCheck.reason;
+            }
+            args._classification = classification.classification; // 'safe' or 'contained'
 
             // Pre-check: if command is rm/unlink, verify targets exist first
             const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
@@ -149,7 +162,9 @@ export function createToolExecutor({ retriever } = {}) {
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
             const exitMatch = rawOutput.match(/Exit code: (\d+)/);
-            const success = !exitMatch || exitMatch[1] === '0';
+            const exitCode = exitMatch ? parseInt(exitMatch[1]) : 0;
+            // Semantic exit code: grep returns 1 for "no matches" (not an error)
+            const success = !isExitCodeError(args.command, exitCode);
 
             // Apply smart filtering based on command type
             const filtered = filterOutput(rawOutput, args.command, success);
@@ -157,8 +172,9 @@ export function createToolExecutor({ retriever } = {}) {
             return {
                 success,
                 output: filtered.output,
-                exit_code: exitMatch ? parseInt(exitMatch[1]) : 0,
+                exit_code: exitCode,
                 _tool: 'shell',
+                _classification: args._classification,
                 _commandType: filtered.commandType,
                 _filtered: filtered.truncated || filtered.originalLines !== filtered.filteredLines,
             };
