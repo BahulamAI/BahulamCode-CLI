@@ -85,8 +85,8 @@ await test('parses status event', async () => {
     assert.strictEqual(events[1].type, 'complete');
 });
 
-// Test 2: Tool call triggers execution + callback (not yielded)
-await test('tool_call triggers execution and callback', async () => {
+// Test 2: Tool call triggers execution + callback and exposes the local result
+await test('tool_call triggers execution, callback, and tool_result', async () => {
     let callbackReceived = false;
     const server = http.createServer((req, res) => {
         if (req.url === '/api/execute') {
@@ -122,6 +122,12 @@ await test('tool_call triggers execution and callback', async () => {
     server.close();
     // tool_call IS yielded (to show the user what tool is running), then handled internally
     assert.ok(events.some(e => e.type === 'tool_call'), 'tool_call should be yielded to show user');
+    const resultEvent = events.find(e => e.type === 'tool_result');
+    assert.ok(resultEvent, 'local tool_result should be yielded for terminal rendering');
+    assert.strictEqual(resultEvent.data.call_id, 'tc1');
+    assert.strictEqual(resultEvent.data.tool, 'read_file');
+    assert.strictEqual(resultEvent.data.output, 'mock result for read_file');
+    assert.ok(Number.isInteger(resultEvent.data.duration_ms));
     assert.ok(callbackReceived, 'callback should have been sent');
 });
 
@@ -188,6 +194,32 @@ await test('plan event with milestones', async () => {
     server.close();
     assert.strictEqual(events[0].type, 'plan');
     assert.strictEqual(events[0].data.milestones.length, 2);
+});
+
+// Test 6: Server-side tools are displayed but never executed by the CLI
+await test('server-side tool_call is not executed locally', async () => {
+    let executions = 0;
+    const { server, port } = await createMockServer([
+        { event: 'tool_call', data: { call_id: 'mcp1', tool: 'mcp_demo', args: { q: 'test' }, server_side: true } },
+        { event: 'tool_done', data: { call_id: 'mcp1', tool: 'mcp_demo', success: true, server_side: true } },
+        { event: 'complete', data: { summary: 'Done' } },
+    ]);
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: {
+            async execute() {
+                executions++;
+                return { success: true, output: 'should not run' };
+            },
+        },
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+    assert.strictEqual(executions, 0);
+    assert.ok(events.some(e => e.type === 'tool_call' && e.data.server_side));
+    assert.ok(events.some(e => e.type === 'tool_done' && e.data.server_side));
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

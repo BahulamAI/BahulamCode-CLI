@@ -33,6 +33,12 @@ export const EVENT_TYPES = Object.freeze({
     DELEGATION: 'delegation',
     CHANGE: 'change',
     CONTENT: 'content',
+    CONTENT_PARTIAL: 'content_partial',
+    TOOL_RESULT: 'tool_result',
+    SUB_AGENT_START: 'sub_agent_start',
+    SUB_AGENT_TOOL: 'sub_agent_tool',
+    SUB_AGENT_COMPLETE: 'sub_agent_complete',
+    STAGNATION: 'stagnation',
     CANCELLED: 'cancelled',
     PAUSED: 'paused',
     RESUMED: 'resumed',
@@ -65,8 +71,8 @@ export class TarangStreamClient {
 
     /**
      * Execute an instruction via SSE stream.
-     * Yields parsed events. Tool requests are handled internally
-     * (executed locally, callback POSTed) and NOT yielded.
+     * Yields parsed events. Client-side tool requests are shown, executed
+     * locally, callback-posted, then followed by a local tool_result event.
      *
      * @param {string} instruction
      * @param {Object} [context={}]
@@ -144,6 +150,7 @@ export class TarangStreamClient {
             // This path remains for backwards compatibility with older backends.
             if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
                 yield { type: event, data }; // Show tool call to user first
+                if (data?.server_side) continue;
                 const toolEvent = await this._handleToolRequest(data);
                 if (toolEvent) yield toolEvent;
                 continue;
@@ -224,7 +231,7 @@ export class TarangStreamClient {
      * By the time a tool_call arrives here, it's already approved.
      *
      * @param {Object} data - { call_id, tool, args }
-     * @returns {Object|null} optional status event to yield
+     * @returns {Object} local tool result event to yield
      */
     async _handleToolRequest(data) {
         const { call_id, request_id, tool, args } = data;
@@ -255,7 +262,16 @@ export class TarangStreamClient {
             await sendCallback(this.baseUrl, this.token, this.currentTaskId, callId, result);
         }
 
-        return null;
+        return {
+            type: EVENT_TYPES.TOOL_RESULT,
+            data: {
+                ...result,
+                call_id: callId,
+                tool: toolName,
+                args: args || {},
+                duration_ms: durationMs,
+            },
+        };
     }
 
     /**

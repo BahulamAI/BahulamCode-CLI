@@ -33,12 +33,15 @@ export const c = {
   bold:    (s) => `${ESC}1m${s}${ESC}0m`,
   dim:     (s) => `${ESC}2m${s}${ESC}0m`,
   italic:  (s) => `${ESC}3m${s}${ESC}0m`,
+  underline: (s) => `${ESC}4m${s}${ESC}0m`,
   red:     (s) => `${ESC}31m${s}${ESC}0m`,
   green:   (s) => `${ESC}32m${s}${ESC}0m`,
   yellow:  (s) => `${ESC}33m${s}${ESC}0m`,
   blue:    (s) => `${ESC}34m${s}${ESC}0m`,
   magenta: (s) => `${ESC}35m${s}${ESC}0m`,
-  cyan:    (s) => `${ESC}36m${s}${ESC}0m`,
+  brand:   (s) => `${ESC}36m${s}${ESC}0m`,
+  cyan:    (s) => `${ESC}94m${s}${ESC}0m`,
+  white:   (s) => `${ESC}97m${s}${ESC}0m`,
   gray:    (s) => `${ESC}90m${s}${ESC}0m`,
   bgRed:   (s) => `${ESC}41m${s}${ESC}0m`,
   bgGreen: (s) => `${ESC}42m${s}${ESC}0m`,
@@ -49,9 +52,9 @@ export const c = {
 
 const BOX = { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' };
 
-export function drawBox(content, { borderColor = 'cyan', width } = {}) {
+export function drawBox(content, { borderColor = 'brand', width } = {}) {
   const w = width || (process.stdout.columns || 80) - 2;
-  const colorFn = c[borderColor] || c.cyan;
+  const colorFn = c[borderColor] || c.brand;
   const lines = content.split('\n');
 
   write(colorFn(`${BOX.tl}${BOX.h.repeat(w)}${BOX.tr}`) + '\n');
@@ -83,7 +86,7 @@ let _spinnerIdx = 0;
 export function spinner(text) {
   const frame = SPINNER_FRAMES[_spinnerIdx % SPINNER_FRAMES.length];
   _spinnerIdx++;
-  return `${c.cyan(frame)} ${c.cyan(text)}`;
+  return `${c.brand(frame)} ${c.brand(text)}`;
 }
 
 // ── In-Place Update ──
@@ -147,7 +150,8 @@ export function hr(char = '─', color = 'gray') {
 
 /**
  * Render markdown to ANSI-styled terminal text.
- * Supports: headers, bold, italic, code, code blocks, lists, links.
+ * Supports: headers, bold, italic, code, code blocks, tables, blockquotes,
+ * task lists, lists, and links.
  */
 export function renderMarkdown(text) {
   if (!text) return '';
@@ -157,7 +161,8 @@ export function renderMarkdown(text) {
   let inCodeBlock = false;
   let codeLang = '';
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
     // Code block start/end
     if (line.trimStart().startsWith('```')) {
       if (inCodeBlock) {
@@ -173,21 +178,39 @@ export function renderMarkdown(text) {
     }
 
     if (inCodeBlock) {
-      out.push(c.gray('  │ ') + c.cyan(line));
+      out.push(c.gray('  │ ') + renderCodeLine(line, codeLang));
+      continue;
+    }
+
+    // GitHub-flavored Markdown table
+    if (
+      line.includes('|') &&
+      lineIndex + 1 < lines.length &&
+      isTableSeparator(lines[lineIndex + 1])
+    ) {
+      const headers = parseTableRow(line);
+      const rows = [];
+      lineIndex += 2;
+      while (lineIndex < lines.length && lines[lineIndex].includes('|') && lines[lineIndex].trim()) {
+        rows.push(parseTableRow(lines[lineIndex]));
+        lineIndex++;
+      }
+      lineIndex--;
+      out.push(...renderMarkdownTable(headers, rows));
       continue;
     }
 
     // Headers
     if (line.startsWith('### ')) {
-      out.push(c.bold(c.cyan(line.slice(4))));
+      out.push(c.bold(c.brand(line.slice(4))));
       continue;
     }
     if (line.startsWith('## ')) {
-      out.push(c.bold(c.cyan(line.slice(3))));
+      out.push(c.bold(c.brand(line.slice(3))));
       continue;
     }
     if (line.startsWith('# ')) {
-      out.push(c.bold(c.cyan(line.slice(2))));
+      out.push(c.bold(c.brand(line.slice(2))));
       continue;
     }
 
@@ -197,11 +220,27 @@ export function renderMarkdown(text) {
       continue;
     }
 
+    // Blockquotes
+    if (/^\s*>\s?/.test(line)) {
+      const content = line.replace(/^\s*>\s?/, '');
+      out.push(`${c.brand('  ▌')} ${c.italic(c.gray(content))}`);
+      continue;
+    }
+
+    // Task lists
+    const task = line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)/);
+    if (task) {
+      const done = task[2].toLowerCase() === 'x';
+      const marker = done ? c.green('✓') : c.gray('○');
+      out.push(`${task[1]}  ${marker} ${inlineMarkdown(task[3])}`);
+      continue;
+    }
+
     // Lists
     if (/^\s*[-*]\s/.test(line)) {
       const indent = line.match(/^(\s*)/)[1];
       const content = line.replace(/^\s*[-*]\s/, '');
-      out.push(`${indent}  ${c.cyan('•')} ${inlineMarkdown(content)}`);
+      out.push(`${indent}  ${c.brand('•')} ${inlineMarkdown(content)}`);
       continue;
     }
 
@@ -209,7 +248,7 @@ export function renderMarkdown(text) {
     if (/^\s*\d+\.\s/.test(line)) {
       const match = line.match(/^(\s*)(\d+)\.\s(.*)/);
       if (match) {
-        out.push(`${match[1]}  ${c.cyan(match[2] + '.')} ${inlineMarkdown(match[3])}`);
+        out.push(`${match[1]}  ${c.brand(match[2] + '.')} ${inlineMarkdown(match[3])}`);
         continue;
       }
     }
@@ -221,6 +260,48 @@ export function renderMarkdown(text) {
   return out.join('\n');
 }
 
+function renderCodeLine(line, language) {
+  const lang = String(language || '').toLowerCase();
+  if (lang === 'diff') {
+    if (line.startsWith('+')) return c.green(line);
+    if (line.startsWith('-')) return c.red(line);
+    if (line.startsWith('@@')) return c.brand(line);
+  }
+  if (lang === 'json' || lang === 'yaml' || lang === 'yml' || lang === 'toml') {
+    return line.replace(/^(\s*)(["']?[\w.-]+["']?)(\s*[:=])/, (_, space, key, separator) =>
+      `${space}${c.brand(key)}${c.gray(separator)}`
+    );
+  }
+  return c.cyan(line);
+}
+
+function parseTableRow(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+}
+
+function isTableSeparator(line) {
+  const cells = parseTableRow(line);
+  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderMarkdownTable(headers, rows) {
+  const columnCount = Math.max(headers.length, ...rows.map(row => row.length));
+  const widths = Array.from({ length: columnCount }, (_, index) => {
+    const values = [headers[index] || '', ...rows.map(row => row[index] || '')];
+    return Math.min(40, Math.max(...values.map(value => stripAnsi(value).length), 3));
+  });
+  const border = c.gray(`  ${widths.map(width => '─'.repeat(width + 2)).join('┼')}`);
+  const formatRow = (row, header = false) => {
+    const cells = widths.map((width, index) => {
+      const value = truncate(row[index] || '', width);
+      const padded = value + ' '.repeat(Math.max(0, width - stripAnsi(value).length));
+      return header ? c.bold(padded) : inlineMarkdown(padded);
+    });
+    return `  ${cells.map(cell => ` ${cell} `).join(c.gray('│'))}`;
+  };
+  return [formatRow(headers, true), border, ...rows.map(row => formatRow(row))];
+}
+
 /**
  * Apply inline markdown: **bold**, *italic*, `code`, [links](url)
  */
@@ -229,7 +310,10 @@ function inlineMarkdown(text) {
     .replace(/\*\*(.+?)\*\*/g, (_, s) => c.bold(s))
     .replace(/\*(.+?)\*/g, (_, s) => c.italic(s))
     .replace(/`(.+?)`/g, (_, s) => c.cyan(s))
-    .replace(/\[(.+?)\]\((.+?)\)/g, (_, label, url) => `${c.blue(label)} ${c.gray('(' + url + ')')}`);
+    .replace(
+      /\[(.+?)\]\((.+?)\)/g,
+      (_, label, url) => `${c.underline(c.white(label))} ${c.gray('(' + url + ')')}`,
+    );
 }
 
 // ── Diff Display ──
@@ -245,7 +329,7 @@ export function renderDiff(diffText) {
     if (line.startsWith('+++') || line.startsWith('---')) {
       out.push(c.bold(line));
     } else if (line.startsWith('@@')) {
-      out.push(c.cyan(line));
+      out.push(c.brand(line));
     } else if (line.startsWith('+')) {
       out.push(c.green(line));
     } else if (line.startsWith('-')) {
@@ -263,10 +347,10 @@ export function renderDiff(diffText) {
  * Display a labeled info panel (no box borders, just indented content).
  * @param {string} label - Panel title
  * @param {Array<[string, string]>} rows - [label, value] pairs
- * @param {string} [color='cyan'] - Title color
+ * @param {string} [color='brand'] - Title color
  */
-export function infoPanel(label, rows, color = 'cyan') {
-  const colorFn = c[color] || c.cyan;
+export function infoPanel(label, rows, color = 'brand') {
+  const colorFn = c[color] || c.brand;
   write(`  ${colorFn(c.bold(label))}\n`);
   write(`  ${c.gray('─'.repeat(Math.min(40, (process.stdout.columns || 80) - 4)))}\n`);
   for (const [key, val] of rows) {
@@ -289,7 +373,7 @@ export function table(headers, rows) {
   });
 
   // Header
-  write('  ' + headers.map((h, i) => c.bold(h.padEnd(widths[i]))).join('') + '\n');
+  write('  ' + headers.map((h, i) => c.bold(c.brand(h.padEnd(widths[i])))).join('') + '\n');
   write('  ' + widths.map(w => c.gray('─'.repeat(w))).join('') + '\n');
 
   // Rows

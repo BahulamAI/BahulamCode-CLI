@@ -127,7 +127,7 @@ export async function runAgent(agentName, instruction, ctx, session, renderEvent
   }
 
   // Header
-  process.stderr.write(`\n  ${agent.icon} ${c.bold(c.cyan(agent.name))}\n`);
+  process.stderr.write(`\n  ${agent.icon} ${c.bold(c.brand(agent.name))}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
   process.stderr.write(`  ${c.gray(instruction)}\n\n`);
 

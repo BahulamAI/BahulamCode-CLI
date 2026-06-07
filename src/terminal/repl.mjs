@@ -17,7 +17,7 @@
 
 import * as readline from 'node:readline';
 import * as path from 'node:path';
-import { c, progressBar, spinner, inPlace, renderMarkdown, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
+import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
@@ -129,7 +129,7 @@ function printBanner(auth) {
   ];
   process.stderr.write('\n');
   for (const line of art) {
-    process.stderr.write(c.cyan(line) + '\n');
+    process.stderr.write(c.brand(line) + '\n');
   }
   process.stderr.write('\n');
   process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n`);
@@ -275,31 +275,85 @@ function renderToolCall(data) {
     displaySummary = '...' + displaySummary.slice(-(maxSummary - 3));
   }
   const summaryStr = displaySummary ? `(${displaySummary})` : '';
-  process.stderr.write(`\n${indent}${c.cyan('⏺')} ${c.bold(tool)}${c.dim(summaryStr)}\n`);
+  process.stderr.write(`\n${indent}${c.brand('⏺')} ${c.bold(tool)}${c.dim(summaryStr)}\n`);
 }
 
 /**
  * Render a tool result (success/failure, output snippet).
  */
-function renderToolResult(data) {
+const _renderedToolResults = new Set();
+
+function formatToolDuration(data) {
+  const ms = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+  if (ms == null) return '';
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function firstOutputLine(data) {
+  const output = data?.output_preview || data?.output || data?.message || '';
+  return String(output).split('\n').map(line => line.trim()).find(Boolean) || '';
+}
+
+function fileTypeLabel(filePath) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  if (ext === '.md' || ext === '.mdx') return 'Markdown';
+  if (ext === '.json' || ext === '.jsonl') return 'JSON';
+  if (ext === '.yaml' || ext === '.yml') return 'YAML';
+  if (ext === '.toml') return 'TOML';
+  if (ext === '.csv' || ext === '.tsv') return 'tabular data';
+  if (['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.py', '.go', '.rs', '.java', '.rb', '.php', '.swift'].includes(ext)) {
+    return 'source';
+  }
+  return ext ? `${ext.slice(1).toUpperCase()} file` : 'file';
+}
+
+function renderToolResult(data, eventType = 'tool_result') {
   if (!data) return;
   const indent = session.inSubAgent ? '     ' : '  ';
   const gutter = `${indent}${c.dim('⎿')}  `;
+  const callId = data.call_id || data._callId;
+  if (eventType === 'tool_done' && callId && _renderedToolResults.has(callId)) return;
+  if (callId) _renderedToolResults.add(callId);
+  const duration = formatToolDuration(data);
+  const suffix = duration ? c.dim(` · ${duration}`) : '';
 
   if (data._blocked) {
     session.blockedOps++;
-    process.stderr.write(`${gutter}${c.red(data.output || 'Blocked by safety guardrails')}\n`);
+    process.stderr.write(`${gutter}${c.red(firstOutputLine(data) || 'Blocked by safety guardrails')}${suffix}\n`);
     return;
   }
 
   if (data.success === false) {
-    const msg = (data.output || data.message || 'Failed').slice(0, 120);
-    process.stderr.write(`${gutter}${c.red(msg)}\n`);
+    const msg = (data.error || firstOutputLine(data) || 'Failed').slice(0, 140);
+    process.stderr.write(`${gutter}${c.red(msg)}${suffix}\n`);
     return;
   }
 
+  const tool = data.tool || data._tool || '';
+  let summary = 'Completed';
+  if (tool === 'read_file') {
+    const lines = data._total_lines || String(data.output || '').split('\n').length;
+    const filePath = data.args?.file_path || data.args?.path || '';
+    summary = `Read ${fileTypeLabel(filePath)} · ${lines} line${lines === 1 ? '' : 's'}`;
+  } else if (tool === 'read_files') {
+    summary = 'Files read';
+  } else if (tool === 'search_code' || tool === 'list_files') {
+    const lines = String(data.output || '').split('\n').filter(line => line.trim()).length;
+    summary = lines > 0 ? `${lines} result${lines === 1 ? '' : 's'}` : 'No results';
+  } else if (tool === 'write_file' || tool === 'edit_file' || tool === 'write_project') {
+    summary = 'Updated';
+  } else if (tool === 'delete_file') {
+    summary = 'Deleted';
+  } else if (data.server_side) {
+    summary = firstOutputLine(data).slice(0, 100) || 'Completed server-side';
+  } else if (tool === 'shell') {
+    summary = firstOutputLine(data).slice(0, 100) || 'Command completed';
+  }
+
+  process.stderr.write(`${gutter}${c.dim(summary)}${suffix}\n`);
+
   // For writes, show lint warnings
-  if (data._tool === 'write_file' || data._tool === 'edit_file') {
+  if (tool === 'write_file' || tool === 'edit_file') {
     const lint = data.lint;
     if (lint) {
       process.stderr.write(`${gutter}${c.yellow('⚠ ' + lint.split('\n')[0].slice(0, 80))}\n`);
@@ -336,7 +390,7 @@ function startSpinner(text) {
     if (!_spinText) return;
     const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
     _spinFrame++;
-    inPlace(`  ${c.cyan(frame)} ${c.dim(_spinText)}`);
+    inPlace(`  ${c.brand(frame)} ${c.dim(_spinText)}`);
   }, 80);
 }
 
@@ -353,11 +407,14 @@ function stopSpinner() {
 // ── Content Streaming Display ──
 
 let _streamBuffer = '';
+let _streamedPartialText = '';
 let _streamTimer = null;
 let _renderedContentThisTurn = false;
 
 function startContentStream() {
   _streamBuffer = '';
+  _streamedPartialText = '';
+  _renderedToolResults.clear();
   _renderedContentThisTurn = false;
   stopSpinner();
 }
@@ -365,6 +422,7 @@ function startContentStream() {
 function appendContent(text) {
   if (!text) return;
   _streamBuffer += text;
+  _streamedPartialText += text;
 
   // Debounce rendering to avoid flicker on rapid partial updates
   if (_streamTimer) clearTimeout(_streamTimer);
@@ -406,10 +464,17 @@ function renderEvent(event) {
     }
 
     case 'content': {
-      const text = data?.text || '';
+      let text = data?.text || '';
       if (text) {
         flushContent();
         stopSpinner();
+        if (_streamedPartialText && text.startsWith(_streamedPartialText)) {
+          text = text.slice(_streamedPartialText.length);
+        } else if (_streamedPartialText.includes(text)) {
+          text = '';
+        }
+      }
+      if (text) {
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
@@ -463,7 +528,24 @@ function renderEvent(event) {
     case 'tool_result':
     case 'tool_done': {
       stopSpinner();
-      renderToolResult(data);
+      renderToolResult(data, type);
+      break;
+    }
+
+    case 'plan': {
+      stopSpinner();
+      flushContent();
+      const milestones = data?.milestones || data?.steps || [];
+      const title = data?.title || 'Plan';
+      process.stderr.write(`\n  ${c.brand('▸')} ${c.bold(title)}\n`);
+      for (const [index, milestone] of milestones.entries()) {
+        const label = typeof milestone === 'string'
+          ? milestone
+          : milestone.name || milestone.title || milestone.description || `Step ${index + 1}`;
+        const status = typeof milestone === 'object' ? milestone.status : '';
+        const marker = status === 'complete' || status === 'completed' ? c.green('✓') : c.dim(`${index + 1}.`);
+        process.stderr.write(`     ${marker} ${label}\n`);
+      }
       break;
     }
 
@@ -487,7 +569,7 @@ function renderEvent(event) {
       if (phase) {
         stopSpinner();
         session.phases.push({ name: phase, time: Date.now() });
-        process.stderr.write(`\n  ${c.cyan('▸')} ${c.bold(phase)}\n`);
+        process.stderr.write(`\n  ${c.brand('▸')} ${c.bold(phase)}\n`);
       }
       break;
     }
@@ -520,7 +602,7 @@ function renderEvent(event) {
       const from = data?.from || '';
       const to = data?.to || '';
       session.delegations.push({ from, to, time: Date.now() });
-      process.stderr.write(`\n  ${c.cyan('↳')} ${c.dim(from)} ${c.cyan('→')} ${c.bold(to)}`);
+      process.stderr.write(`\n  ${c.brand('↳')} ${c.dim(from)} ${c.brand('→')} ${c.bold(to)}`);
       if (data?.instruction) {
         process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
       }
@@ -537,7 +619,7 @@ function renderEvent(event) {
       const model = data?.model || '';
       const query = data?.query || '';
       const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
-      process.stderr.write(`\n  ${icon} ${c.bold(c.cyan(`${agentType} agent`))} ${c.dim('started')}\n`);
+      process.stderr.write(`\n  ${icon} ${c.bold(c.brand(`${agentType} agent`))} ${c.dim('started')}\n`);
       if (model) process.stderr.write(`     ${c.gray('model:')} ${c.dim(model)}\n`);
       if (query) process.stderr.write(`     ${c.gray('query:')} ${c.dim(query)}\n`);
       startSpinner(`${agentType}: working...`);
@@ -562,10 +644,17 @@ function renderEvent(event) {
       const usage = data?.usage || {};
       const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
       const parts = [];
+      if (data?.tool_calls > 0) parts.push(`${data.tool_calls} tools`);
+      if (data?.iterations > 0) parts.push(`${data.iterations} iterations`);
       if (resultLen > 0) parts.push(`${resultLen} chars`);
       if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
+      if (data?.duration_s != null) parts.push(`${Number(data.duration_s).toFixed(1)}s`);
       const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
-      process.stderr.write(`  ${icon} ${c.green('✓')} ${c.dim(`${agentType} agent complete`)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n\n`);
+      const marker = data?.success === false ? c.red('✗') : c.green('✓');
+      const label = data?.success === false ? `${agentType} agent failed` : `${agentType} agent complete`;
+      process.stderr.write(`  ${icon} ${marker} ${c.dim(label)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n`);
+      if (data?.error) process.stderr.write(`     ${c.red(String(data.error).slice(0, 140))}\n`);
+      process.stderr.write('\n');
       break;
     }
 
@@ -672,14 +761,14 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Orca Commands')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
       for (const [name, desc] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${c.cyan(name.padEnd(14))} ${desc}\n`);
+        process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
       }
       process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
       process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n\n`);
       return;
 
     case '/login':
-      process.stderr.write(`${c.cyan('Starting login flow...')}\n`);
+      process.stderr.write(`${c.brand('Starting login flow...')}\n`);
       try {
         await ctx.auth.login();
         process.stderr.write(`${c.green('✓ Login successful!')}\n`);
@@ -743,7 +832,7 @@ async function handleCommand(input, ctx) {
         if (session.delegations.length > 0) {
           process.stderr.write(`  ${c.dim('Delegations')}  ${session.delegations.length}\n`);
           for (const d of session.delegations.slice(-5)) {
-            process.stderr.write(`    ${c.dim(d.from)} ${c.cyan('→')} ${d.to}\n`);
+            process.stderr.write(`    ${c.dim(d.from)} ${c.brand('→')} ${d.to}\n`);
           }
         }
         if (session.phases.length > 0) {
@@ -841,7 +930,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
       for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user' ? c.cyan('You') : c.green('Orca');
+        const role = msg.role === 'user' ? c.white('You') : c.brand('Orca');
         process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
       }
       process.stderr.write('\n');
@@ -870,7 +959,13 @@ async function handleCommand(input, ctx) {
 
     case '/diff': {
       const { execSync } = await import('node:child_process');
-      try { process.stdout.write(execSync('git diff --stat', { encoding: 'utf-8' }) || '(no changes)\n'); }
+      try {
+        const diff = execSync('git diff --no-ext-diff --unified=3', {
+          encoding: 'utf-8',
+          maxBuffer: 2 * 1024 * 1024,
+        });
+        process.stdout.write(diff ? renderDiff(diff) + '\n' : c.dim('(no changes)') + '\n');
+      }
       catch (e) { process.stderr.write(`  ${c.red(e.message)}\n`); }
       return;
     }
@@ -912,7 +1007,7 @@ async function handleCommand(input, ctx) {
       for (const s of resumable) {
         const date = s.startedAt ? new Date(s.startedAt).toLocaleDateString() : '?';
         const instr = s.instruction ? s.instruction.slice(0, 40) : '(no instruction)';
-        process.stderr.write(`  ${c.cyan(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+        process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Resume with:')} orca --resume <sessionId>\n`);
       return;
@@ -948,9 +1043,9 @@ async function handleCommand(input, ctx) {
         const s = resumable[i];
         const date = s.startedAt ? new Date(s.startedAt).toLocaleString() : '?';
         const instr = (s.instruction || '(no instruction)').slice(0, 45);
-        const proj = s.project ? c.cyan(s.project) + ' ' : '';
+        const proj = s.project ? c.brand(s.project) + ' ' : '';
         const num = `[${i + 1}]`;
-        process.stderr.write(`  ${c.cyan(num)} ${proj}${c.dim(date)}  ${s.messageCount} msgs\n`);
+        process.stderr.write(`  ${c.brand(num)} ${proj}${c.dim(date)}  ${s.messageCount} msgs\n`);
         process.stderr.write(`      ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
@@ -1000,7 +1095,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
       for (const agent of BUILTIN_AGENTS) {
-        process.stderr.write(`  ${c.cyan(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
+        process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
         process.stderr.write(`  ${' '.repeat(14)} ${c.gray(agent.detail)}\n`);
       }
       process.stderr.write(`\n  ${c.gray('Usage: /<agent> <instruction>')}\n`);
@@ -1031,7 +1126,7 @@ async function handleCommand(input, ctx) {
 
     case '/exit':
     case '/quit':
-      process.stderr.write(`\n  ${c.cyan('Goodbye!')}\n\n`);
+      process.stderr.write(`\n  ${c.brand('Goodbye!')}\n\n`);
       process.exit(0);
 
     default:
@@ -1091,7 +1186,7 @@ export async function startTerminalRepl() {
   let projectSkeleton = '';
 
   // Phase 1: Show immediate feedback
-  process.stderr.write(`  ${c.cyan('⠋')} ${c.dim('Initializing...')}\r`);
+  process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
 
   // Fetch user in parallel (network I/O, won't block event loop)
   const userPromise = fetchUser(ctx);
@@ -1102,7 +1197,7 @@ export async function startTerminalRepl() {
     // Let the event loop flush stderr before blocking
     setImmediate(async () => {
       try {
-        process.stderr.write(`\r  ${c.cyan('⠹')} ${c.dim('Indexing project files...')}${' '.repeat(20)}\r`);
+        process.stderr.write(`\r  ${c.brand('⠹')} ${c.dim('Indexing project files...')}${' '.repeat(20)}\r`);
         const result = await retriever.buildIndex();
         resolve(result);
       } catch {
@@ -1112,7 +1207,7 @@ export async function startTerminalRepl() {
   });
 
   // Phase 3: Build skeleton (fast, synchronous)
-  process.stderr.write(`\r  ${c.cyan('⠼')} ${c.dim('Building project skeleton...')}${' '.repeat(20)}\r`);
+  process.stderr.write(`\r  ${c.brand('⠼')} ${c.dim('Building project skeleton...')}${' '.repeat(20)}\r`);
   await new Promise(r => setImmediate(r)); // yield so message renders
   projectSkeleton = buildProjectSkeleton(safeCwd());
 
@@ -1157,9 +1252,9 @@ export async function startTerminalRepl() {
     }
   }
 
-  process.stderr.write(`\n  ${c.dim('Press')} ${c.cyan('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
+  process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
-  const PROMPT = `${c.cyan('orca')} ${c.dim('›')} `;
+  const PROMPT = `${c.brand('orca')} ${c.dim('›')} `;
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -1225,7 +1320,7 @@ export async function startTerminalRepl() {
     }
 
     // Orca response label
-    process.stderr.write(`\n${c.bold(c.cyan('orca'))}\n`);
+    process.stderr.write(`\n${c.bold(c.brand('orca'))}\n`);
 
     // Create or reuse stream client — sessionId persists across turns
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
@@ -1314,11 +1409,21 @@ export async function startTerminalRepl() {
       for await (const event of client.execute(input, execContext, session.history)) {
         renderEvent(event);
 
-        if (event.type === 'content' || event.type === 'content_partial') {
+        if (event.type === 'content_partial') {
           const text = event.data?.text || '';
-          if (text) assistantContent = text;
-          // Local JSONL: accumulate content
+          assistantContent += text;
           jsonlWriter.accumulateContent(text);
+        } else if (event.type === 'content') {
+          const text = event.data?.text || '';
+          const newText = assistantContent && text.startsWith(assistantContent)
+            ? text.slice(assistantContent.length)
+            : text === assistantContent ? '' : text;
+          if (text) {
+            assistantContent = assistantContent && !text.startsWith(assistantContent)
+              ? assistantContent + text
+              : text;
+          }
+          if (newText) jsonlWriter.accumulateContent(newText);
         }
 
         // Local JSONL: capture session ID from backend
