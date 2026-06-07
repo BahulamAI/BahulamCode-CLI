@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
+import { formatShellCommand, toolDisplayLabel } from '../src/terminal/tool-display.mjs';
 
 let passed = 0;
 
@@ -23,6 +24,22 @@ test('uses bright white for user labels and underlined links', () => {
   assert.ok(rendered.includes('\x1b[97mDocumentation'));
 });
 
+test('uses action descriptions instead of raw tool identifiers', () => {
+  assert.strictEqual(toolDisplayLabel('shell'), 'Run command');
+  assert.strictEqual(toolDisplayLabel('read_file'), 'Read file');
+  assert.strictEqual(toolDisplayLabel('search_files'), 'Search files');
+  assert.strictEqual(toolDisplayLabel('mcp_fetch_weather'), 'Fetch weather');
+});
+
+test('renders shell commands with blue, yellow, red, and white syntax colors', () => {
+  const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
+  assert.ok(rendered.includes('\x1b[34mpython'));
+  assert.ok(rendered.includes('\x1b[33m-c'));
+  assert.ok(rendered.includes('\x1b[33m"print(1)"'));
+  assert.ok(rendered.includes('\x1b[31m|'));
+  assert.ok(rendered.includes('\x1b[34mhead'));
+});
+
 test('renders Markdown pipe tables as aligned terminal tables', () => {
   const rendered = stripAnsi(renderMarkdown([
     '| Name | Status |',
@@ -37,11 +54,17 @@ test('renders Markdown pipe tables as aligned terminal tables', () => {
   assert.ok(!rendered.includes('| --- |'));
 });
 
-test('renders blockquotes and task lists distinctly', () => {
-  const rendered = stripAnsi(renderMarkdown('> Important\n- [x] Done\n- [ ] Pending'));
-  assert.ok(rendered.includes('▌ Important'));
-  assert.ok(rendered.includes('✓ Done'));
-  assert.ok(rendered.includes('○ Pending'));
+test('renders blockquotes and task lists with structural styling', () => {
+  const rendered = renderMarkdown('> Important\n- [x] Done\n- [ ] Pending');
+  assert.ok(rendered.includes('\x1b[90m  │\x1b[0m \x1b[3mImportant'));
+  assert.ok(rendered.includes('\x1b[32m✓ Done'));
+  assert.ok(rendered.includes('\x1b[90m○ Pending'));
+});
+
+test('renders structured keys bold cyan and values regular cyan', () => {
+  const rendered = renderMarkdown('```yaml\nstatus: ready\n```');
+  assert.ok(rendered.includes('\x1b[1;36mstatus'));
+  assert.ok(rendered.includes('\x1b[36m ready'));
 });
 
 test('renders diff additions and removals with semantic colors', () => {

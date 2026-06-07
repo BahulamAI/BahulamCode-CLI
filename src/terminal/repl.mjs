@@ -30,6 +30,7 @@ import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
+import { formatShellCommand, toolDisplayLabel } from './tool-display.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -216,6 +217,7 @@ function updateStatusBar() {
  */
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
+  const label = toolDisplayLabel(tool);
   const args = data?.args || {};
   const indent = session.inSubAgent ? '     ' : '  ';
 
@@ -266,16 +268,20 @@ function renderToolCall(data) {
       summary = Object.values(args || {}).filter(v => typeof v === 'string').join(', ').slice(0, 60);
   }
 
-  // Render: ⏺ ToolName(summary)
-  // Use terminal width minus tool name and padding, minimum 60
+  // Render: ⏺ Human-readable action(summary)
+  // Use terminal width minus label and padding, minimum 60
   const cols = process.stderr.columns || 120;
-  const maxSummary = Math.max(60, cols - tool.length - 10);
+  const maxSummary = Math.max(60, cols - label.length - 10);
   let displaySummary = summary || '';
   if (displaySummary.length > maxSummary) {
     displaySummary = '...' + displaySummary.slice(-(maxSummary - 3));
   }
-  const summaryStr = displaySummary ? `(${displaySummary})` : '';
-  process.stderr.write(`\n${indent}${c.brand('⏺')} ${c.bold(tool)}${c.dim(summaryStr)}\n`);
+  const summaryStr = displaySummary
+    ? c.gray('(') + (tool === 'shell'
+      ? formatShellCommand(displaySummary, c)
+      : c.white(displaySummary)) + c.gray(')')
+    : '';
+  process.stderr.write(`\n${indent}${c.brand('⏺')} ${c.bold(label)}${summaryStr}\n`);
 }
 
 /**
@@ -350,7 +356,8 @@ function renderToolResult(data, eventType = 'tool_result') {
     summary = firstOutputLine(data).slice(0, 100) || 'Command completed';
   }
 
-  process.stderr.write(`${gutter}${c.dim(summary)}${suffix}\n`);
+  const renderedSummary = tool === 'shell' ? c.green(summary) : c.white(summary);
+  process.stderr.write(`${gutter}${renderedSummary}${suffix}\n`);
 
   // For writes, show lint warnings
   if (tool === 'write_file' || tool === 'edit_file') {

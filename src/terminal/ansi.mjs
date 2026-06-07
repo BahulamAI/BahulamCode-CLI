@@ -41,6 +41,8 @@ export const c = {
   magenta: (s) => `${ESC}35m${s}${ESC}0m`,
   brand:   (s) => `${ESC}36m${s}${ESC}0m`,
   cyan:    (s) => `${ESC}94m${s}${ESC}0m`,
+  cyanRegular: (s) => `${ESC}36m${s}${ESC}0m`,
+  cyanBold: (s) => `${ESC}1;36m${s}${ESC}0m`,
   white:   (s) => `${ESC}97m${s}${ESC}0m`,
   gray:    (s) => `${ESC}90m${s}${ESC}0m`,
   bgRed:   (s) => `${ESC}41m${s}${ESC}0m`,
@@ -223,7 +225,7 @@ export function renderMarkdown(text) {
     // Blockquotes
     if (/^\s*>\s?/.test(line)) {
       const content = line.replace(/^\s*>\s?/, '');
-      out.push(`${c.brand('  ▌')} ${c.italic(c.gray(content))}`);
+      out.push(`${c.gray('  │')} ${c.italic(content)}`);
       continue;
     }
 
@@ -231,8 +233,9 @@ export function renderMarkdown(text) {
     const task = line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)/);
     if (task) {
       const done = task[2].toLowerCase() === 'x';
-      const marker = done ? c.green('✓') : c.gray('○');
-      out.push(`${task[1]}  ${marker} ${inlineMarkdown(task[3])}`);
+      const renderState = done ? c.green : c.gray;
+      const marker = done ? '✓' : '○';
+      out.push(`${task[1]}  ${renderState(`${marker} ${task[3]}`)}`);
       continue;
     }
 
@@ -268,8 +271,8 @@ function renderCodeLine(line, language) {
     if (line.startsWith('@@')) return c.brand(line);
   }
   if (lang === 'json' || lang === 'yaml' || lang === 'yml' || lang === 'toml') {
-    return line.replace(/^(\s*)(["']?[\w.-]+["']?)(\s*[:=])/, (_, space, key, separator) =>
-      `${space}${c.brand(key)}${c.gray(separator)}`
+    return line.replace(/^(\s*)(["']?[\w.-]+["']?)(\s*[:=])(.*)$/, (_, space, key, separator, value) =>
+      `${space}${c.cyanBold(key)}${c.gray(separator)}${c.cyanRegular(value)}`
     );
   }
   return c.cyan(line);
