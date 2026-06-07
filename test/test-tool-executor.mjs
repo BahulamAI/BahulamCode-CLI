@@ -110,5 +110,15 @@ await test('search_files returns results', async () => {
     assert.ok(Array.isArray(result.files));
 });
 
+await test('search_files passes regex alternation literally', async () => {
+    const result = await executor.execute('search_files', {
+        query: 'proxy|PAC|profile|router',
+        path: '.',
+    });
+    assert.strictEqual(result.success, true);
+    assert.ok(!result.output.includes('command not found'));
+    assert.ok(!result.output.includes('usage: route'));
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -10,7 +10,7 @@
  * - head_limit (default 250)
  * - multiline mode
  */
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import path from 'path';
 
 export const GrepTool = {
@@ -46,12 +46,13 @@ export const GrepTool = {
             const mode = input.output_mode || 'files_with_matches';
             const limit = input.head_limit ?? 250;
 
-            // Build grep command — try rg first, fall back to grep
+            // Pass regex and paths as process arguments. Joining these into a
+            // shell command would turn regex operators such as | into pipelines.
             const args = [];
             const useRg = hasRipgrep();
+            const command = useRg ? 'rg' : 'grep';
 
             if (useRg) {
-                args.push('rg');
                 if (input['-i']) args.push('-i');
                 if (input.multiline) args.push('-U', '--multiline-dotall');
 
@@ -75,7 +76,7 @@ export const GrepTool = {
 
                 args.push('--', input.pattern, dir);
             } else {
-                args.push('grep', '-r');
+                args.push('-r');
                 if (input['-i']) args.push('-i');
 
                 if (mode === 'files_with_matches') {
@@ -96,18 +97,20 @@ export const GrepTool = {
                 args.push('--', input.pattern, dir);
             }
 
-            // Apply head_limit
-            const cmd = limit > 0
-                ? `${args.join(' ')} 2>/dev/null | head -${limit}`
-                : `${args.join(' ')} 2>/dev/null`;
-
-            const result = execSync(cmd, {
+            const result = spawnSync(command, args, {
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
                 timeout: 30000,
             });
 
-            return result.trim() || 'No matches found.';
+            if (result.error || (result.status !== 0 && result.status !== 1)) {
+                return 'No matches found.';
+            }
+
+            const output = (result.stdout || '').trim();
+            if (!output) return 'No matches found.';
+            if (limit <= 0) return output;
+            return output.split('\n').slice(0, limit).join('\n');
         } catch {
             return 'No matches found.';
         }
@@ -117,11 +120,10 @@ export const GrepTool = {
 let _hasRg = null;
 function hasRipgrep() {
     if (_hasRg !== null) return _hasRg;
-    try {
-        execSync('which rg', { encoding: 'utf-8', timeout: 5000 });
-        _hasRg = true;
-    } catch {
-        _hasRg = false;
-    }
+    const result = spawnSync('rg', ['--version'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+    });
+    _hasRg = !result.error && result.status === 0;
     return _hasRg;
 }
