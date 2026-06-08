@@ -17,24 +17,17 @@ const BLUE = '\x1b[34m';
 const BOLD_GREEN = '\x1b[1;32m';
 const BOLD_CYAN = '\x1b[1;36m';
 
-const BANNER_KEPLER = [
-    '██╗  ██╗ ███████╗ ██████╗  ██╗     ███████╗ ██████╗ ',
-    '██║ ██╔╝ ██╔════╝ ██╔══██╗ ██║     ██╔════╝ ██╔══██╗',
-    '█████╔╝  █████╗   ██████╔╝ ██║     █████╗   ██████╔╝',
-    '██╔═██╗  ██╔══╝   ██╔═══╝  ██║     ██╔══╝   ██╔══██╗',
-    '██║  ██╗ ███████╗ ██║      ███████╗ ███████╗ ██║  ██║',
-    '╚═╝  ╚═╝ ╚══════╝ ╚═╝      ╚══════╝ ╚══════╝ ╚═╝  ╚═╝',
-];
-
 /**
- * Print the branded ASCII art banner.
+ * Print the branded orbital banner.
  */
 export function printBanner() {
     process.stderr.write('\n');
-    for (const line of BANNER_KEPLER) {
-        process.stderr.write(`  ${BOLD_CYAN}${line}${RESET}\n`);
-    }
-    process.stderr.write(`  ${DIM}AI Coding Agent — codekepler.ai${RESET}\n`);
+    process.stderr.write(`${DIM}         ✦${RESET}\n`);
+    process.stderr.write(`${DIM}      ╭──────────────────────────╮${RESET}\n`);
+    process.stderr.write(`${DIM}      │${RESET}  ${BOLD}${CYAN}K · E · P · L · E · R${RESET}  ${DIM}│${RESET}\n`);
+    process.stderr.write(`${DIM}      ╰──────── ${YELLOW}◯${RESET}${DIM} ───────────────╯${RESET}\n`);
+    process.stderr.write(`${DIM}            ╱ ╲${RESET}\n`);
+    process.stderr.write(`${DIM}       the agentic os${RESET}\n`);
     process.stderr.write('\n');
 }
 

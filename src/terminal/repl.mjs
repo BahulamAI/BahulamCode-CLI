@@ -120,18 +120,19 @@ function printBanner(auth) {
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
 
-  const art = [
-    '   ██████╗ ██████╗  ██████╗ █████╗',
-    '  ██╔═══██╗██╔══██╗██╔════╝██╔══██╗',
-    '  ██║   ██║██████╔╝██║     ███████║',
-    '  ██║   ██║██╔══██╗██║     ██╔══██║',
-    '  ╚██████╔╝██║  ██║╚██████╗██║  ██║',
-    '   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝',
-  ];
+  const CYAN = '\x1b[36m';
+  const DIM = '\x1b[2m';
+  const BOLD = '\x1b[1m';
+  const YELLOW = '\x1b[33m';
+  const RST = '\x1b[0m';
+
   process.stderr.write('\n');
-  for (const line of art) {
-    process.stderr.write(c.brand(line) + '\n');
-  }
+  process.stderr.write(`${DIM}         ✦${RST}\n`);
+  process.stderr.write(`${DIM}      ╭──────────────────────────╮${RST}\n`);
+  process.stderr.write(`${DIM}      │${RST}  ${BOLD}${CYAN}K · E · P · L · E · R${RST}  ${DIM}│${RST}\n`);
+  process.stderr.write(`${DIM}      ╰──────── ${YELLOW}◯${RST}${DIM} ───────────────╯${RST}\n`);
+  process.stderr.write(`${DIM}            ╱ ╲${RST}\n`);
+  process.stderr.write(`${DIM}       the agentic os${RST}\n`);
   process.stderr.write('\n');
   process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n`);
   process.stderr.write('\n');
