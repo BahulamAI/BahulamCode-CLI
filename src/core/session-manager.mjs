@@ -1,8 +1,8 @@
 /**
  * Session Manager — persist session state, history, and conversation messages.
  *
- * All data lives under ~/.orca/:
- *   ~/.orca/
+ * All data lives under ~/.kepler/:
+ *   ~/.kepler/
  *     projects/{hash}/
  *       state.json              — current session metadata
  *       sessions/               — session metadata archive
@@ -29,7 +29,7 @@ const MAX_SESSIONS = 100;
 export class SessionManager {
     constructor(projectPath = process.cwd()) {
         this.projectPath = projectPath;
-        this.projectOrcaDir = getProjectDir(projectPath);
+        this.projectKeplerDir = getProjectDir(projectPath);
         this.statePath = getStatePath(projectPath);
         this.sessionsDir = getSessionsDir(projectPath);
         this.conversationsDir = getConversationsDir();
@@ -37,7 +37,7 @@ export class SessionManager {
     }
 
     _ensureDirs() {
-        fs.mkdirSync(this.projectOrcaDir, { recursive: true });
+        fs.mkdirSync(this.projectKeplerDir, { recursive: true });
         fs.mkdirSync(this.sessionsDir, { recursive: true });
         fs.mkdirSync(this.conversationsDir, { recursive: true });
     }

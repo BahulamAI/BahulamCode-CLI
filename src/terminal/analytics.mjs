@@ -72,12 +72,12 @@ function extractPrompt(entry) {
 
 export function formatSessionsReport(sessions, limit) {
   if (!sessions.length) {
-    return 'No local sessions found in ~/.orca/projects.\n';
+    return 'No local sessions found in ~/.kepler/projects.\n';
   }
 
   const lines = [];
-  lines.push(`ORCA SESSIONS  ${sessions.length} shown`);
-  lines.push(`Recent local transcripts from ~/.orca/projects  (limit ${limit})`);
+  lines.push(`KEPLER SESSIONS  ${sessions.length} shown`);
+  lines.push(`Recent local transcripts from ~/.kepler/projects  (limit ${limit})`);
   lines.push('');
 
   for (const session of sessions) {
@@ -96,8 +96,8 @@ export function formatSessionsReport(sessions, limit) {
 
 export function formatStatsReport(stats, tools, models, days, paths) {
   const lines = [];
-  lines.push(`ORCA STATS  ${relativeDaysLabel(days)}`);
-  lines.push(`Store: ${paths.orcaDir}`);
+  lines.push(`KEPLER STATS  ${relativeDaysLabel(days)}`);
+  lines.push(`Store: ${paths.keplerDir}`);
   lines.push('');
   lines.push(`Sessions        ${formatNumber(stats.totalSessions)}`);
   lines.push(`Messages        ${formatNumber(stats.totalUserMessages + stats.totalAssistantMessages)}  (${formatNumber(stats.totalUserMessages)} user, ${formatNumber(stats.totalAssistantMessages)} assistant)`);
@@ -131,12 +131,12 @@ export function formatStatsReport(stats, tools, models, days, paths) {
 
 export function formatHistoryReport(entries, limit) {
   if (!entries.length) {
-    return 'No local prompt history found in ~/.orca/history.jsonl.\n';
+    return 'No local prompt history found in ~/.kepler/history.jsonl.\n';
   }
 
   const lines = [];
-  lines.push(`ORCA HISTORY  ${entries.length} shown`);
-  lines.push(`Recent prompts from ~/.orca/history.jsonl  (limit ${limit})`);
+  lines.push(`KEPLER HISTORY  ${entries.length} shown`);
+  lines.push(`Recent prompts from ~/.kepler/history.jsonl  (limit ${limit})`);
   lines.push('');
 
   for (const entry of entries) {
@@ -202,7 +202,7 @@ export async function runHistoryCommand(args = []) {
   process.stdout.write(formatHistoryReport(history, limit));
 }
 
-// Dashboard removed — now using Orca Pulse (pulse/cli.js)
+// Dashboard removed — now using Kepler Pulse (pulse/cli.js)
 
 export async function _runDashboardCommand_REMOVED() { /* see pulse/cli.js */ }
 
@@ -272,8 +272,8 @@ export async function _OLD_runDashboardCommand(args = []) {
   const actualPort = typeof address === 'object' && address ? address.port : requestedPort;
   const url = `http://${host}:${actualPort}`;
 
-  process.stderr.write(`\x1b[36mOrca dashboard\x1b[0m ${url}\n`);
-  process.stderr.write(`\x1b[2mReading local analytics from ${getStorePaths().orcaDir}\x1b[0m\n`);
+  process.stderr.write(`\x1b[36mKepler dashboard\x1b[0m ${url}\n`);
+  process.stderr.write(`\x1b[2mReading local analytics from ${getStorePaths().keplerDir}\x1b[0m\n`);
   process.stderr.write(`\x1b[2mPress Ctrl+C to stop the dashboard server.\x1b[0m\n`);
 
   if (shouldOpen) {

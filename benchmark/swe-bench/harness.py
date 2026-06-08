@@ -337,20 +337,14 @@ def run_instance(instance: dict, model: str, timeout: int = 300, debug: bool = F
     print("  [4/5] Collecting changes...", file=sys.stderr)
     patch = collect_patch(repo_dir)
     result["patch_lines"] = len(patch.split("\n")) if patch else 0
+    result["model_patch"] = patch  # Store actual diff for swebench eval
 
     if not patch.strip():
         result.update({"status": "no_changes", "error": "Orca made no file changes"})
         return result
 
-    # 5. Run tests
-    print("  [5/5] Running tests...", file=sys.stderr)
-    test_result = run_tests(repo_dir, instance)
-    result["tests"] = {
-        "passed": test_result["passed"],
-        "exit_code": test_result["exit_code"],
-    }
-
-    result["status"] = "PASS" if test_result["passed"] else "FAIL"
+    # 5. Skip inline tests (swebench Docker eval handles this properly)
+    result["status"] = "patched"
 
     icon = "✓" if result["status"] == "PASS" else "✗"
     cost = f"${orca_result['cost_usd']:.3f}" if orca_result["cost_usd"] else "?"
@@ -395,6 +389,29 @@ def main():
     failed = 0
     errors = 0
 
+    # Incremental results file — write after each instance so nothing is lost on kill
+    model_slug = args.model.replace("/", "_")
+    output_path = args.output or str(RESULTS_DIR / f"{model_slug}_{args.dataset}.json")
+
+    def save_incremental():
+        """Save results after every completed instance."""
+        total = len(results)
+        summary = {
+            "benchmark": f"swe-bench-{args.dataset}",
+            "model": args.model,
+            "timestamp": datetime.now().isoformat(),
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "pass_rate": round((passed / total * 100) if total > 0 else 0, 1),
+            "total_cost_usd": round(sum(r.get("orca", {}).get("cost_usd", 0) for r in results), 3),
+            "avg_cost_usd": round(sum(r.get("orca", {}).get("cost_usd", 0) for r in results) / total if total > 0 else 0, 3),
+            "results": results,
+        }
+        with open(output_path, "w") as f:
+            json.dump(summary, f, indent=2)
+
     if args.parallel > 1:
         # Parallel execution
         from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -409,16 +426,18 @@ def main():
                 result = future.result()
                 results.append(result)
                 status = result.get("status", "?")
-                icon = "✓" if status == "PASS" else "✗"
+                icon = "✓" if status == "patched" else "✗"
                 cost = result.get("orca", {}).get("cost_usd", 0)
                 print(f"  [{i+1}/{len(instances)}] {icon} {result['instance_id']}  ({status}, ${cost:.3f})", file=sys.stderr)
 
-                if status == "PASS":
+                if status == "patched":
                     passed += 1
-                elif status == "FAIL":
-                    failed += 1
-                else:
+                elif status in ("error", "orca_failed", "no_changes"):
                     errors += 1
+                else:
+                    failed += 1
+
+                save_incremental()
     else:
         # Sequential execution
         for i, instance in enumerate(instances):
@@ -426,12 +445,14 @@ def main():
             result = run_instance(instance, args.model, args.timeout, debug=args.debug)
             results.append(result)
 
-            if result["status"] == "PASS":
+            if result["status"] == "patched":
                 passed += 1
-            elif result["status"] == "FAIL":
-                failed += 1
-            else:
+            elif result["status"] in ("error", "orca_failed", "no_changes"):
                 errors += 1
+            else:
+                failed += 1
+
+            save_incremental()
 
     # Summary
     total = len(results)

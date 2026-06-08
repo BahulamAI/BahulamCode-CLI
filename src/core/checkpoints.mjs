@@ -3,7 +3,7 @@
  *
  * Before any file edit, a checkpoint is created containing the
  * original file content. The /undo command restores the last checkpoint.
- * Checkpoints are stored in ~/.orca/projects/{hash}/checkpoints/
+ * Checkpoints are stored in ~/.kepler/projects/{hash}/checkpoints/
  */
 
 import fs from 'fs';

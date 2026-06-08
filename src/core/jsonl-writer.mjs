@@ -1,8 +1,8 @@
 /**
- * JSONL Writer — writes cc-lens compatible session transcripts to ~/.orca/.
+ * JSONL Writer — writes cc-lens compatible session transcripts to ~/.kepler/.
  *
  * Format mirrors Claude Code's ~/.claude/ JSONL structure so that
- * cc-lens (CLAUDE_CONFIG_DIR=~/.orca npx cc-lens) can read Orca sessions.
+ * cc-lens (CLAUDE_CONFIG_DIR=~/.kepler npx cc-lens) can read Kepler sessions.
  *
  * Design:
  * - Non-blocking: buffered writes, flushed every 500ms or on turn end
@@ -17,13 +17,13 @@ import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
 
-const ORCA_DIR = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
+const KEPLER_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
 const FLUSH_INTERVAL_MS = 500;
 
 /**
  * Sanitize a cwd path into a project slug for the directory name.
  * /Users/sree/Sites/myproject → -Users-sree-Sites-myproject
- * Mirrors the Claude Code / orca-cli convention.
+ * Mirrors the Claude Code / kepler-cli convention.
  */
 function sanitizePath(p) {
   return p.replace(/\//g, '-').replace(/^-/, '-');
@@ -50,7 +50,7 @@ export class JsonlWriter {
     this.version = version;
     this.sessionId = null; // set by setSessionId() when backend assigns it
     this.slug = sanitizePath(cwd);
-    this.projectDir = path.join(ORCA_DIR, 'projects', this.slug);
+    this.projectDir = path.join(KEPLER_DIR, 'projects', this.slug);
 
     // UUID chain for parent linking (cc-lens replay)
     this.lastUuid = null;
@@ -238,7 +238,7 @@ export class JsonlWriter {
   }
 
   /**
-   * Write a prompt entry to ~/.orca/history.jsonl.
+   * Write a prompt entry to ~/.kepler/history.jsonl.
    */
   writeHistory(prompt) {
     const entry = {
@@ -248,7 +248,7 @@ export class JsonlWriter {
       project: this.cwd,
       sessionId: this.sessionId,
     };
-    const historyPath = path.join(ORCA_DIR, 'history.jsonl');
+    const historyPath = path.join(KEPLER_DIR, 'history.jsonl');
     fs.promises.appendFile(historyPath, JSON.stringify(entry) + '\n', { mode: 0o600 })
       .catch(() => {}); // best effort
   }
@@ -327,7 +327,7 @@ export class JsonlWriter {
       fs.mkdirSync(this.projectDir, { recursive: true, mode: 0o700 });
     } catch { /* ignore */ }
     try {
-      fs.mkdirSync(path.join(ORCA_DIR, 'projects'), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(path.join(KEPLER_DIR, 'projects'), { recursive: true, mode: 0o700 });
     } catch { /* ignore */ }
   }
 

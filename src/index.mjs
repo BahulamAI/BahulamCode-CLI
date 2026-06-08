@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * @devtarang/orca v1.0.1 — Orca AI Coding Agent CLI
+ * @axplusb/kepler v1.0.1 — Kepler AI Coding Agent CLI
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
 
-// Load .env file from cwd or ~/.orca/.env
+// Load .env file from cwd or ~/.kepler/.env
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.orca', '.env')]) {
+for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.kepler', '.env')]) {
     if (existsSync(envPath)) {
         for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
             const match = line.match(/^\s*([\w]+)\s*=\s*(.+?)\s*$/);
@@ -117,12 +117,12 @@ function printUsage() {
     const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
     process.stderr.write(`${B}USAGE${R}\n`);
-    process.stderr.write(`  ${C}orca "instruction"${R}         Execute instruction\n`);
-    process.stderr.write(`  ${C}orca${R}                       Interactive mode (REPL)\n`);
-    process.stderr.write(`  ${C}orca login${R}                 Authenticate via GitHub OAuth\n`);
-    process.stderr.write(`  ${C}orca configure${R}             Open settings in browser\n`);
-    process.stderr.write(`  ${C}orca config --show${R}         Display local configuration\n`);
-    process.stderr.write(`  ${C}orca resume${R}                Resume a paused session\n`);
+    process.stderr.write(`  ${C}kepler "instruction"${R}         Execute instruction\n`);
+    process.stderr.write(`  ${C}kepler${R}                       Interactive mode (REPL)\n`);
+    process.stderr.write(`  ${C}kepler login${R}                 Authenticate via GitHub OAuth\n`);
+    process.stderr.write(`  ${C}kepler configure${R}             Open settings in browser\n`);
+    process.stderr.write(`  ${C}kepler config --show${R}         Display local configuration\n`);
+    process.stderr.write(`  ${C}kepler resume${R}                Resume a paused session\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
@@ -133,7 +133,7 @@ function printUsage() {
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
-    process.stderr.write(`  ${D}Models are configured via: orca configure${R}\n`);
+    process.stderr.write(`  ${D}Models are configured via: kepler configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
@@ -187,7 +187,7 @@ import { startTerminalRepl } from './terminal/repl.mjs';
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (args.version) { console.log(`@devtarang/orca ${VERSION}`); process.exit(0); }
+    if (args.version) { console.log(`@axplusb/kepler ${VERSION}`); process.exit(0); }
     if (args.help) { printUsage(); process.exit(0); }
 
     const auth = new TarangAuth();
@@ -203,7 +203,7 @@ async function main() {
             const remote = await auth.syncSettings();
             process.stderr.write(`\x1b[32m✓ Settings synced\x1b[0m ${remote.gateway_type ? `(gateway: ${remote.gateway_type})` : ''}\n`);
         } catch {
-            process.stderr.write('\x1b[2mSettings sync skipped — configure at devtarang.ai/dashboard/settings\x1b[0m\n');
+            process.stderr.write('\x1b[2mSettings sync skipped — configure at codekepler.ai/dashboard/settings\x1b[0m\n');
         }
         process.stderr.write('\n');
         // Fall through to REPL — user starts working right away
@@ -219,7 +219,7 @@ async function main() {
             if (remote.models?.reasoning)    process.stderr.write(`\x1b[32m✓ Coding:\x1b[0m       ${remote.models.reasoning}\n`);
             if (remote.models?.local)        process.stderr.write(`\x1b[32m✓ Local:\x1b[0m        ${remote.models.local}\n`);
             if (remote.configured_providers?.length) process.stderr.write(`\x1b[32m✓ Providers:\x1b[0m   ${remote.configured_providers.join(', ')}\n`);
-            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.orca/config.json\x1b[0m\n');
+            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.kepler/config.json\x1b[0m\n');
         } catch (err) {
             process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
         }

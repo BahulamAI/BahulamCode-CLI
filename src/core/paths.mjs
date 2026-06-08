@@ -1,8 +1,8 @@
 /**
- * Orca Paths — centralized path resolution for all Orca data.
+ * Kepler Paths — centralized path resolution for all Kepler data.
  *
- * Everything lives under ~/.orca/:
- *   ~/.orca/
+ * Everything lives under ~/.kepler/:
+ *   ~/.kepler/
  *     config.json              — auth credentials + settings
  *     history.jsonl            — prompt history
  *     hooks.json               — global hooks
@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
-const ORCA_HOME = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
+const KEPLER_HOME = process.env.KEPLER_HOME || process.env.ORCA_HOME || path.join(os.homedir(), '.kepler');
 
 /**
  * Hash a project path to a short directory name.
@@ -42,57 +42,58 @@ export function projectHash(projectDir) {
         .slice(0, 16);
 }
 
-/** Root ~/.orca/ directory. */
-export function orcaHome() {
-    return ORCA_HOME;
+/** Root ~/.kepler/ directory. */
+export function keplerHome() {
+    return KEPLER_HOME;
 }
 
-/** ~/.orca/projects/{hash}/ for a given project path. */
+
+/** ~/.kepler/projects/{hash}/ for a given project path. */
 export function projectDir(projectPath) {
-    return path.join(ORCA_HOME, 'projects', projectHash(projectPath));
+    return path.join(KEPLER_HOME, 'projects', projectHash(projectPath));
 }
 
-/** ~/.orca/projects/{hash}/index/ — BM25 search index. */
+/** ~/.kepler/projects/{hash}/index/ — BM25 search index. */
 export function indexDir(projectPath) {
     return path.join(projectDir(projectPath), 'index');
 }
 
-/** ~/.orca/projects/{hash}/checkpoints/ — file undo. */
+/** ~/.kepler/projects/{hash}/checkpoints/ — file undo. */
 export function checkpointsDir(projectPath) {
     return path.join(projectDir(projectPath), 'checkpoints');
 }
 
-/** ~/.orca/projects/{hash}/state.json — current session. */
+/** ~/.kepler/projects/{hash}/state.json — current session. */
 export function statePath(projectPath) {
     return path.join(projectDir(projectPath), 'state.json');
 }
 
-/** ~/.orca/projects/{hash}/sessions/ — session archive. */
+/** ~/.kepler/projects/{hash}/sessions/ — session archive. */
 export function sessionsDir(projectPath) {
     return path.join(projectDir(projectPath), 'sessions');
 }
 
-/** ~/.orca/projects/{hash}/hooks.json — project hooks. */
+/** ~/.kepler/projects/{hash}/hooks.json — project hooks. */
 export function projectHooksPath(projectPath) {
     return path.join(projectDir(projectPath), 'hooks.json');
 }
 
-/** ~/.orca/conversations/ — central conversation storage. */
+/** ~/.kepler/conversations/ — central conversation storage. */
 export function conversationsDir() {
-    return path.join(ORCA_HOME, 'conversations');
+    return path.join(KEPLER_HOME, 'conversations');
 }
 
-/** ~/.orca/conversations/{sessionId}.jsonl */
+/** ~/.kepler/conversations/{sessionId}.jsonl */
 export function conversationPath(sessionId) {
     return path.join(conversationsDir(), `${sessionId}.jsonl`);
 }
 
-/** ~/.orca/hooks.json — global hooks. */
+/** ~/.kepler/hooks.json — global hooks. */
 export function globalHooksPath() {
-    return path.join(ORCA_HOME, 'hooks.json');
+    return path.join(KEPLER_HOME, 'hooks.json');
 }
 
-/** ~/.orca/history.jsonl — prompt history. */
+/** ~/.kepler/history.jsonl — prompt history. */
 export function historyPath() {
-    return path.join(ORCA_HOME, 'history.jsonl');
+    return path.join(KEPLER_HOME, 'history.jsonl');
 }

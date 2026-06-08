@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Orca CLI — ANSI Terminal UI.
+ * Kepler CLI — ANSI Terminal UI.
  * Zero React. Zero Ink. Zero flickering.
  */
 
@@ -19,7 +19,7 @@ const subcommandArgs = process.argv.slice(3);
 
 async function main() {
   if (subcommand === 'dashboard') {
-    // Launch Orca Pulse Next.js dashboard
+    // Launch Kepler Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const path = await import('node:path');
@@ -76,28 +76,28 @@ async function main() {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
     const { version } = require('../../package.json');
-    process.stdout.write(`orca v${version}\n`);
+    process.stdout.write(`kepler v${version}\n`);
     return;
   }
 
   if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
     process.stderr.write(`
-  \x1b[1m\x1b[36morca\x1b[0m — Orchestration of Composable Agents
+  \x1b[1m\x1b[36mkepler\x1b[0m — AI Coding Agent — codekepler.ai
 
   \x1b[1mUsage:\x1b[0m
-    orca                    Start interactive REPL
-    orca "instruction"      Run a single instruction
-    orca --headless -p "x"  Non-interactive: auto-approve, JSONL output
-    orca --resume            Resume last conversation
-    orca dashboard          Open Orca Pulse analytics dashboard
-    orca login              Sign in via browser
-    orca logout             Sign out and clear credentials
-    orca version            Show version
+    kepler                    Start interactive REPL
+    kepler "instruction"      Run a single instruction
+    kepler --headless -p "x"  Non-interactive: auto-approve, JSONL output
+    kepler --resume            Resume last conversation
+    kepler dashboard          Open Kepler Pulse analytics dashboard
+    kepler login              Sign in via browser
+    kepler logout             Sign out and clear credentials
+    kepler version            Show version
 
   \x1b[1mAnalytics:\x1b[0m
-    orca sessions           List recent local sessions
-    orca stats              Show aggregate local session stats
-    orca history            Show recent prompt history
+    kepler sessions           List recent local sessions
+    kepler stats              Show aggregate local session stats
+    kepler history            Show recent prompt history
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands
@@ -121,9 +121,9 @@ async function main() {
     TARANG_ENV              Set backend (local, development, production)
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
-    ORCA_CONFIG_DIR         Override config directory (default: ~/.orca)
+    KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)
 
-  \x1b[2mDocs: https://devtarang.ai/docs\x1b[0m
+  \x1b[2mDocs: https://codekepler.ai/docs\x1b[0m
 `);
     return;
   }

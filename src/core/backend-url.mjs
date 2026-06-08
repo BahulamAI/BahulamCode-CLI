@@ -19,8 +19,8 @@ BACKEND_URLS.prod = BACKEND_URLS.production;
 
 const WEB_URLS = {
     local:       'http://localhost:3000',
-    development: 'https://devtarang.ai',
-    production:  'https://devtarang.ai',
+    development: 'https://codekepler.ai',
+    production:  'https://codekepler.ai',
 };
 WEB_URLS.dev = WEB_URLS.development;
 WEB_URLS.prod = WEB_URLS.production;

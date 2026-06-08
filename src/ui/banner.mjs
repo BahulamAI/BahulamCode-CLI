@@ -1,5 +1,5 @@
 /**
- * Banner & Branding — Tarang CLI startup display.
+ * Banner & Branding — Kepler CLI startup display.
  */
 
 import { execSync } from 'node:child_process';
@@ -17,13 +17,13 @@ const BLUE = '\x1b[34m';
 const BOLD_GREEN = '\x1b[1;32m';
 const BOLD_CYAN = '\x1b[1;36m';
 
-const BANNER_ORCA = [
-    ' ██████╗  ██████╗   ██████╗  █████╗ ',
-    '██╔═══██╗ ██╔══██╗ ██╔════╝ ██╔══██╗',
-    '██║   ██║ ██████╔╝ ██║      ███████║',
-    '██║   ██║ ██╔══██╗ ██║      ██╔══██║',
-    '╚██████╔╝ ██║  ██║ ╚██████╗ ██║  ██║',
-    ' ╚═════╝  ╚═╝  ╚═╝  ╚═════╝ ╚═╝  ╚═╝',
+const BANNER_KEPLER = [
+    '██╗  ██╗ ███████╗ ██████╗  ██╗     ███████╗ ██████╗ ',
+    '██║ ██╔╝ ██╔════╝ ██╔══██╗ ██║     ██╔════╝ ██╔══██╗',
+    '█████╔╝  █████╗   ██████╔╝ ██║     █████╗   ██████╔╝',
+    '██╔═██╗  ██╔══╝   ██╔═══╝  ██║     ██╔══╝   ██╔══██╗',
+    '██║  ██╗ ███████╗ ██║      ███████╗ ███████╗ ██║  ██║',
+    '╚═╝  ╚═╝ ╚══════╝ ╚═╝      ╚══════╝ ╚══════╝ ╚═╝  ╚═╝',
 ];
 
 /**
@@ -31,10 +31,10 @@ const BANNER_ORCA = [
  */
 export function printBanner() {
     process.stderr.write('\n');
-    for (const line of BANNER_ORCA) {
+    for (const line of BANNER_KEPLER) {
         process.stderr.write(`  ${BOLD_CYAN}${line}${RESET}\n`);
     }
-    process.stderr.write(`  ${DIM}Orchestration of Composable Agents${RESET}\n`);
+    process.stderr.write(`  ${DIM}AI Coding Agent — codekepler.ai${RESET}\n`);
     process.stderr.write('\n');
 }
 
@@ -105,7 +105,7 @@ export function printStyledConfig(creds) {
         return `${check} ${val.slice(0, 6)}...${val.slice(-4)}`;
     };
 
-    process.stderr.write(`\n${BOLD}Orca Configuration${RESET} ${DIM}(~/.orca/config.json)${RESET}\n`);
+    process.stderr.write(`\n${BOLD}Kepler Configuration${RESET} ${DIM}(~/.kepler/config.json)${RESET}\n`);
     process.stderr.write(`${'─'.repeat(50)}\n`);
     process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
     process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -167,7 +167,7 @@ export function getLoginSuccessHTML() {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Orca - Login Successful</title>
+    <title>Kepler - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -189,7 +189,7 @@ export function getLoginSuccessHTML() {
             margin-bottom: 8px;
         }
         .dev { color: #3fb950; }
-        .orca { color: #58a6ff; }
+        .kepler { color: #58a6ff; }
         .check {
             font-size: 64px;
             color: #3fb950;
@@ -222,14 +222,14 @@ export function getLoginSuccessHTML() {
 <body>
     <div class="container">
         <div class="logo">
-            <span class="orca">ORCA</span>
+            <span class="kepler">KEPLER</span>
         </div>
         <div class="check">&#10003;</div>
         <h1>Login Successful!</h1>
         <p>You can close this tab and return to your terminal.</p>
         <div class="hint">
             <p>Next step: set your API key</p>
-            <code>orca config --openrouter-key YOUR_KEY</code>
+            <code>kepler config --openrouter-key YOUR_KEY</code>
         </div>
     </div>
 </body>

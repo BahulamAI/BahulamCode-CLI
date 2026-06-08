@@ -1,5 +1,5 @@
 /**
- * Local Store Reader — scans ~/.orca/ JSONL files for historical stats.
+ * Local Store Reader — scans ~/.kepler/ JSONL files for historical stats.
  *
  * Provides read helpers for CLI commands (/stats, /history, /tokens, /tools, /sessions).
  * All data comes from local JSONL files — no cloud dependency.
@@ -10,8 +10,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as readline from 'node:readline';
 
-const ORCA_DIR = process.env.ORCA_HOME || path.join(os.homedir(), '.orca');
-const PROJECTS_DIR = path.join(ORCA_DIR, 'projects');
+const KEPLER_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
+const PROJECTS_DIR = path.join(KEPLER_DIR, 'projects');
 
 function normalizeBlock(block) {
   if (!block || typeof block !== 'object') {
@@ -302,7 +302,7 @@ export async function getModelBreakdown(days = 30) {
  * @param {number} n — max entries to return (most recent first)
  */
 export function getHistory(n = 50) {
-  const historyPath = path.join(ORCA_DIR, 'history.jsonl');
+  const historyPath = path.join(KEPLER_DIR, 'history.jsonl');
   try {
     const content = fs.readFileSync(historyPath, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
@@ -318,8 +318,8 @@ export function getHistory(n = 50) {
 
 export function getStorePaths() {
   return {
-    orcaDir: ORCA_DIR,
+    keplerDir: KEPLER_DIR,
     projectsDir: PROJECTS_DIR,
-    historyPath: path.join(ORCA_DIR, 'history.jsonl'),
+    historyPath: path.join(KEPLER_DIR, 'history.jsonl'),
   };
 }

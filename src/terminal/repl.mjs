@@ -1,5 +1,5 @@
 /**
- * Orca REPL — Full Claude-like terminal UX.
+ * Kepler REPL — Full Claude-like terminal UX.
  *
  * Pure ANSI. No React. No Ink. No flickering.
  *
@@ -148,12 +148,12 @@ function printBanner(auth) {
 //
 //   ✓ 3 tools · 1.2s · $0.02                      ctx 21% · 42k tok
 //   ╶─────────────────────────────────────────────────────────────────╴
-//   orca ›
+//   kepler ›
 //
 // Layout on first prompt (no stats yet):
 //
 //   ╶─────────────────────────────────────────────────────────────────╴
-//   orca ›
+//   kepler ›
 
 /**
  * Build the contextual status strip — compact, one line.
@@ -765,7 +765,7 @@ async function handleCommand(input, ctx) {
 
   switch (cmd) {
     case '/help':
-      process.stderr.write(`\n  ${c.bold('Orca Commands')}\n`);
+      process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
       for (const [name, desc] of Object.entries(COMMANDS)) {
         process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
@@ -937,7 +937,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
       for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user' ? c.white('You') : c.brand('Orca');
+        const role = msg.role === 'user' ? c.white('You') : c.brand('Kepler');
         process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
       }
       process.stderr.write('\n');
@@ -1016,7 +1016,7 @@ async function handleCommand(input, ctx) {
         const instr = s.instruction ? s.instruction.slice(0, 40) : '(no instruction)';
         process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
       }
-      process.stderr.write(`\n  ${c.dim('Resume with:')} orca --resume <sessionId>\n`);
+      process.stderr.write(`\n  ${c.dim('Resume with:')} kepler --resume <sessionId>\n`);
       return;
     }
 
@@ -1123,7 +1123,7 @@ async function handleCommand(input, ctx) {
     case '/logout': {
       const success = ctx.auth.logout();
       if (success) {
-        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.orca/config.json')}\n`);
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.kepler/config.json')}\n`);
         process.stderr.write(`  ${c.dim('Run /login to sign in again.')}\n`);
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim('No credentials to clear.')}\n`);
@@ -1172,11 +1172,11 @@ export async function startTerminalRepl() {
   const skipPerms = cliArgs.freeswim;
   const approval = new ApprovalManager({ autoApprove: skipPerms });
 
-  // Session manager — persists conversation messages to .orca/conversations/
+  // Session manager — persists conversation messages to .kepler/conversations/
   const sessionMgr = new SessionManager(safeCwd());
   _sessionMgr = sessionMgr; // expose to renderEvent
 
-  // Local JSONL writer — writes cc-lens compatible session data to ~/.orca/
+  // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
   const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn
@@ -1261,7 +1261,7 @@ export async function startTerminalRepl() {
 
   process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
-  const PROMPT = `${c.brand('orca')} ${c.dim('›')} `;
+  const PROMPT = `${c.brand('kepler')} ${c.dim('›')} `;
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -1326,8 +1326,8 @@ export async function startTerminalRepl() {
       return;
     }
 
-    // Orca response label
-    process.stderr.write(`\n${c.bold(c.brand('orca'))}\n`);
+    // Kepler response label
+    process.stderr.write(`\n${c.bold(c.brand('kepler'))}\n`);
 
     // Create or reuse stream client — sessionId persists across turns
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
