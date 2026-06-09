@@ -1,4 +1,4 @@
-# SWE-bench Evaluation: Azure VM Setup
+# SWE-bench Benchmark: Azure VM Setup & Run Guide
 
 ## VM Details
 
@@ -10,101 +10,159 @@
 | Size | Standard_D4s_v3 (4 vCPU, 16GB RAM) |
 | OS | Ubuntu 24.04 LTS (x86_64) |
 | Disk | 100GB |
-| Public IP | `20.9.77.9` |
+| Public IP | `20.9.77.9` (may change after deallocate/start) |
 | User | `azureuser` |
 | Cost | ~$0.19/hr |
-| Azure Account | `raviakasapu@gmail.com` (AzureSubscription_ADO) |
+| GitHub SSH | `axplusbtechdev` account has VM's deploy key |
 
-## SSH Access
-
-```bash
-ssh azureuser@20.9.77.9
-```
-
-Uses `~/.ssh/id_ed25519` key (added via `az vm user update`).
-
-## What's Installed
-
-- Python 3.12 with venv at `~/swebench-env/`
-- swebench 4.1.0 + datasets
-- Docker (native x86_64, no emulation needed)
-
-## File Locations on VM
-
-```
-~/benchmark/results/official/deepseek_deepseek-v4-pro/predictions.json  # 300 predictions
-~/swebench-env/                                                          # Python venv
-/tmp/swebench-eval.log                                                   # Current eval log
-```
-
-## Running Evaluation
+## VM Management
 
 ```bash
+# Start VM
+az vm start --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+
+# Get IP (may change after restart)
+az vm show -d --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm --query publicIps -o tsv
+
+# SSH in
 ssh azureuser@20.9.77.9
 
-# Run eval (background)
-nohup ~/swebench-env/bin/python -m swebench.harness.run_evaluation \
-  --predictions_path ~/benchmark/results/official/deepseek_deepseek-v4-pro/predictions.json \
+# Stop VM (saves cost, keeps disk)
+az vm deallocate --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+
+# If SSH is blocked, use Azure run-command:
+az vm run-command invoke --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm \
+  --command-id RunShellScript --scripts 'sudo -u azureuser bash -c "YOUR_COMMAND"'
+```
+
+## What's Installed on VM
+
+```
+~/tarang-backend/           # Backend (git clone, git pull to update)
+~/tarang-npm/               # CLI + benchmark harness
+~/tarang-ai-agent-framework/  # Agent framework (pip install -e)
+~/backend-env/              # Python venv for backend
+~/swebench-env/             # Python venv for swebench + datasets
+~/start-benchmark.sh        # Main entry point
+~/.kepler/config.json       # CLI auth token
+```
+
+## How to Run a Benchmark
+
+### Step 1: Start VM and update code
+
+```bash
+az vm start --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+ssh azureuser@20.9.77.9
+
+# Pull latest backend (includes agent prompt changes)
+cd ~/tarang-backend && git pull origin main
+```
+
+### Step 2: Run single instance (quick test)
+
+```bash
+export AGENT_FRAMEWORK_TOKEN=internal-local-dev
+export SKIP_QUOTA=1
+export TARANG_ENV=local
+export OPENROUTER_API_KEY=sk-or-v1-...
+
+# Start backend
+source ~/backend-env/bin/activate
+cd ~/tarang-backend
+uvicorn app.main:app --port 8000 &
+sleep 10
+
+# Run one instance
+source ~/swebench-env/bin/activate
+cd ~/tarang-npm
+python3 benchmark/swe-bench/harness.py \
+  --dataset lite \
+  --model deepseek/deepseek-v4-flash \
+  --instance django__django-11848 \
+  --timeout 300 \
+  --debug \
+  --output /tmp/test-single.json
+
+# Check result
+cat /tmp/test-single.json | python3 -m json.tool | head -20
+
+pkill -f uvicorn
+```
+
+### Step 3: Run batch (multiple instances)
+
+```bash
+# Use start-benchmark.sh (starts backend + runs harness)
+# Usage: ./start-benchmark.sh MODEL LIMIT EXTRA_ARGS
+
+# 10 instances with flash
+./start-benchmark.sh deepseek/deepseek-v4-flash 10
+
+# Full 300 (background, ~3 hours)
+nohup ./start-benchmark.sh deepseek/deepseek-v4-flash > /tmp/bench-full.log 2>&1 &
+
+# Monitor
+tail -f /tmp/bench-full.log
+grep -c "\[.*\/300\]" /tmp/bench-full.log
+```
+
+### Step 4: Docker evaluation (get actual score)
+
+```bash
+# Build predictions from harness results
+python3 << 'PYEOF'
+import json, os
+d = json.load(open("/home/azureuser/tarang-npm/benchmark/results/MODEL_SLUG_lite.json"))
+predictions = [{"instance_id": r["instance_id"], "model_patch": r.get("model_patch", ""), "model_name_or_path": "MODEL"} for r in d["results"]]
+os.makedirs("benchmark/results/official/MODEL_SLUG", exist_ok=True)
+json.dump(predictions, open("benchmark/results/official/MODEL_SLUG/predictions.json", "w"), indent=2)
+print(f"{sum(1 for p in predictions if p['model_patch'])}/{len(predictions)} with patches")
+PYEOF
+
+# Run swebench Docker eval
+source ~/swebench-env/bin/activate
+nohup python3 -m swebench.harness.run_evaluation \
+  --predictions_path ~/tarang-npm/benchmark/results/official/MODEL_SLUG/predictions.json \
   --dataset_name princeton-nlp/SWE-bench_Lite \
-  --run_id orca-v2.7.2-full \
+  --run_id kepler-RUN_NAME \
   --max_workers 4 \
   > /tmp/swebench-eval.log 2>&1 &
 
 # Monitor
 tail -f /tmp/swebench-eval.log
+
+# Results appear as: deepseek__deepseek-v4-flash.kepler-RUN_NAME.json
 ```
 
-## Check Progress
+### Step 5: Copy results back to laptop
 
 ```bash
-# From laptop
-ssh azureuser@20.9.77.9 "tail -5 /tmp/swebench-eval.log"
-
-# Check resolved count
-ssh azureuser@20.9.77.9 "grep -o '✓=[0-9]*' /tmp/swebench-eval.log | tail -1"
+scp azureuser@20.9.77.9:~/deepseek*.json ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/official/
+scp -r azureuser@20.9.77.9:~/tarang-npm/benchmark/results/debug/ ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/debug-latest/
 ```
 
-## Copy Results Back
+## Important Notes
 
-```bash
-# Copy result report
-scp azureuser@20.9.77.9:~/benchmark/*.json ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/
+- `AGENT_FRAMEWORK_TOKEN=internal-local-dev` MUST be exported before starting backend
+- `LICENSE_KEY` in .env/.env.development causes JWT validation failure (placeholder public key in source install) — remove it or ensure AGENT_FRAMEWORK_TOKEN is checked first
+- Backend needs ~10s to start (seed templates + scheduler) — health check may fail at 5s
+- `start-benchmark.sh` already has AGENT_FRAMEWORK_TOKEN and SKIP_QUOTA exported
+- Patches are saved incrementally — safe to kill mid-run, no data loss
+- Debug traces saved to `benchmark/results/debug/{instance_id}_stdout.txt`
 
-# Copy eval logs
-scp -r azureuser@20.9.77.9:~/benchmark/logs/ ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/azure-eval-logs/
-```
+## Benchmark Results History
 
-## VM Management
+### V4 Flash (300 instances, June 2026)
+- **30.7%** resolve rate (92/300)
+- Cost: ~$10 total ($0.034/instance on OpenRouter)
 
-```bash
-# Stop VM (saves cost, keeps disk)
-az vm deallocate --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+### V4 Pro (28 instance sample, June 2026)
+- **50.0%** resolve rate (14/28)
+- Cost: ~$16 total ($0.48/instance on OpenRouter)
 
-# Start VM again
-az vm start --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
-
-# Get current IP (changes after restart)
-az vm show -d --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm --query publicIps -o tsv
-
-# Delete everything when done
-az group delete --name AZ-RG-ORCA-BENCHMARK --yes --no-wait
-```
-
-## Predictions Summary
-
-- 300 instances (SWE-bench Lite)
-- 297 with patches, 3 empty
-- Model: deepseek/deepseek-v4-pro via OpenRouter
-- Generated by Orca v2.7.1 headless on Mac Mini
-- Total generation cost: ~$52 (OpenRouter)
-
-## Previous Partial Results (Mac Mini, 31/300 evaluated)
-
-7 resolved out of 31 = 22.6%:
-- django__django-10914
-- django__django-11001
-- django__django-11049
-- django__django-11099
-- django__django-11133
-- django__django-11848
-- astropy__astropy-14995
+### Phase 1 Optimized Agent (5 instance test, June 2026)
+- 2/5 previously failed instances now resolve
+- django__django-11848: timeout → RESOLVED
+- astropy__astropy-12907: timeout → RESOLVED
+- Agent improvements: line-range reads, test-after-edit, manual verification
