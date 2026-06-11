@@ -15,23 +15,28 @@
 | Cost | ~$0.19/hr |
 | GitHub SSH | `axplusbtechdev` account has VM's deploy key |
 
+`AZ-RG-ORCA-BENCHMARK` is the existing Azure resource identifier. It is retained
+for infrastructure compatibility and is not a Kepler product name.
+
 ## VM Management
 
 ```bash
+RESOURCE_GROUP=AZ-RG-ORCA-BENCHMARK
+
 # Start VM
-az vm start --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+az vm start --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
 
 # Get IP (may change after restart)
-az vm show -d --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm --query publicIps -o tsv
+az vm show -d --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm --query publicIps -o tsv
 
 # SSH in
 ssh azureuser@20.9.77.9
 
 # Stop VM (saves cost, keeps disk)
-az vm deallocate --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+az vm deallocate --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
 
 # If SSH is blocked, use Azure run-command:
-az vm run-command invoke --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm \
+az vm run-command invoke --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm \
   --command-id RunShellScript --scripts 'sudo -u azureuser bash -c "YOUR_COMMAND"'
 ```
 
@@ -52,7 +57,8 @@ az vm run-command invoke --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-e
 ### Step 1: Start VM and update code
 
 ```bash
-az vm start --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm
+RESOURCE_GROUP=AZ-RG-ORCA-BENCHMARK
+az vm start --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
 ssh azureuser@20.9.77.9
 
 # Pull latest backend (includes agent prompt changes)
@@ -138,8 +144,8 @@ tail -f /tmp/swebench-eval.log
 ### Step 5: Copy results back to laptop
 
 ```bash
-scp azureuser@20.9.77.9:~/deepseek*.json ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/official/
-scp -r azureuser@20.9.77.9:~/tarang-npm/benchmark/results/debug/ ~/Sites/Tarang\ Orca/tarang-npm/benchmark/results/debug-latest/
+scp azureuser@20.9.77.9:~/deepseek*.json <local-repo>/benchmark/results/official/
+scp -r azureuser@20.9.77.9:~/tarang-npm/benchmark/results/debug/ <local-repo>/benchmark/results/debug-latest/
 ```
 
 ## Important Notes

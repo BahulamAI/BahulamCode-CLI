@@ -12,6 +12,7 @@
 set -euo pipefail
 
 VM="azureuser@20.9.77.9"
+RESOURCE_GROUP=${RESOURCE_GROUP:-AZ-RG-ORCA-BENCHMARK}
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 BUNDLE="/tmp/kepler-vm-full-bundle.tar.gz"
@@ -160,5 +161,5 @@ echo "║  Full run (background):                                  ║"
 echo "║    ssh $VM 'nohup ./start-benchmark.sh deepseek/deepseek-v4-pro > /tmp/bench.log 2>&1 &'"
 echo "║                                                          ║"
 echo "║  Stop VM when done:                                      ║"
-echo "║    az vm deallocate --resource-group AZ-RG-ORCA-BENCHMARK --name swebench-eval-vm"
+echo "║    az vm deallocate --resource-group \"$RESOURCE_GROUP\" --name swebench-eval-vm"
 echo "╚══════════════════════════════════════════════════════════╝"

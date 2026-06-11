@@ -360,6 +360,31 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
     return result
 
 
+def normalize_result(result: dict) -> dict:
+    """Migrate pre-Kepler result entries when resuming an existing output file."""
+    if "kepler" not in result and "orca" in result:
+        result["kepler"] = result.pop("orca")
+    if result.get("status") == "orca_failed":
+        result["status"] = "kepler_failed"
+    if result.get("error") == "Orca made no file changes":
+        result["error"] = "Kepler made no file changes"
+    return result
+
+
+def summarize_results(results: list[dict]) -> tuple[int, int, int]:
+    passed = sum(result.get("status") == "patched" for result in results)
+    errors = sum(
+        result.get("status") in ("error", "kepler_failed", "no_changes")
+        for result in results
+    )
+    failed = len(results) - passed - errors
+    return passed, failed, errors
+
+
+def result_cost(result: dict) -> float:
+    return result.get("kepler", {}).get("cost_usd", 0)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Kepler SWE-bench Harness")
     parser.add_argument("--dataset", default="lite", choices=["lite", "verified", "full"])
@@ -400,7 +425,10 @@ def main():
         if Path(output_path).exists():
             try:
                 existing = json.load(open(output_path))
-                results = existing.get("results", [])
+                results = [
+                    normalize_result(result)
+                    for result in existing.get("results", [])
+                ]
                 done_ids = set(r["instance_id"] for r in results)
                 before = len(instances)
                 instances = [i for i in instances if i["instance_id"] not in done_ids]
@@ -409,9 +437,7 @@ def main():
                 print(f"Skip-done: could not load {output_path}: {e}", file=sys.stderr)
 
     # Run instances (sequential or parallel)
-    passed = 0
-    failed = 0
-    errors = 0
+    passed, failed, errors = summarize_results(results)
 
     # Incremental results file — write after each instance so nothing is lost on kill
     model_slug = args.model.replace("/", "_")
@@ -429,8 +455,8 @@ def main():
             "failed": failed,
             "errors": errors,
             "pass_rate": round((passed / total * 100) if total > 0 else 0, 1),
-            "total_cost_usd": round(sum(r.get("kepler", {}).get("cost_usd", 0) for r in results), 3),
-            "avg_cost_usd": round(sum(r.get("kepler", {}).get("cost_usd", 0) for r in results) / total if total > 0 else 0, 3),
+            "total_cost_usd": round(sum(result_cost(r) for r in results), 3),
+            "avg_cost_usd": round(sum(result_cost(r) for r in results) / total if total > 0 else 0, 3),
             "results": results,
         }
         with open(output_path, "w") as f:
@@ -451,7 +477,7 @@ def main():
                 results.append(result)
                 status = result.get("status", "?")
                 icon = "✓" if status == "patched" else "✗"
-                cost = result.get("kepler", {}).get("cost_usd", 0)
+                cost = result_cost(result)
                 print(f"  [{i+1}/{len(instances)}] {icon} {result['instance_id']}  ({status}, ${cost:.3f})", file=sys.stderr)
 
                 if status == "patched":
@@ -481,7 +507,7 @@ def main():
     # Summary
     total = len(results)
     pass_rate = (passed / total * 100) if total > 0 else 0
-    total_cost = sum(r.get("kepler", {}).get("cost_usd", 0) for r in results)
+    total_cost = sum(result_cost(r) for r in results)
     avg_cost = total_cost / total if total > 0 else 0
 
     summary = {

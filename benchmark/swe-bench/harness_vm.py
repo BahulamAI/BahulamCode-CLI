@@ -47,6 +47,12 @@ PREDICTIONS_DIR = RESULTS_DIR / "official"
 HARNESS_PY = Path(__file__).parent / "harness.py"
 
 
+def result_cost(result: dict) -> float:
+    """Read current Kepler metrics and historical pre-rebrand metrics."""
+    metrics = result.get("kepler") or result.get("orca") or {}
+    return metrics.get("cost_usd", 0)
+
+
 def phase_generate(model: str, dataset: str, limit: int | None, parallel: int, timeout: int, debug: bool) -> Path:
     """Phase 1: Run Kepler harness to generate patches."""
     print("\n" + "=" * 70)
@@ -199,7 +205,7 @@ def phase_summarize(results_file: Path, model: str):
     if failures:
         print(f"  Failed instances ({len(failures)}):")
         for r in failures[:20]:
-            cost = r.get("kepler", {}).get("cost_usd", 0)
+            cost = result_cost(r)
             print(f"    - {r['instance_id']} (${cost:.3f})")
         if len(failures) > 20:
             print(f"    ... and {len(failures) - 20} more")
