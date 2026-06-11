@@ -20,8 +20,8 @@ const pressStart2P = Press_Start_2P({
 })
 
 export const metadata: Metadata = {
-  title: 'Orca Pulse',
-  description: 'Real-time analytics for your Orca AI agent sessions',
+  title: 'Kepler Pulse',
+  description: 'Real-time analytics for your Kepler AI agent sessions',
 }
 
 export default function RootLayout({

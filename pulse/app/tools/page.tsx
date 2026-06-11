@@ -201,7 +201,7 @@ export default function ToolsPage() {
             {data.versions.length > 0 && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Orca Version History</CardTitle>
+                  <CardTitle>Kepler Version History</CardTitle>
                   <CardDescription>Versions seen across your sessions</CardDescription>
                 </CardHeader>
                 <CardContent>

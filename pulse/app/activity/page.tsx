@@ -175,7 +175,7 @@ export default function ActivityPage() {
                     <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
                     Day of Week
                   </CardTitle>
-                  <CardDescription>Which days you use Orca most</CardDescription>
+                  <CardDescription>Which days you use Kepler most</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-1 flex-col justify-between pt-3 pb-0">
                   <DayOfWeekChart data={data.dow_counts} />

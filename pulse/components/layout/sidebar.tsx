@@ -101,7 +101,7 @@ function SidebarContents({
             <span
               className="dark:[text-shadow:0_1px_0_#0e4f5c,0_2px_0_#083344,0_3px_6px_rgba(0,0,0,0.35)] [text-shadow:0_1px_0_rgba(255,255,255,0.4)]"
             >
-              Orca Pulse
+              Kepler Pulse
             </span>
           </span>
         )}
@@ -140,7 +140,7 @@ function SidebarContents({
       )}>
         {!collapsed && (
           <span className="text-xs text-sidebar-foreground/50">
-            Orca Pulse
+            Kepler Pulse
           </span>
         )}
         <button

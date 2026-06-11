@@ -5,8 +5,8 @@ export default function OverviewPage() {
   return (
     <div className="flex flex-col min-h-screen">
       <TopBar
-        title="Orca Pulse"
-        subtitle="Real-time analytics for your Orca AI agent sessions"
+        title="Kepler Pulse"
+        subtitle="Real-time analytics for your Kepler AI agent sessions"
       />
       <OverviewClient />
     </div>

@@ -1,11 +1,11 @@
 """
-Orca Agent Adapter for SWE-bench evaluation.
+Kepler Agent Adapter for SWE-bench evaluation.
 
-Runs Orca in headless mode against a repo and returns the patch (git diff).
-This is the bridge between swebench's evaluation harness and Orca's CLI.
+Runs Kepler in headless mode against a repo and returns the patch (git diff).
+This is the bridge between swebench's evaluation harness and Kepler's CLI.
 
 Usage:
-    agent = OrcaAgent(model="deepseek/deepseek-chat-v3-0324")
+    agent = KeplerAgent(model="deepseek/deepseek-chat-v3-0324")
     patch = agent.solve(instance, repo_dir, timeout=600)
 """
 
@@ -17,12 +17,12 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Orca CLI entrypoint
-ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
+# Kepler CLI entrypoint
+KEPLER_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
 
 
-class OrcaAgent:
-    """SWE-bench agent adapter — runs Orca headless and returns a patch."""
+class KeplerAgent:
+    """SWE-bench agent adapter that runs Kepler headless and returns a patch."""
 
     def __init__(
         self,
@@ -48,7 +48,7 @@ class OrcaAgent:
         Args:
             instance: SWE-bench instance dict with problem_statement, instance_id, etc.
             repo_dir: Path to the cloned repo (already at base_commit)
-            timeout: Max seconds for Orca to work
+            timeout: Max seconds for Kepler to work
 
         Returns:
             dict with:
@@ -80,7 +80,7 @@ class OrcaAgent:
         )
 
         cmd = [
-            "node", str(ORCA_MAIN),
+            "node", str(KEPLER_MAIN),
             "--headless", "--verbose",
             "-p", instruction,
         ]
@@ -137,7 +137,7 @@ class OrcaAgent:
         return {
             "instance_id": instance_id,
             "model_patch": patch,
-            "model_name_or_path": f"Orca v2.7.1 + {self.model}",
+            "model_name_or_path": f"Kepler v1.0.5 + {self.model}",
             "duration_s": round(duration, 1),
             "cost_usd": cost,
             "tools": tools,
@@ -187,7 +187,7 @@ def generate_predictions(
 
     print(f"Generating predictions for {len(instances)} instances with {model}", file=sys.stderr)
 
-    agent = OrcaAgent(model=model, timeout=timeout)
+    agent = KeplerAgent(model=model, timeout=timeout)
     predictions = []
     passed = 0
     total = 0
@@ -200,7 +200,7 @@ def generate_predictions(
         # Setup repo
         repo = instance["repo"]
         base_commit = instance["base_commit"]
-        repo_dir = Path(f"/tmp/orca-swebench/{repo.replace('/', '__')}/{base_commit[:8]}")
+        repo_dir = Path(f"/tmp/kepler-swebench/{repo.replace('/', '__')}/{base_commit[:8]}")
 
         if repo_dir.exists():
             import shutil
@@ -221,7 +221,7 @@ def generate_predictions(
             predictions.append({
                 "instance_id": instance_id,
                 "model_patch": "",
-                "model_name_or_path": f"Orca v2.7.1 + {model}",
+                "model_name_or_path": f"Kepler v1.0.5 + {model}",
             })
             continue
 
@@ -235,7 +235,7 @@ def generate_predictions(
                 capture_output=True, cwd=repo_dir,
             )
 
-        # Run Orca
+        # Run Kepler
         result = agent.solve(instance, str(repo_dir), timeout)
 
         if result["success"]:
@@ -278,7 +278,7 @@ def generate_predictions(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Orca SWE-bench Agent")
+    parser = argparse.ArgumentParser(description="Kepler SWE-bench Agent")
     parser.add_argument("--dataset", default="lite", choices=["lite", "verified", "full"])
     parser.add_argument("--model", default="deepseek/deepseek-chat-v3-0324")
     parser.add_argument("--limit", type=int, help="Max instances")

@@ -1,7 +1,8 @@
 node_modules/
+__pycache__/
 
-.orca
-.orca/*
+.kepler
+.kepler/*
 
 .tarang
 .tarang/*

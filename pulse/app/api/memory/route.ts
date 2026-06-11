@@ -6,7 +6,7 @@ import { readMemories } from '@/lib/claude-reader'
 
 export const dynamic = 'force-dynamic'
 
-const CLAUDE_DIR = path.join(os.homedir(), '.orca')
+const CLAUDE_DIR = path.join(os.homedir(), '.kepler')
 
 export async function GET() {
   const memories = await readMemories()
@@ -37,7 +37,7 @@ export async function PATCH(req: Request) {
 
     const filePath = path.join(CLAUDE_DIR, 'projects', projectSlug, 'memory', file)
 
-    // Ensure the resolved path stays within ~/.orca/projects/
+    // Ensure the resolved path stays within ~/.kepler/projects/
     const allowedRoot = path.join(CLAUDE_DIR, 'projects')
     if (!filePath.startsWith(allowedRoot + path.sep)) {
       return NextResponse.json({ error: 'Path outside allowed directory' }, { status: 403 })

@@ -86,5 +86,34 @@ await test('get_file_info auto-approves (not a write tool)', async () => {
     assert.strictEqual(r.approved, true);
 });
 
+await test('approval prompt shows action, target, risk, and reason', async () => {
+    const mgr = new ApprovalManager();
+    mgr._readKey = async () => 'n';
+
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+
+    try {
+        const result = await mgr.check(
+            'shell',
+            { command: 'npm publish' },
+            true,
+            { risk: 'high', reason: 'Publishes this package publicly' },
+        );
+        assert.strictEqual(result.approved, false);
+        assert.ok(output.includes('Approval required'));
+        assert.ok(output.includes('Run command'));
+        assert.ok(output.includes('npm publish'));
+        assert.ok(output.includes('high'));
+        assert.ok(output.includes('Publishes this package publicly'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

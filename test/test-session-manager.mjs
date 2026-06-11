@@ -2,7 +2,6 @@
  * Tests for SessionManager.
  */
 
-import { SessionManager } from '../src/core/session-manager.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert';
@@ -32,11 +31,13 @@ function cleanup() {
 
 cleanup(); // clean before
 fs.mkdirSync(testDir, { recursive: true });
+process.env.KEPLER_HOME = path.join(testDir, '.kepler');
+const { SessionManager } = await import('../src/core/session-manager.mjs');
 
 test('start creates state.json', () => {
     const mgr = new SessionManager(testDir);
     mgr.start('add auth');
-    const statePath = path.join(testDir, '.orca', 'state.json');
+    const statePath = mgr.statePath;
     assert.ok(fs.existsSync(statePath));
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     assert.strictEqual(state.instruction, 'add auth');
@@ -115,6 +116,7 @@ test('loadState returns null when no state', () => {
 
 // Cleanup
 cleanup();
+delete process.env.KEPLER_HOME;
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
-const KEPLER_HOME = process.env.KEPLER_HOME || process.env.ORCA_HOME || path.join(os.homedir(), '.kepler');
+const KEPLER_HOME = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
 
 /**
  * Hash a project path to a short directory name.

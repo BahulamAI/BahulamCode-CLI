@@ -480,18 +480,17 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
 
 def _load_cli_token() -> str:
     env_token = os.environ.get("AGENT_FRAMEWORK_TOKEN", "")
-    if env_token.startswith(("orca_", "tarang_")):
+    if env_token.startswith(("kepler_", "tarang_")):
         return env_token
 
     for path in (
         Path.home() / ".kepler" / "config.json",
-        Path.home() / ".orca" / "config.json",
     ):
         try:
             token = json.loads(path.read_text()).get("token", "")
         except (OSError, json.JSONDecodeError):
             continue
-        if token.startswith(("orca_", "tarang_")):
+        if token.startswith(("kepler_", "tarang_")):
             return token
 
     return env_token or "internal-local-dev"

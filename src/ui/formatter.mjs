@@ -8,6 +8,8 @@
  *   White for content and summaries
  */
 
+import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -179,48 +181,12 @@ export class EventFormatter {
 
         this.toolCount++;
 
-        // Build human-readable description
-        const desc = this._toolDescription(tool, args);
-        process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${tool}: ${desc}${RESET}\n`);
+        const label = toolDisplayLabel(tool);
+        const summary = toolDisplaySummary(tool, args);
+        const detail = summary ? `${DIM}${summary}${RESET}` : '';
+        process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${label}${RESET}${detail ? `  ${detail}` : ''}\n`);
 
         this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
-    }
-
-    _toolDescription(tool, args) {
-        switch (tool) {
-            case 'read_file':
-                return `Reading ${args.file_path || 'file'}...`;
-            case 'read_files': {
-                const paths = args.file_paths || [];
-                return `Reading ${paths.length} files...`;
-            }
-            case 'write_file':
-                return `Writing ${args.file_path || 'file'}...`;
-            case 'write_project': {
-                const files = args.files || [];
-                return `Writing ${files.length} files...`;
-            }
-            case 'edit_file':
-                return `Editing ${args.file_path || 'file'}...`;
-            case 'list_files':
-                return `Listing files${args.pattern ? ' (' + args.pattern + ')' : ''}...`;
-            case 'search_files':
-                return `Searching for "${args.pattern || ''}"...`;
-            case 'search_code':
-                return `Searching code: ${args.query || ''}...`;
-            case 'shell': {
-                const cmd = (args.command || '').slice(0, 60);
-                return `Running: ${cmd}${(args.command || '').length > 60 ? '...' : ''}`;
-            }
-            case 'validate_build':
-                return `Running build validation...`;
-            case 'validate_file':
-                return `Validating ${args.file_path || 'file'}...`;
-            case 'lint_check':
-                return `Linting ${args.file_path || 'file'}...`;
-            default:
-                return `${tool}...`;
-        }
     }
 
     _toolDone(data) {

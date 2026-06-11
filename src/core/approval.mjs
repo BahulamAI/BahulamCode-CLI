@@ -10,7 +10,7 @@
  * Shell commands are risk-assessed (safe/medium/high).
  */
 
-import * as path from 'node:path';
+import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 
 // ── Tool Classification ──
 
@@ -66,44 +66,6 @@ const WHITE = '\x1b[37m';
 
 const write = (s) => process.stderr.write(s);
 
-// ── Tool Description ──
-
-function shortPath(p) {
-    if (!p) return '';
-    const cwd = process.cwd();
-    return p.startsWith(cwd) ? p.slice(cwd.length + 1) : p;
-}
-
-function toolSummary(toolName, args) {
-    switch (toolName) {
-        case 'shell':
-            return args.command || '(empty)';
-        case 'write_file':
-            return shortPath(args.path || args.file_path || '');
-        case 'write_project': {
-            const files = args.files || [];
-            if (files.length === 0) return 'batch write';
-            return files.map(f => shortPath(f.path || f.file_path || '')).join(', ');
-        }
-        case 'edit_file': {
-            const fp = shortPath(args.path || args.file_path || '');
-            const search = (args.search || '').slice(0, 30);
-            return search ? `${fp} "${search}..."` : fp;
-        }
-        case 'delete_file':
-            return shortPath(args.path || args.file_path || '');
-        case 'read_file':
-        case 'read_files':
-            return shortPath(args.file_path || args.path || (args.file_paths || [])[0] || '');
-        case 'search_code':
-            return `"${args.query || args.pattern || ''}"`;
-        case 'list_files':
-            return args.pattern || args.path || '';
-        default:
-            return Object.values(args || {}).filter(v => typeof v === 'string').join(', ').slice(0, 50) || '';
-    }
-}
-
 // ── Approval Manager ──
 
 export class ApprovalManager {
@@ -138,7 +100,7 @@ export class ApprovalManager {
         return `${DIM}ask${RST}`;
     }
 
-    async check(toolName, args, requireApproval = false) {
+    async check(toolName, args, requireApproval = false, context = {}) {
         if (this.planMode && WRITE_TOOLS.has(toolName)) {
             return { approved: false, reason: `Blocked by plan mode: ${toolName}` };
         }
@@ -157,11 +119,11 @@ export class ApprovalManager {
                 return { approved: true };
             }
             if (FORCE_APPROVAL_SHELL.some(p => p.test(args.command || ''))) {
-                return this._prompt(toolName, args);
+                return this._prompt(toolName, args, context);
             }
         }
         if (NEVER_AUTO_APPROVE.has(toolName)) {
-            return this._prompt(toolName, args);
+            return this._prompt(toolName, args, context);
         }
         if (this.approveAll) {
             this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
@@ -171,20 +133,27 @@ export class ApprovalManager {
             this.history.push({ tool: toolName, decision: 'type-auto', time: Date.now() });
             return { approved: true };
         }
-        return this._prompt(toolName, args);
+        return this._prompt(toolName, args, context);
     }
 
-    async _prompt(toolName, args) {
+    async _prompt(toolName, args, context = {}) {
         const baseRisk = RISK_LEVELS[toolName] || 'medium';
-        const risk = toolName === 'shell' ? assessShellRisk(args.command) : baseRisk;
-        const summary = toolSummary(toolName, args);
+        const assessedRisk = toolName === 'shell' ? assessShellRisk(args.command) : baseRisk;
+        const risk = context.risk || assessedRisk;
+        const label = toolDisplayLabel(toolName);
+        const summary = toolDisplaySummary(toolName, args);
         const isDestructive = risk === 'high';
 
-        // ── Prompt line ──
+        write(`\n  ${isDestructive ? `${YELLOW}⚠${RST}` : `${CYAN}?${RST}`}  ${BOLD}Approval required${RST}\n`);
+        write(`  ${GRAY}Action${RST}  ${WHITE}${label}${RST}\n`);
+        if (summary) write(`  ${GRAY}Target${RST}  ${WHITE}${summary.slice(0, 160)}${RST}\n`);
+        write(`  ${GRAY}Risk${RST}    ${isDestructive ? YELLOW : CYAN}${risk}${RST}\n`);
+        if (context.reason) write(`  ${GRAY}Reason${RST}  ${DIM}${String(context.reason).slice(0, 160)}${RST}\n`);
+
         if (isDestructive) {
-            write(`  ${YELLOW}⚠${RST}  ${DIM}Allow?${RST} ${WHITE}[y]${RST} yes  ${WHITE}[n]${RST} no  ${WHITE}[d]${RST} details\n`);
+            write(`  ${DIM}Choose${RST}  ${WHITE}[y]${RST} allow once  ${WHITE}[n]${RST} deny  ${WHITE}[d]${RST} details\n`);
         } else {
-            write(`  ${DIM}?${RST}  ${DIM}Allow?${RST} ${WHITE}[y]${RST} yes  ${WHITE}[n]${RST} no  ${WHITE}[a]${RST} always  ${WHITE}[t]${RST} type  ${WHITE}[d]${RST} details\n`);
+            write(`  ${DIM}Choose${RST}  ${WHITE}[y]${RST} once  ${WHITE}[n]${RST} deny  ${WHITE}[t]${RST} this action  ${WHITE}[a]${RST} all  ${WHITE}[d]${RST} details\n`);
         }
 
         const key = await this._readKey();
@@ -206,7 +175,7 @@ export class ApprovalManager {
 
             case 'a':
             case 'A':
-                if (isDestructive) return this._prompt(toolName, args);
+                if (isDestructive) return this._prompt(toolName, args, context);
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', time: Date.now() });
@@ -214,7 +183,7 @@ export class ApprovalManager {
 
             case 't':
             case 'T':
-                if (isDestructive) return this._prompt(toolName, args);
+                if (isDestructive) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 write(`  ${GREEN}✓${RST}  ${DIM}always allow ${toolName}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'type-approve', time: Date.now() });
@@ -223,10 +192,10 @@ export class ApprovalManager {
             case 'd':
             case 'D':
                 write(`\n${DIM}${JSON.stringify(args, null, 2)}${RST}\n\n`);
-                return this._prompt(toolName, args);
+                return this._prompt(toolName, args, context);
 
             default:
-                return this._prompt(toolName, args);
+                return this._prompt(toolName, args, context);
         }
     }
 

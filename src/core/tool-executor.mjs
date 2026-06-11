@@ -5,7 +5,7 @@
  * This bridge translates those into OCC tool calls and wraps the results.
  *
  * Safety guardrails integrated — prevents destructive operations on source code.
- * 14 tools mapped: 7 OCC-bridged + 7 Tarang-specific.
+ * 20 tools mapped across file, search, shell, validation, and Git operations.
  */
 
 import { createToolRegistry } from '../tools/registry.mjs';

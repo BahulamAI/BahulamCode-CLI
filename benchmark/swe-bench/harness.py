@@ -1,6 +1,6 @@
-#!/Users/sree/Sites/Tarang Orca/tarang-backend/.venv/bin/python
+#!/usr/bin/env python3
 """
-SWE-bench Harness — run Orca against SWE-bench instances and score results.
+SWE-bench Harness — run Kepler against SWE-bench instances and score results.
 
 Usage:
     python harness.py --dataset lite --model deepseek/deepseek-chat-v3-0324
@@ -10,7 +10,7 @@ Usage:
 Flow per instance:
     1. Clone repo at base_commit
     2. Apply test patch (the failing test)
-    3. Run: orca --headless -p "Fix: {problem_statement}"
+    3. Run: kepler --headless -p "Fix: {problem_statement}"
     4. Collect file changes (git diff)
     5. Run test suite
     6. Score: PASS (tests pass) or FAIL
@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
-WORKDIR = Path("/tmp/orca-swe-bench")
+WORKDIR = Path("/tmp/kepler-swe-bench")
 
 
 def load_dataset(dataset_name: str, limit: int = None):
@@ -129,11 +129,11 @@ def apply_test_patch(repo_dir: Path, instance: dict) -> bool:
     return True
 
 
-ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
+KEPLER_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
 
 
-def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 600, debug: bool = False) -> dict:
-    """Run Orca in headless mode on the instance."""
+def run_kepler(repo_dir: Path, instance: dict, model: str, timeout: int = 600, debug: bool = False) -> dict:
+    """Run Kepler in headless mode on the instance."""
     problem = instance["problem_statement"]
     repo_abs = str(repo_dir.resolve())
     instruction = (
@@ -144,7 +144,7 @@ def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 600, deb
     )
 
     cmd = [
-        "node", str(ORCA_MAIN), "--headless", "--verbose",
+        "node", str(KEPLER_MAIN), "--headless", "--verbose",
         "--timeout", str(timeout),
         "-p", instruction,
     ]
@@ -214,7 +214,7 @@ def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 600, deb
 
 
 def collect_patch(repo_dir: Path) -> str:
-    """Collect the git diff of Orca's changes."""
+    """Collect the git diff of Kepler's changes."""
     result = subprocess.run(
         ["git", "diff"],
         capture_output=True, text=True, cwd=repo_dir,
@@ -320,18 +320,18 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
         result.update({"status": "error", "error": "Test patch failed"})
         return result
 
-    # 3. Run Orca
-    print(f"  [3/5] Running Orca (model={model}, timeout={timeout}s)...", file=sys.stderr)
-    orca_result = run_orca(repo_dir, instance, model, timeout, debug=debug)
-    result["orca"] = {
-        "success": orca_result["success"],
-        "duration_s": orca_result["duration_s"],
-        "cost_usd": orca_result["cost_usd"],
-        "tools": orca_result["tools"],
+    # 3. Run Kepler
+    print(f"  [3/5] Running Kepler (model={model}, timeout={timeout}s)...", file=sys.stderr)
+    kepler_result = run_kepler(repo_dir, instance, model, timeout, debug=debug)
+    result["kepler"] = {
+        "success": kepler_result["success"],
+        "duration_s": kepler_result["duration_s"],
+        "cost_usd": kepler_result["cost_usd"],
+        "tools": kepler_result["tools"],
     }
 
-    if not orca_result["success"]:
-        result.update({"status": "orca_failed", "error": orca_result["stderr"][:200]})
+    if not kepler_result["success"]:
+        result.update({"status": "kepler_failed", "error": kepler_result["stderr"][:200]})
         return result
 
     # 4. Collect patch
@@ -341,15 +341,15 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
     result["model_patch"] = patch  # Store actual diff for swebench eval
 
     if not patch.strip():
-        result.update({"status": "no_changes", "error": "Orca made no file changes"})
+        result.update({"status": "no_changes", "error": "Kepler made no file changes"})
         return result
 
     # 5. Skip inline tests (swebench Docker eval handles this properly)
     result["status"] = "patched"
 
     icon = "✓" if result["status"] == "PASS" else "✗"
-    cost = f"${orca_result['cost_usd']:.3f}" if orca_result["cost_usd"] else "?"
-    print(f"  {icon} {result['status']}  ({orca_result['duration_s']}s, {cost})", file=sys.stderr)
+    cost = f"${kepler_result['cost_usd']:.3f}" if kepler_result["cost_usd"] else "?"
+    print(f"  {icon} {result['status']}  ({kepler_result['duration_s']}s, {cost})", file=sys.stderr)
 
     # Cleanup
     try:
@@ -361,11 +361,12 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Orca SWE-bench Harness")
+    parser = argparse.ArgumentParser(description="Kepler SWE-bench Harness")
     parser.add_argument("--dataset", default="lite", choices=["lite", "verified", "full"])
     parser.add_argument("--model", default="deepseek/deepseek-chat-v3-0324")
     parser.add_argument("--limit", type=int, help="Max instances to run")
     parser.add_argument("--instance", help="Run a specific instance ID")
+    parser.add_argument("--instance-file", help="File with instance IDs to run (one per line)")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per instance (seconds)")
     parser.add_argument("--output", help="Output file (default: results/<model>_<dataset>.json)")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel instances (default: 1)")
@@ -384,6 +385,12 @@ def main():
         if not instances:
             print(f"Instance not found: {args.instance}", file=sys.stderr)
             sys.exit(1)
+
+    if args.instance_file:
+        with open(args.instance_file) as f:
+            target_ids = set(line.strip() for line in f if line.strip())
+        instances = [i for i in instances if i["instance_id"] in target_ids]
+        print(f"Instance file: {len(target_ids)} IDs, {len(instances)} matched in dataset", file=sys.stderr)
 
     # Skip already-done instances
     results = []
@@ -422,8 +429,8 @@ def main():
             "failed": failed,
             "errors": errors,
             "pass_rate": round((passed / total * 100) if total > 0 else 0, 1),
-            "total_cost_usd": round(sum(r.get("orca", {}).get("cost_usd", 0) for r in results), 3),
-            "avg_cost_usd": round(sum(r.get("orca", {}).get("cost_usd", 0) for r in results) / total if total > 0 else 0, 3),
+            "total_cost_usd": round(sum(r.get("kepler", {}).get("cost_usd", 0) for r in results), 3),
+            "avg_cost_usd": round(sum(r.get("kepler", {}).get("cost_usd", 0) for r in results) / total if total > 0 else 0, 3),
             "results": results,
         }
         with open(output_path, "w") as f:
@@ -444,12 +451,12 @@ def main():
                 results.append(result)
                 status = result.get("status", "?")
                 icon = "✓" if status == "patched" else "✗"
-                cost = result.get("orca", {}).get("cost_usd", 0)
+                cost = result.get("kepler", {}).get("cost_usd", 0)
                 print(f"  [{i+1}/{len(instances)}] {icon} {result['instance_id']}  ({status}, ${cost:.3f})", file=sys.stderr)
 
                 if status == "patched":
                     passed += 1
-                elif status in ("error", "orca_failed", "no_changes"):
+                elif status in ("error", "kepler_failed", "no_changes"):
                     errors += 1
                 else:
                     failed += 1
@@ -464,7 +471,7 @@ def main():
 
             if result["status"] == "patched":
                 passed += 1
-            elif result["status"] in ("error", "orca_failed", "no_changes"):
+            elif result["status"] in ("error", "kepler_failed", "no_changes"):
                 errors += 1
             else:
                 failed += 1
@@ -474,7 +481,7 @@ def main():
     # Summary
     total = len(results)
     pass_rate = (passed / total * 100) if total > 0 else 0
-    total_cost = sum(r.get("orca", {}).get("cost_usd", 0) for r in results)
+    total_cost = sum(r.get("kepler", {}).get("cost_usd", 0) for r in results)
     avg_cost = total_cost / total if total > 0 else 0
 
     summary = {

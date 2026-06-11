@@ -6,7 +6,7 @@
 #   1. Packages backend + agent framework + CLI
 #   2. Uploads to VM
 #   3. Installs Python deps
-#   4. Sets up ~/.orca/config.json (CLI auth)
+#   4. Sets up ~/.kepler/config.json (CLI auth)
 #   5. Verifies everything works
 
 set -euo pipefail
@@ -14,10 +14,10 @@ set -euo pipefail
 VM="azureuser@20.9.77.9"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
-BUNDLE="/tmp/orca-vm-full-bundle.tar.gz"
+BUNDLE="/tmp/kepler-vm-full-bundle.tar.gz"
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  Orca VM Setup — packaging and deploying                 ║"
+echo "║  Kepler VM Setup — packaging and deploying               ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -49,7 +49,7 @@ echo "  Bundle: $(du -h $BUNDLE | cut -f1)"
 
 # ── 2. Upload ──
 echo "[2/5] Uploading to VM..."
-scp "$BUNDLE" "$VM":~/orca-vm-bundle.tar.gz
+scp "$BUNDLE" "$VM":~/kepler-vm-bundle.tar.gz
 
 # ── 3. Extract + Install ──
 echo "[3/5] Installing on VM..."
@@ -58,8 +58,8 @@ set -e
 
 # Extract
 rm -rf ~/tarang-backend ~/tarang-npm ~/tarang-ai-agent-framework
-tar xzf ~/orca-vm-bundle.tar.gz -C ~/
-rm ~/orca-vm-bundle.tar.gz
+tar xzf ~/kepler-vm-bundle.tar.gz -C ~/
+rm ~/kepler-vm-bundle.tar.gz
 
 # Python venv for backend
 if [ ! -d ~/backend-env ]; then
@@ -84,14 +84,14 @@ REMOTE
 
 # ── 4. Set up CLI auth ──
 echo "[4/5] Setting up CLI auth..."
-TOKEN=$(python3 -c "import json; print(json.load(open('$HOME/.orca/config.json'))['token'])")
+TOKEN=$(python3 -c "import json; print(json.load(open('$HOME/.kepler/config.json'))['token'])")
 
 ssh "$VM" bash <<REMOTE
-mkdir -p ~/.orca
-cat > ~/.orca/config.json <<EOF
+mkdir -p ~/.kepler
+cat > ~/.kepler/config.json <<EOF
 {"token": "$TOKEN"}
 EOF
-chmod 600 ~/.orca/config.json
+chmod 600 ~/.kepler/config.json
 echo "  CLI token configured"
 REMOTE
 
@@ -100,7 +100,6 @@ echo "[5/5] Creating VM start script..."
 ssh "$VM" bash <<'REMOTE'
 # Ensure .bashrc has the right exports
 grep -q TARANG_ENV ~/.bashrc || echo 'export TARANG_ENV=local' >> ~/.bashrc
-grep -q OPENROUTER_API_KEY ~/.bashrc || echo 'export OPENROUTER_API_KEY=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' >> ~/.bashrc
 
 # Create convenience start script
 cat > ~/start-benchmark.sh <<'EOF'
@@ -109,7 +108,7 @@ cat > ~/start-benchmark.sh <<'EOF'
 set -euo pipefail
 
 export TARANG_ENV=local
-export OPENROUTER_API_KEY=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
+: "${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY before running this script}"
 
 MODEL="${1:-deepseek/deepseek-v4-pro}"
 LIMIT="${2:-}"

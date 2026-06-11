@@ -260,7 +260,7 @@ export default function MemoryPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="orca-pulse · memory" subtitle="~/.orca/projects/*/memory/" />
+      <TopBar title="kepler-pulse · memory" subtitle="~/.kepler/projects/*/memory/" />
       <div className="p-4 md:p-6 space-y-5">
 
         {error && <p className="text-[#f87171] text-sm font-mono">Error loading memories.</p>}
@@ -338,7 +338,7 @@ export default function MemoryPage() {
                 <p className="text-3xl mb-3">🧠</p>
                 <p className="text-muted-foreground/60 text-sm font-mono">
                   {memories.length === 0
-                    ? 'No memory files found in ~/.orca/projects/*/memory/'
+                    ? 'No memory files found in ~/.kepler/projects/*/memory/'
                     : 'No memories match your filter.'}
                 </p>
               </div>

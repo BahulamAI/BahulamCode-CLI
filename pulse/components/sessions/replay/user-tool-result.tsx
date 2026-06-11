@@ -19,7 +19,7 @@ function restAfterAction(s: string, idx: number, needleLen: number): string | un
 }
 
 /**
- * Best-effort parse of common Orca / tool sandbox result strings.
+ * Best-effort parse of common Kepler / tool sandbox result strings.
  */
 export function parseToolResultMessage(raw: string): ParsedToolResult {
   const s = raw.trim()

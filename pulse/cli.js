@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Orca Pulse — local analytics dashboard launcher.
- * Launches a Next.js dev server from ~/.orca-pulse/ cache directory.
+ * Kepler Pulse — local analytics dashboard launcher.
+ * Launches a Next.js dev server from ~/.kepler-pulse/ cache directory.
  */
 
 const { spawn, exec } = require('child_process')
@@ -11,9 +11,9 @@ const path = require('path')
 const fs   = require('fs')
 
 const PKG_DIR   = __dirname
-const CACHE_DIR = path.join(os.homedir(), '.orca-pulse')
+const CACHE_DIR = path.join(os.homedir(), '.kepler-pulse')
 
-// ANSI helpers — Orca cyan palette
+// ANSI helpers — Kepler cyan palette
 const C   = '\x1b[36m'     // cyan
 const C2  = '\x1b[96m'     // bright cyan
 const DIM = '\x1b[2m'
@@ -22,20 +22,10 @@ const R   = '\x1b[0m'
 const G   = '\x1b[32m'
 
 function printBanner() {
-  const art = [
-    `${C}${B} ██████╗ ██████╗  ██████╗ █████╗     ██████╗ ██╗   ██╗██╗     ███████╗███████╗${R}`,
-    `${C}${B}██╔═══██╗██╔══██╗██╔════╝██╔══██╗    ██╔══██╗██║   ██║██║     ██╔════╝██╔════╝${R}`,
-    `${C2}${B}██║   ██║██████╔╝██║     ███████║    ██████╔╝██║   ██║██║     ███████╗█████╗  ${R}`,
-    `${C2}${B}██║   ██║██╔══██╗██║     ██╔══██║    ██╔═══╝ ██║   ██║██║     ╚════██║██╔══╝  ${R}`,
-    `${C}${B}╚██████╔╝██║  ██║╚██████╗██║  ██║    ██║     ╚██████╔╝███████╗███████║███████╗${R}`,
-    `${C}${B} ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝    ╚═╝      ╚═════╝ ╚══════╝╚══════╝╚══════╝${R}`,
-  ]
-
   console.log()
-  art.forEach((line) => console.log('  ' + line))
-  console.log()
-  const configDir = process.env.ORCA_CONFIG_DIR ?? path.join(os.homedir(), '.orca')
-  console.log(`  ${B}${C}Orca Pulse${R}   ${DIM}— real-time analytics for your Orca sessions${R}`)
+  const configDir = process.env.KEPLER_CONFIG_DIR ?? path.join(os.homedir(), '.kepler')
+  console.log(`  ${B}${C}K · E · P · L · E · R${R}`)
+  console.log(`  ${B}${C2}Kepler Pulse${R}   ${DIM}real-time agent analytics${R}`)
   console.log()
   console.log(`  ${DIM}Data dir:${R}    ${C2}${configDir}${R}`)
   console.log()
@@ -58,7 +48,7 @@ function openBrowser(url) {
   exec(cmd)
 }
 
-// Source dirs/files to mirror into ~/.orca-pulse/
+// Source dirs/files to mirror into ~/.kepler-pulse/
 const SRC_DIRS  = ['app', 'components', 'lib', 'types', 'public']
 const SRC_FILES = ['next.config.ts', 'tsconfig.json', 'postcss.config.mjs', 'components.json']
 
@@ -78,7 +68,7 @@ function syncSource(pkg) {
   }
   // Write a minimal package.json with only runtime dependencies
   fs.writeFileSync(path.join(CACHE_DIR, 'package.json'), JSON.stringify({
-    name: 'orca-pulse-runtime',
+    name: 'kepler-pulse-runtime',
     version: pkg.version,
     dependencies: pkg.dependencies,
   }, null, 2))
@@ -89,8 +79,8 @@ async function main() {
 
   const pkg = require(path.join(PKG_DIR, 'package.json'))
 
-  // Check whether ~/.orca-pulse/ is up-to-date for this version
-  const versionFile = path.join(CACHE_DIR, '.orca-pulse-version')
+  // Check whether ~/.kepler-pulse/ is up-to-date for this version
+  const versionFile = path.join(CACHE_DIR, '.kepler-pulse-version')
   const cachedVersion = fs.existsSync(versionFile)
     ? fs.readFileSync(versionFile, 'utf8').trim()
     : null
@@ -120,13 +110,13 @@ async function main() {
   const port = await findFreePort(3000)
   const url  = `http://localhost:${port}`
 
-  // Pass ORCA_CONFIG_DIR to the Next.js process so it reads from ~/.orca/
-  const orcaDir = process.env.ORCA_CONFIG_DIR ?? path.join(os.homedir(), '.orca')
+  // Pass KEPLER_CONFIG_DIR to the Next.js process so it reads from ~/.kepler/
+  const keplerDir = process.env.KEPLER_CONFIG_DIR ?? path.join(os.homedir(), '.kepler')
   const env = {
     ...process.env,
     PORT: String(port),
-    ORCA_CONFIG_DIR: orcaDir,
-    CLAUDE_CONFIG_DIR: orcaDir,
+    KEPLER_CONFIG_DIR: keplerDir,
+    CLAUDE_CONFIG_DIR: keplerDir,
   }
 
   console.log(`  ${DIM}Starting server on${R} ${C2}${B}${url}${R}\n`)

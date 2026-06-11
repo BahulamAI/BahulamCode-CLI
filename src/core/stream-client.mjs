@@ -290,7 +290,12 @@ export class TarangStreamClient {
         }
 
         // Use the same ApprovalManager for consistent UX
-        const { approved, reason: denyReason } = await this.approval.check(tool, args || {}, true);
+        const { approved, reason: denyReason } = await this.approval.check(
+            tool,
+            args || {},
+            true,
+            { risk, reason },
+        );
 
         // Map ApprovalManager decision to framework scope
         let decision, scope;

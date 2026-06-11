@@ -10,7 +10,7 @@ import * as http from 'node:http';
 import { getLoginSuccessHTML } from '../ui/banner.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 
-const CONFIG_DIR = process.env.KEPLER_HOME || process.env.ORCA_HOME || path.join(os.homedir(), '.kepler');
+const CONFIG_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 export class TarangAuth {

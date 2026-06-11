@@ -24,10 +24,10 @@ console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
 
-// Test 1: listTools returns all 14 tool names
-await test('listTools returns 14 tools', async () => {
+// Test 1: listTools returns the complete bridge inventory
+await test('listTools returns all 20 tools', async () => {
     const tools = executor.listTools();
-    assert.strictEqual(tools.length, 14);
+    assert.strictEqual(tools.length, 20);
     assert.ok(tools.includes('shell'));
     assert.ok(tools.includes('read_file'));
     assert.ok(tools.includes('write_file'));
@@ -37,13 +37,17 @@ await test('listTools returns 14 tools', async () => {
     assert.ok(tools.includes('read_files'));
     assert.ok(tools.includes('delete_file'));
     assert.ok(tools.includes('get_file_info'));
+    assert.ok(tools.includes('run_tests'));
+    assert.ok(tools.includes('git_diff'));
+    assert.ok(tools.includes('git_status'));
+    assert.ok(tools.includes('analyze_code'));
 });
 
 // Test 2: read_file reads existing file
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
-    assert.ok(result.content.includes('@devtarang/orca'));
+    assert.ok(result.content.includes('@axplusb/kepler'));
 });
 
 // Test 3: read_file on missing file returns error

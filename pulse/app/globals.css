@@ -86,9 +86,9 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* Orca accent colors */
-  --color-orca-cyan: #06b6d4;
-  --color-orca-cyan-light: #22d3ee;
+  /* Kepler accent colors */
+  --color-kepler-cyan: #06b6d4;
+  --color-kepler-cyan-light: #22d3ee;
   --color-terminal-cyan: #06b6d4;
   --color-terminal-green: #34d399;
   --color-terminal-amber: #f59e0b;

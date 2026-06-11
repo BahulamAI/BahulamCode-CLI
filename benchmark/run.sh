@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Orca against SWE-bench Lite with specified model.
+# Run Kepler against SWE-bench Lite with specified model.
 #
 # Usage:
 #   ./benchmark/run.sh                                    # DeepSeek (default)
@@ -13,7 +13,7 @@ MODEL="${1:-deepseek/deepseek-chat-v3-0324}"
 LIMIT="${2:-}"
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  ORCA SWE-bench Benchmark                               ║"
+echo "║  KEPLER SWE-bench Benchmark                             ║"
 echo "║  Model: $MODEL"
 echo "║  Dataset: lite (300 instances)                          ║"
 echo "╚══════════════════════════════════════════════════════════╝"

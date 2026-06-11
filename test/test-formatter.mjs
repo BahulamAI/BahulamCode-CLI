@@ -87,7 +87,8 @@ test('renders tool_call with counter', () => {
     f.render({ type: 'tool_call', data: { call_id: 'tc1', tool: 'read_file', args: { path: 'x.js' } } });
     restore();
     assert.strictEqual(f.toolCount, 1);
-    assert.ok(captured.includes('read_file'));
+    assert.ok(captured.includes('Read file'));
+    assert.ok(captured.includes('x.js'));
     assert.ok(captured.includes('[1]'));
 });
 

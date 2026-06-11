@@ -146,7 +146,7 @@ export default function ExportPage() {
     <div className="flex flex-col min-h-screen">
       <TopBar
         title="Export & import"
-        subtitle="Download a portable backup of ~/.orca/ analytics or merge data from another machine"
+        subtitle="Download a portable backup of ~/.kepler/ analytics or merge data from another machine"
       />
 
       <div className="p-6 space-y-6 flex-1">
@@ -239,7 +239,7 @@ export default function ExportPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <p className="text-xs text-muted-foreground">From ~/.orca/ when available</p>
+                    <p className="text-xs text-muted-foreground">From ~/.kepler/ when available</p>
                   </CardContent>
                 </Card>
               </>
@@ -436,7 +436,7 @@ export default function ExportPage() {
                       <Alert className="border-amber-500/40 bg-amber-500/5">
                         <AlertTriangle className="h-4 w-4 text-amber-600" />
                         <AlertDescription className="text-xs text-amber-800 dark:text-amber-200/90">
-                          Writing merged data to ~/.orca/ is not implemented in this build — this is a preview only.
+                          Writing merged data to ~/.kepler/ is not implemented in this build — this is a preview only.
                         </AlertDescription>
                       </Alert>
                       <div className="max-h-36 overflow-auto rounded-md border border-border/60 bg-background/50 space-y-1 p-2 font-mono text-[11px] text-muted-foreground">

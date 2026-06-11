@@ -1,8 +1,8 @@
 {
-  "name": "orca-pulse",
-  "version": "1.0.0",
+  "name": "kepler-pulse",
+  "version": "1.0.1",
   "private": true,
-  "description": "Orca Pulse — real-time analytics dashboard for Orca AI agent sessions",
+  "description": "Kepler Pulse — real-time analytics dashboard for Kepler AI agent sessions",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

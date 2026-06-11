@@ -30,7 +30,7 @@ import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
-import { formatShellCommand, toolDisplayLabel } from './tool-display.mjs';
+import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -222,52 +222,7 @@ function renderToolCall(data) {
   const args = data?.args || {};
   const indent = session.inSubAgent ? '     ' : '  ';
 
-  // Build summary string (what the tool will do)
-  let summary;
-  switch (tool) {
-    case 'read_file': {
-      const fp = shortPath(args.file_path || args.path || '');
-      const range = args.start_line && args.end_line
-        ? ` lines ${args.start_line}-${args.end_line}`
-        : args.start_line ? ` from line ${args.start_line}` : '';
-      summary = `${fp}${range}`;
-      break;
-    }
-    case 'write_file': {
-      const fp = shortPath(args.file_path || args.path || '');
-      const lines = args.content ? `, ${args.content.split('\n').length} lines` : '';
-      summary = `${fp}${lines}`;
-      break;
-    }
-    case 'edit_file': {
-      const fp = shortPath(args.file_path || args.path || '');
-      const search = args.search ? `, "${(args.search || '').slice(0, 30)}..."` : '';
-      summary = `${fp}${search}`;
-      break;
-    }
-    case 'shell':
-      summary = args.command || '';
-      break;
-    case 'search_code':
-      summary = `"${args.query || args.pattern || ''}"`;
-      break;
-    case 'list_files':
-      summary = `${args.pattern || '*'}${args.path ? ` in ${shortPath(args.path)}` : ''}`;
-      break;
-    case 'delete_file':
-      summary = shortPath(args.file_path || args.path || '');
-      break;
-    case 'read_files':
-      summary = (args.file_paths || args.paths || []).map(shortPath).join(', ');
-      break;
-    case 'write_project': {
-      const files = (args.files || []).map(f => shortPath(f.path || f.file_path || ''));
-      summary = files.length > 0 ? files.join(', ') : '';
-      break;
-    }
-    default:
-      summary = Object.values(args || {}).filter(v => typeof v === 'string').join(', ').slice(0, 60);
-  }
+  const summary = toolDisplaySummary(tool, args, { cwd: safeCwd() });
 
   // Render: ⏺ Human-readable action(summary)
   // Use terminal width minus label and padding, minimum 60

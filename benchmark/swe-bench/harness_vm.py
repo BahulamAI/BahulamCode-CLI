@@ -2,7 +2,7 @@
 """
 SWE-bench VM Harness — end-to-end benchmark on Azure VM.
 
-Runs Orca patch generation AND swebench Docker evaluation in one shot.
+Runs Kepler patch generation and swebench Docker evaluation in one shot.
 Designed for the Azure VM (swebench-eval-vm, x86_64, Docker installed).
 
 Usage:
@@ -19,17 +19,17 @@ Usage:
     python3 harness_vm.py --gen-only --model deepseek/deepseek-v4-pro --limit 5
 
 Flow:
-    Phase 1 — Generate patches (Orca headless via harness.py)
+    Phase 1 — Generate patches (Kepler headless via harness.py)
     Phase 2 — Convert results to swebench predictions format
     Phase 3 — Run swebench Docker evaluation
     Phase 4 — Summarize results
 
 Prerequisites (on VM):
-    - Node.js 20+ (for Orca CLI)
+    - Node.js 20+ (for Kepler CLI)
     - Python 3.12+ with swebench, datasets
     - Docker (for swebench evaluation)
     - OPENROUTER_API_KEY or appropriate LLM key in env
-    - Orca CLI: npm install in tarang-npm/
+    - Kepler CLI: npm install in tarang-npm/
 """
 
 import argparse
@@ -48,7 +48,7 @@ HARNESS_PY = Path(__file__).parent / "harness.py"
 
 
 def phase_generate(model: str, dataset: str, limit: int | None, parallel: int, timeout: int, debug: bool) -> Path:
-    """Phase 1: Run Orca harness to generate patches."""
+    """Phase 1: Run Kepler harness to generate patches."""
     print("\n" + "=" * 70)
     print("  PHASE 1: PATCH GENERATION")
     print(f"  Model: {model} | Dataset: {dataset} | Parallel: {parallel}")
@@ -199,7 +199,7 @@ def phase_summarize(results_file: Path, model: str):
     if failures:
         print(f"  Failed instances ({len(failures)}):")
         for r in failures[:20]:
-            cost = r.get("orca", {}).get("cost_usd", 0)
+            cost = r.get("kepler", {}).get("cost_usd", 0)
             print(f"    - {r['instance_id']} (${cost:.3f})")
         if len(failures) > 20:
             print(f"    ... and {len(failures) - 20} more")
@@ -216,7 +216,7 @@ def main():
     parser.add_argument("--parallel", type=int, default=4, help="Parallel workers for generation (default: 4)")
     parser.add_argument("--eval-workers", type=int, default=4, help="Parallel workers for Docker eval (default: 4)")
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per instance in seconds")
-    parser.add_argument("--run-id", default=None, help="Eval run ID (default: orca-<model>-<timestamp>)")
+    parser.add_argument("--run-id", default=None, help="Eval run ID (default: kepler-<model>-<timestamp>)")
     parser.add_argument("--debug", action="store_true", help="Save raw agent output (required for predictions)")
 
     # Phase control
@@ -231,12 +231,12 @@ def main():
         parser.error("--eval-only requires --predictions <path>")
 
     model_slug = args.model.replace("/", "_")
-    run_id = args.run_id or f"orca-{model_slug}-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    run_id = args.run_id or f"kepler-{model_slug}-{datetime.now().strftime('%Y%m%d-%H%M')}"
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "#" * 70)
-    print("#  ORCA SWE-BENCH VM HARNESS")
+    print("#  KEPLER SWE-BENCH VM HARNESS")
     print(f"#  Model: {args.model}")
     print(f"#  Dataset: {args.dataset} | Limit: {args.limit or 'all'}")
     print(f"#  Run ID: {run_id}")

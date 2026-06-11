@@ -24,7 +24,7 @@ export async function POST(req: Request) {
   }
 
   // Note: actual file writing is intentionally not implemented here
-  // to prevent accidental corruption of ~/.orca/ live data.
+  // to prevent accidental corruption of ~/.kepler/ live data.
   // The import feature shows a diff preview only.
 
   return NextResponse.json(diff)
