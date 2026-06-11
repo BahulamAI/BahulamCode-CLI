@@ -135,7 +135,7 @@ async function main() {
     await runHeadless({
       instruction: args.prompt,
       model: args.model,
-      timeout: args.maxTurns ? args.maxTurns * 60 : 300,
+      timeout: args.timeout || (args.maxTurns ? args.maxTurns * 60 : 600),
       verbose: args.verbose,
     });
     return;

@@ -132,7 +132,7 @@ def apply_test_patch(repo_dir: Path, instance: dict) -> bool:
 ORCA_MAIN = Path(__file__).parent.parent.parent / "src" / "terminal" / "main.mjs"
 
 
-def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300, debug: bool = False) -> dict:
+def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 600, debug: bool = False) -> dict:
     """Run Orca in headless mode on the instance."""
     problem = instance["problem_statement"]
     repo_abs = str(repo_dir.resolve())
@@ -145,9 +145,10 @@ def run_orca(repo_dir: Path, instance: dict, model: str, timeout: int = 300, deb
 
     cmd = [
         "node", str(ORCA_MAIN), "--headless", "--verbose",
+        "--timeout", str(timeout),
         "-p", instruction,
     ]
-    if model:
+    if model and model != "profile":
         cmd.extend(["-m", model])
 
     start = time.time()
@@ -291,7 +292,7 @@ def run_tests(repo_dir: Path, instance: dict) -> dict:
         return {"passed": False, "exit_code": -1, "stdout": "", "stderr": str(e)}
 
 
-def run_instance(instance: dict, model: str, timeout: int = 300, debug: bool = False) -> dict:
+def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = False) -> dict:
     """Run a single SWE-bench instance end-to-end."""
     instance_id = instance["instance_id"]
     print(f"\n{'='*60}", file=sys.stderr)
@@ -365,10 +366,11 @@ def main():
     parser.add_argument("--model", default="deepseek/deepseek-chat-v3-0324")
     parser.add_argument("--limit", type=int, help="Max instances to run")
     parser.add_argument("--instance", help="Run a specific instance ID")
-    parser.add_argument("--timeout", type=int, default=300, help="Timeout per instance (seconds)")
+    parser.add_argument("--timeout", type=int, default=600, help="Timeout per instance (seconds)")
     parser.add_argument("--output", help="Output file (default: results/<model>_<dataset>.json)")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel instances (default: 1)")
     parser.add_argument("--debug", action="store_true", help="Save raw agent output for debugging")
+    parser.add_argument("--skip-done", action="store_true", help="Skip instances already in output file")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -383,8 +385,23 @@ def main():
             print(f"Instance not found: {args.instance}", file=sys.stderr)
             sys.exit(1)
 
-    # Run instances (sequential or parallel)
+    # Skip already-done instances
     results = []
+    if args.skip_done:
+        model_slug = args.model.replace("/", "_")
+        output_path = args.output or str(RESULTS_DIR / f"{model_slug}_{args.dataset}.json")
+        if Path(output_path).exists():
+            try:
+                existing = json.load(open(output_path))
+                results = existing.get("results", [])
+                done_ids = set(r["instance_id"] for r in results)
+                before = len(instances)
+                instances = [i for i in instances if i["instance_id"] not in done_ids]
+                print(f"Skip-done: {len(done_ids)} already done, {len(instances)} remaining (from {before})", file=sys.stderr)
+            except Exception as e:
+                print(f"Skip-done: could not load {output_path}: {e}", file=sys.stderr)
+
+    # Run instances (sequential or parallel)
     passed = 0
     failed = 0
     errors = 0

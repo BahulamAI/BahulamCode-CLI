@@ -26,6 +26,7 @@ export function parseArgs(args) {
         systemPrompt: null,
         addDirs: [],
         maxTurns: null,
+        timeout: null,
         allowedTools: null,
         disallowedTools: null,
         resume: false,
@@ -70,6 +71,10 @@ export function parseArgs(args) {
 
             case '--max-turns':
                 result.maxTurns = parseInt(args[++i], 10);
+                break;
+
+            case '--timeout':
+                result.timeout = parseInt(args[++i], 10);
                 break;
 
             case '--allowedTools':
