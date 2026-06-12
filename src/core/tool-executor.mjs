@@ -5,15 +5,15 @@
  * This bridge translates those into OCC tool calls and wraps the results.
  *
  * Safety guardrails integrated — prevents destructive operations on source code.
- * 20 tools mapped across file, search, shell, validation, and Git operations.
+ * Tools are mapped across file, search, shell, validation, and Git operations.
  */
 
 import { createToolRegistry } from '../tools/registry.mjs';
 import { filterOutput } from './output-filter.mjs';
 import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
 import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
-import { ContextRetriever } from '../context/retriever.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
+import { ProjectRegistry } from '../tools/project-overview.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -21,29 +21,31 @@ import { execSync } from 'node:child_process';
 /**
  * Create a tool executor that bridges Tarang tool names to OCC tools.
  * @param {Object} [options]
- * @param {ContextRetriever} [options.retriever] - BM25 retriever for search_code
+ * @param {ProjectRegistry} [options.projectRegistry] - session-owned project registry
  * @returns {{ execute(name, args): Promise<Object>, listTools(): string[] }}
  */
-export function createToolExecutor({ retriever } = {}) {
+export function createToolExecutor({ projectRegistry = new ProjectRegistry() } = {}) {
     const occRegistry = createToolRegistry();
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
 
-    // Capture CWD at creation time — OCC Bash tool mutates process.cwd() after shell commands
-    const PROJECT_CWD = process.cwd();
+    function resolvePath(p, args = {}, options = {}) {
+        return projectRegistry.resolvePath(p, args.project_id, options);
+    }
 
-    /**
-     * Resolve a path relative to project CWD, with traversal protection.
-     */
-    function resolvePath(p) {
-        if (!p) return PROJECT_CWD;
-        const resolved = path.resolve(PROJECT_CWD, p);
-        // Prevent path traversal outside CWD's parent
-        const cwd = process.cwd();
-        const cwdParent = path.dirname(cwd);
-        if (!resolved.startsWith(cwdParent)) {
-            throw new Error(`Path traversal blocked: ${p}`);
-        }
-        return resolved;
+    function projectRootFor(filePath) {
+        const project = projectRegistry.projectForPath(filePath);
+        if (!project) throw new Error(`No registered project contains path: ${filePath}`);
+        return project.resource.root;
+    }
+
+    function commandCwd(args = {}) {
+        return resolvePath(args.cwd || null, args);
+    }
+
+    function updateProjectIndex(filePath) {
+        try {
+            projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
+        } catch { /* best effort */ }
     }
 
     /**
@@ -115,7 +117,7 @@ export function createToolExecutor({ retriever } = {}) {
             if (!shellCheck.safe) {
                 return {
                     success: false,
-                    output: `BLOCKED: ${shellCheck.reason}. Your current working directory is ${process.cwd()} — search within it, not from filesystem root.`,
+                    output: `BLOCKED: ${shellCheck.reason}. Work only inside a registered project root.`,
                     _tool: 'shell', _blocked: true,
                 };
             }
@@ -136,13 +138,14 @@ export function createToolExecutor({ retriever } = {}) {
                 args._riskReason = classification.reason || shellCheck.reason;
             }
             args._classification = classification.classification; // 'safe' or 'contained'
+            const cwd = commandCwd(args);
 
             // Pre-check: if command is rm/unlink, verify targets exist first
             const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
             if (rmMatch) {
                 const targets = rmMatch[1].split(/\s+/).filter(t => !t.startsWith('-'));
                 const missing = targets.filter(t => {
-                    try { return !fs.existsSync(path.resolve(process.cwd(), t)); } catch { return true; }
+                    try { return !fs.existsSync(path.resolve(cwd, t)); } catch { return true; }
                 });
                 if (missing.length > 0 && missing.length === targets.length) {
                     return {
@@ -159,6 +162,7 @@ export function createToolExecutor({ retriever } = {}) {
                 command: args.command,
                 timeout: args.timeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
+                cwd,
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
             const exitMatch = rawOutput.match(/Exit code: (\d+)/);
@@ -182,7 +186,7 @@ export function createToolExecutor({ retriever } = {}) {
 
         // 2. read_file → Read (with smart truncation for large files)
         read_file: async (args) => {
-            const filePath = resolvePath(args.file_path || args.path);
+            const filePath = resolvePath(args.file_path || args.path, args);
             const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
 
             // Nudge: if reading shallow overview files, remind agent to search deeper
@@ -242,10 +246,10 @@ export function createToolExecutor({ retriever } = {}) {
         write_file: async (args) => {
             const rawPath = args.file_path || args.path;
             if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
-                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Use an ABSOLUTE path like "${process.cwd()}/src/main.py"`, _tool: 'write_file' };
+                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
             }
-            const filePath = resolvePath(rawPath);
-            const writeCheck = validateWrite(filePath, args.content);
+            const filePath = resolvePath(rawPath, args, { allowMissing: true });
+            const writeCheck = validateWrite(filePath, args.content, projectRootFor(filePath));
             if (!writeCheck.safe) {
                 return { success: false, output: `🛡️ BLOCKED: ${writeCheck.reason}`, _tool: 'write_file', _blocked: true };
             }
@@ -260,6 +264,7 @@ export function createToolExecutor({ retriever } = {}) {
                 content: args.content,
             });
             const wrapped = wrapResult(result, 'write_file');
+            updateProjectIndex(filePath);
 
             // Auto-lint the written file
             const lintOutput = autoLint(filePath);
@@ -287,10 +292,10 @@ export function createToolExecutor({ retriever } = {}) {
                     errors.push('Missing path in file entry');
                     continue;
                 }
-                const filePath = resolvePath(rawPath);
+                const filePath = resolvePath(rawPath, file, { allowMissing: true });
                 const content = file.content || '';
 
-                const writeCheck = validateWrite(filePath, content);
+                const writeCheck = validateWrite(filePath, content, projectRootFor(filePath));
                 if (!writeCheck.safe) {
                     errors.push(`${rawPath}: BLOCKED — ${writeCheck.reason}`);
                     continue;
@@ -309,6 +314,7 @@ export function createToolExecutor({ retriever } = {}) {
                     } catch { /* file may not exist yet */ }
 
                     await occRegistry.call('Write', { file_path: filePath, content });
+                    updateProjectIndex(filePath);
                     results.push(rawPath);
                 } catch (err) {
                     errors.push(`${rawPath}: ${err.message}`);
@@ -335,7 +341,11 @@ export function createToolExecutor({ retriever } = {}) {
         // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
-            const filePath = resolvePath(rawPath);
+            const filePath = resolvePath(rawPath, args);
+            const writeCheck = validateWrite(filePath, args.replace, projectRootFor(filePath));
+            if (!writeCheck.safe) {
+                return { success: false, output: `BLOCKED: ${writeCheck.reason}`, _tool: 'edit_file', _blocked: true };
+            }
             // OCC Edit requires Read first
             try {
                 await occRegistry.call('Read', { file_path: filePath, limit: 1 });
@@ -366,7 +376,11 @@ content = content.replace(old, new, 1)
 with open('${filePath}', 'w') as f: f.write(content)
 print('OK: replaced')
 "`;
-                    const fallbackResult = execSync(pyCmd, { encoding: 'utf-8', timeout: 5000, cwd: PROJECT_CWD });
+                    const fallbackResult = execSync(pyCmd, {
+                        encoding: 'utf-8',
+                        timeout: 5000,
+                        cwd: projectRootFor(filePath),
+                    });
                     result = `Edited ${filePath} (via fallback): ${fallbackResult.trim()}`;
                 } catch (sedErr) {
                     return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${sedErr?.message || 'unknown'}. Try shell(sed) manually.`, _tool: 'edit_file' };
@@ -374,6 +388,7 @@ print('OK: replaced')
             }
 
             const wrapped = wrapResult(result, 'edit_file');
+            updateProjectIndex(filePath);
 
             // Auto-lint the edited file
             const lintOutput = autoLint(filePath);
@@ -389,7 +404,7 @@ print('OK: replaced')
         list_files: async (args) => {
             const result = await occRegistry.call('Glob', {
                 pattern: args.pattern || '**/*',
-                path: args.path ? resolvePath(args.path) : undefined,
+                path: resolvePath(args.path || null, args),
             });
             const output = typeof result === 'string' ? result : String(result);
             const files = output.split('\n').filter(Boolean);
@@ -407,7 +422,24 @@ print('OK: replaced')
             const query = args.query || args.pattern;
             if (!query) return { success: false, output: 'query required', _tool: 'search_code' };
 
-            const searchPath = args.path ? resolvePath(args.path) : PROJECT_CWD;
+            let project;
+            if (args.project_id) {
+                project = projectRegistry.get(args.project_id);
+                if (!project) {
+                    return { success: false, output: `Unknown project_id: ${args.project_id}`, _tool: 'search_code' };
+                }
+            } else if (args.path) {
+                project = projectRegistry.projectForPath(resolvePath(args.path, args));
+            } else if (projectRegistry.resources().length === 1) {
+                project = projectRegistry.get(projectRegistry.resources()[0].project_id);
+            } else {
+                return {
+                    success: false,
+                    output: 'search_code requires project_id when multiple or no projects are registered',
+                    _tool: 'search_code',
+                };
+            }
+            const searchPath = args.path ? resolvePath(args.path, args) : project.resource.root;
             const parts = [];
 
             // Layer 1: ripgrep — exact text matches with context
@@ -420,9 +452,9 @@ print('OK: replaced')
             } catch { /* rg not found or no results */ }
 
             // Layer 2: BM25 — semantic relevance (finds related code even without exact match)
-            if (retriever) {
-                if (!retriever.index) retriever.loadIndex();
-                const chunks = retriever.retrieve(query, 5);
+            if (project?.retriever) {
+                if (!project.retriever.index) project.retriever.loadIndex();
+                const chunks = project.retriever.retrieve(query, 5);
                 if (chunks.length > 0) {
                     const bm25Output = chunks.map(c => {
                         const score = c.score?.toFixed(2) || '?';
@@ -461,7 +493,7 @@ print('OK: replaced')
             if (query.includes('*') || query.includes('?')) {
                 const result = await occRegistry.call('Glob', {
                     pattern: query,
-                    path: args.path ? resolvePath(args.path) : undefined,
+                    path: resolvePath(args.path || null, args),
                 });
                 const output = typeof result === 'string' ? result : String(result);
                 return {
@@ -475,7 +507,7 @@ print('OK: replaced')
             // For text patterns: grep with context lines (like grep -n -C 3)
             const result = await occRegistry.call('Grep', {
                 pattern: query,
-                path: args.path ? resolvePath(args.path) : undefined,
+                path: resolvePath(args.path || null, args),
                 output_mode: 'content',
                 '-n': true,
                 '-C': 3,
@@ -495,12 +527,12 @@ print('OK: replaced')
             const pattern = args.pattern;
             if (!pattern) return { success: false, output: 'pattern required', _tool: 'grep' };
 
-            const searchPath = args.path ? resolvePath(args.path) : PROJECT_CWD;
+            const searchPath = resolvePath(args.path || null, args);
             const includeFlag = args.include ? `--glob "${args.include}"` : '';
 
             try {
                 const cmd = `rg -n -C 2 --max-count 10 --max-filesize 500K ${includeFlag} -e ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -80`;
-                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: PROJECT_CWD }).trim();
+                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
                 if (output) {
                     return { success: true, output, _tool: 'grep' };
                 }
@@ -521,7 +553,7 @@ print('OK: replaced')
             const results = [];
             for (const p of paths) {
                 try {
-                    const filePath = resolvePath(p);
+                    const filePath = resolvePath(p, args);
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const lines = content.split('\n').length;
 
@@ -547,12 +579,13 @@ print('OK: replaced')
         // 9. delete_file + safety check
         delete_file: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path);
-                const delCheck = validateDelete(filePath);
+                const filePath = resolvePath(args.file_path || args.path, args);
+                const delCheck = validateDelete(filePath, projectRootFor(filePath));
                 if (!delCheck.safe) {
                     return { success: false, output: `🛡️ BLOCKED: ${delCheck.reason}`, _tool: 'delete_file', _blocked: true };
                 }
                 fs.unlinkSync(filePath);
+                updateProjectIndex(filePath);
                 return { success: true, message: `Deleted ${args.path}`, _tool: 'delete_file' };
             } catch (err) {
                 return { success: false, output: `Error: ${err.message}`, _tool: 'delete_file' };
@@ -562,7 +595,7 @@ print('OK: replaced')
         // 10. get_file_info
         get_file_info: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path);
+                const filePath = resolvePath(args.file_path || args.path, args);
                 const stat = fs.statSync(filePath);
                 return {
                     success: true,
@@ -580,14 +613,14 @@ print('OK: replaced')
         // 11. validate_file (syntax check)
         validate_file: async (args) => {
             try {
-                const filePath = resolvePath(args.path);
+                const filePath = resolvePath(args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
                 if (ext === '.py') cmd = `python3 -m py_compile "${filePath}"`;
                 else if (ext === '.js' || ext === '.mjs') cmd = `node --check "${filePath}"`;
                 else return { success: true, valid: true, message: 'No validator for this file type', _tool: 'validate_file' };
 
-                execSync(cmd, { stdio: 'pipe' });
+                execSync(cmd, { stdio: 'pipe', cwd: projectRootFor(filePath) });
                 return { success: true, valid: true, _tool: 'validate_file' };
             } catch (err) {
                 return { success: true, valid: false, errors: err.stderr?.toString() || err.message, _tool: 'validate_file' };
@@ -599,12 +632,13 @@ print('OK: replaced')
             try {
                 let cmd = args.command;
                 if (!cmd) {
-                    if (fs.existsSync('package.json')) cmd = 'npm run build';
-                    else if (fs.existsSync('Makefile')) cmd = 'make';
-                    else if (fs.existsSync('Cargo.toml')) cmd = 'cargo build';
+                    const cwd = commandCwd(args);
+                    if (fs.existsSync(path.join(cwd, 'package.json'))) cmd = 'npm run build';
+                    else if (fs.existsSync(path.join(cwd, 'Makefile'))) cmd = 'make';
+                    else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000 }).toString();
+                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000, cwd: commandCwd(args) }).toString();
                 return { success: true, output, _tool: 'validate_build' };
             } catch (err) {
                 return { success: false, output: err.stderr?.toString() || err.message, _tool: 'validate_build' };
@@ -614,7 +648,9 @@ print('OK: replaced')
         // 13. validate_structure
         validate_structure: async (args) => {
             const expected = args.expected || [];
-            const missing = expected.filter(f => !fs.existsSync(resolvePath(f)));
+            const missing = expected.filter(f =>
+                !fs.existsSync(resolvePath(f, args, { allowMissing: true }))
+            );
             return {
                 success: missing.length === 0,
                 missing,
@@ -626,14 +662,14 @@ print('OK: replaced')
         // 14. lint_check
         lint_check: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path);
+                const filePath = resolvePath(args.file_path || args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
                 if (ext === '.py') cmd = `python3 -m ruff check "${filePath}" 2>&1 || true`;
                 else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
                 else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
 
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 30_000 }).toString();
+                const output = execSync(cmd, { stdio: 'pipe', timeout: 30_000, cwd: projectRootFor(filePath) }).toString();
                 return { success: true, output, issues: output.split('\n').filter(Boolean), _tool: 'lint_check' };
             } catch (err) {
                 return { success: false, output: err.message, _tool: 'lint_check' };
@@ -645,7 +681,7 @@ print('OK: replaced')
             try {
                 const cmd = args.command || 'npm test';
                 const output = execSync(cmd, {
-                    stdio: 'pipe', timeout: 120_000, cwd: process.cwd(),
+                    stdio: 'pipe', timeout: 120_000, cwd: commandCwd(args),
                     encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output.slice(-3000), _tool: 'run_tests' };
@@ -660,7 +696,7 @@ print('OK: replaced')
             try {
                 const filePath = args.file_path ? `-- "${args.file_path}"` : '';
                 const output = execSync(`git diff ${filePath}`, {
-                    stdio: 'pipe', timeout: 10_000, cwd: process.cwd(), encoding: 'utf-8',
+                    stdio: 'pipe', timeout: 10_000, cwd: commandCwd(args), encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output.slice(-5000) || '(no changes)', _tool: 'git_diff' };
             } catch (err) {
@@ -672,7 +708,7 @@ print('OK: replaced')
         git_status: async (args) => {
             try {
                 const output = execSync('git status --short', {
-                    stdio: 'pipe', timeout: 10_000, cwd: process.cwd(), encoding: 'utf-8',
+                    stdio: 'pipe', timeout: 10_000, cwd: commandCwd(args), encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output || '(clean)', _tool: 'git_status' };
             } catch (err) {
@@ -684,7 +720,7 @@ print('OK: replaced')
         // Returns function signatures, classes, imports instead of raw file contents
         // 10x more token-efficient than read_file
         analyze_code: async (args) => {
-            const filePath = resolvePath(args.file_path || args.path);
+            const filePath = resolvePath(args.file_path || args.path, args);
             const result = analyzeCode(filePath, {
                 startLine: args.start_line,
                 endLine: args.end_line,
@@ -694,6 +730,19 @@ print('OK: replaced')
                 output: result.summary,
                 structure: result.structure,
                 _tool: 'analyze_code',
+            };
+        },
+
+        // Project overview — on-demand index + skeleton
+        get_project_overview: async (args) => {
+            const projectPath = args.path || args.project_path;
+            const result = await projectRegistry.register(projectPath);
+            return {
+                success: true,
+                output: result.output,
+                project_resource: result.resource,
+                already_registered: result.already_registered,
+                _tool: 'get_project_overview',
             };
         },
     };
@@ -720,6 +769,14 @@ print('OK: replaced')
         /** List all available tool names. */
         listTools() {
             return Object.keys(toolMap);
+        },
+
+        getProjectResources() {
+            return projectRegistry.resources();
+        },
+
+        resetProjects() {
+            projectRegistry.reset();
         },
     };
 }

@@ -15,8 +15,6 @@ import { TarangStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
-import { ContextRetriever } from '../context/retriever.mjs';
-import { buildProjectSkeleton } from '../context/skeleton.mjs';
 
 /**
  * Run a single instruction in headless mode.
@@ -46,22 +44,8 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.exit(1);
     }
 
-    // ── Index project (with timeout — large repos can take minutes) ──
-    log('Indexing project...');
-    const retriever = new ContextRetriever(process.cwd());
-    try {
-        const indexPromise = retriever.buildIndex();
-        const indexTimeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Index timeout')), 15000)
-        );
-        await Promise.race([indexPromise, indexTimeout]);
-        log('Index ready');
-    } catch (e) {
-        log(`Index skipped: ${e.message || 'failed'}`);
-    }
-
-    const skeleton = buildProjectSkeleton(process.cwd());
-    const toolExecutor = createToolExecutor({ retriever });
+    // Projects are registered and indexed only when the agent requests an overview.
+    const toolExecutor = createToolExecutor();
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });
@@ -85,8 +69,11 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
-    const execContext = { cwd: process.cwd(), freeswim: true };
-    if (skeleton) execContext.project_skeleton = skeleton;
+    const execContext = {
+        cwd: process.cwd(),
+        freeswim: true,
+        project_resources: toolExecutor.getProjectResources(),
+    };
     if (model) execContext.model_override = model;
 
     let toolCount = 0;

@@ -26,8 +26,6 @@ import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
-import { ContextRetriever } from '../context/retriever.mjs';
-import { buildProjectSkeleton } from '../context/skeleton.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
@@ -1122,9 +1120,8 @@ export async function startTerminalRepl() {
   const cliArgs = parseArgs(process.argv.slice(2));
   const auth = new TarangAuth();
 
-  // BM25 retriever — indexes project files for search_code tool
-  const retriever = new ContextRetriever(safeCwd());
-  const toolExecutor = createToolExecutor({ retriever });
+  // Projects are registered and indexed on demand through get_project_overview.
+  const toolExecutor = createToolExecutor();
   const skipPerms = cliArgs.freeswim;
   const approval = new ApprovalManager({ autoApprove: skipPerms });
 
@@ -1142,51 +1139,13 @@ export async function startTerminalRepl() {
 
   printBanner(auth);
 
-  // ── Initialization with progress ──
-  // BM25 indexing is CPU-bound and blocks the event loop, so setInterval
-  // spinners won't tick during it. Instead, show a static "Initializing..."
-  // message, then yield to the event loop between phases so the spinner runs.
-  let projectSkeleton = '';
-
-  // Phase 1: Show immediate feedback
+  // ── Initialization ──
   process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
-
-  // Fetch user in parallel (network I/O, won't block event loop)
-  const userPromise = fetchUser(ctx);
-
-  // Phase 2: BM25 index — CPU-bound, blocks event loop.
-  // Wrap in a microtask break so the initial message renders first.
-  const indexResult = await new Promise((resolve) => {
-    // Let the event loop flush stderr before blocking
-    setImmediate(async () => {
-      try {
-        process.stderr.write(`\r  ${c.brand('⠹')} ${c.dim('Indexing project files...')}${' '.repeat(20)}\r`);
-        const result = await retriever.buildIndex();
-        resolve(result);
-      } catch {
-        resolve({ fileCount: 0, chunkCount: 0 });
-      }
-    });
-  });
-
-  // Phase 3: Build skeleton (fast, synchronous)
-  process.stderr.write(`\r  ${c.brand('⠼')} ${c.dim('Building project skeleton...')}${' '.repeat(20)}\r`);
-  await new Promise(r => setImmediate(r)); // yield so message renders
-  projectSkeleton = buildProjectSkeleton(safeCwd());
-
-  // Wait for user fetch
-  await userPromise;
+  await fetchUser(ctx);
 
   // Clear the spinner line
   process.stderr.write(`\r${' '.repeat(60)}\r`);
-
-  // Show init summary
-  if (indexResult.fileCount > 0) {
-    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Indexed ${indexResult.fileCount} files (${indexResult.chunkCount} chunks)`)}\n`);
-  }
-  if (projectSkeleton) {
-    process.stderr.write(`  ${c.green('✓')} ${c.dim('Project skeleton ready')}\n`);
-  }
+  process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
   if (session.user) {
     process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
   }
@@ -1367,7 +1326,7 @@ export async function startTerminalRepl() {
 
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;
-      if (projectSkeleton) execContext.project_skeleton = projectSkeleton;
+      execContext.project_resources = toolExecutor.getProjectResources();
 
       for await (const event of client.execute(input, execContext, session.history)) {
         renderEvent(event);

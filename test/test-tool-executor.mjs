@@ -4,6 +4,7 @@
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert';
 
@@ -23,11 +24,23 @@ function test(name, fn) {
 console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
+const unregisteredExecutor = createToolExecutor();
+await test('file tools reject paths before project registration', async () => {
+    const result = await unregisteredExecutor.execute('read_file', {
+        path: path.join(process.cwd(), 'package.json'),
+    });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.output.includes('outside registered project roots'));
+});
+
+const overview = await executor.execute('get_project_overview', { path: process.cwd() });
+assert.strictEqual(overview.success, true);
+const projectId = overview.project_resource.project_id;
 
 // Test 1: listTools returns the complete bridge inventory
-await test('listTools returns all 20 tools', async () => {
+await test('listTools returns all 21 tools', async () => {
     const tools = executor.listTools();
-    assert.strictEqual(tools.length, 20);
+    assert.strictEqual(tools.length, 21);
     assert.ok(tools.includes('shell'));
     assert.ok(tools.includes('read_file'));
     assert.ok(tools.includes('write_file'));
@@ -41,6 +54,23 @@ await test('listTools returns all 20 tools', async () => {
     assert.ok(tools.includes('git_diff'));
     assert.ok(tools.includes('git_status'));
     assert.ok(tools.includes('analyze_code'));
+    assert.ok(tools.includes('get_project_overview'));
+});
+
+await test('project overview is session-stable and exposes project_id', async () => {
+    const repeated = await executor.execute('get_project_overview', { path: process.cwd() });
+    assert.strictEqual(repeated.success, true);
+    assert.strictEqual(repeated.already_registered, true);
+    assert.strictEqual(repeated.project_resource.project_id, projectId);
+});
+
+await test('search_code routes through the registered project index', async () => {
+    const result = await executor.execute('search_code', {
+        project_id: projectId,
+        query: 'createToolExecutor',
+    });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes('tool-executor'));
 });
 
 // Test 2: read_file reads existing file
@@ -122,6 +152,42 @@ await test('search_files passes regex alternation literally', async () => {
     assert.strictEqual(result.success, true);
     assert.ok(!result.output.includes('command not found'));
     assert.ok(!result.output.includes('usage: route'));
+});
+
+await test('multiple projects are routed explicitly and undeclared siblings stay blocked', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-registry-'));
+    const first = path.join(root, 'first');
+    const second = path.join(root, 'second');
+    const undeclared = path.join(root, 'undeclared');
+    fs.mkdirSync(first);
+    fs.mkdirSync(second);
+    fs.mkdirSync(undeclared);
+    fs.writeFileSync(path.join(first, 'first.js'), 'export const firstValue = 1;\n');
+    fs.writeFileSync(path.join(second, 'second.py'), 'def second_value():\n    return 2\n');
+    fs.writeFileSync(path.join(undeclared, 'secret.txt'), 'not registered\n');
+
+    try {
+        const multi = createToolExecutor();
+        const firstOverview = await multi.execute('get_project_overview', { path: first });
+        const secondOverview = await multi.execute('get_project_overview', { path: second });
+        assert.strictEqual(firstOverview.success, true);
+        assert.strictEqual(secondOverview.success, true);
+
+        const secondSearch = await multi.execute('search_code', {
+            project_id: secondOverview.project_resource.project_id,
+            query: 'second_value',
+        });
+        assert.strictEqual(secondSearch.success, true);
+        assert.ok(secondSearch.output.includes('second.py'));
+
+        const blocked = await multi.execute('read_file', {
+            path: path.join(undeclared, 'secret.txt'),
+        });
+        assert.strictEqual(blocked.success, false);
+        assert.ok(blocked.output.includes('outside registered project roots'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

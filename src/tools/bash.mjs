@@ -27,6 +27,7 @@ export const BashTool = {
             command: { type: 'string', description: 'The command to execute' },
             timeout: { type: 'number', description: 'Timeout in ms (max 600000)', default: 120000 },
             description: { type: 'string', description: 'Description of what this command does' },
+            cwd: { type: 'string', description: 'Working directory for the command' },
             run_in_background: { type: 'boolean', description: 'Run in background', default: false },
         },
         required: ['command'],
@@ -40,7 +41,7 @@ export const BashTool = {
         const timeout = Math.min(input.timeout || 120000, 600000);
 
         if (input.run_in_background) {
-            return runBackground(input.command);
+            return runBackground(input.command, input.cwd);
         }
 
         return new Promise((resolve) => {
@@ -50,6 +51,7 @@ export const BashTool = {
             let exitCode = null;
 
             const proc = spawn('bash', ['-c', input.command], {
+                cwd: input.cwd,
                 env: { ...process.env },
                 stdio: ['pipe', 'pipe', 'pipe'],
                 timeout: 0, // we handle timeout ourselves
@@ -120,9 +122,10 @@ export const BashTool = {
 const backgroundJobs = new Map();
 let bgJobId = 0;
 
-function runBackground(command) {
+function runBackground(command, cwd) {
     const id = ++bgJobId;
     const proc = spawn('bash', ['-c', command], {
+        cwd,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
     });
