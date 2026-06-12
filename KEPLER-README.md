@@ -84,6 +84,7 @@ Platform default included free. Bring your own API key for unlimited.
 
 | Model | Score | Cost |
 |-------|-------|------|
+| DeepSeek V4 Flash + stagnation | 47.3% (142/300) | $0.046/instance |
 | DeepSeek V4 Flash | 39.7% (119/300) | $0.046/instance |
 | DeepSeek V4 Flash (baseline) | 30.7% (92/300) | $0.03/instance |
 | DeepSeek V4 Pro | 50% (14/28 sample) | $0.48/instance |
