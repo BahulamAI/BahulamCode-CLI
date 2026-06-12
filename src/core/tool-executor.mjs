@@ -14,6 +14,7 @@ import { validatePath, validateDelete, validateShellCommand, validateWrite } fro
 import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
+import { SkillsLoader } from '../skills/loader.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -24,8 +25,13 @@ import { execSync } from 'node:child_process';
  * @param {ProjectRegistry} [options.projectRegistry] - session-owned project registry
  * @returns {{ execute(name, args): Promise<Object>, listTools(): string[] }}
  */
-export function createToolExecutor({ projectRegistry = new ProjectRegistry() } = {}) {
+export function createToolExecutor({
+    projectRegistry = new ProjectRegistry(),
+    skillsLoader = new SkillsLoader().load(process.cwd()),
+} = {}) {
     const occRegistry = createToolRegistry();
+    const skillTool = occRegistry.get('Skill');
+    if (skillTool) skillTool._skillsLoader = skillsLoader;
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
 
     function resolvePath(p, args = {}, options = {}) {
@@ -745,6 +751,36 @@ print('OK: replaced')
                 _tool: 'get_project_overview',
             };
         },
+
+        // Portable skills — metadata first, full content only on demand.
+        skills_list: async (args) => ({
+            success: true,
+            output: JSON.stringify(skillsLoader.list({
+                query: args.query || '',
+                source: args.source || '',
+                scope: args.scope || '',
+            }), null, 2),
+            skills: skillsLoader.list({
+                query: args.query || '',
+                source: args.source || '',
+                scope: args.scope || '',
+            }),
+            _tool: 'skills_list',
+        }),
+
+        skill_view: async (args) => {
+            const skill = skillsLoader.view(
+                args.name,
+                args.path || null,
+                { sourceId: args.source_id || null },
+            );
+            return {
+                success: true,
+                output: JSON.stringify(skill, null, 2),
+                skill,
+                _tool: 'skill_view',
+            };
+        },
     };
 
     return {
@@ -773,6 +809,21 @@ print('OK: replaced')
 
         getProjectResources() {
             return projectRegistry.resources();
+        },
+
+        getAgentContext() {
+            const global = projectRegistry.getGlobalContext();
+            return {
+                identity: global.identity,
+                preferences: global.preferences,
+                global_skills: skillsLoader.list(),
+                source: 'cli',
+            };
+        },
+
+        reloadSkills(cwd = process.cwd()) {
+            skillsLoader.load(cwd);
+            return skillsLoader.list();
         },
 
         resetProjects() {

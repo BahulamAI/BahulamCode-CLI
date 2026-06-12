@@ -1342,6 +1342,7 @@ export async function startTerminalRepl() {
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;
       execContext.project_resources = toolExecutor.getProjectResources();
+      execContext.agent_context = toolExecutor.getAgentContext();
 
       for await (const event of client.execute(input, execContext, session.history)) {
         renderEvent(event);

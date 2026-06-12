@@ -1,6 +1,6 @@
 {
   "name": "@axplusb/kepler",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Kepler — AI coding agent that plans, builds, tests, and ships. 30.7% on SWE-bench Lite.",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
   "readme": "KEPLER-README.md",
   "scripts": {
     "start": "node src/terminal/main.mjs",
-    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-callback.mjs && node test/test-formatter.mjs && node test/test-terminal-rendering.mjs && node test/test-slash-commands.mjs && node test/test-approval.mjs && node test/test-session-manager.mjs && node test/test-safety.mjs && node test/test-jsonl-writer.mjs && node test/test-analytics.mjs && node test/test-stagnation.mjs"
+    "test": "node test/test-sse-client.mjs && node test/test-tool-executor.mjs && node test/test-skills.mjs && node test/test-callback.mjs && node test/test-formatter.mjs && node test/test-terminal-rendering.mjs && node test/test-slash-commands.mjs && node test/test-approval.mjs && node test/test-session-manager.mjs && node test/test-safety.mjs && node test/test-jsonl-writer.mjs && node test/test-analytics.mjs && node test/test-stagnation.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -38,7 +38,7 @@
   "homepage": "https://codekepler.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/raviakasapu/codekepler-web.git"
+    "url": "git+https://github.com/raviakasapu/codekepler-npm.git"
   },
   "dependencies": {}
 }

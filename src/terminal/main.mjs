@@ -47,6 +47,17 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'skills' || subcommand === 'skill') {
+    const { runSkillsCommand } = await import('./skills.mjs');
+    try {
+      await runSkillsCommand(subcommandArgs);
+    } catch (err) {
+      process.stderr.write(`\x1b[31m✗ Skills command failed: ${err.message}\x1b[0m\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (subcommand === 'login') {
     const { TarangAuth } = await import('../auth/tarang-auth.mjs');
     const auth = new TarangAuth();
@@ -98,6 +109,13 @@ async function main() {
     kepler sessions           List recent local sessions
     kepler stats              Show aggregate local session stats
     kepler history            Show recent prompt history
+
+  \x1b[1mSkills:\x1b[0m
+    kepler skills list [--all|--project]
+    kepler skills view <name> [resource]
+    kepler skills install <path-or-git-url> [--project] [--force]
+    kepler skills update <name> [--project]
+    kepler skills remove <name> [--project]
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands

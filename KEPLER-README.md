@@ -26,8 +26,41 @@ kepler dashboard          Open Kepler Pulse analytics dashboard
 kepler sessions           List recent local sessions
 kepler stats              Aggregate session stats (tokens, cost, tools)
 kepler history            Recent prompt history
+kepler skills list        List discovered project and global skills
+kepler skills view NAME   View a skill procedure or bundled resource
+kepler skills install SRC Install skills from a directory or Git repository
+kepler skills update NAME Update a locked installed skill
+kepler skills remove NAME Remove an installed skill
 kepler version            Show version
 ```
+
+## Agent Skills
+
+Kepler supports portable `SKILL.md` bundles and Claude-compatible skill
+directories. Skill metadata is included in the cached agent context; full
+instructions and references are loaded only when the agent calls
+`skill_view`.
+
+Discovery precedence:
+
+1. `<project>/.kepler/skills`
+2. `<project>/.claude/skills`
+3. `~/.kepler/skills`
+4. `~/.claude/skills`
+
+Install a local bundle or a repository containing one or more skills:
+
+```bash
+kepler skills install ./my-skill
+kepler skills install github:owner/skills-repository
+kepler skills install https://github.com/owner/skills.git
+kepler skills install ./team-skills --project
+```
+
+Global installations are recorded in `~/.kepler/skills.lock.json`. Project
+installations use `<project>/.kepler/skills.lock.json`. Kepler copies skill
+files as data, rejects symlinks, and does not execute bundled scripts during
+installation.
 
 ## REPL Commands
 
