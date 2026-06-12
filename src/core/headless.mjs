@@ -69,10 +69,20 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
+    // Load global agent context (~/.kepler/identity.md, preferences.md, skills/)
+    const { ProjectRegistry } = await import('../tools/project-overview.mjs');
+    const globalCtx = new ProjectRegistry().getGlobalContext();
+
     const execContext = {
         cwd: process.cwd(),
         freeswim: true,
         project_resources: toolExecutor.getProjectResources(),
+        agent_context: {
+            identity: globalCtx.identity,
+            preferences: globalCtx.preferences,
+            global_skills: globalCtx.skills,
+            source: 'cli',
+        },
     };
     if (model) execContext.model_override = model;
 

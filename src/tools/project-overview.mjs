@@ -1,5 +1,6 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
@@ -144,13 +145,80 @@ function formatResource(resource) {
         lines.push(`Commands: ${Object.entries(resource.commands)
             .map(([name, command]) => `${name}="${command}"`).join(', ')}`);
     }
+    if (resource.skills_index && resource.skills_index.length > 0) {
+        lines.push(`Skills: ${resource.skills_index.map(s => s.name).join(', ')}`);
+    }
     lines.push('', resource.overview);
+    if (resource.project_context) {
+        lines.push('', '--- Project Context ---', resource.project_context);
+    }
+    if (resource.goal) {
+        lines.push('', '--- Current Goal ---', resource.goal);
+    }
     return lines.join('\n');
+}
+
+function _readIfExists(dir, filename, maxChars = 8000) {
+    try {
+        const filePath = path.join(dir, filename);
+        if (!fs.existsSync(filePath)) return '';
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (content.length > maxChars) {
+            // 70/20 head/tail truncation
+            const head = Math.floor(maxChars * 0.7);
+            const tail = Math.floor(maxChars * 0.2);
+            return content.slice(0, head) + '\n\n[...truncated...]\n\n' + content.slice(-tail);
+        }
+        return content;
+    } catch { return ''; }
+}
+
+function _scanSkills(keplerDir) {
+    const skillsDir = path.join(keplerDir, 'skills');
+    if (!fs.existsSync(skillsDir)) return [];
+    try {
+        return fs.readdirSync(skillsDir)
+            .filter(f => f.endsWith('.md'))
+            .map(f => {
+                const content = fs.readFileSync(path.join(skillsDir, f), 'utf-8');
+                const descMatch = content.match(/^#\s+.*\n+(.+)/);
+                return {
+                    name: f.replace('.md', ''),
+                    description: descMatch ? descMatch[1].slice(0, 100) : f.replace('.md', ''),
+                };
+            });
+    } catch { return []; }
 }
 
 export class ProjectRegistry {
     constructor() {
         this.projects = new Map();
+        this._globalIdentity = null;
+        this._globalPreferences = null;
+        this._globalSkills = null;
+    }
+
+    /**
+     * Load global context from ~/.kepler/ (once per session).
+     */
+    loadGlobalContext() {
+        if (this._globalIdentity !== null) return;
+        const globalDir = path.join(os.homedir(), '.kepler');
+        this._globalIdentity = _readIfExists(globalDir, 'identity.md', 4000);
+        this._globalPreferences = _readIfExists(globalDir, 'preferences.md', 2000);
+        this._globalSkills = _scanSkills(globalDir);
+    }
+
+    /**
+     * Get the global agent context (identity, preferences, skills).
+     */
+    getGlobalContext() {
+        this.loadGlobalContext();
+        return {
+            identity: this._globalIdentity || '',
+            preferences: this._globalPreferences || '',
+            skills: this._globalSkills || [],
+        };
     }
 
     async register(rawPath) {
@@ -206,6 +274,20 @@ export class ProjectRegistry {
                 index_version: fingerprint,
             };
             fs.writeFileSync(resourcePath, JSON.stringify(resource));
+        }
+
+        // Read project-level context files (.kepler/project.md, goal.md, skills/)
+        const keplerDir = path.join(root, '.kepler');
+        resource.project_context = _readIfExists(keplerDir, 'project.md', 8000);
+        resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
+        resource.skills_index = _scanSkills(keplerDir);
+
+        // Also check for top-level context files (AGENTS.md, CLAUDE.md, .kepler.md)
+        if (!resource.project_context) {
+            for (const name of ['.kepler.md', 'AGENTS.md', 'CLAUDE.md']) {
+                const content = _readIfExists(root, name, 8000);
+                if (content) { resource.project_context = content; break; }
+            }
         }
 
         this.projects.set(id, { resource, retriever });
