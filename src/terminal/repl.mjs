@@ -17,6 +17,7 @@
 
 import * as readline from 'node:readline';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -616,6 +617,20 @@ function renderEvent(event) {
       process.stderr.write(`  ${icon} ${marker} ${c.dim(label)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n`);
       if (data?.error) process.stderr.write(`     ${c.red(String(data.error).slice(0, 140))}\n`);
       process.stderr.write('\n');
+      break;
+    }
+
+    case 'plan_created': {
+      // Plan pinning (PRD-053): persist plan sub-agent output to .kepler/plan.md
+      const planText = data?.plan || '';
+      if (planText) {
+        try {
+          const keplerDir = path.join(process.cwd(), '.kepler');
+          fs.mkdirSync(keplerDir, { recursive: true });
+          fs.writeFileSync(path.join(keplerDir, 'plan.md'), planText, 'utf-8');
+          process.stderr.write(`  ${c.dim('plan saved → .kepler/plan.md')}\n`);
+        } catch { /* non-fatal */ }
+      }
       break;
     }
 

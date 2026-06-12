@@ -155,6 +155,9 @@ function formatResource(resource) {
     if (resource.goal) {
         lines.push('', '--- Current Goal ---', resource.goal);
     }
+    if (resource.plan) {
+        lines.push('', '--- Current Plan ---', resource.plan);
+    }
     return lines.join('\n');
 }
 
@@ -280,6 +283,7 @@ export class ProjectRegistry {
         const keplerDir = path.join(root, '.kepler');
         resource.project_context = _readIfExists(keplerDir, 'project.md', 8000);
         resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
+        resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
         resource.skills_index = _scanSkills(keplerDir);
 
         // Also check for top-level context files (AGENTS.md, CLAUDE.md, .kepler.md)
