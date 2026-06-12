@@ -190,6 +190,10 @@ def run_kepler(repo_dir: Path, instance: dict, model: str, timeout: int = 600, d
             "duration_s": round(duration, 1),
             "cost_usd": complete_event.get("cost_usd", 0),
             "tools": complete_event.get("tools", 0),
+            "tool_breakdown": complete_event.get("tool_breakdown", {}),
+            "sub_agents": complete_event.get("sub_agents", []),
+            "stagnation_triggers": complete_event.get("stagnation_triggers", 0),
+            "usage": complete_event.get("usage", {}),
             "events": events,
             "stderr": result.stderr[-500:] if result.stderr else "",
         }
@@ -328,6 +332,10 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
         "duration_s": kepler_result["duration_s"],
         "cost_usd": kepler_result["cost_usd"],
         "tools": kepler_result["tools"],
+        "tool_breakdown": kepler_result.get("tool_breakdown", {}),
+        "sub_agents": kepler_result.get("sub_agents", []),
+        "stagnation_triggers": kepler_result.get("stagnation_triggers", 0),
+        "usage": kepler_result.get("usage", {}),
     }
 
     if not kepler_result["success"]:

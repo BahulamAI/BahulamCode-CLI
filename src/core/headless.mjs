@@ -93,6 +93,12 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     let finalContent = '';
     let totalCost = 0;
 
+    // ── Telemetry collectors ──
+    const toolCalls = [];       // { tool, duration_ms, success }
+    const subAgents = [];       // { type, model, duration_s, tool_calls, success }
+    let stagnationCount = 0;
+    let usage = {};             // { input_tokens, output_tokens, cache_read, cache_write }
+
     try {
         for await (const event of client.execute(instruction, execContext)) {
             const { type, data } = event;
@@ -101,6 +107,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 toolCount++;
                 const toolName = data?.tool || 'unknown';
                 const args = data?.args || {};
+                toolCalls.push({ tool: toolName, success: null, duration_ms: 0 });
                 emit({ type: 'tool_call', tool: toolName, args, approved: true });
                 log(`Tool: ${toolName}`);
             }
@@ -108,7 +115,32 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             if (type === 'tool_result' || type === 'tool_done') {
                 const success = data?.success !== false;
                 const duration = data?.duration_s || 0;
+                // Update last tool call with result
+                const last = toolCalls.findLast(t => t.tool === (data?.tool || ''));
+                if (last) { last.success = success; last.duration_ms = Math.round(duration * 1000); }
                 emit({ type: 'tool_result', tool: data?.tool || '', success, duration_ms: Math.round(duration * 1000) });
+            }
+
+            if (type === 'sub_agent_start') {
+                log(`SubAgent: ${data?.type} (${data?.model})`);
+            }
+
+            if (type === 'sub_agent_complete') {
+                subAgents.push({
+                    type: data?.type || '',
+                    model: data?.model || '',
+                    duration_s: data?.duration_s || 0,
+                    tool_calls: data?.tool_calls || 0,
+                    success: data?.success !== false,
+                });
+                emit({ type: 'sub_agent', ...data });
+                log(`SubAgent done: ${data?.type} (${data?.tool_calls} tools, ${data?.duration_s}s)`);
+            }
+
+            if (type === 'stagnation' || type === 'stagnation_detected') {
+                stagnationCount++;
+                emit({ type: 'stagnation', reason: data?.reason || '', strategy: data?.recovery_strategy || '' });
+                log(`Stagnation: ${data?.reason || ''}`);
             }
 
             if (type === 'content') {
@@ -122,10 +154,15 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
 
             if (type === 'complete') {
                 totalCost = data?.cost || data?.total_cost || 0;
-
-                // Extract cost from usage breakdown if available
-                if (data?.usage?.total_cost) {
-                    totalCost = data.usage.total_cost;
+                if (data?.usage?.total_cost) totalCost = data.usage.total_cost;
+                // Capture token usage
+                if (data?.usage) {
+                    usage = {
+                        input_tokens: data.usage.total_input_tokens || data.usage.input_tokens || 0,
+                        output_tokens: data.usage.total_output_tokens || data.usage.output_tokens || 0,
+                        cache_read: data.usage.cache_read_input_tokens || data.usage.cache_read || 0,
+                        cache_write: data.usage.cache_creation_input_tokens || data.usage.cache_write || 0,
+                    };
                 }
             }
 
@@ -148,9 +185,19 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
 
     const durationS = (Date.now() - startTime) / 1000;
 
+    // ── Tool breakdown ──
+    const toolBreakdown = {};
+    for (const t of toolCalls) {
+        toolBreakdown[t.tool] = (toolBreakdown[t.tool] || 0) + 1;
+    }
+
     emit({
         type: 'complete',
         tools: toolCount,
+        tool_breakdown: toolBreakdown,
+        sub_agents: subAgents,
+        stagnation_triggers: stagnationCount,
+        usage,
         duration_s: Math.round(durationS * 10) / 10,
         cost_usd: totalCost,
         model: model || 'default',
