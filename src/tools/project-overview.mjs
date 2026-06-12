@@ -225,8 +225,11 @@ export class ProjectRegistry {
     }
 
     async register(rawPath) {
-        if (!rawPath || !path.isAbsolute(rawPath)) {
-            throw new Error('get_project_overview requires an absolute project path');
+        if (!rawPath) {
+            throw new Error('get_project_overview requires a project path');
+        }
+        if (!path.isAbsolute(rawPath)) {
+            rawPath = path.resolve(process.cwd(), rawPath);
         }
 
         let root;
@@ -237,6 +240,11 @@ export class ProjectRegistry {
         }
         if (!fs.statSync(root).isDirectory()) {
             throw new Error(`Project path is not a directory: ${root}`);
+        }
+        if (root === path.parse(root).root || root === os.homedir()) {
+            throw new Error(
+                `Refusing to index ${root} — too broad. Pass the project directory itself.`
+            );
         }
 
         const id = projectId(root);
