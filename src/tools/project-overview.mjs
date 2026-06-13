@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
@@ -134,6 +135,45 @@ function detectCommands(projectDir) {
     return commands;
 }
 
+function commandVersion(command, args = ['--version']) {
+    try {
+        const result = spawnSync(command, args, {
+            encoding: 'utf-8',
+            timeout: 2000,
+            windowsHide: true,
+        });
+        if (result.error || result.status !== 0) return '';
+        return `${result.stdout || result.stderr || ''}`.trim().split('\n')[0].slice(0, 120);
+    } catch {
+        return '';
+    }
+}
+
+function detectEnvironment() {
+    const candidates = [
+        ['python', 'python3'],
+        ['node', 'node'],
+        ['git', 'git'],
+        ['npm', 'npm'],
+        ['uv', 'uv'],
+        ['pytest', 'pytest'],
+        ['docker', 'docker'],
+    ];
+    const tools = {};
+    for (const [name, command] of candidates) {
+        const version = commandVersion(command);
+        if (version) tools[name] = version;
+    }
+    return {
+        platform: os.platform(),
+        release: os.release(),
+        architecture: os.arch(),
+        shell: process.env.SHELL || process.env.ComSpec || '',
+        node: process.version,
+        tools,
+    };
+}
+
 function formatResource(resource) {
     const lines = [
         `Project registered: ${resource.name} (project_id=${resource.project_id})`,
@@ -141,6 +181,18 @@ function formatResource(resource) {
         `Languages: ${resource.languages.join(', ') || 'unknown'}`,
         `Index: ${resource.index_status} (${resource.index_version})`,
     ];
+    if (resource.environment) {
+        const env = resource.environment;
+        lines.push(
+            `Environment: ${env.platform || 'unknown'} ${env.release || ''} ` +
+            `(${env.architecture || 'unknown'}), shell=${env.shell || 'unknown'}, node=${env.node || 'unknown'}`
+        );
+        const toolVersions = Object.entries(env.tools || {});
+        if (toolVersions.length > 0) {
+            lines.push(`Available tools: ${toolVersions.map(([name, version]) =>
+                `${name}=${version}`).join(', ')}`);
+        }
+    }
     if (Object.keys(resource.commands).length > 0) {
         lines.push(`Commands: ${Object.entries(resource.commands)
             .map(([name, command]) => `${name}="${command}"`).join(', ')}`);
@@ -289,6 +341,7 @@ export class ProjectRegistry {
 
         // Read project-level context files (.kepler/project.md, goal.md, skills/)
         const keplerDir = path.join(root, '.kepler');
+        resource.environment = detectEnvironment();
         resource.project_context = _readIfExists(keplerDir, 'project.md', 8000);
         resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
         resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);

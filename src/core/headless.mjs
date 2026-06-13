@@ -11,10 +11,9 @@
  *   kepler --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { TarangStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
+import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
 
@@ -127,17 +126,12 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 log(`SubAgent done: ${data?.type} (${data?.tool_calls} tools, ${data?.duration_s}s)`);
             }
 
-            if (type === 'plan_created') {
-                // Plan pinning (PRD-053): persist plan to .kepler/plan.md (auto-approved in headless)
-                const planText = data?.plan || '';
-                if (planText) {
-                    try {
-                        const keplerDir = path.join(process.cwd(), '.kepler');
-                        fs.mkdirSync(keplerDir, { recursive: true });
-                        fs.writeFileSync(path.join(keplerDir, 'plan.md'), planText, 'utf-8');
-                        log('Plan saved → .kepler/plan.md');
-                    } catch { /* non-fatal */ }
-                }
+            if (type === 'plan_created' || type === 'goal_created') {
+                persistProjectArtifacts(
+                    data,
+                    toolExecutor.getProjectResources(),
+                    log,
+                );
             }
 
             if (type === 'stagnation' || type === 'stagnation_detected') {

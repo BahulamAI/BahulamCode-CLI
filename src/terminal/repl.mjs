@@ -23,6 +23,7 @@ import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mj
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
@@ -621,16 +622,12 @@ function renderEvent(event) {
     }
 
     case 'plan_created': {
-      // Plan pinning (PRD-053): persist plan sub-agent output to .kepler/plan.md
-      const planText = data?.plan || '';
-      if (planText) {
-        try {
-          const keplerDir = path.join(process.cwd(), '.kepler');
-          fs.mkdirSync(keplerDir, { recursive: true });
-          fs.writeFileSync(path.join(keplerDir, 'plan.md'), planText, 'utf-8');
-          process.stderr.write(`  ${c.dim('plan saved → .kepler/plan.md')}\n`);
-        } catch { /* non-fatal */ }
-      }
+      process.stderr.write(`  ${c.dim('project plan prepared')}\n`);
+      break;
+    }
+
+    case 'goal_created': {
+      process.stderr.write(`  ${c.dim('project goal prepared')}\n`);
       break;
     }
 
@@ -1345,6 +1342,13 @@ export async function startTerminalRepl() {
       execContext.agent_context = toolExecutor.getAgentContext();
 
       for await (const event of client.execute(input, execContext, session.history)) {
+        if (event.type === 'plan_created' || event.type === 'goal_created') {
+          persistProjectArtifacts(
+            event.data,
+            toolExecutor.getProjectResources(),
+            message => process.stderr.write(`  ${c.dim(message)}\n`),
+          );
+        }
         renderEvent(event);
 
         if (event.type === 'content_partial') {

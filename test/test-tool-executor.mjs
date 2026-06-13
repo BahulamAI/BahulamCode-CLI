@@ -64,6 +64,9 @@ await test('project overview is session-stable and exposes project_id', async ()
     assert.strictEqual(repeated.success, true);
     assert.strictEqual(repeated.already_registered, true);
     assert.strictEqual(repeated.project_resource.project_id, projectId);
+    assert.ok(repeated.project_resource.environment);
+    assert.strictEqual(repeated.project_resource.environment.node, process.version);
+    assert.ok(repeated.project_resource.environment.platform);
 });
 
 await test('search_code routes through the registered project index', async () => {
