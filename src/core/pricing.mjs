@@ -271,7 +271,7 @@ export function calculateCost(usage) {
 // ── Formatting ───────────────────────────────────────────────
 
 /**
- * Format a cost value as a dollar string.
+ * Format a cost value as a dollar string (diagnostic/telemetry only).
  * @param {number} cost
  * @returns {string}
  */
@@ -279,6 +279,28 @@ export function formatCostValue(cost) {
     if (cost === 0) return '$0.00';
     if (cost < 0.01) return `$${cost.toFixed(4)}`;
     return `$${cost.toFixed(2)}`;
+}
+
+/**
+ * Convert provider cost to Kepler credits.
+ * 100 credits = $1 of retail model usage, 2x multiplier.
+ * @param {number} costUsd
+ * @returns {number}
+ */
+export function costToCredits(costUsd) {
+    if (costUsd <= 0) return 0;
+    return Math.max(1, Math.ceil(costUsd * 2.0 * 100));
+}
+
+/**
+ * Format credits for display (e.g. "5 cr", "1.2k cr").
+ * @param {number} credits
+ * @returns {string}
+ */
+export function formatCredits(credits) {
+    if (credits === 0) return '0 cr';
+    if (credits >= 1000) return `${(credits / 1000).toFixed(1)}k cr`;
+    return `${credits} cr`;
 }
 
 /**

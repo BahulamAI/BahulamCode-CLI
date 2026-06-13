@@ -19,7 +19,7 @@ import * as readline from 'node:readline';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
-import { calculateCost, formatCostValue, formatTokens } from '../core/pricing.mjs';
+import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
@@ -163,13 +163,12 @@ function printBanner(auth) {
  */
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
-  const cost = formatCostValue(session.totalCost);
+  const credits = formatCredits(costToCredits(session.totalCost));
   const elapsed = formatElapsed(session.startTime);
 
-  // Right side — always shown
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    c.dim(cost),
+    c.dim(credits),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -200,7 +199,7 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
-  if (turnCost > 0) parts.push(formatCostValue(turnCost));
+  if (turnCost > 0) parts.push(formatCredits(costToCredits(turnCost)));
   if (parts.length > 0) {
     process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
   }
@@ -783,7 +782,7 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
-      process.stderr.write(`  ${c.dim('Cost')}         ${formatCostValue(session.totalCost)}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
 
       // Permissions
@@ -851,29 +850,29 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
       process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
       process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
-      process.stderr.write(`  ${c.gray('Cost:')}      ${formatCostValue(session.totalCost)}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      process.stderr.write(`  ${c.gray('Credits:')}   ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
       process.stderr.write(`  ${c.gray('Elapsed:')}  ${formatElapsed(session.startTime)}\n\n`);
       return;
     }
 
     case '/cost': {
-      process.stderr.write(`\n  ${c.bold('Session Cost')}`);
+      process.stderr.write(`\n  ${c.bold('Session Credits')}  ${c.brand(formatCredits(costToCredits(session.totalCost)))}`);
       if (!session.costAccurate) {
-        process.stderr.write(`  ${c.yellow('(estimated — backend not sending model breakdown)')}`);
+        process.stderr.write(`  ${c.yellow('(estimated)')}`);
       }
       process.stderr.write('\n');
       process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
 
       if (session.costBreakdown.length > 0) {
         // Header
-        process.stderr.write(`  ${c.dim('Model'.padEnd(36))}${c.dim('Input'.padStart(10))}${c.dim('Output'.padStart(10))}${c.dim('Cache'.padStart(10))}${c.dim('Cost'.padStart(10))}\n`);
+        process.stderr.write(`  ${c.dim('Model'.padEnd(36))}${c.dim('Input'.padStart(10))}${c.dim('Output'.padStart(10))}${c.dim('Cache'.padStart(10))}${c.dim('Credits'.padStart(10))}\n`);
         process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
 
         for (const b of session.costBreakdown) {
           const modelLabel = b.model === 'unknown' ? c.yellow('unknown model') : b.model;
           const roleTag = b.role && b.role !== 'unknown' ? ` ${c.dim(`(${b.role})`)}` : '';
           const cacheTokens = (b.cache_read_tokens || 0) + (b.cache_creation_tokens || 0);
-          const costStr = b.free ? c.green('free') : formatCostValue(b.cost);
+          const costStr = b.free ? c.green('free') : formatCredits(costToCredits(b.cost));
 
           process.stderr.write(
             `  ${(modelLabel + roleTag).padEnd(36)}` +
@@ -892,9 +891,9 @@ async function handleCommand(input, ctx) {
         `${formatTokens(session.inputTokens).padStart(10)}` +
         `${formatTokens(session.outputTokens).padStart(10)}` +
         `${''.padStart(10)}` +
-        `${formatCostValue(session.totalCost).padStart(10)}\n`
+        `${formatCredits(costToCredits(session.totalCost)).padStart(10)}\n`
       );
-      process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}`)}\n\n`);
+      process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}  Provider: ${formatCostValue(session.totalCost)}`)}\n\n`);
       return;
     }
 

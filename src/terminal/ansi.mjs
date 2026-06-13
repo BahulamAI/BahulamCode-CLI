@@ -399,7 +399,7 @@ export function formatElapsed(startMs) {
 
 // ── Format Cost ──
 
-import { calculateCost, formatCostValue } from '../core/pricing.mjs';
+import { calculateCost, formatCostValue, costToCredits, formatCredits } from '../core/pricing.mjs';
 
 /**
  * Format cost from token counts.
@@ -407,15 +407,13 @@ import { calculateCost, formatCostValue } from '../core/pricing.mjs';
  * or a single usage object with optional per-model breakdown.
  */
 export function formatCost(inputOrUsage, outputTokens) {
-  // New API: pass a usage object directly
   if (typeof inputOrUsage === 'object' && inputOrUsage !== null) {
     const { total } = calculateCost(inputOrUsage);
-    return formatCostValue(total);
+    return formatCredits(costToCredits(total));
   }
-  // Legacy API: flat input/output token counts, default pricing
   const { total } = calculateCost({
     input_tokens: inputOrUsage || 0,
     output_tokens: outputTokens || 0,
   });
-  return formatCostValue(total);
+  return formatCredits(costToCredits(total));
 }
