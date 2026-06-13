@@ -1,174 +1,358 @@
-# SWE-bench Benchmark: Azure VM Setup & Run Guide
+# SWE-bench Benchmark: Azure VM Setup & Evaluation
 
-## VM Details
+## VM Inventory
 
-| Field | Value |
-|-------|-------|
-| Resource Group | `AZ-RG-ORCA-BENCHMARK` |
-| VM Name | `swebench-eval-vm` |
-| Location | centralus |
-| Size | Standard_D4s_v3 (4 vCPU, 16GB RAM) |
-| OS | Ubuntu 24.04 LTS (x86_64) |
-| Disk | 100GB |
-| Public IP | `20.9.77.9` (may change after deallocate/start) |
-| User | `azureuser` |
-| Cost | ~$0.19/hr |
-| GitHub SSH | `axplusbtechdev` account has VM's deploy key |
+| Name | Size | IP | State | Role |
+|------|------|----|-------|------|
+| `swebench-eval-vm` | D16s_v3 (16 vCPU, 64GB) | 20.9.77.9 | running | Primary |
+| `swebench-eval-vm-2` | D8s_v3 (8 vCPU, 32GB) | 172.202.17.40 | deallocated | Spare |
+| `swebench-eval-vm-3..5` | cloned from VM1 snapshot | — | create on demand | Parallel shards |
 
-`AZ-RG-ORCA-BENCHMARK` is the existing Azure resource identifier. It is retained
-for infrastructure compatibility and is not a Kepler product name.
+Resource Group: `AZ-RG-ORCA-BENCHMARK` (centralus)
 
-## VM Management
+## Quick Reference
 
 ```bash
-RESOURCE_GROUP=AZ-RG-ORCA-BENCHMARK
+RG=AZ-RG-ORCA-BENCHMARK
 
-# Start VM
-az vm start --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
+# Start / stop / get IP
+az vm start -g $RG -n swebench-eval-vm
+az vm deallocate -g $RG -n swebench-eval-vm
+az vm show -d -g $RG -n swebench-eval-vm --query publicIps -o tsv
 
-# Get IP (may change after restart)
-az vm show -d --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm --query publicIps -o tsv
-
-# SSH in
+# SSH
 ssh azureuser@20.9.77.9
 
-# Stop VM (saves cost, keeps disk)
-az vm deallocate --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
-
-# If SSH is blocked, use Azure run-command:
-az vm run-command invoke --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm \
-  --command-id RunShellScript --scripts 'sudo -u azureuser bash -c "YOUR_COMMAND"'
+# Emergency (SSH blocked)
+az vm run-command invoke -g $RG -n swebench-eval-vm \
+  --command-id RunShellScript --scripts 'sudo -u azureuser bash -c "CMD"'
 ```
 
-## What's Installed on VM
+## VM Layout
 
 ```
-~/tarang-backend/           # Backend (git clone, git pull to update)
-~/tarang-npm/               # CLI + benchmark harness
-~/tarang-ai-agent-framework/  # Agent framework (pip install -e)
-~/backend-env/              # Python venv for backend
-~/swebench-env/             # Python venv for swebench + datasets
-~/start-benchmark.sh        # Main entry point
-~/.kepler/config.json       # CLI auth token
+~/tarang-backend/              # Backend (symlink to ~/codekepler-backend)
+~/tarang-npm/                  # CLI + harness (symlink to ~/codekepler-npm)
+~/tarang-ai-agent-framework/   # Agent framework (pip install -e)
+~/backend-env/                 # Python venv — uvicorn + backend deps
+~/swebench-env/                # Python venv — swebench + datasets
+~/.tarang-benchmark.env        # All env vars (API keys, flags)
+~/.kepler/config.json          # CLI auth token (kepler_ or orca_ prefix)
 ```
 
-## How to Run a Benchmark
+## Setup from Scratch
 
-### Step 1: Start VM and update code
+### 1. Deploy code to VM
+
+From your laptop (with repos checked out under a common parent dir):
 
 ```bash
-RESOURCE_GROUP=AZ-RG-ORCA-BENCHMARK
-az vm start --resource-group "$RESOURCE_GROUP" --name swebench-eval-vm
-ssh azureuser@20.9.77.9
+./benchmark/deploy-and-run.sh <VM_IP> <MODEL> [PARALLEL] [OPTIONS]
 
-# Pull latest backend (includes agent prompt changes)
-cd ~/tarang-backend && git pull origin main
+# Examples:
+./benchmark/deploy-and-run.sh 20.9.77.9 deepseek/deepseek-v4-flash 1
+./benchmark/deploy-and-run.sh 20.9.77.9 minimax/minimax-m3 1 --skip-setup
 ```
 
-### Step 2: Run single instance (quick test)
+Or use `vm-setup.sh` for setup-only (no benchmark run):
 
 ```bash
-export AGENT_FRAMEWORK_TOKEN=internal-local-dev
-export SKIP_QUOTA=1
-export TARANG_ENV=local
-export OPENROUTER_API_KEY=sk-or-v1-...
+./benchmark/vm-setup.sh
+```
 
-# Start backend
+### 2. Configure environment
+
+The env file `~/.tarang-benchmark.env` must contain:
+
+```bash
+# Required
+OPENROUTER_API_KEY=sk-or-v1-...
+LICENSE_KEY=eyJ...                    # Agent framework license JWT
+SKIP_QUOTA=1
+TARANG_ENV=local
+
+# Recommended
+KEPLER_STAGNATION_DETECTION=true
+KEPLER_ENHANCED_STAGNATION=true
+KEPLER_STAGNATION_THRESHOLD=3
+KEPLER_MEMORY_ENABLED=false           # Prevents cross-session path leaks
+KEPLER_PREFLIGHT_PLAN=true            # Pre-flight plan with reasoning model
+```
+
+### 3. Configure CLI auth
+
+```bash
+mkdir -p ~/.kepler
+cat > ~/.kepler/config.json << 'EOF'
+{"token": "orca_<YOUR_CLI_TOKEN_HASH>"}
+EOF
+chmod 600 ~/.kepler/config.json
+```
+
+The token is a `kepler_`, `orca_`, or `tarang_` prefixed hash stored in
+Supabase `cli_tokens` table. Copy from `~/.orca/config.json` if migrating.
+
+### 4. Start backend manually
+
+```bash
+set -a; source ~/.tarang-benchmark.env; set +a
+export LOG_DIR=~/kepler-logs
 source ~/backend-env/bin/activate
 cd ~/tarang-backend
-uvicorn app.main:app --port 8000 &
-sleep 10
+nohup uvicorn app.main:app --port 8000 > ~/backend.log 2>&1 &
 
-# Run one instance
+# Verify
+curl -s http://localhost:8000/health
+# Check env flags are loaded:
+tr "\0" "\n" < /proc/$(pgrep -x uvicorn | head -1)/environ | grep KEPLER
+```
+
+## Running Benchmarks
+
+### Single instance (smoke test)
+
+```bash
 source ~/swebench-env/bin/activate
 cd ~/tarang-npm
 python3 benchmark/swe-bench/harness.py \
   --dataset lite \
-  --model deepseek/deepseek-v4-flash \
+  --model minimax/minimax-m3 \
   --instance django__django-11848 \
   --timeout 300 \
   --debug \
   --output /tmp/test-single.json
-
-# Check result
-cat /tmp/test-single.json | python3 -m json.tool | head -20
-
-pkill -f uvicorn
 ```
 
-### Step 3: Run batch (multiple instances)
+### Full 300 (sequential, ~24h)
 
 ```bash
-# Use start-benchmark.sh (starts backend + runs harness)
-# Usage: ./start-benchmark.sh MODEL LIMIT EXTRA_ARGS
-
-# 10 instances with flash
-./start-benchmark.sh deepseek/deepseek-v4-flash 10
-
-# Full 300 (background, ~3 hours)
-nohup ./start-benchmark.sh deepseek/deepseek-v4-flash > /tmp/bench-full.log 2>&1 &
-
-# Monitor
-tail -f /tmp/bench-full.log
-grep -c "\[.*\/300\]" /tmp/bench-full.log
+source ~/swebench-env/bin/activate
+cd ~/tarang-npm
+nohup python3 benchmark/swe-bench/harness.py \
+  --dataset lite \
+  --model minimax/minimax-m3 \
+  --parallel 1 \
+  --timeout 600 \
+  --skip-done \
+  --output ~/results-full.json \
+  > ~/benchmark-full.log 2>&1 &
 ```
 
-### Step 4: Docker evaluation (get actual score)
+### Sharded parallel (5 VMs, ~5h)
+
+See `run.sh --shard` or manually:
 
 ```bash
-# Build predictions from harness results
+# Generate shard files (run once on any machine with swebench-env)
+python3 benchmark/swe-bench/harness.py --dataset lite --gen-shards 5
+
+# This creates:
+#   benchmark/shards/shard_1.txt  (60 instance IDs)
+#   benchmark/shards/shard_2.txt  (60 instance IDs)
+#   ...
+#   benchmark/shards/shard_5.txt  (60 instance IDs)
+
+# On each VM, run its shard:
+python3 benchmark/swe-bench/harness.py \
+  --dataset lite \
+  --model minimax/minimax-m3 \
+  --instance-file benchmark/shards/shard_N.txt \
+  --timeout 600 \
+  --output ~/results-shard-N.json
+```
+
+### Monitor progress
+
+```bash
+# Count completed instances
+cat ~/results-*.json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+r = d.get('results', [])
+ok = sum(1 for x in r if x.get('model_patch'))
+print(f'{ok}/{len(r)} patched ({len(r)} done)')
+"
+
+# Tail the log
+tail -f ~/benchmark-full.log
+```
+
+## Docker Evaluation (Official Score)
+
+### 1. Build predictions file
+
+```bash
 python3 << 'PYEOF'
-import json, os
-d = json.load(open("/home/azureuser/tarang-npm/benchmark/results/MODEL_SLUG_lite.json"))
-predictions = [{"instance_id": r["instance_id"], "model_patch": r.get("model_patch", ""), "model_name_or_path": "MODEL"} for r in d["results"]]
-os.makedirs("benchmark/results/official/MODEL_SLUG", exist_ok=True)
-json.dump(predictions, open("benchmark/results/official/MODEL_SLUG/predictions.json", "w"), indent=2)
-print(f"{sum(1 for p in predictions if p['model_patch'])}/{len(predictions)} with patches")
-PYEOF
+import json, glob, os
 
-# Run swebench Docker eval
+# Merge all shard results if needed
+all_results = []
+for f in sorted(glob.glob(os.path.expanduser("~/results-shard-*.json"))):
+    all_results.extend(json.load(open(f)).get("results", []))
+
+# Or single file:
+# all_results = json.load(open(os.path.expanduser("~/results-full.json")))["results"]
+
+predictions = [{
+    "instance_id": r["instance_id"],
+    "model_patch": r.get("model_patch", ""),
+    "model_name_or_path": "kepler"
+} for r in all_results]
+
+os.makedirs(os.path.expanduser("~/eval"), exist_ok=True)
+out = os.path.expanduser("~/eval/predictions.json")
+json.dump(predictions, open(out, "w"), indent=2)
+patched = sum(1 for p in predictions if p["model_patch"])
+print(f"Wrote {out}: {patched}/{len(predictions)} with patches")
+PYEOF
+```
+
+### 2. Run swebench evaluation
+
+```bash
 source ~/swebench-env/bin/activate
 nohup python3 -m swebench.harness.run_evaluation \
-  --predictions_path ~/tarang-npm/benchmark/results/official/MODEL_SLUG/predictions.json \
+  --predictions_path ~/eval/predictions.json \
   --dataset_name princeton-nlp/SWE-bench_Lite \
-  --run_id kepler-RUN_NAME \
-  --max_workers 4 \
-  > /tmp/swebench-eval.log 2>&1 &
+  --run_id kepler-eval \
+  --max_workers 6 \
+  > ~/eval/docker-eval.log 2>&1 &
 
 # Monitor
-tail -f /tmp/swebench-eval.log
+tail -f ~/eval/docker-eval.log
 
-# Results appear as: deepseek__deepseek-v4-flash.kepler-RUN_NAME.json
+# Results file: ~/kepler.kepler-eval.json
+# Contains: resolved_ids, error_ids, etc.
 ```
 
-### Step 5: Copy results back to laptop
+### 3. Score
 
 ```bash
-scp azureuser@20.9.77.9:~/deepseek*.json <local-repo>/benchmark/results/official/
-scp -r azureuser@20.9.77.9:~/tarang-npm/benchmark/results/debug/ <local-repo>/benchmark/results/debug-latest/
+python3 -c "
+import json
+r = json.load(open('kepler.kepler-eval.json'))
+resolved = len(r.get('resolved_ids', r.get('resolved', [])))
+total = resolved + len(r.get('unresolved_ids', r.get('unresolved', [])))
+print(f'{resolved}/{total} = {100*resolved/total:.1f}%')
+"
 ```
 
-## Important Notes
+## 5-VM Parallel Setup
 
-- `AGENT_FRAMEWORK_TOKEN=internal-local-dev` MUST be exported before starting backend
-- `LICENSE_KEY` in .env/.env.development causes JWT validation failure (placeholder public key in source install) — remove it or ensure AGENT_FRAMEWORK_TOKEN is checked first
-- Backend needs ~10s to start (seed templates + scheduler) — health check may fail at 5s
-- `start-benchmark.sh` already has AGENT_FRAMEWORK_TOKEN and SKIP_QUOTA exported
-- Patches are saved incrementally — safe to kill mid-run, no data loss
-- Debug traces saved to `benchmark/results/debug/{instance_id}_stdout.txt`
+To run 300 instances across 5 VMs in ~5 hours:
 
-## Benchmark Results History
+### Create VMs 3–5 from VM1 snapshot
 
-### V4 Flash (300 instances, June 2026)
-- **30.7%** resolve rate (92/300)
-- Cost: ~$10 total ($0.034/instance on OpenRouter)
+```bash
+RG=AZ-RG-ORCA-BENCHMARK
+LOCATION=centralus
 
-### V4 Pro (28 instance sample, June 2026)
-- **50.0%** resolve rate (14/28)
-- Cost: ~$16 total ($0.48/instance on OpenRouter)
+# 1. Snapshot VM1's OS disk (VM must be running or deallocated)
+DISK_ID=$(az vm show -g $RG -n swebench-eval-vm --query storageProfile.osDisk.managedDisk.id -o tsv)
+az snapshot create -g $RG -n vm1-snapshot --source "$DISK_ID" -l $LOCATION
 
-### Phase 1 Optimized Agent (5 instance test, June 2026)
-- 2/5 previously failed instances now resolve
-- django__django-11848: timeout → RESOLVED
-- astropy__astropy-12907: timeout → RESOLVED
-- Agent improvements: line-range reads, test-after-edit, manual verification
+# 2. Create managed disks from snapshot
+for i in 3 4 5; do
+  az disk create -g $RG -n swebench-disk-$i \
+    --source vm1-snapshot --size-gb 200 -l $LOCATION --sku Standard_LRS
+done
+
+# 3. Create VMs from those disks
+for i in 3 4 5; do
+  az vm create -g $RG -n swebench-eval-vm-$i \
+    --attach-os-disk swebench-disk-$i \
+    --os-type Linux --size Standard_D8s_v3 \
+    -l $LOCATION --public-ip-sku Standard
+done
+
+# 4. Get IPs
+for i in 1 2 3 4 5; do
+  NAME="swebench-eval-vm"
+  [ $i -gt 1 ] && NAME="swebench-eval-vm-$i"
+  IP=$(az vm show -d -g $RG -n $NAME --query publicIps -o tsv)
+  echo "VM$i ($NAME): $IP"
+done
+```
+
+### Distribute shards and run
+
+Use `benchmark/run.sh --parallel-vms` or manually:
+
+```bash
+# Generate shards
+python3 benchmark/swe-bench/harness.py --dataset lite --gen-shards 5
+
+# Deploy to each VM and start
+for i in 1 2 3 4 5; do
+  VM_IP=<IP_OF_VM_$i>
+  ./benchmark/deploy-and-run.sh $VM_IP minimax/minimax-m3 1 \
+    --skip-setup --shard=$i
+done
+```
+
+### Collect and merge results
+
+```bash
+for i in 1 2 3 4 5; do
+  scp azureuser@<VM${i}_IP>:~/results-shard-${i}.json /tmp/
+done
+
+python3 << 'PYEOF'
+import json, glob
+all_results = []
+for f in sorted(glob.glob("/tmp/results-shard-*.json")):
+    all_results.extend(json.load(open(f)).get("results", []))
+print(f"Total: {len(all_results)} instances")
+patched = sum(1 for r in all_results if r.get("model_patch"))
+print(f"Patched: {patched}/{len(all_results)}")
+PYEOF
+```
+
+### Cleanup (save costs)
+
+```bash
+RG=AZ-RG-ORCA-BENCHMARK
+for i in 2 3 4 5; do
+  az vm deallocate -g $RG -n swebench-eval-vm-$i --no-wait
+done
+# Delete clones when no longer needed:
+# for i in 3 4 5; do
+#   az vm delete -g $RG -n swebench-eval-vm-$i --yes
+#   az disk delete -g $RG -n swebench-disk-$i --yes
+# done
+# az snapshot delete -g $RG -n vm1-snapshot
+```
+
+## Results History
+
+| Run | Model | Score | Cost | Date |
+|-----|-------|-------|------|------|
+| Full 300 | deepseek-v4-flash | 115/300 = 38.3% | ~$10 | June 2026 |
+| Regression 35 | deepseek-v4-flash | 10/35 new | union 125/300 = 41.7% | June 2026 |
+| Smoke 3 | deepseek-v4-flash | 3/3 resolved | $0.026/inst | June 2026 |
+| V4 Pro 28 | deepseek-v4-pro | 14/28 = 50.0% | $0.48/inst | June 2026 |
+
+## Troubleshooting
+
+**Auth fails (401)**:
+- Check `~/.kepler/config.json` has a `kepler_` or `orca_` prefixed token
+- The LICENSE_KEY JWT is for framework licensing, NOT for CLI auth
+- Verify token exists in Supabase `cli_tokens` table
+
+**Backend won't start**:
+- Check `LICENSE_KEY` is set: `grep LICENSE_KEY ~/.tarang-benchmark.env`
+- Check port free: `fuser 8000/tcp` (kill if occupied)
+- Check logs: `tail -50 ~/backend.log`
+
+**Stale uvicorn from previous session**:
+- `pkill -f "uvicorn app.main:app"` then wait 2s, verify with `pgrep -x uvicorn`
+- Restart with `set -a; source ~/.tarang-benchmark.env; set +a` to pick up flags
+
+**Agent explores wrong directory**:
+- `KEPLER_MEMORY_ENABLED=false` prevents cross-session path injection
+- Clean `/tmp/kepler-swe-bench` between runs if stale indexes persist
+
+**Preflight plan not generating**:
+- `KEPLER_PREFLIGHT_PLAN=true` must be in the env file
+- Check gateway class matches PLATFORM_ROUTING (needs OpenRouterV2Gateway entry)
+- Logs: `grep PreflightPlan ~/backend.log`

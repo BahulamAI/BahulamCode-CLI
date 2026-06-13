@@ -140,6 +140,9 @@ def run_kepler(repo_dir: Path, instance: dict, model: str, timeout: int = 600, d
         f"Fix the following issue in the code at {repo_abs}. "
         f"Use search_code to find the relevant file, read_file to understand the code, "
         f"then edit_file with ABSOLUTE paths to fix it. You MUST call edit_file.\n\n"
+        f"After editing, you MUST run the relevant tests to verify your fix works. "
+        f"Use run_tests or shell to execute the test suite. Do NOT finish without "
+        f"running tests. If tests fail, fix your code and re-test.\n\n"
         f"{problem}"
     )
 
