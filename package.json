@@ -1,7 +1,7 @@
 {
   "name": "@axplusb/kepler",
-  "version": "1.0.8",
-  "description": "Kepler — AI coding agent that plans, builds, tests, and ships. 30.7% on SWE-bench Lite.",
+  "version": "1.0.9",
+  "description": "Kepler — AI coding agent with operating brief, preflight planning, and sub-agents. SWE-bench Lite evaluated.",
   "type": "module",
   "bin": {
     "kepler": "src/terminal/main.mjs"
