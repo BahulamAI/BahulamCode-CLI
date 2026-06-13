@@ -113,6 +113,25 @@ export function createToolExecutor({
         }
     }
 
+    // ── Post-edit verification hint ──────────────────────────────
+    // Appended to edit_file/write_file results so the model knows
+    // exactly how to verify. Uses detected project commands.
+
+    function verificationHint(filePath) {
+        const project = projectRegistry.projectForPath(filePath);
+        const commands = project?.resource?.commands || {};
+        const parts = [];
+        if (commands.test) {
+            parts.push(`Run tests: ${commands.test}`);
+        }
+        if (parts.length === 0) {
+            const ext = path.extname(filePath);
+            if (ext === '.py') parts.push('Run tests: python -m pytest');
+            else if (['.js', '.ts', '.tsx', '.mjs'].includes(ext)) parts.push('Run tests: npm test');
+        }
+        return parts.length ? `\n--- Verify ---\n${parts.join('\n')}` : '';
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
@@ -275,9 +294,13 @@ export function createToolExecutor({
             // Auto-lint the written file
             const lintOutput = autoLint(filePath);
             if (lintOutput) {
-                wrapped.output += `\n\n--- Lint result ---\n${lintOutput}`;
+                wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;
             }
+
+            // Nudge: tell the model how to verify
+            const hint = verificationHint(filePath);
+            if (hint) wrapped.output += hint;
 
             return wrapped;
         },
@@ -399,9 +422,13 @@ print('OK: replaced')
             // Auto-lint the edited file
             const lintOutput = autoLint(filePath);
             if (lintOutput) {
-                wrapped.output += `\n\n--- Lint result ---\n${lintOutput}`;
+                wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;
             }
+
+            // Nudge: tell the model how to verify
+            const hint = verificationHint(filePath);
+            if (hint) wrapped.output += hint;
 
             return wrapped;
         },

@@ -1,0 +1,188 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "deepseek/deepseek-v4-flash",
+  "timestamp": "2026-06-12T15:54:11.317591",
+  "total": 5,
+  "passed": 5,
+  "failed": 0,
+  "errors": 0,
+  "pass_rate": 100.0,
+  "total_cost_usd": 0.139,
+  "avg_cost_usd": 0.028,
+  "results": [
+    {
+      "instance_id": "sympy__sympy-11897",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-12T15:33:20.578241",
+      "kepler": {
+        "success": true,
+        "duration_s": 584.0,
+        "cost_usd": 0.03835,
+        "tools": 37,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 11,
+          "read_file": 14,
+          "grep": 6,
+          "list_files": 3,
+          "analyze_code": 1,
+          "search_files": 1
+        },
+        "sub_agents": [
+          {
+            "type": "explore",
+            "model": "deepseek/deepseek-v4-flash",
+            "duration_s": 240.87,
+            "tool_calls": 21,
+            "success": true
+          }
+        ],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 197741,
+          "output_tokens": 22934,
+          "cache_read": 59776,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/printing/tests/test_latex.py b/sympy/printing/tests/test_latex.py\nindex 8a70549050..a550ca0a71 100644\n--- a/sympy/printing/tests/test_latex.py\n+++ b/sympy/printing/tests/test_latex.py\n@@ -867,7 +867,7 @@ def test_latex_Piecewise():\n     p = Piecewise((A**2, Eq(A, B)), (A*B, True))\n     s = r\"\\begin{cases} A^{2} & \\text{for}\\: A = B \\\\A B & \\text{otherwise} \\end{cases}\"\n     assert latex(p) == s\n-    assert latex(A*p) == r\"A %s\" % s\n+    assert latex(A*p) == r\"A \\left(%s\\right)\" % s\n     assert latex(p*A) == r\"\\left(%s\\right) A\" % s\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12171",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-12T15:43:18.949858",
+      "kepler": {
+        "success": true,
+        "duration_s": 112.7,
+        "cost_usd": 0.018271,
+        "tools": 15,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 6,
+          "shell": 2,
+          "edit_file": 1,
+          "run_tests": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 173975,
+          "output_tokens": 6231,
+          "cache_read": 77824,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 45,
+      "model_patch": "diff --git a/sympy/printing/mathematica.py b/sympy/printing/mathematica.py\nindex 4c2ffd81e1..dfc79a5e2b 100644\n--- a/sympy/printing/mathematica.py\n+++ b/sympy/printing/mathematica.py\n@@ -106,6 +106,13 @@ def _print_Integral(self, expr):\n             args = expr.args\n         return \"Hold[Integrate[\" + ', '.join(self.doprint(a) for a in args) + \"]]\"\n \n+    def _print_Derivative(self, expr):\n+        return \"Hold[D[\" + \", \".join(self.doprint(a) for a in (expr.expr,) + expr.variables) + \"]]\"\n+\n+    def _print_Float(self, expr):\n+        res = str(expr)\n+        return res.replace('e', '*^')\n+\n     def _print_Sum(self, expr):\n         return \"Hold[Sum[\" + ', '.join(self.doprint(a) for a in expr.args) + \"]]\"\n \ndiff --git a/sympy/printing/tests/test_mathematica.py b/sympy/printing/tests/test_mathematica.py\nindex 8fd05ae544..d4fb90bd1e 100644\n--- a/sympy/printing/tests/test_mathematica.py\n+++ b/sympy/printing/tests/test_mathematica.py\n@@ -1,5 +1,5 @@\n from sympy.core import (S, pi, oo, symbols, Function,\n-                        Rational, Integer, Tuple)\n+                        Rational, Integer, Tuple, Derivative)\n from sympy.integrals import Integral\n from sympy.concrete import Sum\n from sympy.functions import exp, sin, cos\n@@ -74,6 +74,14 @@ def test_Integral():\n         \"{y, -Infinity, Infinity}]]\"\n \n \n+def test_Derivative():\n+    assert mcode(Derivative(sin(x), x)) == \"Hold[D[Sin[x], x]]\"\n+    assert mcode(Derivative(x, x)) == \"Hold[D[x, x]]\"\n+    assert mcode(Derivative(sin(x)*y**4, x, 2)) == \"Hold[D[y^4*Sin[x], x, x]]\"\n+    assert mcode(Derivative(sin(x)*y**4, x, y, x)) == \"Hold[D[y^4*Sin[x], x, y, x]]\"\n+    assert mcode(Derivative(sin(x)*y**4, x, y, 3, x)) == \"Hold[D[y^4*Sin[x], x, y, y, y, x]]\"\n+\n+\n def test_Sum():\n     assert mcode(Sum(sin(x), (x, 0, 10))) == \"Hold[Sum[Sin[x], {x, 0, 10}]]\"\n     assert mcode(Sum(exp(-x**2 - y**2),\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12236",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-12T15:45:25.569830",
+      "kepler": {
+        "success": true,
+        "duration_s": 254.9,
+        "cost_usd": 0.037753,
+        "tools": 43,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 7,
+          "list_files": 3,
+          "read_file": 17,
+          "search_files": 6,
+          "grep": 8,
+          "git_status": 1
+        },
+        "sub_agents": [
+          {
+            "type": "explore",
+            "model": "deepseek/deepseek-v4-flash",
+            "duration_s": 162.86,
+            "tool_calls": 25,
+            "success": true
+          }
+        ],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 191556,
+          "output_tokens": 6981,
+          "cache_read": 89088,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 48,
+      "model_patch": "diff --git a/sympy/polys/tests/test_partfrac.py b/sympy/polys/tests/test_partfrac.py\nindex 707fb45871..3dea9d6c1c 100644\n--- a/sympy/polys/tests/test_partfrac.py\n+++ b/sympy/polys/tests/test_partfrac.py\n@@ -8,7 +8,7 @@\n )\n \n from sympy import (S, Poly, E, pi, I, Matrix, Eq, RootSum, Lambda,\n-                   Symbol, Dummy, factor, together, sqrt, Expr)\n+                   Symbol, Dummy, factor, together, sqrt, Expr, Rational)\n from sympy.utilities.pytest import raises, XFAIL\n from sympy.abc import x, y, a, b, c\n \n@@ -37,6 +37,18 @@ def test_apart():\n \n     assert apart(Eq((x**2 + 1)/(x + 1), x), x) == Eq(x - 1 + 2/(x + 1), x)\n \n+    assert apart(x/2, y) == x/2\n+\n+    f, g = (x+y)/(2*x - y), Rational(3/2)*y/((2*x - y)) + Rational(1/2)\n+\n+    assert apart(f, x, full=False) == g\n+    assert apart(f, x, full=True) == g\n+\n+    f, g = (x+y)/(2*x - y), 3*x/(2*x - y) - 1\n+\n+    assert apart(f, y, full=False) == g\n+    assert apart(f, y, full=True) == g\n+\n     raises(NotImplementedError, lambda: apart(1/(x + 1)/(y + 2)))\n \n \ndiff --git a/sympy/polys/tests/test_polytools.py b/sympy/polys/tests/test_polytools.py\nindex f50ad2e9e8..c3dc9078a5 100644\n--- a/sympy/polys/tests/test_polytools.py\n+++ b/sympy/polys/tests/test_polytools.py\n@@ -1700,6 +1700,10 @@ def test_div():\n     q = f.exquo(g)\n     assert q.get_domain().is_ZZ\n \n+    f, g = Poly(x+y, x), Poly(2*x+y, x)\n+    q, r = f.div(g)\n+    assert q.get_domain().is_Frac and r.get_domain().is_Frac\n+\n \n def test_gcdex():\n     f, g = 2*x, x**2 - 16\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12419",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-12T15:49:54.724382",
+      "kepler": {
+        "success": true,
+        "duration_s": 107.8,
+        "cost_usd": 0.018151,
+        "tools": 16,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 6,
+          "read_file": 3,
+          "grep": 6
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 175799,
+          "output_tokens": 4706,
+          "cache_read": 82688,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 34,
+      "model_patch": "diff --git a/sympy/matrices/expressions/tests/test_matexpr.py b/sympy/matrices/expressions/tests/test_matexpr.py\nindex dbc5485948..ffe760b374 100644\n--- a/sympy/matrices/expressions/tests/test_matexpr.py\n+++ b/sympy/matrices/expressions/tests/test_matexpr.py\n@@ -65,6 +65,7 @@ def test_ZeroMatrix():\n     with raises(ShapeError):\n         Z**2\n \n+\n def test_ZeroMatrix_doit():\n     Znn = ZeroMatrix(Add(n, n, evaluate=False), n)\n     assert isinstance(Znn.rows, Add)\n@@ -74,6 +75,8 @@ def test_ZeroMatrix_doit():\n \n def test_Identity():\n     A = MatrixSymbol('A', n, m)\n+    i, j = symbols('i j')\n+\n     In = Identity(n)\n     Im = Identity(m)\n \n@@ -84,6 +87,11 @@ def test_Identity():\n     assert In.inverse() == In\n     assert In.conjugate() == In\n \n+    assert In[i, j] != 0\n+    assert Sum(In[i, j], (i, 0, n-1), (j, 0, n-1)).subs(n,3).doit() == 3\n+    assert Sum(Sum(In[i, j], (i, 0, n-1)), (j, 0, n-1)).subs(n,3).doit() == 3\n+\n+\n def test_Identity_doit():\n     Inn = Identity(Add(n, n, evaluate=False))\n     assert isinstance(Inn.rows, Add)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12454",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-12T15:51:56.301880",
+      "kepler": {
+        "success": true,
+        "duration_s": 120.9,
+        "cost_usd": 0.026469,
+        "tools": 26,
+        "tool_breakdown": {
+          "get_project_overview": 3,
+          "search_code": 5,
+          "grep": 7,
+          "list_files": 1,
+          "read_file": 5,
+          "edit_file": 1,
+          "run_tests": 3,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 254683,
+          "output_tokens": 7702,
+          "cache_read": 109056,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 37,
+      "model_patch": "diff --git a/sympy/matrices/matrices.py b/sympy/matrices/matrices.py\nindex 90ea232faf..c600fe88e2 100644\n--- a/sympy/matrices/matrices.py\n+++ b/sympy/matrices/matrices.py\n@@ -1112,7 +1112,7 @@ def is_upper(self):\n         \"\"\"\n         return all(self[i, j].is_zero\n                    for i in range(1, self.rows)\n-                   for j in range(i))\n+                   for j in range(min(i, self.cols)))\n \n     @property\n     def is_zero(self):\ndiff --git a/sympy/matrices/tests/test_matrices.py b/sympy/matrices/tests/test_matrices.py\nindex 03b1548fd9..4f38f7c261 100644\n--- a/sympy/matrices/tests/test_matrices.py\n+++ b/sympy/matrices/tests/test_matrices.py\n@@ -1225,6 +1225,8 @@ def test_is_upper():\n     assert a.is_upper is True\n     a = Matrix([[1], [2], [3]])\n     assert a.is_upper is False\n+    a = zeros(4, 2)\n+    assert a.is_upper is True\n \n \n def test_is_lower():\n@@ -1880,6 +1882,9 @@ def test_hessenberg():\n     A = Matrix([[3, 4, 1], [2, 4, 5], [3, 1, 2]])\n     assert not A.is_upper_hessenberg\n \n+    A = zeros(5, 2)\n+    assert A.is_upper_hessenberg\n+\n \n def test_cholesky():\n     raises(NonSquareMatrixError, lambda: Matrix((1, 2)).cholesky())\n",
+      "status": "patched"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: search_files
+[headless] Tool: list_files
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: search_files
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: git_diff
+[headless] Tool: read_file
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Done: 15 tools, 47.8s, $0.186
+
+--- Response ---
+Perfect! The fix is complete and working. Here's a summary of what was done:
+
+## Summary
+
+**Bug Fixed:** The `sqlmigrate` command was showing transaction wrappers (BEGIN/COMMIT) even for databases that don't support transactional DDL.
+
+**Root Cause:** The code only checked if a migration was atomic (`migration.atomic`) but didn't verify if the database actually supports transactional DDL (`connection.features.can_rollback_ddl`).
+
+**Solution:** Modified `/private/tmp/orca-swe-bench/django__django/d5276398/django/core/management/commands/sqlmigrate.py` line 60 to:
+```python
+self.output_transaction = migration.atomic and connection.features.can_rollback_ddl
+```
+
+This ensures transaction wrappers are only shown when BOTH conditions are true:
+1. The migration is atomic
+2. The database supports transactional DDL
+
+**Tests Verified:**
+- ✅ `test_sqlmigrate_for_non_transactional_databases` - Confirms transaction wrappers are NOT shown for non-transactional databases
+- ✅ `test_sqlmigrate_forwards` - Confirms normal sqlmigrate functionality still works

@@ -1,0 +1,54 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: search_files
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: git_diff
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: git_diff
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: shell
+[headless] Tool: shell
+[headless] Done: 21 tools, 72.0s, $0.202
+
+--- Response ---
+Perfect! The fix is complete and working correctly. Let me summarize what was done:
+
+## Summary
+
+I've successfully implemented the fix for the Django issue where `CharField` with `choices` that don't fit within `max_length` should raise a validation error.
+
+### Changes Made:
+
+**File: `/private/tmp/orca-swe-bench/django__django/fee75d2a/django/db/models/fields/__init__.py`**
+
+1. **Added a new check method** `_check_choices_fit_max_length()` to the `CharField` class that:
+   - Returns early if there are no choices or no max_length
+   - Calculates the maximum length of all choice values (including nested/grouped choices via `flatchoices`)
+   - Raises an error with ID `fields.E009` if any choice value exceeds the max_length
+
+2. **Integrated the check** into the `check()` method of `CharField` by adding a call to `_check_choices_fit_max_length()`
+
+### Validation:
+
+✅ The specific test `test_choices_in_max_length` passes  
+✅ All CharField-related tests pass  
+✅ All tests in the ordinary fields module pass  
+✅ Manual testing confirms:
+- Models with choices that fit max_length pass validation
+- Models with choices that exceed max_length raise the correct error (E009)
+- Nested/grouped choices are properly validated
+
+The implementation correctly handles both flat and nested choice structures using Django's `flatchoices` property.

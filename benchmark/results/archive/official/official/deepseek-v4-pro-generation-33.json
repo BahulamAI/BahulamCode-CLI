@@ -1,0 +1,506 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "deepseek/deepseek-v4-pro",
+  "timestamp": "2026-06-08T02:28:03.725615",
+  "total": 33,
+  "passed": 28,
+  "failed": 0,
+  "errors": 5,
+  "pass_rate": 84.8,
+  "total_cost_usd": 1.713,
+  "avg_cost_usd": 0.052,
+  "results": [
+    {
+      "instance_id": "astropy__astropy-14182",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:01:27.972874",
+      "orca": {
+        "success": true,
+        "duration_s": 51.3,
+        "cost_usd": 0.012325,
+        "tools": 3
+      },
+      "patch_lines": 60,
+      "model_patch": "diff --git a/astropy/io/ascii/rst.py b/astropy/io/ascii/rst.py\nindex abdeba8efb..78e42b7d63 100644\n--- a/astropy/io/ascii/rst.py\n+++ b/astropy/io/ascii/rst.py\n@@ -57,8 +57,8 @@ class RST(FixedWidth):\n     data_class = SimpleRSTData\n     header_class = SimpleRSTHeader\n \n-    def __init__(self):\n-        super().__init__(delimiter_pad=None, bookend=False)\n+    def __init__(self, header_rows=None):\n+        super().__init__(delimiter_pad=None, bookend=False, header_rows=header_rows)\n \n     def write(self, lines):\n         lines = super().write(lines)\ndiff --git a/astropy/io/ascii/tests/test_rst.py b/astropy/io/ascii/tests/test_rst.py\nindex 84d6fed401..8643ff9bda 100644\n--- a/astropy/io/ascii/tests/test_rst.py\n+++ b/astropy/io/ascii/tests/test_rst.py\n@@ -2,7 +2,11 @@\n \n from io import StringIO\n \n+import numpy as np\n+\n+import astropy.units as u\n from astropy.io import ascii\n+from astropy.table import QTable\n \n from .common import assert_almost_equal, assert_equal\n \n@@ -185,3 +189,27 @@ Col1      Col2 Col3 Col4\n ==== ========= ==== ====\n \"\"\",\n     )\n+\n+\n+def test_rst_with_header_rows():\n+    \"\"\"Round-trip a table with header_rows specified\"\"\"\n+    lines = [\n+        \"======= ======== ====\",\n+        \"   wave response ints\",\n+        \"     nm       ct     \",\n+        \"float64  float32 int8\",\n+        \"======= ======== ====\",\n+        \"  350.0      1.0    1\",\n+        \"  950.0      2.0    2\",\n+        \"======= ======== ====\",\n+    ]\n+    tbl = QTable.read(lines, format=\"ascii.rst\", header_rows=[\"name\", \"unit\", \"dtype\"])\n+    assert tbl[\"wave\"].unit == u.nm\n+    assert tbl[\"response\"].unit == u.ct\n+    assert tbl[\"wave\"].dtype == np.float64\n+    assert tbl[\"response\"].dtype == np.float32\n+    assert tbl[\"ints\"].dtype == np.int8\n+\n+    out = StringIO()\n+    tbl.write(out, format=\"ascii.rst\", header_rows=[\"name\", \"unit\", \"dtype\"])\n+    assert out.getvalue().splitlines() == lines\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "astropy__astropy-14365",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:01:27.973189",
+      "orca": {
+        "success": true,
+        "duration_s": 68.8,
+        "cost_usd": 0.023137,
+        "tools": 6
+      },
+      "patch_lines": 47,
+      "model_patch": "diff --git a/astropy/io/ascii/qdp.py b/astropy/io/ascii/qdp.py\nindex 83a4f004aa..768beb0de9 100644\n--- a/astropy/io/ascii/qdp.py\n+++ b/astropy/io/ascii/qdp.py\n@@ -68,7 +68,7 @@ def _line_type(line, delimiter=None):\n     _new_re = rf\"NO({sep}NO)+\"\n     _data_re = rf\"({_decimal_re}|NO|[-+]?nan)({sep}({_decimal_re}|NO|[-+]?nan))*)\"\n     _type_re = rf\"^\\s*((?P<command>{_command_re})|(?P<new>{_new_re})|(?P<data>{_data_re})?\\s*(\\!(?P<comment>.*))?\\s*$\"\n-    _line_type_re = re.compile(_type_re)\n+    _line_type_re = re.compile(_type_re, re.IGNORECASE)\n     line = line.strip()\n     if not line:\n         return \"comment\"\ndiff --git a/astropy/io/ascii/tests/test_qdp.py b/astropy/io/ascii/tests/test_qdp.py\nindex ef24e6f6a3..487eda854f 100644\n--- a/astropy/io/ascii/tests/test_qdp.py\n+++ b/astropy/io/ascii/tests/test_qdp.py\n@@ -43,7 +43,18 @@ def test_get_tables_from_qdp_file(tmp_path):\n     assert np.isclose(table2[\"MJD_nerr\"][0], -2.37847222222222e-05)\n \n \n-def test_roundtrip(tmp_path):\n+def lowercase_header(value):\n+    \"\"\"Make every non-comment line lower case.\"\"\"\n+    lines = []\n+    for line in value.splitlines():\n+        if not line.startswith(\"!\"):\n+            line = line.lower()\n+        lines.append(line)\n+    return \"\\n\".join(lines)\n+\n+\n+@pytest.mark.parametrize(\"lowercase\", [False, True])\n+def test_roundtrip(tmp_path, lowercase):\n     example_qdp = \"\"\"\n     ! Swift/XRT hardness ratio of trigger: XXXX, name: BUBU X-2\n     ! Columns are as labelled\n@@ -70,6 +81,8 @@ def test_roundtrip(tmp_path):\n     53000.123456 2.37847222222222e-05    -2.37847222222222e-05   -0.292553       -0.374935\n     NO 1.14467592592593e-05    -1.14467592592593e-05   0.000000        NO\n     \"\"\"\n+    if lowercase:\n+        example_qdp = lowercase_header(example_qdp)\n \n     path = str(tmp_path / \"test.qdp\")\n     path2 = str(tmp_path / \"test2.qdp\")\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "astropy__astropy-12907",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:01:27.972297",
+      "orca": {
+        "success": true,
+        "duration_s": 93.6,
+        "cost_usd": 0.041217,
+        "tools": 9
+      },
+      "patch_lines": 51,
+      "model_patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27297..45bea36085 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \ndiff --git a/astropy/modeling/tests/test_separable.py b/astropy/modeling/tests/test_separable.py\nindex 8dfe5c8626..024b239508 100644\n--- a/astropy/modeling/tests/test_separable.py\n+++ b/astropy/modeling/tests/test_separable.py\n@@ -28,6 +28,13 @@ p22 = models.Polynomial2D(2, name='p22')\n p1 = models.Polynomial1D(1, name='p1')\n \n \n+cm_4d_expected = (np.array([False, False, True, True]),\n+                  np.array([[True,  True,  False, False],\n+                            [True,  True,  False, False],\n+                            [False, False, True,  False],\n+                            [False, False, False, True]]))\n+\n+\n compound_models = {\n     'cm1': (map3 & sh1 | rot & sh1 | sh1 & sh2 & sh1,\n             (np.array([False, False, True]),\n@@ -52,7 +59,17 @@ compound_models = {\n     'cm7': (map2 | p2 & sh1,\n             (np.array([False, True]),\n              np.array([[True, False], [False, True]]))\n-            )\n+            ),\n+    'cm8': (rot & (sh1 & sh2), cm_4d_expected),\n+    'cm9': (rot & sh1 & sh2, cm_4d_expected),\n+    'cm10': ((rot & sh1) & sh2, cm_4d_expected),\n+    'cm11': (rot & sh1 & (scl1 & scl2),\n+             (np.array([False, False, True, True, True]),\n+              np.array([[True,  True,  False, False, False],\n+                        [True,  True,  False, False, False],\n+                        [False, False, True,  False, False],\n+                        [False, False, False, True,  False],\n+                        [False, False, False, False, True]]))),\n }\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "astropy__astropy-14995",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:01:27.973978",
+      "orca": {
+        "success": true,
+        "duration_s": 162.1,
+        "cost_usd": 0.059961,
+        "tools": 13
+      },
+      "patch_lines": 61,
+      "model_patch": "diff --git a/astropy/nddata/mixins/ndarithmetic.py b/astropy/nddata/mixins/ndarithmetic.py\nindex 4153dfccb2..dafca193b5 100644\n--- a/astropy/nddata/mixins/ndarithmetic.py\n+++ b/astropy/nddata/mixins/ndarithmetic.py\n@@ -522,6 +522,8 @@ class NDArithmeticMixin:\n             return deepcopy(operand.mask)\n         elif operand is None:\n             return deepcopy(self.mask)\n+        elif operand is not None and operand.mask is None:\n+            return deepcopy(self.mask)\n         else:\n             # Now lets calculate the resulting mask (operation enforces copy)\n             return handle_mask(self.mask, operand.mask, **kwds)\ndiff --git a/astropy/nddata/mixins/tests/test_ndarithmetic.py b/astropy/nddata/mixins/tests/test_ndarithmetic.py\nindex 8c461155ab..f6ffa2df46 100644\n--- a/astropy/nddata/mixins/tests/test_ndarithmetic.py\n+++ b/astropy/nddata/mixins/tests/test_ndarithmetic.py\n@@ -1310,3 +1310,42 @@ def test_raise_method_not_supported():\n     # raise error for unsupported propagation operations:\n     with pytest.raises(ValueError):\n         ndd1.uncertainty.propagate(np.mod, ndd2, result, correlation)\n+\n+\n+def test_nddata_bitmask_arithmetic():\n+    # NDData.mask is usually assumed to be boolean, but could be\n+    # a bitmask. Ensure bitmask works:\n+    array = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])\n+    mask = np.array([[0, 1, 64], [8, 0, 1], [2, 1, 0]])\n+\n+    nref_nomask = NDDataRef(array)\n+    nref_masked = NDDataRef(array, mask=mask)\n+\n+    # multiply no mask by constant (no mask * no mask)\n+    assert nref_nomask.multiply(1.0, handle_mask=np.bitwise_or).mask is None\n+\n+    # multiply no mask by itself (no mask * no mask)\n+    assert nref_nomask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask is None\n+\n+    # multiply masked by constant (mask * no mask)\n+    np.testing.assert_equal(\n+        nref_masked.multiply(1.0, handle_mask=np.bitwise_or).mask, mask\n+    )\n+\n+    # multiply masked by itself (mask * mask)\n+    np.testing.assert_equal(\n+        nref_masked.multiply(nref_masked, handle_mask=np.bitwise_or).mask, mask\n+    )\n+\n+    # multiply masked by no mask (mask * no mask)\n+    np.testing.assert_equal(\n+        nref_masked.multiply(nref_nomask, handle_mask=np.bitwise_or).mask, mask\n+    )\n+\n+    # check bitwise logic still works\n+    other_mask = np.array([[64, 1, 0], [2, 1, 0], [8, 0, 2]])\n+    nref_mask_other = NDDataRef(array, mask=other_mask)\n+    np.testing.assert_equal(\n+        nref_mask_other.multiply(nref_masked, handle_mask=np.bitwise_or).mask,\n+        np.bitwise_or(mask, other_mask),\n+    )\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "astropy__astropy-6938",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:03:08.624280",
+      "orca": {
+        "success": true,
+        "duration_s": 90.7,
+        "cost_usd": 0.084764,
+        "tools": 19
+      },
+      "patch_lines": 41,
+      "model_patch": "diff --git a/astropy/io/fits/tests/test_checksum.py b/astropy/io/fits/tests/test_checksum.py\nindex 3ee6eade81..14959407a2 100644\n--- a/astropy/io/fits/tests/test_checksum.py\n+++ b/astropy/io/fits/tests/test_checksum.py\n@@ -205,9 +205,9 @@ class TestChecksumFunctions(FitsTestCase):\n                 # The checksum ends up being different on Windows, possibly due\n                 # to slight floating point differences\n                 assert 'CHECKSUM' in hdul[1].header\n-                assert hdul[1].header['CHECKSUM'] == '51IDA1G981GCA1G9'\n+                assert hdul[1].header['CHECKSUM'] == '3rKFAoI94oICAoI9'\n                 assert 'DATASUM' in hdul[1].header\n-                assert hdul[1].header['DATASUM'] == '1948208413'\n+                assert hdul[1].header['DATASUM'] == '1914653725'\n \n     def test_compressed_image_data(self):\n         with fits.open(self.data('comp.fits')) as h1:\ndiff --git a/astropy/io/fits/tests/test_table.py b/astropy/io/fits/tests/test_table.py\nindex 67fe21aa72..6898afdf38 100644\n--- a/astropy/io/fits/tests/test_table.py\n+++ b/astropy/io/fits/tests/test_table.py\n@@ -298,6 +298,19 @@ class TestTableFunctions(FitsTestCase):\n         hdul = fits.open(self.temp('toto.fits'))\n         assert comparerecords(hdu.data, hdul[1].data)\n         hdul.close()\n+\n+        # Test Scaling\n+\n+        r1 = np.array([11., 12.])\n+        c2 = fits.Column(name='def', format='D', array=r1, bscale=2.3,\n+                         bzero=0.6)\n+        hdu = fits.TableHDU.from_columns([c2])\n+        hdu.writeto(self.temp('toto.fits'), overwrite=True)\n+        with open(self.temp('toto.fits')) as f:\n+            assert '4.95652173913043548D+00' in f.read()\n+        with fits.open(self.temp('toto.fits')) as hdul:\n+            assert comparerecords(hdu.data, hdul[1].data)\n+\n         a.close()\n \n     def test_endianness(self):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "astropy__astropy-7746",
+      "repo": "astropy/astropy",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:03:24.334663",
+      "orca": {
+        "success": true,
+        "duration_s": 112.5,
+        "cost_usd": 0.052798,
+        "tools": 12
+      },
+      "patch_lines": 50,
+      "model_patch": "diff --git a/astropy/wcs/tests/test_wcs.py b/astropy/wcs/tests/test_wcs.py\nindex 85853e10e5..39763a4a50 100644\n--- a/astropy/wcs/tests/test_wcs.py\n+++ b/astropy/wcs/tests/test_wcs.py\n@@ -1093,3 +1093,21 @@ def test_keyedsip():\n     assert isinstance( w.sip, wcs.Sip )\n     assert w.sip.crpix[0] == 2048\n     assert w.sip.crpix[1] == 1026\n+\n+\n+def test_zero_size_input():\n+    with fits.open(get_pkg_data_filename('data/sip.fits')) as f:\n+        w = wcs.WCS(f[0].header)\n+\n+    inp = np.zeros((0, 2))\n+    assert_array_equal(inp, w.all_pix2world(inp, 0))\n+    assert_array_equal(inp, w.all_world2pix(inp, 0))\n+\n+    inp = [], [1]\n+    result = w.all_pix2world([], [1], 0)\n+    assert_array_equal(inp[0], result[0])\n+    assert_array_equal(inp[1], result[1])\n+\n+    result = w.all_world2pix([], [1], 0)\n+    assert_array_equal(inp[0], result[0])\n+    assert_array_equal(inp[1], result[1])\ndiff --git a/astropy/wcs/wcs.py b/astropy/wcs/wcs.py\nindex d3a06f2b31..f87a98e8bf 100644\n--- a/astropy/wcs/wcs.py\n+++ b/astropy/wcs/wcs.py\n@@ -1220,6 +1220,9 @@ reduce these to 2 dimensions using the naxis kwarg.\n \n             xy = np.hstack([x.reshape((x.size, 1)) for x in axes])\n \n+            if xy.size == 0:\n+                return [np.array([]) for _ in range(self.naxis)]\n+\n             if ra_dec_order and sky == 'input':\n                 xy = self._denormalize_sky(xy)\n             output = func(xy, origin)\n@@ -1235,6 +1238,8 @@ reduce these to 2 dimensions using the naxis kwarg.\n                 raise ValueError(\n                     \"When providing two arguments, the array must be \"\n                     \"of shape (N, {0})\".format(self.naxis))\n+            if xy.size == 0:\n+                return np.empty_like(xy)\n             if ra_dec_order and sky == 'input':\n                 xy = self._denormalize_sky(xy)\n             result = func(xy, origin)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-10914",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:03:50.339960",
+      "orca": {
+        "success": true,
+        "duration_s": 109.1,
+        "cost_usd": 0.135149,
+        "tools": 20
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/tests/test_utils/tests.py b/tests/test_utils/tests.py\nindex a1a113a26e..e953eb6609 100644\n--- a/tests/test_utils/tests.py\n+++ b/tests/test_utils/tests.py\n@@ -1099,7 +1099,7 @@ class OverrideSettingsTests(SimpleTestCase):\n         the file_permissions_mode attribute of\n         django.core.files.storage.default_storage.\n         \"\"\"\n-        self.assertIsNone(default_storage.file_permissions_mode)\n+        self.assertEqual(default_storage.file_permissions_mode, 0o644)\n         with self.settings(FILE_UPLOAD_PERMISSIONS=0o777):\n             self.assertEqual(default_storage.file_permissions_mode, 0o777)\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11001",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:05:01.352088",
+      "orca": {
+        "success": true,
+        "duration_s": 74.7,
+        "cost_usd": 0.026429,
+        "tools": 6
+      },
+      "patch_lines": 57,
+      "model_patch": "diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py\nindex 7649c39262..8f1e44c9b3 100644\n--- a/django/db/models/sql/compiler.py\n+++ b/django/db/models/sql/compiler.py\n@@ -353,7 +353,7 @@ class SQLCompiler:\n             # not taken into account so we strip it. When this entire method\n             # is refactored into expressions, then we can check each part as we\n             # generate it.\n-            without_ordering = self.ordering_parts.search(sql).group(1)\n+            without_ordering = self.ordering_parts.search(' '.join(sql.split())).group(1)\n             params_hash = make_hashable(params)\n             if (without_ordering, params_hash) in seen:\n                 continue\n@@ -366,7 +366,7 @@ class SQLCompiler:\n         if self.query.distinct and not self.query.distinct_fields:\n             select_sql = [t[1] for t in select]\n             for expr, (sql, params, is_ref) in order_by:\n-                without_ordering = self.ordering_parts.search(sql).group(1)\n+                without_ordering = self.ordering_parts.search(' '.join(sql.split())).group(1)\n                 if not is_ref and (without_ordering, params) not in select_sql:\n                     extra_select.append((expr, (without_ordering, params), None))\n         return extra_select\ndiff --git a/tests/expressions/tests.py b/tests/expressions/tests.py\nindex c22ff34ee8..a8897fa069 100644\n--- a/tests/expressions/tests.py\n+++ b/tests/expressions/tests.py\n@@ -384,6 +384,29 @@ class BasicExpressionsTests(TestCase):\n         )\n         self.assertSequenceEqual(mustermanns_by_seniority, [self.max, mary])\n \n+    def test_order_by_multiline_sql(self):\n+        raw_order_by = (\n+            RawSQL('''\n+                CASE WHEN num_employees > 1000\n+                     THEN num_chairs\n+                     ELSE 0 END\n+            ''', []).desc(),\n+            RawSQL('''\n+                CASE WHEN num_chairs > 1\n+                     THEN 1\n+                     ELSE 0 END\n+            ''', []).asc()\n+        )\n+        for qs in (\n+            Company.objects.all(),\n+            Company.objects.distinct(),\n+        ):\n+            with self.subTest(qs=qs):\n+                self.assertSequenceEqual(\n+                    qs.order_by(*raw_order_by),\n+                    [self.example_inc, self.gmbh, self.foobar_ltd],\n+                )\n+\n     def test_outerref(self):\n         inner = Company.objects.filter(point_of_contact=OuterRef('pk'))\n         msg = (\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-10924",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:04:59.317799",
+      "orca": {
+        "success": true,
+        "duration_s": 127.2,
+        "cost_usd": 0.061813,
+        "tools": 19
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Orca made no file changes"
+    },
+    {
+      "instance_id": "django__django-11039",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:06:07.962481",
+      "orca": {
+        "success": true,
+        "duration_s": 132.2,
+        "cost_usd": 0.192328,
+        "tools": 19
+      },
+      "patch_lines": 95,
+      "model_patch": "diff --git a/django/core/management/commands/sqlmigrate.py b/django/core/management/commands/sqlmigrate.py\nindex f0b663222a..1e6ff26d72 100644\n--- a/django/core/management/commands/sqlmigrate.py\n+++ b/django/core/management/commands/sqlmigrate.py\n@@ -55,8 +55,9 @@ class Command(BaseCommand):\n                 migration_name, app_label))\n         targets = [(app_label, migration.name)]\n \n-        # Show begin/end around output only for atomic migrations\n-        self.output_transaction = migration.atomic\n+        # Show begin/end around output only for atomic migrations, and only if\n+        # the database supports transactional DDL.\n+        self.output_transaction = migration.atomic and connection.features.can_rollback_ddl\n \n         # Make a plan that represents just the requested migrations and show SQL\n         # for it\ndiff --git a/tests/migrations/test_commands.py b/tests/migrations/test_commands.py\nindex 0e8fa9fdd1..57e71f4643 100644\n--- a/tests/migrations/test_commands.py\n+++ b/tests/migrations/test_commands.py\n@@ -536,7 +536,13 @@ class MigrateTests(MigrationTestBase):\n         index_op_desc_unique_together = output.find('-- alter unique_together')\n         index_tx_end = output.find(connection.ops.end_transaction_sql().lower())\n \n-        self.assertGreater(index_tx_start, -1, \"Transaction start not found\")\n+        if connection.features.can_rollback_ddl:\n+            self.assertGreater(index_tx_start, -1, \"Transaction start not found\")\n+            self.assertGreater(\n+                index_tx_end, index_op_desc_unique_together,\n+                \"Transaction end not found or found before operation description (unique_together)\"\n+            )\n+\n         self.assertGreater(\n             index_op_desc_author, index_tx_start,\n             \"Operation description (author) not found or found before transaction start\"\n@@ -553,10 +559,6 @@ class MigrateTests(MigrationTestBase):\n             index_op_desc_unique_together, index_op_desc_tribble,\n             \"Operation description (unique_together) not found or found before operation description (tribble)\"\n         )\n-        self.assertGreater(\n-            index_tx_end, index_op_desc_unique_together,\n-            \"Transaction end not found or found before operation description (unique_together)\"\n-        )\n \n     @override_settings(MIGRATION_MODULES={\"migrations\": \"migrations.test_migrations\"})\n     def test_sqlmigrate_backwards(self):\n@@ -577,7 +579,12 @@ class MigrateTests(MigrationTestBase):\n         index_drop_table = output.rfind('drop table')\n         index_tx_end = output.find(connection.ops.end_transaction_sql().lower())\n \n-        self.assertGreater(index_tx_start, -1, \"Transaction start not found\")\n+        if connection.features.can_rollback_ddl:\n+            self.assertGreater(index_tx_start, -1, \"Transaction start not found\")\n+            self.assertGreater(\n+                index_tx_end, index_op_desc_unique_together,\n+                \"Transaction end not found or found before DROP TABLE\"\n+            )\n         self.assertGreater(\n             index_op_desc_unique_together, index_tx_start,\n             \"Operation description (unique_together) not found or found before transaction start\"\n@@ -595,10 +602,6 @@ class MigrateTests(MigrationTestBase):\n             index_drop_table, index_op_desc_author,\n             \"DROP TABLE not found or found before operation description (author)\"\n         )\n-        self.assertGreater(\n-            index_tx_end, index_op_desc_unique_together,\n-            \"Transaction end not found or found before DROP TABLE\"\n-        )\n \n         # Cleanup by unmigrating everything\n         call_command(\"migrate\", \"migrations\", \"zero\", verbosity=0)\n@@ -616,6 +619,22 @@ class MigrateTests(MigrationTestBase):\n             self.assertNotIn(connection.ops.start_transaction_sql().lower(), queries)\n         self.assertNotIn(connection.ops.end_transaction_sql().lower(), queries)\n \n+    @override_settings(MIGRATION_MODULES={'migrations': 'migrations.test_migrations'})\n+    def test_sqlmigrate_for_non_transactional_databases(self):\n+        \"\"\"\n+        Transaction wrappers aren't shown for databases that don't support\n+        transactional DDL.\n+        \"\"\"\n+        out = io.StringIO()\n+        with mock.patch.object(connection.features, 'can_rollback_ddl', False):\n+            call_command('sqlmigrate', 'migrations', '0001', stdout=out)\n+        output = out.getvalue().lower()\n+        queries = [q.strip() for q in output.splitlines()]\n+        start_transaction_sql = connection.ops.start_transaction_sql()\n+        if start_transaction_sql:\n+            self.assertNotIn(start_transaction_sql.lower(), queries)\n+        self.assertNotIn(connection.ops.end_transaction_sql().lower(), queries)\n+\n     @override_settings(\n         INSTALLED_APPS=[\n             \"migrations.migrations_test_apps.migrated_app\",\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11099",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:07:42.555499",
+      "orca": {
+        "success": true,
+        "duration_s": 50.5,
+        "cost_usd": 0.019231,
+        "tools": 5
+      },
+      "patch_lines": 45,
+      "model_patch": "diff --git a/django/contrib/auth/validators.py b/django/contrib/auth/validators.py\nindex b4878cfd45..1304f20a60 100644\n--- a/django/contrib/auth/validators.py\n+++ b/django/contrib/auth/validators.py\n@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _\n \n @deconstructible\n class ASCIIUsernameValidator(validators.RegexValidator):\n-    regex = r'^[\\w.@+-]+$'\n+    regex = r'\\A[\\w.@+-]+\\Z'\n     message = _(\n         'Enter a valid username. This value may contain only English letters, '\n         'numbers, and @/./+/-/_ characters.'\n@@ -17,7 +17,7 @@ class ASCIIUsernameValidator(validators.RegexValidator):\n \n @deconstructible\n class UnicodeUsernameValidator(validators.RegexValidator):\n-    regex = r'^[\\w.@+-]+$'\n+    regex = r'\\A[\\w.@+-]+\\Z'\n     message = _(\n         'Enter a valid username. This value may contain only letters, '\n         'numbers, and @/./+/-/_ characters.'\ndiff --git a/tests/auth_tests/test_validators.py b/tests/auth_tests/test_validators.py\nindex 1c2c6b4aff..87e3f890bb 100644\n--- a/tests/auth_tests/test_validators.py\n+++ b/tests/auth_tests/test_validators.py\n@@ -237,7 +237,7 @@ class UsernameValidatorsTests(SimpleTestCase):\n         invalid_usernames = [\n             \"o'connell\", \"\u0639\u0628\u062f \u0627\u0644\",\n             \"zerowidth\\u200Bspace\", \"nonbreaking\\u00A0space\",\n-            \"en\\u2013dash\",\n+            \"en\\u2013dash\", 'trailingnewline\\u000A',\n         ]\n         v = validators.UnicodeUsernameValidator()\n         for valid in valid_usernames:\n@@ -250,7 +250,7 @@ class UsernameValidatorsTests(SimpleTestCase):\n \n     def test_ascii_validator(self):\n         valid_usernames = ['glenn', 'GLEnN', 'jean-marc']\n-        invalid_usernames = [\"o'connell\", '\u00c9ric', 'jean marc', \"\u0623\u062d\u0645\u062f\"]\n+        invalid_usernames = [\"o'connell\", '\u00c9ric', 'jean marc', \"\u0623\u062d\u0645\u062f\", 'trailingnewline\\n']\n         v = validators.ASCIIUsernameValidator()\n         for valid in valid_usernames:\n             with self.subTest(valid=valid):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11049",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:06:52.591590",
+      "orca": {
+        "success": true,
+        "duration_s": 101.1,
+        "cost_usd": 0.063598,
+        "tools": 22
+      },
+      "patch_lines": 27,
+      "model_patch": "diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py\nindex f32ce64629..71005490f3 100644\n--- a/django/db/models/fields/__init__.py\n+++ b/django/db/models/fields/__init__.py\n@@ -1587,7 +1587,7 @@ class DurationField(Field):\n     empty_strings_allowed = False\n     default_error_messages = {\n         'invalid': _(\"'%(value)s' value has an invalid format. It must be in \"\n-                     \"[DD] [HH:[MM:]]ss[.uuuuuu] format.\")\n+                     \"[DD] [[HH:]MM:]ss[.uuuuuu] format.\")\n     }\n     description = _(\"Duration\")\n \ndiff --git a/tests/model_fields/test_durationfield.py b/tests/model_fields/test_durationfield.py\nindex b73994f86a..f1c82ab8bd 100644\n--- a/tests/model_fields/test_durationfield.py\n+++ b/tests/model_fields/test_durationfield.py\n@@ -75,7 +75,7 @@ class TestValidation(SimpleTestCase):\n         self.assertEqual(\n             cm.exception.message % cm.exception.params,\n             \"'not a datetime' value has an invalid format. \"\n-            \"It must be in [DD] [HH:[MM:]]ss[.uuuuuu] format.\"\n+            \"It must be in [DD] [[HH:]MM:]ss[.uuuuuu] format.\"\n         )\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11019",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:05:39.204747",
+      "orca": {
+        "success": true,
+        "duration_s": 243.5,
+        "cost_usd": 0.030574,
+        "tools": 5
+      },
+      "patch_lines": 262,
+      "model_patch": "diff --git a/tests/admin_inlines/tests.py b/tests/admin_inlines/tests.py\nindex 0a1ab5acbb..5272d44f35 100644\n--- a/tests/admin_inlines/tests.py\n+++ b/tests/admin_inlines/tests.py\n@@ -497,10 +497,10 @@ class TestInlineMedia(TestDataMixin, TestCase):\n             response.context['inline_admin_formsets'][0].media._js,\n             [\n                 'admin/js/vendor/jquery/jquery.min.js',\n-                'admin/js/jquery.init.js',\n-                'admin/js/inlines.min.js',\n                 'my_awesome_inline_scripts.js',\n                 'custom_number.js',\n+                'admin/js/jquery.init.js',\n+                'admin/js/inlines.min.js',\n             ]\n         )\n         self.assertContains(response, 'my_awesome_inline_scripts.js')\ndiff --git a/tests/admin_widgets/test_autocomplete_widget.py b/tests/admin_widgets/test_autocomplete_widget.py\nindex cd9d58e347..601929fd37 100644\n--- a/tests/admin_widgets/test_autocomplete_widget.py\n+++ b/tests/admin_widgets/test_autocomplete_widget.py\n@@ -139,4 +139,4 @@ class AutocompleteMixinTests(TestCase):\n                 else:\n                     expected_files = base_files\n                 with translation.override(lang):\n-                    self.assertEqual(AutocompleteSelect(rel, admin.site).media._js, expected_files)\n+                    self.assertEqual(AutocompleteSelect(rel, admin.site).media._js, list(expected_files))\ndiff --git a/tests/forms_tests/tests/test_media.py b/tests/forms_tests/tests/test_media.py\nindex 8cb484a15e..192d78f331 100644\n--- a/tests/forms_tests/tests/test_media.py\n+++ b/tests/forms_tests/tests/test_media.py\n@@ -25,8 +25,8 @@ class FormsMediaTestCase(SimpleTestCase):\n         )\n         self.assertEqual(\n             repr(m),\n-            \"Media(css={'all': ('path/to/css1', '/path/to/css2')}, \"\n-            \"js=('/path/to/js1', 'http://media.other.com/path/to/js2', 'https://secure.other.com/path/to/js3'))\"\n+            \"Media(css={'all': ['path/to/css1', '/path/to/css2']}, \"\n+            \"js=['/path/to/js1', 'http://media.other.com/path/to/js2', 'https://secure.other.com/path/to/js3'])\"\n         )\n \n         class Foo:\n@@ -125,8 +125,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n         # media addition hasn't affected the original objects\n@@ -151,6 +151,17 @@ class FormsMediaTestCase(SimpleTestCase):\n         self.assertEqual(str(w4.media), \"\"\"<link href=\"/path/to/css1\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\"\"\")\n \n+    def test_media_deduplication(self):\n+        # A deduplication test applied directly to a Media object, to confirm\n+        # that the deduplication doesn't only happen at the point of merging\n+        # two or more media objects.\n+        media = Media(\n+            css={'all': ('/path/to/css1', '/path/to/css1')},\n+            js=('/path/to/js1', '/path/to/js1'),\n+        )\n+        self.assertEqual(str(media), \"\"\"<link href=\"/path/to/css1\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n+<script type=\"text/javascript\" src=\"/path/to/js1\"></script>\"\"\")\n+\n     def test_media_property(self):\n         ###############################################################\n         # Property-based media definitions\n@@ -197,12 +208,12 @@ class FormsMediaTestCase(SimpleTestCase):\n         self.assertEqual(\n             str(w6.media),\n             \"\"\"<link href=\"http://media.example.com/static/path/to/css1\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n-<link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <link href=\"/other/path\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n+<link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n+<script type=\"text/javascript\" src=\"/other/js\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/other/js\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n     def test_media_inheritance(self):\n@@ -247,8 +258,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n     def test_media_inheritance_from_property(self):\n@@ -322,8 +333,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n     def test_media_inheritance_single_type(self):\n@@ -420,8 +431,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n     def test_form_media(self):\n@@ -462,8 +473,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n         # Form media can be combined to produce a single media definition.\n@@ -477,8 +488,8 @@ class FormsMediaTestCase(SimpleTestCase):\n <link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n-<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n         # Forms can also define media, following the same rules as widgets.\n@@ -495,28 +506,28 @@ class FormsMediaTestCase(SimpleTestCase):\n         self.assertEqual(\n             str(f3.media),\n             \"\"\"<link href=\"http://media.example.com/static/path/to/css1\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n+<link href=\"/some/form/css\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n-<link href=\"/some/form/css\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n+<script type=\"text/javascript\" src=\"/some/form/javascript\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n <script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n-<script type=\"text/javascript\" src=\"/some/form/javascript\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n         )\n \n         # Media works in templates\n         self.assertEqual(\n             Template(\"{{ form.media.js }}{{ form.media.css }}\").render(Context({'form': f3})),\n             \"\"\"<script type=\"text/javascript\" src=\"/path/to/js1\"></script>\n+<script type=\"text/javascript\" src=\"/some/form/javascript\"></script>\n <script type=\"text/javascript\" src=\"http://media.other.com/path/to/js2\"></script>\n-<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\n <script type=\"text/javascript\" src=\"/path/to/js4\"></script>\n-<script type=\"text/javascript\" src=\"/some/form/javascript\"></script>\"\"\"\n+<script type=\"text/javascript\" src=\"https://secure.other.com/path/to/js3\"></script>\"\"\"\n             \"\"\"<link href=\"http://media.example.com/static/path/to/css1\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n+<link href=\"/some/form/css\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n <link href=\"/path/to/css2\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n-<link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\n-<link href=\"/some/form/css\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\"\"\"\n+<link href=\"/path/to/css3\" type=\"text/css\" media=\"all\" rel=\"stylesheet\">\"\"\"\n         )\n \n     def test_html_safe(self):\n@@ -526,19 +537,23 @@ class FormsMediaTestCase(SimpleTestCase):\n \n     def test_merge(self):\n         test_values = (\n-            (([1, 2], [3, 4]), [1, 2, 3, 4]),\n+            (([1, 2], [3, 4]), [1, 3, 2, 4]),\n             (([1, 2], [2, 3]), [1, 2, 3]),\n             (([2, 3], [1, 2]), [1, 2, 3]),\n             (([1, 3], [2, 3]), [1, 2, 3]),\n             (([1, 2], [1, 3]), [1, 2, 3]),\n             (([1, 2], [3, 2]), [1, 3, 2]),\n+            (([1, 2], [1, 2]), [1, 2]),\n+            ([[1, 2], [1, 3], [2, 3], [5, 7], [5, 6], [6, 7, 9], [8, 9]], [1, 5, 8, 2, 6, 3, 7, 9]),\n+            ((), []),\n+            (([1, 2],), [1, 2]),\n         )\n-        for (list1, list2), expected in test_values:\n-            with self.subTest(list1=list1, list2=list2):\n-                self.assertEqual(Media.merge(list1, list2), expected)\n+        for lists, expected in test_values:\n+            with self.subTest(lists=lists):\n+                self.assertEqual(Media.merge(*lists), expected)\n \n     def test_merge_warning(self):\n-        msg = 'Detected duplicate Media files in an opposite order:\\n1\\n2'\n+        msg = 'Detected duplicate Media files in an opposite order: [1, 2], [2, 1]'\n         with self.assertWarnsMessage(RuntimeWarning, msg):\n             self.assertEqual(Media.merge([1, 2], [2, 1]), [1, 2])\n \n@@ -546,28 +561,30 @@ class FormsMediaTestCase(SimpleTestCase):\n         \"\"\"\n         The relative order of scripts is preserved in a three-way merge.\n         \"\"\"\n-        # custom_widget.js doesn't depend on jquery.js.\n-        widget1 = Media(js=['custom_widget.js'])\n-        widget2 = Media(js=['jquery.js', 'uses_jquery.js'])\n-        form_media = widget1 + widget2\n-        # The relative ordering of custom_widget.js and jquery.js has been\n-        # established (but without a real need to).\n-        self.assertEqual(form_media._js, ['custom_widget.js', 'jquery.js', 'uses_jquery.js'])\n-        # The inline also uses custom_widget.js. This time, it's at the end.\n-        inline_media = Media(js=['jquery.js', 'also_jquery.js']) + Media(js=['custom_widget.js'])\n-        merged = form_media + inline_media\n-        self.assertEqual(merged._js, ['custom_widget.js', 'jquery.js', 'uses_jquery.js', 'also_jquery.js'])\n+        widget1 = Media(js=['color-picker.js'])\n+        widget2 = Media(js=['text-editor.js'])\n+        widget3 = Media(js=['text-editor.js', 'text-editor-extras.js', 'color-picker.js'])\n+        merged = widget1 + widget2 + widget3\n+        self.assertEqual(merged._js, ['text-editor.js', 'text-editor-extras.js', 'color-picker.js'])\n+\n+    def test_merge_js_three_way2(self):\n+        # The merge prefers to place 'c' before 'b' and 'g' before 'h' to\n+        # preserve the original order. The preference 'c'->'b' is overridden by\n+        # widget3's media, but 'g'->'h' survives in the final ordering.\n+        widget1 = Media(js=['a', 'c', 'f', 'g', 'k'])\n+        widget2 = Media(js=['a', 'b', 'f', 'h', 'k'])\n+        widget3 = Media(js=['b', 'c', 'f', 'k'])\n+        merged = widget1 + widget2 + widget3\n+        self.assertEqual(merged._js, ['a', 'b', 'c', 'f', 'g', 'h', 'k'])\n \n     def test_merge_css_three_way(self):\n-        widget1 = Media(css={'screen': ['a.css']})\n-        widget2 = Media(css={'screen': ['b.css']})\n-        widget3 = Media(css={'all': ['c.css']})\n-        form1 = widget1 + widget2\n-        form2 = widget2 + widget1\n-        # form1 and form2 have a.css and b.css in different order...\n-        self.assertEqual(form1._css, {'screen': ['a.css', 'b.css']})\n-        self.assertEqual(form2._css, {'screen': ['b.css', 'a.css']})\n-        # ...but merging succeeds as the relative ordering of a.css and b.css\n-        # was never specified.\n-        merged = widget3 + form1 + form2\n-        self.assertEqual(merged._css, {'screen': ['a.css', 'b.css'], 'all': ['c.css']})\n+        widget1 = Media(css={'screen': ['c.css'], 'all': ['d.css', 'e.css']})\n+        widget2 = Media(css={'screen': ['a.css']})\n+        widget3 = Media(css={'screen': ['a.css', 'b.css', 'c.css'], 'all': ['e.css']})\n+        merged = widget1 + widget2\n+        # c.css comes before a.css because widget1 + widget2 establishes this\n+        # order.\n+        self.assertEqual(merged._css, {'screen': ['c.css', 'a.css'], 'all': ['d.css', 'e.css']})\n+        merged = merged + widget3\n+        # widget3 contains an explicit ordering of c.css and a.css.\n+        self.assertEqual(merged._css, {'screen': ['a.css', 'b.css', 'c.css'], 'all': ['d.css', 'e.css']})\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11133",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:08:49.474374",
+      "orca": {
+        "success": true,
+        "duration_s": 59.0,
+        "cost_usd": 0.015376,
+        "tools": 4
+      },
+      "patch_lines": 29,
+      "model_patch": "diff --git a/django/http/response.py b/django/http/response.py\nindex 6a84e193ba..a9ede09dd9 100644\n--- a/django/http/response.py\n+++ b/django/http/response.py\n@@ -229,7 +229,7 @@ class HttpResponseBase:\n         # Handle string types -- we can't rely on force_bytes here because:\n         # - Python attempts str conversion first\n         # - when self._charset != 'utf-8' it re-encodes the content\n-        if isinstance(value, bytes):\n+        if isinstance(value, (bytes, memoryview)):\n             return bytes(value)\n         if isinstance(value, str):\n             return bytes(value.encode(self.charset))\ndiff --git a/tests/httpwrappers/tests.py b/tests/httpwrappers/tests.py\nindex e6c6297898..0c81cd0341 100644\n--- a/tests/httpwrappers/tests.py\n+++ b/tests/httpwrappers/tests.py\n@@ -366,6 +366,10 @@ class HttpResponseTests(unittest.TestCase):\n         r.content = 12345\n         self.assertEqual(r.content, b'12345')\n \n+    def test_memoryview_content(self):\n+        r = HttpResponse(memoryview(b'memoryview'))\n+        self.assertEqual(r.content, b'memoryview')\n+\n     def test_iter_content(self):\n         r = HttpResponse(['abc', 'def', 'ghi'])\n         self.assertEqual(r.content, b'abcdefghi')\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11179",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:08:59.919007",
+      "orca": {
+        "success": true,
+        "duration_s": 48.9,
+        "cost_usd": 0.01523,
+        "tools": 4
+      },
+      "patch_lines": 40,
+      "model_patch": "diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\nindex 92fe4affb9..3a462f1c4c 100644\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -277,6 +277,7 @@ class Collector:\n             if self.can_fast_delete(instance):\n                 with transaction.mark_for_rollback_on_error():\n                     count = sql.DeleteQuery(model).delete_batch([instance.pk], self.using)\n+                setattr(instance, model._meta.pk.attname, None)\n                 return count, {model._meta.label: count}\n \n         with transaction.atomic(using=self.using, savepoint=False):\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\nindex 55eeb226ea..ed47d0667d 100644\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,6 +1,7 @@\n from math import ceil\n \n from django.db import IntegrityError, connection, models\n+from django.db.models.deletion import Collector\n from django.db.models.sql.constants import GET_ITERATOR_CHUNK_SIZE\n from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature\n \n@@ -471,6 +472,14 @@ class FastDeleteTests(TestCase):\n         self.assertEqual(User.objects.count(), 1)\n         self.assertTrue(User.objects.filter(pk=u2.pk).exists())\n \n+    def test_fast_delete_instance_set_pk_none(self):\n+        u = User.objects.create()\n+        # User can be fast-deleted.\n+        collector = Collector(using='default')\n+        self.assertTrue(collector.can_fast_delete(u))\n+        u.delete()\n+        self.assertIsNone(u.pk)\n+\n     def test_fast_delete_joined_qs(self):\n         a = Avatar.objects.create(desc='a')\n         User.objects.create(avatar=a)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11583",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:10:32.694928",
+      "orca": {
+        "success": true,
+        "duration_s": 43.5,
+        "cost_usd": 0.014742,
+        "tools": 3
+      },
+      "patch_lines": 36,
+      "model_patch": "diff --git a/django/utils/autoreload.py b/django/utils/autoreload.py\nindex 25c3b44250..eae1721f95 100644\n--- a/django/utils/autoreload.py\n+++ b/django/utils/autoreload.py\n@@ -139,7 +139,7 @@ def iter_modules_and_files(modules, extra_files):\n         path = Path(filename)\n         try:\n             resolved_path = path.resolve(strict=True).absolute()\n-        except FileNotFoundError:\n+        except (FileNotFoundError, ValueError):\n             # The module could have been removed, don't fail loudly if this\n             # is the case.\n             continue\ndiff --git a/tests/utils_tests/test_autoreload.py b/tests/utils_tests/test_autoreload.py\nindex 1ea019ac7a..628749db01 100644\n--- a/tests/utils_tests/test_autoreload.py\n+++ b/tests/utils_tests/test_autoreload.py\n@@ -140,6 +140,17 @@ class TestIterModulesAndFiles(SimpleTestCase):\n         fake_main = types.ModuleType('__main__')\n         self.assertEqual(autoreload.iter_modules_and_files((fake_main,), frozenset()), frozenset())\n \n+    def test_path_with_embedded_null_bytes(self):\n+        for path in (\n+            'embedded_null_byte\\x00.py',\n+            'di\\x00rectory/embedded_null_byte.py',\n+        ):\n+            with self.subTest(path=path):\n+                self.assertEqual(\n+                    autoreload.iter_modules_and_files((), frozenset([path])),\n+                    frozenset(),\n+                )\n+\n \n class TestCommonRoots(SimpleTestCase):\n     def test_common_roots(self):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11564",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:10:26.093870",
+      "orca": {
+        "success": true,
+        "duration_s": 54.1,
+        "cost_usd": 0.030488,
+        "tools": 16
+      },
+      "patch_lines": 78,
+      "model_patch": "diff --git a/tests/file_storage/tests.py b/tests/file_storage/tests.py\nindex 1c4176014c..1f7fd94b5a 100644\n--- a/tests/file_storage/tests.py\n+++ b/tests/file_storage/tests.py\n@@ -521,7 +521,7 @@ class FileStorageTests(SimpleTestCase):\n         defaults_storage = self.storage_class()\n         settings = {\n             'MEDIA_ROOT': 'overridden_media_root',\n-            'MEDIA_URL': 'overridden_media_url/',\n+            'MEDIA_URL': '/overridden_media_url/',\n             'FILE_UPLOAD_PERMISSIONS': 0o333,\n             'FILE_UPLOAD_DIRECTORY_PERMISSIONS': 0o333,\n         }\ndiff --git a/tests/settings_tests/tests.py b/tests/settings_tests/tests.py\nindex d663f6e819..55ca0de524 100644\n--- a/tests/settings_tests/tests.py\n+++ b/tests/settings_tests/tests.py\n@@ -12,6 +12,7 @@ from django.test import (\n     override_settings, signals,\n )\n from django.test.utils import requires_tz_support\n+from django.urls import clear_script_prefix, set_script_prefix\n \n \n @modify_settings(ITEMS={\n@@ -567,3 +568,51 @@ class OverrideSettingsIsolationOnExceptionTests(SimpleTestCase):\n         signals.setting_changed.disconnect(self.receiver)\n         # This call shouldn't raise any errors.\n         decorated_function()\n+\n+\n+class MediaURLStaticURLPrefixTest(SimpleTestCase):\n+    def set_script_name(self, val):\n+        clear_script_prefix()\n+        if val is not None:\n+            set_script_prefix(val)\n+\n+    def test_not_prefixed(self):\n+        # Don't add SCRIPT_NAME prefix to valid URLs, absolute paths or None.\n+        tests = (\n+            '/path/',\n+            'http://myhost.com/path/',\n+            None,\n+        )\n+        for setting in ('MEDIA_URL', 'STATIC_URL'):\n+            for path in tests:\n+                new_settings = {setting: path}\n+                with self.settings(**new_settings):\n+                    for script_name in ['/somesubpath', '/somesubpath/', '/', '', None]:\n+                        with self.subTest(script_name=script_name, **new_settings):\n+                            try:\n+                                self.set_script_name(script_name)\n+                                self.assertEqual(getattr(settings, setting), path)\n+                            finally:\n+                                clear_script_prefix()\n+\n+    def test_add_script_name_prefix(self):\n+        tests = (\n+            # Relative paths.\n+            ('/somesubpath', 'path/', '/somesubpath/path/'),\n+            ('/somesubpath/', 'path/', '/somesubpath/path/'),\n+            ('/', 'path/', '/path/'),\n+            # Invalid URLs.\n+            ('/somesubpath/', 'htp://myhost.com/path/', '/somesubpath/htp://myhost.com/path/'),\n+            # Blank settings.\n+            ('/somesubpath/', '', '/somesubpath/'),\n+        )\n+        for setting in ('MEDIA_URL', 'STATIC_URL'):\n+            for script_name, path, expected_path in tests:\n+                new_settings = {setting: path}\n+                with self.settings(**new_settings):\n+                    with self.subTest(script_name=script_name, **new_settings):\n+                        try:\n+                            self.set_script_name(script_name)\n+                            self.assertEqual(getattr(settings, setting), expected_path)\n+                        finally:\n+                            clear_script_prefix()\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11620",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:11:54.156413",
+      "orca": {
+        "success": true,
+        "duration_s": 30.9,
+        "cost_usd": 0,
+        "tools": 4
+      },
+      "patch_lines": 31,
+      "model_patch": "diff --git a/tests/view_tests/tests/test_debug.py b/tests/view_tests/tests/test_debug.py\nindex 46589c82ba..73430178d7 100644\n--- a/tests/view_tests/tests/test_debug.py\n+++ b/tests/view_tests/tests/test_debug.py\n@@ -12,11 +12,13 @@ from unittest import mock\n from django.core import mail\n from django.core.files.uploadedfile import SimpleUploadedFile\n from django.db import DatabaseError, connection\n+from django.http import Http404\n from django.shortcuts import render\n from django.template import TemplateDoesNotExist\n from django.test import RequestFactory, SimpleTestCase, override_settings\n from django.test.utils import LoggingCaptureMixin\n from django.urls import path, reverse\n+from django.urls.converters import IntConverter\n from django.utils.functional import SimpleLazyObject\n from django.utils.safestring import mark_safe\n from django.views.debug import (\n@@ -237,6 +239,11 @@ class DebugViewTests(SimpleTestCase):\n             technical_404_response(mock.MagicMock(), mock.Mock())\n             m.assert_called_once_with(encoding='utf-8')\n \n+    def test_technical_404_converter_raise_404(self):\n+        with mock.patch.object(IntConverter, 'to_python', side_effect=Http404):\n+            response = self.client.get('/path-post/1/')\n+            self.assertContains(response, 'Page not found', status_code=404)\n+\n \n class DebugViewQueriesAllowedTests(SimpleTestCase):\n     # May need a query to initialize MySQL connection\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11422",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:10:10.309133",
+      "orca": {
+        "success": true,
+        "duration_s": 162.1,
+        "cost_usd": 0.088055,
+        "tools": 15
+      },
+      "patch_lines": 37,
+      "model_patch": "diff --git a/django/utils/autoreload.py b/django/utils/autoreload.py\nindex 7ca0d68fae..de2b818f85 100644\n--- a/django/utils/autoreload.py\n+++ b/django/utils/autoreload.py\n@@ -114,9 +114,15 @@ def iter_modules_and_files(modules, extra_files):\n         # During debugging (with PyDev) the 'typing.io' and 'typing.re' objects\n         # are added to sys.modules, however they are types not modules and so\n         # cause issues here.\n-        if not isinstance(module, ModuleType) or getattr(module, '__spec__', None) is None:\n+        if not isinstance(module, ModuleType):\n             continue\n         spec = module.__spec__\n+        if spec is None:\n+            # Module has no __spec__ (e.g. __main__ for scripts like manage.py).\n+            # Fall back to __file__ to still watch them.\n+            if hasattr(module, '__file__') and module.__file__:\n+                sys_file_paths.append(module.__file__)\n+            continue\n         # Modules could be loaded from places without a concrete location. If\n         # this is the case, skip them.\n         if spec.has_location:\ndiff --git a/tests/utils_tests/test_autoreload.py b/tests/utils_tests/test_autoreload.py\nindex 42bcd0a50b..e7305f6ac9 100644\n--- a/tests/utils_tests/test_autoreload.py\n+++ b/tests/utils_tests/test_autoreload.py\n@@ -132,6 +132,10 @@ class TestIterModulesAndFiles(SimpleTestCase):\n         del module.__spec__\n         self.assertEqual(autoreload.iter_modules_and_files((module,), frozenset()), frozenset())\n \n+    def test_main_module_is_resolved(self):\n+        main_module = sys.modules['__main__']\n+        self.assertFileFound(Path(main_module.__file__))\n+\n \n class TestCommonRoots(SimpleTestCase):\n     def test_common_roots(self):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11283",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:09:00.758061",
+      "orca": {
+        "success": false,
+        "duration_s": 300,
+        "cost_usd": 0,
+        "tools": 0
+      },
+      "status": "orca_failed",
+      "error": "Timeout"
+    },
+    {
+      "instance_id": "django__django-11742",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:12:59.418625",
+      "orca": {
+        "success": true,
+        "duration_s": 184.1,
+        "cost_usd": 0.086278,
+        "tools": 23
+      },
+      "patch_lines": 88,
+      "model_patch": "diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py\nindex 9ce46e3f73..59323c244e 100644\n--- a/django/db/models/fields/__init__.py\n+++ b/django/db/models/fields/__init__.py\n@@ -280,6 +280,45 @@ class Field(RegisterLookupMixin):\n             if isinstance(choices_group, str):\n                 break\n         else:\n+            if self.max_length is not None:\n+                # Check if max_length is large enough to fit the longest\n+                # value in choices.\n+                choices = self.choices\n+                for choice in choices:\n+                    if isinstance(choice, (list, tuple)) and not isinstance(choice, str):\n+                        # Grouped choices: [group_name, [value, display]]\n+                        if (\n+                            len(choice) == 2 and\n+                            isinstance(choice[1], (list, tuple)) and\n+                            not isinstance(choice[1], str)\n+                        ):\n+                            for value, _ in choice[1]:\n+                                if (\n+                                    isinstance(value, str) and\n+                                    len(value) > self.max_length\n+                                ):\n+                                    return [\n+                                        checks.Error(\n+                                            \"'max_length' is too small to fit the \"\n+                                            \"longest value in 'choices' \"\n+                                            \"(%d characters).\" % len(value),\n+                                            obj=self,\n+                                            id='fields.E008',\n+                                        )\n+                                    ]\n+                        # Flat choices: [value, display]\n+                        else:\n+                            value, _ = choice\n+                            if isinstance(value, str) and len(value) > self.max_length:\n+                                return [\n+                                    checks.Error(\n+                                        \"'max_length' is too small to fit the \"\n+                                        \"longest value in 'choices' \"\n+                                        \"(%d characters).\" % len(value),\n+                                        obj=self,\n+                                        id='fields.E008',\n+                                    )\n+                                ]\n             return []\n \n         return [\ndiff --git a/tests/invalid_models_tests/test_ordinary_fields.py b/tests/invalid_models_tests/test_ordinary_fields.py\nindex 5bb1847a70..2ef0907a6a 100644\n--- a/tests/invalid_models_tests/test_ordinary_fields.py\n+++ b/tests/invalid_models_tests/test_ordinary_fields.py\n@@ -304,6 +304,32 @@ class CharFieldTests(SimpleTestCase):\n \n         self.assertEqual(Model._meta.get_field('field').check(), [])\n \n+    def test_choices_in_max_length(self):\n+        class Model(models.Model):\n+            field = models.CharField(\n+                max_length=2, choices=[\n+                    ('ABC', 'Value Too Long!'), ('OK', 'Good')\n+                ],\n+            )\n+            group = models.CharField(\n+                max_length=2, choices=[\n+                    ('Nested', [('OK', 'Good'), ('Longer', 'Longer')]),\n+                    ('Grouped', [('Bad', 'Bad')]),\n+                ],\n+            )\n+\n+        for name, choice_max_length in (('field', 3), ('group', 6)):\n+            with self.subTest(name):\n+                field = Model._meta.get_field(name)\n+                self.assertEqual(field.check(), [\n+                    Error(\n+                        \"'max_length' is too small to fit the longest value \"\n+                        \"in 'choices' (%d characters).\" % choice_max_length,\n+                        obj=field,\n+                        id='fields.E009',\n+                    ),\n+                ])\n+\n     def test_bad_db_index_value(self):\n         class Model(models.Model):\n             field = models.CharField(max_length=10, db_index='bad')\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11630",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:11:59.300894",
+      "orca": {
+        "success": true,
+        "duration_s": 250.8,
+        "cost_usd": 0.12255,
+        "tools": 30
+      },
+      "patch_lines": 141,
+      "model_patch": "diff --git a/django/core/checks/model_checks.py b/django/core/checks/model_checks.py\nindex 5c2266ca1d..16959e71e0 100644\n--- a/django/core/checks/model_checks.py\n+++ b/django/core/checks/model_checks.py\n@@ -4,7 +4,8 @@ from collections import defaultdict\n from itertools import chain\n \n from django.apps import apps\n-from django.core.checks import Error, Tags, register\n+from django.conf import settings\n+from django.core.checks import Error, Tags, Warning, register\n \n \n @register(Tags.models)\n@@ -37,14 +38,29 @@ def check_all_models(app_configs=None, **kwargs):\n             constraints[model_constraint.name].append(model._meta.label)\n     for db_table, model_labels in db_table_models.items():\n         if len(model_labels) != 1:\n-            errors.append(\n-                Error(\n-                    \"db_table '%s' is used by multiple models: %s.\"\n-                    % (db_table, ', '.join(db_table_models[db_table])),\n-                    obj=db_table,\n-                    id='models.E028',\n+            if hasattr(settings, 'DATABASE_ROUTERS') and settings.DATABASE_ROUTERS:\n+                errors.append(\n+                    Warning(\n+                        \"db_table '%s' is used by multiple models: %s.\"\n+                        % (db_table, ', '.join(db_table_models[db_table])),\n+                        hint=(\n+                            'You have configured settings.DATABASE_ROUTERS. Verify '\n+                            'that %s are correctly routed to separate '\n+                            'databases.' % ', '.join(db_table_models[db_table])\n+                        ),\n+                        obj=db_table,\n+                        id='models.W035',\n+                    )\n+                )\n+            else:\n+                errors.append(\n+                    Error(\n+                        \"db_table '%s' is used by multiple models: %s.\"\n+                        % (db_table, ', '.join(db_table_models[db_table])),\n+                        obj=db_table,\n+                        id='models.E028',\n+                    )\n                 )\n-            )\n     for index_name, model_labels in indexes.items():\n         if len(model_labels) > 1:\n             model_labels = set(model_labels)\ndiff --git a/tests/check_framework/test_model_checks.py b/tests/check_framework/test_model_checks.py\nindex 79177e38f7..02c36dc610 100644\n--- a/tests/check_framework/test_model_checks.py\n+++ b/tests/check_framework/test_model_checks.py\n@@ -1,12 +1,16 @@\n from django.core import checks\n-from django.core.checks import Error\n+from django.core.checks import Error, Warning\n from django.db import models\n from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature\n from django.test.utils import (\n-    isolate_apps, modify_settings, override_system_checks,\n+    isolate_apps, modify_settings, override_settings, override_system_checks,\n )\n \n \n+class EmptyRouter:\n+    pass\n+\n+\n @isolate_apps('check_framework', attr_name='apps')\n @override_system_checks([checks.model_checks.check_all_models])\n class DuplicateDBTableTests(SimpleTestCase):\n@@ -28,6 +32,30 @@ class DuplicateDBTableTests(SimpleTestCase):\n             )\n         ])\n \n+    @override_settings(DATABASE_ROUTERS=['check_framework.test_model_checks.EmptyRouter'])\n+    def test_collision_in_same_app_database_routers_installed(self):\n+        class Model1(models.Model):\n+            class Meta:\n+                db_table = 'test_table'\n+\n+        class Model2(models.Model):\n+            class Meta:\n+                db_table = 'test_table'\n+\n+        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [\n+            Warning(\n+                \"db_table 'test_table' is used by multiple models: \"\n+                \"check_framework.Model1, check_framework.Model2.\",\n+                hint=(\n+                    'You have configured settings.DATABASE_ROUTERS. Verify '\n+                    'that check_framework.Model1, check_framework.Model2 are '\n+                    'correctly routed to separate databases.'\n+                ),\n+                obj='test_table',\n+                id='models.W035',\n+            )\n+        ])\n+\n     @modify_settings(INSTALLED_APPS={'append': 'basic'})\n     @isolate_apps('basic', 'check_framework', kwarg_name='apps')\n     def test_collision_across_apps(self, apps):\n@@ -50,6 +78,34 @@ class DuplicateDBTableTests(SimpleTestCase):\n             )\n         ])\n \n+    @modify_settings(INSTALLED_APPS={'append': 'basic'})\n+    @override_settings(DATABASE_ROUTERS=['check_framework.test_model_checks.EmptyRouter'])\n+    @isolate_apps('basic', 'check_framework', kwarg_name='apps')\n+    def test_collision_across_apps_database_routers_installed(self, apps):\n+        class Model1(models.Model):\n+            class Meta:\n+                app_label = 'basic'\n+                db_table = 'test_table'\n+\n+        class Model2(models.Model):\n+            class Meta:\n+                app_label = 'check_framework'\n+                db_table = 'test_table'\n+\n+        self.assertEqual(checks.run_checks(app_configs=apps.get_app_configs()), [\n+            Warning(\n+                \"db_table 'test_table' is used by multiple models: \"\n+                \"basic.Model1, check_framework.Model2.\",\n+                hint=(\n+                    'You have configured settings.DATABASE_ROUTERS. Verify '\n+                    'that basic.Model1, check_framework.Model2 are correctly '\n+                    'routed to separate databases.'\n+                ),\n+                obj='test_table',\n+                id='models.W035',\n+            )\n+        ])\n+\n     def test_no_collision_for_unmanaged_models(self):\n         class Unmanaged(models.Model):\n             class Meta:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11797",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:13:23.031774",
+      "orca": {
+        "success": false,
+        "duration_s": 300,
+        "cost_usd": 0,
+        "tools": 0
+      },
+      "status": "orca_failed",
+      "error": "Timeout"
+    },
+    {
+      "instance_id": "django__django-11848",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:16:30.320107",
+      "orca": {
+        "success": true,
+        "duration_s": 140.5,
+        "cost_usd": 0.042707,
+        "tools": 11
+      },
+      "patch_lines": 62,
+      "model_patch": "diff --git a/django/utils/http.py b/django/utils/http.py\nindex 572cfb4347..3ce8abd5e8 100644\n--- a/django/utils/http.py\n+++ b/django/utils/http.py\n@@ -176,10 +176,10 @@ def parse_http_date(date):\n     try:\n         year = int(m.group('year'))\n         if year < 100:\n-            if year < 70:\n-                year += 2000\n-            else:\n-                year += 1900\n+            current_year = datetime.datetime.utcnow().year\n+            year += 2000\n+            if year - current_year > 50:\n+                year -= 100\n         month = MONTHS.index(m.group('mon').lower()) + 1\n         day = int(m.group('day'))\n         hour = int(m.group('hour'))\ndiff --git a/tests/utils_tests/test_http.py b/tests/utils_tests/test_http.py\nindex bc8bcfe977..ed6824429d 100644\n--- a/tests/utils_tests/test_http.py\n+++ b/tests/utils_tests/test_http.py\n@@ -1,5 +1,6 @@\n import unittest\n from datetime import datetime\n+from unittest import mock\n \n from django.test import SimpleTestCase, ignore_warnings\n from django.utils.datastructures import MultiValueDict\n@@ -316,9 +317,27 @@ class HttpDateProcessingTests(unittest.TestCase):\n         parsed = parse_http_date('Sun, 06 Nov 1994 08:49:37 GMT')\n         self.assertEqual(datetime.utcfromtimestamp(parsed), datetime(1994, 11, 6, 8, 49, 37))\n \n-    def test_parsing_rfc850(self):\n-        parsed = parse_http_date('Sunday, 06-Nov-94 08:49:37 GMT')\n-        self.assertEqual(datetime.utcfromtimestamp(parsed), datetime(1994, 11, 6, 8, 49, 37))\n+    @mock.patch('django.utils.http.datetime.datetime')\n+    def test_parsing_rfc850(self, mocked_datetime):\n+        mocked_datetime.side_effect = datetime\n+        mocked_datetime.utcnow = mock.Mock()\n+        utcnow_1 = datetime(2019, 11, 6, 8, 49, 37)\n+        utcnow_2 = datetime(2020, 11, 6, 8, 49, 37)\n+        utcnow_3 = datetime(2048, 11, 6, 8, 49, 37)\n+        tests = (\n+            (utcnow_1, 'Tuesday, 31-Dec-69 08:49:37 GMT', datetime(2069, 12, 31, 8, 49, 37)),\n+            (utcnow_1, 'Tuesday, 10-Nov-70 08:49:37 GMT', datetime(1970, 11, 10, 8, 49, 37)),\n+            (utcnow_1, 'Sunday, 06-Nov-94 08:49:37 GMT', datetime(1994, 11, 6, 8, 49, 37)),\n+            (utcnow_2, 'Wednesday, 31-Dec-70 08:49:37 GMT', datetime(2070, 12, 31, 8, 49, 37)),\n+            (utcnow_2, 'Friday, 31-Dec-71 08:49:37 GMT', datetime(1971, 12, 31, 8, 49, 37)),\n+            (utcnow_3, 'Sunday, 31-Dec-00 08:49:37 GMT', datetime(2000, 12, 31, 8, 49, 37)),\n+            (utcnow_3, 'Friday, 31-Dec-99 08:49:37 GMT', datetime(1999, 12, 31, 8, 49, 37)),\n+        )\n+        for utcnow, rfc850str, expected_date in tests:\n+            with self.subTest(rfc850str=rfc850str):\n+                mocked_datetime.utcnow.return_value = utcnow\n+                parsed = parse_http_date(rfc850str)\n+                self.assertEqual(datetime.utcfromtimestamp(parsed), expected_date)\n \n     def test_parsing_asctime(self):\n         parsed = parse_http_date('Sun Nov  6 08:49:37 1994')\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11815",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:14:43.411341",
+      "orca": {
+        "success": true,
+        "duration_s": 251.3,
+        "cost_usd": 0.169855,
+        "tools": 15
+      },
+      "patch_lines": 113,
+      "model_patch": "diff --git a/django/db/migrations/serializer.py b/django/db/migrations/serializer.py\nindex 27b5cbd379..4275f91a7f 100644\n--- a/django/db/migrations/serializer.py\n+++ b/django/db/migrations/serializer.py\n@@ -120,9 +120,8 @@ class EnumSerializer(BaseSerializer):\n     def serialize(self):\n         enum_class = self.value.__class__\n         module = enum_class.__module__\n-        v_string, v_imports = serializer_factory(self.value.value).serialize()\n-        imports = {'import %s' % module, *v_imports}\n-        return \"%s.%s(%s)\" % (module, enum_class.__name__, v_string), imports\n+        imports = {'import %s' % module}\n+        return \"%s.%s[%r]\" % (module, enum_class.__name__, self.value.name), imports\n \n \n class FloatSerializer(BaseSimpleSerializer):\ndiff --git a/tests/migrations/test_writer.py b/tests/migrations/test_writer.py\nindex f97d76e9ad..6295a67992 100644\n--- a/tests/migrations/test_writer.py\n+++ b/tests/migrations/test_writer.py\n@@ -257,6 +257,10 @@ class WriterTests(SimpleTestCase):\n             A = 'a-value'\n             B = 'value-b'\n \n+        class TextTranslatedEnum(enum.Enum):\n+            A = _('a-value')\n+            B = _('value-b')\n+\n         class BinaryEnum(enum.Enum):\n             A = b'a-value'\n             B = b'value-b'\n@@ -267,15 +271,19 @@ class WriterTests(SimpleTestCase):\n \n         self.assertSerializedResultEqual(\n             TextEnum.A,\n-            (\"migrations.test_writer.TextEnum('a-value')\", {'import migrations.test_writer'})\n+            (\"migrations.test_writer.TextEnum['A']\", {'import migrations.test_writer'})\n+        )\n+        self.assertSerializedResultEqual(\n+            TextTranslatedEnum.A,\n+            (\"migrations.test_writer.TextTranslatedEnum['A']\", {'import migrations.test_writer'})\n         )\n         self.assertSerializedResultEqual(\n             BinaryEnum.A,\n-            (\"migrations.test_writer.BinaryEnum(b'a-value')\", {'import migrations.test_writer'})\n+            (\"migrations.test_writer.BinaryEnum['A']\", {'import migrations.test_writer'})\n         )\n         self.assertSerializedResultEqual(\n             IntEnum.B,\n-            (\"migrations.test_writer.IntEnum(2)\", {'import migrations.test_writer'})\n+            (\"migrations.test_writer.IntEnum['B']\", {'import migrations.test_writer'})\n         )\n \n         field = models.CharField(default=TextEnum.B, choices=[(m.value, m) for m in TextEnum])\n@@ -283,27 +291,39 @@ class WriterTests(SimpleTestCase):\n         self.assertEqual(\n             string,\n             \"models.CharField(choices=[\"\n-            \"('a-value', migrations.test_writer.TextEnum('a-value')), \"\n-            \"('value-b', migrations.test_writer.TextEnum('value-b'))], \"\n-            \"default=migrations.test_writer.TextEnum('value-b'))\"\n+            \"('a-value', migrations.test_writer.TextEnum['A']), \"\n+            \"('value-b', migrations.test_writer.TextEnum['B'])], \"\n+            \"default=migrations.test_writer.TextEnum['B'])\"\n+        )\n+        field = models.CharField(\n+            default=TextTranslatedEnum.A,\n+            choices=[(m.value, m) for m in TextTranslatedEnum],\n+        )\n+        string = MigrationWriter.serialize(field)[0]\n+        self.assertEqual(\n+            string,\n+            \"models.CharField(choices=[\"\n+            \"('a-value', migrations.test_writer.TextTranslatedEnum['A']), \"\n+            \"('value-b', migrations.test_writer.TextTranslatedEnum['B'])], \"\n+            \"default=migrations.test_writer.TextTranslatedEnum['A'])\"\n         )\n         field = models.CharField(default=BinaryEnum.B, choices=[(m.value, m) for m in BinaryEnum])\n         string = MigrationWriter.serialize(field)[0]\n         self.assertEqual(\n             string,\n             \"models.CharField(choices=[\"\n-            \"(b'a-value', migrations.test_writer.BinaryEnum(b'a-value')), \"\n-            \"(b'value-b', migrations.test_writer.BinaryEnum(b'value-b'))], \"\n-            \"default=migrations.test_writer.BinaryEnum(b'value-b'))\"\n+            \"(b'a-value', migrations.test_writer.BinaryEnum['A']), \"\n+            \"(b'value-b', migrations.test_writer.BinaryEnum['B'])], \"\n+            \"default=migrations.test_writer.BinaryEnum['B'])\"\n         )\n         field = models.IntegerField(default=IntEnum.A, choices=[(m.value, m) for m in IntEnum])\n         string = MigrationWriter.serialize(field)[0]\n         self.assertEqual(\n             string,\n             \"models.IntegerField(choices=[\"\n-            \"(1, migrations.test_writer.IntEnum(1)), \"\n-            \"(2, migrations.test_writer.IntEnum(2))], \"\n-            \"default=migrations.test_writer.IntEnum(1))\"\n+            \"(1, migrations.test_writer.IntEnum['A']), \"\n+            \"(2, migrations.test_writer.IntEnum['B'])], \"\n+            \"default=migrations.test_writer.IntEnum['A'])\"\n         )\n \n     def test_serialize_choices(self):\n@@ -454,7 +474,7 @@ class WriterTests(SimpleTestCase):\n         # Test a string regex with flag\n         validator = RegexValidator(r'^[0-9]+$', flags=re.S)\n         string = MigrationWriter.serialize(validator)[0]\n-        self.assertEqual(string, \"django.core.validators.RegexValidator('^[0-9]+$', flags=re.RegexFlag(16))\")\n+        self.assertEqual(string, \"django.core.validators.RegexValidator('^[0-9]+$', flags=re.RegexFlag['DOTALL'])\")\n         self.serialize_round_trip(validator)\n \n         # Test message and code\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11964",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:19:19.158707",
+      "orca": {
+        "success": true,
+        "duration_s": 96.0,
+        "cost_usd": 0.017923,
+        "tools": 4
+      },
+      "patch_lines": 32,
+      "model_patch": "diff --git a/django/db/models/enums.py b/django/db/models/enums.py\nindex bbe362a6ab..ec0cc6c2bf 100644\n--- a/django/db/models/enums.py\n+++ b/django/db/models/enums.py\n@@ -60,7 +60,8 @@ class ChoicesMeta(enum.EnumMeta):\n \n class Choices(enum.Enum, metaclass=ChoicesMeta):\n     \"\"\"Class for creating enumerated choices.\"\"\"\n-    pass\n+    def __str__(self):\n+        return str(self.value)\n \n \n class IntegerChoices(int, Choices):\ndiff --git a/tests/model_enums/tests.py b/tests/model_enums/tests.py\nindex 6b4bd6e7fd..e1810e673a 100644\n--- a/tests/model_enums/tests.py\n+++ b/tests/model_enums/tests.py\n@@ -143,6 +143,12 @@ class ChoicesTests(SimpleTestCase):\n                 APPLE = 1, 'Apple'\n                 PINEAPPLE = 1, 'Pineapple'\n \n+    def test_str(self):\n+        for test in [Gender, Suit, YearInSchool, Vehicle]:\n+            for member in test:\n+                with self.subTest(member=member):\n+                    self.assertEqual(str(test[member.name]), str(member.value))\n+\n \n class Separator(bytes, models.Choices):\n     FS = b'\\x1c', 'File Separator'\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11905",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:16:45.311140",
+      "orca": {
+        "success": false,
+        "duration_s": 300,
+        "cost_usd": 0,
+        "tools": 0
+      },
+      "status": "orca_failed",
+      "error": "Timeout"
+    },
+    {
+      "instance_id": "django__django-11999",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:19:21.684523",
+      "orca": {
+        "success": true,
+        "duration_s": 139.7,
+        "cost_usd": 0.054803,
+        "tools": 19
+      },
+      "patch_lines": 22,
+      "model_patch": "diff --git a/tests/model_fields/tests.py b/tests/model_fields/tests.py\nindex 0d6e930b06..a3b805409c 100644\n--- a/tests/model_fields/tests.py\n+++ b/tests/model_fields/tests.py\n@@ -168,6 +168,16 @@ class GetFieldDisplayTests(SimpleTestCase):\n         self.assertIsInstance(val, str)\n         self.assertEqual(val, 'translated')\n \n+    def test_overriding_FIELD_display(self):\n+        class FooBar(models.Model):\n+            foo_bar = models.IntegerField(choices=[(1, 'foo'), (2, 'bar')])\n+\n+            def get_foo_bar_display(self):\n+                return 'something'\n+\n+        f = FooBar(foo_bar=1)\n+        self.assertEqual(f.get_foo_bar_display(), 'something')\n+\n     def test_iterator_choices(self):\n         \"\"\"\n         get_choices() works with Iterators.\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-11910",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:18:50.366327",
+      "orca": {
+        "success": true,
+        "duration_s": 183.7,
+        "cost_usd": 0.084897,
+        "tools": 35
+      },
+      "patch_lines": 36,
+      "model_patch": "diff --git a/tests/migrations/test_autodetector.py b/tests/migrations/test_autodetector.py\nindex 1d5b8ef463..633d40a26f 100644\n--- a/tests/migrations/test_autodetector.py\n+++ b/tests/migrations/test_autodetector.py\n@@ -932,6 +932,30 @@ class AutodetectorTests(TestCase):\n             changes, 'app', 0, 1, model_name='bar', old_name='second', new_name='second_renamed',\n         )\n \n+    def test_rename_referenced_primary_key(self):\n+        before = [\n+            ModelState('app', 'Foo', [\n+                ('id', models.CharField(primary_key=True, serialize=False)),\n+            ]),\n+            ModelState('app', 'Bar', [\n+                ('id', models.AutoField(primary_key=True)),\n+                ('foo', models.ForeignKey('app.Foo', models.CASCADE)),\n+            ]),\n+        ]\n+        after = [\n+            ModelState('app', 'Foo', [\n+                ('renamed_id', models.CharField(primary_key=True, serialize=False))\n+            ]),\n+            ModelState('app', 'Bar', [\n+                ('id', models.AutoField(primary_key=True)),\n+                ('foo', models.ForeignKey('app.Foo', models.CASCADE)),\n+            ]),\n+        ]\n+        changes = self.get_changes(before, after, MigrationQuestioner({'ask_rename': True}))\n+        self.assertNumberMigrations(changes, 'app', 1)\n+        self.assertOperationTypes(changes, 'app', 0, ['RenameField'])\n+        self.assertOperationAttributes(changes, 'app', 0, 0, old_name='id', new_name='renamed_id')\n+\n     def test_rename_field_preserved_db_column(self):\n         \"\"\"\n         RenameField is used if a field is renamed and db_column equal to the\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12113",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:21:32.377842",
+      "orca": {
+        "success": true,
+        "duration_s": 97.5,
+        "cost_usd": 0.033523,
+        "tools": 10
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py\nindex a3ae1f048e..0d41493ba7 100644\n--- a/django/db/backends/sqlite3/base.py\n+++ b/django/db/backends/sqlite3/base.py\n@@ -379,7 +379,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):\n         Staying in autocommit mode works around a bug of sqlite3 that breaks\n         savepoints when autocommit is disabled.\n         \"\"\"\n-        self.cursor().execute(\"BEGIN\")\n+        self.cursor().execute(\"BEGIN IMMEDIATE\")\n \n     def is_in_memory_db(self):\n         return self.creation.is_in_memory_db(self.settings_dict['NAME'])\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12284",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:22:21.087914",
+      "orca": {
+        "success": true,
+        "duration_s": 149.6,
+        "cost_usd": 0.061431,
+        "tools": 19
+      },
+      "patch_lines": 25,
+      "model_patch": "diff --git a/tests/model_fields/tests.py b/tests/model_fields/tests.py\nindex a3b805409c..b97c99d42d 100644\n--- a/tests/model_fields/tests.py\n+++ b/tests/model_fields/tests.py\n@@ -178,6 +178,19 @@ class GetFieldDisplayTests(SimpleTestCase):\n         f = FooBar(foo_bar=1)\n         self.assertEqual(f.get_foo_bar_display(), 'something')\n \n+    def test_overriding_inherited_FIELD_display(self):\n+        class Base(models.Model):\n+            foo = models.CharField(max_length=254, choices=[('A', 'Base A')])\n+\n+            class Meta:\n+                abstract = True\n+\n+        class Child(Base):\n+            foo = models.CharField(max_length=254, choices=[('A', 'Child A'), ('B', 'Child B')])\n+\n+        self.assertEqual(Child(foo='A').get_foo_display(), 'Child A')\n+        self.assertEqual(Child(foo='B').get_foo_display(), 'Child B')\n+\n     def test_iterator_choices(self):\n         \"\"\"\n         get_choices() works with Iterators.\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12125",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:22:15.783156",
+      "orca": {
+        "success": true,
+        "duration_s": 247.0,
+        "cost_usd": 0.071601,
+        "tools": 15
+      },
+      "patch_lines": 80,
+      "model_patch": "diff --git a/django/db/migrations/serializer.py b/django/db/migrations/serializer.py\nindex 7d226955d5..de0adff859 100644\n--- a/django/db/migrations/serializer.py\n+++ b/django/db/migrations/serializer.py\n@@ -143,7 +143,7 @@ class FunctionTypeSerializer(BaseSerializer):\n         if getattr(self.value, \"__self__\", None) and isinstance(self.value.__self__, type):\n             klass = self.value.__self__\n             module = klass.__module__\n-            return \"%s.%s.%s\" % (module, klass.__name__, self.value.__name__), {\"import %s\" % module}\n+            return \"%s.%s.%s\" % (module, klass.__qualname__, self.value.__name__), {\"import %s\" % module}\n         # Further error checking\n         if self.value.__name__ == '<lambda>':\n             raise ValueError(\"Cannot serialize function: lambda\")\n@@ -269,7 +269,7 @@ class TypeSerializer(BaseSerializer):\n             if module == builtins.__name__:\n                 return self.value.__name__, set()\n             else:\n-                return \"%s.%s\" % (module, self.value.__name__), {\"import %s\" % module}\n+                return \"%s.%s\" % (module, self.value.__qualname__), {\"import %s\" % module}\n \n \n class UUIDSerializer(BaseSerializer):\ndiff --git a/tests/migrations/test_writer.py b/tests/migrations/test_writer.py\nindex ca924f35ec..6a65e87d5a 100644\n--- a/tests/migrations/test_writer.py\n+++ b/tests/migrations/test_writer.py\n@@ -26,6 +26,11 @@ from django.utils.translation import gettext_lazy as _\n from .models import FoodManager, FoodQuerySet\n \n \n+class DeconstructibleInstances:\n+    def deconstruct(self):\n+        return ('DeconstructibleInstances', [], {})\n+\n+\n class Money(decimal.Decimal):\n     def deconstruct(self):\n         return (\n@@ -188,6 +193,10 @@ class WriterTests(SimpleTestCase):\n         A = 1\n         B = 2\n \n+    class NestedChoices(models.TextChoices):\n+        X = 'X', 'X value'\n+        Y = 'Y', 'Y value'\n+\n     def safe_exec(self, string, value=None):\n         d = {}\n         try:\n@@ -383,6 +392,18 @@ class WriterTests(SimpleTestCase):\n             \"default=datetime.date(1969, 11, 19))\"\n         )\n \n+    def test_serialize_nested_class(self):\n+        for nested_cls in [self.NestedEnum, self.NestedChoices]:\n+            cls_name = nested_cls.__name__\n+            with self.subTest(cls_name):\n+                self.assertSerializedResultEqual(\n+                    nested_cls,\n+                    (\n+                        \"migrations.test_writer.WriterTests.%s\" % cls_name,\n+                        {'import migrations.test_writer'},\n+                    ),\n+                )\n+\n     def test_serialize_uuid(self):\n         self.assertSerializedEqual(uuid.uuid1())\n         self.assertSerializedEqual(uuid.uuid4())\n@@ -726,10 +747,6 @@ class WriterTests(SimpleTestCase):\n         # Yes, it doesn't make sense to use a class as a default for a\n         # CharField. It does make sense for custom fields though, for example\n         # an enumfield that takes the enum class as an argument.\n-        class DeconstructibleInstances:\n-            def deconstruct(self):\n-                return ('DeconstructibleInstances', [], {})\n-\n         string = MigrationWriter.serialize(models.CharField(default=DeconstructibleInstances))[0]\n         self.assertEqual(string, \"models.CharField(default=migrations.test_writer.DeconstructibleInstances)\")\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12184",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-08T02:22:17.182504",
+      "orca": {
+        "success": false,
+        "duration_s": 300,
+        "cost_usd": 0,
+        "tools": 0
+      },
+      "status": "orca_failed",
+      "error": "Timeout"
+    }
+  ]
+}

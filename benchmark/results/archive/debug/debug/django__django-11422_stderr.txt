@@ -1,0 +1,20 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_code
+[headless] Tool: analyze_code
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: search_code
+[headless] Tool: read_file
+[headless] Tool: search_code
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Done: 10 tools, 30.6s, $0.103
+
+--- Response ---
+Based on my investigation, I now understand the issue. The problem is that `manage.py` is not being tracked because it's the entry point script (not imported as a module), so it never appears in `sys.modules`. 
+
+The fix is to explicitly watch the main script file. Looking at the code, `sys.argv[0]` contains the path to the script being executed. I need to add this to the watched files in the `run_with_reloader` function or in the reloader initialization.
+
+Let me make the fix:

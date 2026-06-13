@@ -1,0 +1,31 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: search_files
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: git_diff
+[headless] Tool: read_file
+[headless] Done: 7 tools, 24.8s, $0.055
+
+--- Response ---
+Excellent! The fix has been successfully applied. 
+
+## Summary
+
+**Issue:** When `django-admin startapp` is called with a trailing slash in the directory name (e.g., `django-admin startapp name directory/`), it results in a `CommandError` because `os.path.basename()` returns an empty string when given a path with a trailing slash.
+
+**Root Cause:** Line 77 in `django/core/management/templates.py` called `os.path.basename(target)` without stripping trailing slashes first.
+
+**Fix:** Changed line 77 from:
+```python
+self.validate_name(os.path.basename(target), 'directory')
+```
+
+to:
+```python
+self.validate_name(os.path.basename(target.rstrip(os.sep)), 'directory')
+```
+
+This strips any trailing path separators from the `target` before extracting the basename, ensuring that `validate_name()` receives the correct directory name even when a trailing slash is present. The fix uses `os.sep` to be platform-agnostic (handles both `/` on Unix and `\` on Windows).
