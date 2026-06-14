@@ -1,0 +1,35 @@
+{
+  "instances": 100,
+  "edited": 54,
+  "patched": 53,
+  "tested": 45,
+  "test_rate": 45.0,
+  "resolved": 38,
+  "resolve_rate": 38.0,
+  "resolve_per_patch": 71.7,
+  "total_cost_usd": 1.66,
+  "avg_cost_usd": 0.017,
+  "avg_duration_s": 146.0,
+  "avg_tools_per_instance": 16.8,
+  "tool_breakdown": {
+    "grep": 418,
+    "read_file": 351,
+    "search_code": 332,
+    "shell": 204,
+    "get_project_overview": 122,
+    "edit_file": 69,
+    "run_tests": 64,
+    "analyze_code": 49,
+    "git_diff": 44,
+    "list_files": 12,
+    "search_files": 4,
+    "git_status": 3,
+    "bash": 1,
+    "write_file": 1,
+    "validate_file": 1
+  },
+  "harness_fixes": [
+    "git_diff_baseline_after_test_patch",
+    "test_cmd_in_instruction"
+  ]
+}
