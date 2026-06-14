@@ -9,8 +9,8 @@
 
 const BACKEND_URLS = {
     local:       'http://127.0.0.1:8000',
-    development: 'https://tarang-backend-development.up.railway.app',
-    production:  'https://tarang-backend-intl-web-app-production.up.railway.app',
+    development: 'https://codekepler-backend-dev.kindisland-9034322d.eastus.azurecontainerapps.io',
+    production:  'https://codekepler-backend-prod.redsky-6d31f3e5.eastus.azurecontainerapps.io',
 };
 
 // Aliases
