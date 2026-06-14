@@ -1,6 +1,6 @@
 {
   "name": "@axplusb/kepler",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Kepler — AI coding agent with operating brief, preflight planning, and sub-agents. SWE-bench Lite evaluated.",
   "type": "module",
   "bin": {
@@ -40,5 +40,8 @@
     "type": "git",
     "url": "git+https://github.com/raviakasapu/codekepler-npm.git"
   },
-  "dependencies": {}
+  "dependencies": {
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.26.9"
+  }
 }
