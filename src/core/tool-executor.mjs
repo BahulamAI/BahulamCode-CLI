@@ -132,6 +132,30 @@ export function createToolExecutor({
         return parts.length ? `\n--- Verify ---\n${parts.join('\n')}` : '';
     }
 
+    // ── Solution nudge after exploration ───────────────────────
+    // After the agent has read enough code, nudge it to formulate
+    // a solution based on the goal — not to blindly edit, but to
+    // synthesize what it learned into a fix approach.
+    let _codeReadsCount = 0;
+    let _hasEdited = false;
+
+    function solutionNudge(filePath) {
+        const ext = path.extname(filePath).toLowerCase();
+        const isCode = ['.py', '.js', '.ts', '.tsx', '.mjs', '.go', '.rs', '.java', '.rb'].includes(ext);
+        if (!isCode || _hasEdited) return '';
+
+        _codeReadsCount++;
+        if (_codeReadsCount < 4) return '';
+
+        // Only nudge once at threshold, not every read after
+        if (_codeReadsCount === 4) {
+            return '\n\n--- You have explored enough code to formulate a solution. ' +
+                'Based on what you have read, determine the fix and apply it. ' +
+                'If the approach is unclear, call plan() with your findings. ---';
+        }
+        return '';
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
@@ -258,10 +282,11 @@ export function createToolExecutor({
             });
             const output = typeof result === 'string' ? result : String(result);
             const content = output.replace(/^\s*\d+[→\t]/gm, '');
+            const actNudge = solutionNudge(filePath);
             return {
                 success: !isError(output),
                 content,
-                output: output + nudge,
+                output: output + nudge + actNudge,
                 _tool: 'read_file',
                 _output_type: 'file_content',
             };
@@ -418,6 +443,7 @@ print('OK: replaced')
 
             const wrapped = wrapResult(result, 'edit_file');
             updateProjectIndex(filePath);
+            _hasEdited = true;
 
             // Auto-lint the edited file
             const lintOutput = autoLint(filePath);
