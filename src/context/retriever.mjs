@@ -4,12 +4,14 @@
  */
 
 import { BM25Index } from './bm25.mjs';
+import { SymbolIndexer } from './symbol-indexer.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
 
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.kepler', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.ts', '.tsx', '.py', '.go', '.rs', '.java', '.rb', '.php', '.c', '.cpp', '.h', '.css', '.html', '.json', '.yaml', '.yml', '.toml', '.md', '.sh']);
+const SYMBOL_EXTS = new Set(['.py', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.go', '.rs']);
 const MAX_FILE_SIZE = 100_000; // 100KB
 const CHUNK_LINES = 50;
 const CHUNK_OVERLAP = 10;
@@ -19,20 +21,33 @@ export class ContextRetriever {
         this.projectDir = projectDir;
         this.indexDir = getIndexDir(projectDir);
         this.index = null;
+        this.symbolIndexer = null;
         this.chunkTexts = new Map(); // id → original text content
     }
 
-    /** Build or rebuild the search index. */
+    /** Build or rebuild the search index (BM25 chunks + symbol index). */
     async buildIndex() {
         const files = this._scanFiles(this.projectDir);
         const documents = [];
+
+        // Symbol indexer for AST-based search
+        this.symbolIndexer = new SymbolIndexer();
+        await this.symbolIndexer.init();
 
         for (const filePath of files) {
             try {
                 const content = fs.readFileSync(filePath, 'utf-8');
                 const relPath = path.relative(this.projectDir, filePath);
+
+                // BM25 chunks (existing behavior)
                 const chunks = this._chunkFile(content, relPath);
                 documents.push(...chunks);
+
+                // Symbol extraction for code files
+                const ext = path.extname(filePath).toLowerCase();
+                if (SYMBOL_EXTS.has(ext)) {
+                    await this.symbolIndexer.indexFile(relPath, content);
+                }
             } catch { /* skip unreadable files */ }
         }
 
@@ -45,12 +60,13 @@ export class ContextRetriever {
             this.chunkTexts.set(doc.id, doc.text);
         }
 
-        // Persist index + chunk texts
+        // Persist
         if (!fs.existsSync(this.indexDir)) fs.mkdirSync(this.indexDir, { recursive: true });
         fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
         fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
+        fs.writeFileSync(path.join(this.indexDir, 'symbols.json'), JSON.stringify(this.symbolIndexer.toJSON()));
 
-        return { fileCount: files.length, chunkCount: documents.length };
+        return { fileCount: files.length, chunkCount: documents.length, symbolCount: this.symbolIndexer.symbolCount };
     }
 
     /**
@@ -120,20 +136,42 @@ export class ContextRetriever {
     loadIndex() {
         const indexPath = path.join(this.indexDir, 'bm25.json');
         const chunksPath = path.join(this.indexDir, 'chunks.json');
+        const symbolsPath = path.join(this.indexDir, 'symbols.json');
         if (!fs.existsSync(indexPath)) return false;
         try {
             const data = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
             this.index = BM25Index.fromJSON(data);
 
-            // Load chunk texts if available
             if (fs.existsSync(chunksPath)) {
                 const chunks = JSON.parse(fs.readFileSync(chunksPath, 'utf-8'));
                 this.chunkTexts = new Map(Object.entries(chunks));
+            }
+
+            if (fs.existsSync(symbolsPath)) {
+                const symData = JSON.parse(fs.readFileSync(symbolsPath, 'utf-8'));
+                this.symbolIndexer = SymbolIndexer.fromJSON(symData);
             }
             return true;
         } catch {
             return false;
         }
+    }
+
+    /**
+     * Search symbols (functions, classes, methods) by query.
+     * Returns structured results with file:line, signature, parent class.
+     */
+    searchSymbols(query, topK = 5) {
+        if (!this.symbolIndexer) return [];
+        return this.symbolIndexer.search(query, topK);
+    }
+
+    /**
+     * Format symbol search results for the agent.
+     */
+    formatSymbolResults(results) {
+        if (!this.symbolIndexer || !results.length) return '';
+        return this.symbolIndexer.formatResults(results);
     }
 
     /** Retrieve relevant context chunks for a query, with full text. */

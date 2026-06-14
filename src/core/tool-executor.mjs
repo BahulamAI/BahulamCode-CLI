@@ -484,9 +484,16 @@ print('OK: replaced')
                 }
             } catch { /* rg not found or no results */ }
 
-            // Layer 2: BM25 — semantic relevance (finds related code even without exact match)
+            // Layer 2: Symbol search — AST-extracted functions/classes with signatures
             if (project?.retriever) {
                 if (!project.retriever.index) project.retriever.loadIndex();
+                const symbols = project.retriever.searchSymbols(query, 5);
+                if (symbols.length > 0) {
+                    const symOutput = project.retriever.formatSymbolResults(symbols);
+                    parts.push(`## Symbols (functions/classes)\n${symOutput}`);
+                }
+
+                // Layer 3: BM25 chunks — broader context when symbols aren't enough
                 const chunks = project.retriever.retrieve(query, 5);
                 if (chunks.length > 0) {
                     const bm25Output = chunks.map(c => {
