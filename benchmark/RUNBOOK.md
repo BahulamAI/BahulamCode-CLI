@@ -80,8 +80,8 @@ done
 ### 1.2 Set up CLI auth on each VM
 
 ```bash
-# Use the token that's registered in Supabase
-TOKEN='{"token": "orca_be00a8dbd30037801fd900cf0cfb0ce1a95ed6b1dc85de43ddfcf5390538548e"}'
+# Use the same token as local (~/.kepler/config.json)
+TOKEN='{"token": "kepler_3f396fbdaed7ce42163b315b3a124db44e231f36106e02da79a714df409dc393"}'
 for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
   ssh azureuser@$IP "mkdir -p ~/.kepler ~/.orca && \
     echo '$TOKEN' > ~/.kepler/config.json && \
