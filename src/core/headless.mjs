@@ -188,6 +188,11 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         toolBreakdown[t.tool] = (toolBreakdown[t.tool] || 0) + 1;
     }
 
+    // Include sub-agent tool counts in the total
+    for (const sa of subAgents) {
+        toolCount += sa.tool_calls || 0;
+    }
+
     emit({
         type: 'complete',
         tools: toolCount,
