@@ -1,6 +1,6 @@
 {
   "name": "@axplusb/kepler",
-  "version": "1.0.10",
+  "version": "2.0.0",
   "description": "Kepler — AI coding agent with operating brief, preflight planning, and sub-agents. SWE-bench Lite evaluated.",
   "type": "module",
   "bin": {
