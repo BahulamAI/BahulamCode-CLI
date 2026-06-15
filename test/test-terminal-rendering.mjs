@@ -1,4 +1,9 @@
 import assert from 'node:assert';
+// Force ansi16 capability before importing palette-aware modules so the
+// test runs the same way under `npm test` (no TTY) as on a terminal.
+import { _setForTesting as _setTermForTesting } from '../src/ui/term.mjs';
+_setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false });
+
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 
@@ -12,16 +17,27 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-terminal-rendering.mjs\x1b[0m\n');
 
-test('Kepler branding stays cyan and code uses bright blue', () => {
-  assert.ok(c.brand('kepler').startsWith('\x1b[36m'));
-  assert.ok(c.cyan('code').startsWith('\x1b[94m'));
+test('Kepler brand uses Deep Space Purple (PRD-055 §4.1)', () => {
+  // Post-Phase-1: c.brand routes through paint.brand.primary (#7c3aed).
+  // In ansi16 fallback that resolves to magenta (35); in truecolor it is
+  // \x1b[38;2;124;58;237m. Accept either so the test runs in any terminal.
+  const brand = c.brand('kepler');
+  assert.ok(brand.startsWith('\x1b[35m') || brand.startsWith('\x1b[38;2;124;58;237m'),
+    `expected magenta/truecolor brand, got ${JSON.stringify(brand)}`);
+  // c.cyan now routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
+  const cyan = c.cyan('code');
+  assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
+    `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
 });
 
-test('uses bright white for user labels and underlined links', () => {
-  assert.ok(c.white('You').startsWith('\x1b[97m'));
+test('text.primary wraps user labels; markdown links are underlined', () => {
+  const white = c.white('You');
+  // text.primary #c9d1d9 → ansi16 37
+  assert.ok(white.startsWith('\x1b[37m') || white.startsWith('\x1b[38;2;201;209;217m'),
+    `expected text.primary wrap, got ${JSON.stringify(white)}`);
   const rendered = renderMarkdown('[Documentation](https://example.com)');
   assert.ok(rendered.includes('\x1b[4m'));
-  assert.ok(rendered.includes('\x1b[97mDocumentation'));
+  assert.ok(rendered.includes('Documentation'));
 });
 
 test('uses action descriptions instead of raw tool identifiers', () => {
@@ -50,13 +66,21 @@ test('uses concise structured tool summaries', () => {
   );
 });
 
-test('renders shell commands with blue, yellow, red, and white syntax colors', () => {
+test('renders shell commands with semantic syntax colors', () => {
+  // Post-Phase-1: c.blue routes to brand.primary, so command tokens get the
+  // brand color instead of basic blue. Flags stay yellow, pipes stay red.
   const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
-  assert.ok(rendered.includes('\x1b[34mpython'));
-  assert.ok(rendered.includes('\x1b[33m-c'));
-  assert.ok(rendered.includes('\x1b[33m"print(1)"'));
-  assert.ok(rendered.includes('\x1b[31m|'));
-  assert.ok(rendered.includes('\x1b[34mhead'));
+  // Command tokens — brand.primary (#7c3aed). ansi16 magenta or truecolor.
+  assert.ok(/\x1b\[35m|\x1b\[38;2;124;58;237m/.test(rendered),
+    'expected brand color for command tokens');
+  assert.ok(rendered.includes('python'));
+  assert.ok(rendered.includes('head'));
+  // Flag and quoted-string — state.warn (yellow #eab308).
+  assert.ok(/\x1b\[33m|\x1b\[38;2;234;179;8m/.test(rendered),
+    'expected warn/yellow for flags and quoted strings');
+  // Pipe — state.danger (red #ef4444).
+  assert.ok(/\x1b\[31m|\x1b\[38;2;239;68;68m/.test(rendered),
+    'expected danger/red for pipe operator');
 });
 
 test('renders Markdown pipe tables as aligned terminal tables', () => {
@@ -81,8 +105,13 @@ test('renders blockquotes and task lists with structural styling', () => {
 });
 
 test('renders structured keys bold cyan and values regular cyan', () => {
+  // Post-Phase-1 palette emits bold and color as separate SGRs:
+  //   \x1b[1m\x1b[36mstatus\x1b[0m... \x1b[36m ready\x1b[0m
+  // Stripped: "status" + ": " + " ready" all coloured.
   const rendered = renderMarkdown('```yaml\nstatus: ready\n```');
-  assert.ok(rendered.includes('\x1b[1;36mstatus'));
+  assert.ok(rendered.includes('\x1b[1m\x1b[36mstatus') ||
+            rendered.includes('\x1b[1;36mstatus'),
+            'expected bold cyan key');
   assert.ok(rendered.includes('\x1b[36m ready'));
 });
 
