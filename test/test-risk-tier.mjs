@@ -89,6 +89,13 @@ for (const cmd of [
   'cargo check',
   'go test ./...',
   'node --check src/foo.mjs',
+  // v2.0.2: navigation built-ins and harmless creation primitives.
+  'cd /Users/sree/projects',
+  'cd ~/code',
+  'pushd /tmp',
+  'popd',
+  'mkdir -p src/new/dir',
+  'touch new-file.py',
 ]) {
   test(`shell SAFE: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_SAFE, `expected SAFE, got ${classifyShell(cmd)}`);
@@ -139,6 +146,11 @@ for (const cmd of [
 
 test('safe prefix hiding rm -rf is still DANGEROUS', () => {
   assert.equal(classifyShell('ls -la && rm -rf /tmp/x'), TIERS.SHELL_DANGEROUS);
+});
+test('cd-prefix hiding rm -rf is still DANGEROUS', () => {
+  // v2.0.2: cd is SHELL_SAFE on its own; the worst-segment rule must still
+  // catch destructive ops chained after it.
+  assert.equal(classifyShell('cd /Users/sree && rm -rf .'), TIERS.SHELL_DANGEROUS);
 });
 test('safe prefix hiding sudo is still DANGEROUS', () => {
   assert.equal(classifyShell('echo done; sudo rm /etc/passwd'), TIERS.SHELL_DANGEROUS);
