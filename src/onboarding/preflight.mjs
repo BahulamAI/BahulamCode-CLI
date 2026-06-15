@@ -37,32 +37,25 @@ const FAIL = (s) => `${paint.state.danger('[✗]')} ${s}`;
 
 // ── Individual checks (each returns { status, label, hint? }) ──────────
 
-function checkAuthToken(auth) {
+async function checkAuthAndBackend(auth, { timeoutMs = 1500 } = {}) {
   const creds = auth.loadCredentials();
-  if (creds.token) return { status: 'ok', label: `Auth token` };
-  return { status: 'warn', label: 'Auth token missing', hint: '/login to sign in' };
-}
-
-function checkProviderKey(auth) {
-  const creds = auth.loadCredentials();
-  if (creds.openRouterKey) return { status: 'ok', label: 'OpenRouter key' };
-  if (creds.anthropicKey)  return { status: 'ok', label: 'Anthropic key' };
-  if (creds.openaiKey)     return { status: 'ok', label: 'OpenAI key' };
-  if (creds.googleKey)     return { status: 'ok', label: 'Google key' };
-  return { status: 'warn', label: 'No model provider key configured', hint: 'set OPENROUTER_API_KEY or run /config' };
-}
-
-async function checkBackend(auth, { timeoutMs = 1500 } = {}) {
-  const creds = auth.loadCredentials();
+  const signedIn = !!creds.token;
   const url = creds.backendUrl;
-  if (!url) return { status: 'warn', label: 'Backend not configured' };
-  try {
-    const reachable = await ping(url, timeoutMs);
-    if (reachable) return { status: 'ok', label: `Backend  ${shorten(url, 48)}` };
-    return { status: 'warn', label: `Backend  ${shorten(url, 48)}`, hint: 'unreachable — check network or start backend' };
-  } catch {
-    return { status: 'warn', label: `Backend  ${shorten(url, 48)}`, hint: 'unreachable' };
+  let reachable = false;
+  if (url) {
+    try { reachable = await ping(url, timeoutMs); } catch { reachable = false; }
   }
+
+  if (signedIn && reachable) {
+    return { status: 'ok', label: 'Signed in · connected' };
+  }
+  if (!signedIn && reachable) {
+    return { status: 'warn', label: 'Not signed in · backend ready', hint: '/login to sign in' };
+  }
+  if (signedIn && !reachable) {
+    return { status: 'warn', label: 'Signed in · backend offline', hint: 'check network or try again shortly' };
+  }
+  return { status: 'warn', label: 'Not signed in · backend offline', hint: '/login once the network is back' };
 }
 
 function checkGit(cwd) {
@@ -83,25 +76,32 @@ function checkGit(cwd) {
 function checkLinters(cwd) {
   const present = [];
   const missing = [];
-  for (const [name, kind] of LINTERS) {
-    if (which(name)) present.push({ name, kind });
-    else if (projectUses(cwd, kind)) missing.push({ name, kind });
+  for (const linter of LINTERS) {
+    if (which(linter.bin)) present.push(linter);
+    else if (projectUses(cwd, linter.kind)) missing.push(linter);
   }
   if (present.length === 0 && missing.length === 0) {
     return { status: 'ok', label: 'Linters  none required' };
   }
   if (missing.length === 0) {
-    return { status: 'ok', label: `Linters  ${present.map(p => p.name).join(', ')}` };
+    return { status: 'ok', label: `Linters  ${present.map(p => p.bin).join(', ')}` };
   }
-  const hint = missing.map(m => `/install ${m.name} to enable lint_check for ${m.kind}`).join(' · ');
-  return { status: 'warn', label: `Linter (${missing.map(m => m.name).join(', ')}) not found`, hint };
+  // Honest install command per linter. Falls back to "install via your
+  // package manager" when there is no clean one-liner (e.g. cargo).
+  const hint = missing.map(m => m.install
+    ? `${m.bin}: ${m.install}`
+    : `install ${m.bin} for ${m.kind} support`
+  ).join(' · ');
+  return { status: 'warn', label: `Linter (${missing.map(m => m.bin).join(', ')}) not found`, hint };
 }
 
 const LINTERS = [
-  ['ruff',    'python'],
-  ['eslint',  'javascript'],
-  ['tsc',     'typescript'],
-  ['cargo',   'rust'],
+  { bin: 'ruff',    kind: 'python',     install: 'pip install ruff' },
+  { bin: 'eslint',  kind: 'javascript', install: 'npm i -g eslint' },
+  { bin: 'tsc',     kind: 'typescript', install: 'npm i -g typescript' },
+  // cargo ships with rustup; no clean one-liner — surface the warning
+  // without a misleading "/install" command.
+  { bin: 'cargo',   kind: 'rust',       install: null },
 ];
 
 function projectUses(cwd, kind) {
@@ -252,9 +252,7 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   write('\n' + header + '\n\n');
 
   const checks = [];
-  checks.push(checkAuthToken(auth));
-  checks.push(checkProviderKey(auth));
-  checks.push(await checkBackend(auth));
+  checks.push(await checkAuthAndBackend(auth));
   checks.push(checkGit(cwd));
   checks.push(checkLinters(cwd));
   checks.push(checkProjectMap(cwd));

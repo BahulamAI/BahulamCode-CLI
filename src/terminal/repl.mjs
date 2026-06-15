@@ -24,6 +24,7 @@ import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
+import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
 import {
   getVerbosity,
@@ -165,26 +166,15 @@ const COMMANDS = {
 // ── Banner ──
 
 function printBanner(auth) {
+  // Delegate the visual block to the branded banner module (PRD-055 §4.3,
+  // gradient KEPLER letters in Deep Space Purple → Stellar Magenta → Neon
+  // Cyan). The trailing status line stays here because it needs `auth`.
+  printBrandedBanner();
+
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
-
-  const CYAN = '\x1b[36m';
-  const DIM = '\x1b[2m';
-  const BOLD = '\x1b[1m';
-  const YELLOW = '\x1b[33m';
-  const RST = '\x1b[0m';
-
-  process.stderr.write('\n');
-  process.stderr.write(`${DIM}         ✦${RST}\n`);
-  process.stderr.write(`${DIM}      ╭──────────────────────────╮${RST}\n`);
-  process.stderr.write(`${DIM}      │${RST}  ${BOLD}${CYAN}K · E · P · L · E · R${RST}  ${DIM}│${RST}\n`);
-  process.stderr.write(`${DIM}      ╰──────── ${YELLOW}◯${RST}${DIM} ───────────────╯${RST}\n`);
-  process.stderr.write(`${DIM}            ╱ ╲${RST}\n`);
-  process.stderr.write(`${DIM}       the agentic os${RST}\n`);
-  process.stderr.write('\n');
-  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n`);
-  process.stderr.write('\n');
+  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -1378,19 +1368,9 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints };
 
-  // ── Mission Control orbit + status bar ──
-  // Opt-out via KEPLER_STATUS_BAR=0 (debugging) or KEPLER_PLAIN=1 (PRD-055).
-  // status-bar.mjs already no-ops when stdout is not a TTY, but the explicit
-  // env opt-out is useful for debugging escape-sequence noise.
-  const statusBarEnabled = process.env.KEPLER_STATUS_BAR !== '0' && term().isTTY && !term().plain;
-  if (statusBarEnabled) {
-    _orbit = createOrbit();
-    attachOrbit(_orbit);
-    // Always unmount before exit so the terminal scroll region is restored.
-    process.on('beforeExit', unmountStatusBar);
-    process.on('exit',       unmountStatusBar);
-  }
-
+  // ── Print banner + preflight + init BEFORE mounting the status bar ──
+  // The status bar shrinks the scroll region; if it mounts first, the
+  // banner scrolls off-screen before the user ever sees it.
   printBanner(auth);
 
   // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
@@ -1436,6 +1416,17 @@ export async function startTerminalRepl() {
   }
 
   process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
+
+  // Mount the Mission Control status bar AFTER banner + preflight + init so
+  // none of that scrolls off before the user sees it. Opt-out via
+  // KEPLER_STATUS_BAR=0 (debugging) or KEPLER_PLAIN=1 (PRD-055).
+  const statusBarEnabled = process.env.KEPLER_STATUS_BAR !== '0' && term().isTTY && !term().plain;
+  if (statusBarEnabled) {
+    _orbit = createOrbit();
+    attachOrbit(_orbit);
+    process.on('beforeExit', unmountStatusBar);
+    process.on('exit',       unmountStatusBar);
+  }
 
   const PROMPT = `${c.brand('kepler')} ${c.dim('›')} `;
 
