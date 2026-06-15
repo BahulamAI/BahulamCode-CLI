@@ -31,6 +31,9 @@ import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
+import { createOrbit } from '../state/orbit.mjs';
+import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
+import { term } from '../ui/term.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -63,6 +66,7 @@ function safeCwd() {
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
+let _orbit = null;      // Mission Control orbit state machine; set in startTerminalRepl
 
 const session = {
   id: null,                  // set by backend on first turn via session_info event
@@ -409,6 +413,11 @@ function flushContent() {
 function renderEvent(event) {
   const { type, data } = event;
 
+  // Push every event into the orbit state machine before rendering so the
+  // bottom status bar reflects what is happening this very moment. The orbit
+  // module is a no-op when status-bar is not mounted (non-TTY, --headless).
+  if (_orbit) _orbit.onEvent(event);
+
   switch (type) {
     case 'status': {
       const msg = data?.message || '';
@@ -694,6 +703,9 @@ function renderEvent(event) {
       }
 
       session.lastTurnDuration = data?.duration_s || 0;
+
+      // Sync cumulative session cost into the orbit (status bar shows it).
+      if (_orbit) _orbit.onCost(session.totalCost);
 
       // Compact turn summary
       const tools = data?.tool_calls || session.toolCalls || 0;
@@ -1148,6 +1160,19 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr };
 
+  // ── Mission Control orbit + status bar ──
+  // Opt-out via KEPLER_STATUS_BAR=0 (debugging) or KEPLER_PLAIN=1 (PRD-055).
+  // status-bar.mjs already no-ops when stdout is not a TTY, but the explicit
+  // env opt-out is useful for debugging escape-sequence noise.
+  const statusBarEnabled = process.env.KEPLER_STATUS_BAR !== '0' && term().isTTY && !term().plain;
+  if (statusBarEnabled) {
+    _orbit = createOrbit();
+    attachOrbit(_orbit);
+    // Always unmount before exit so the terminal scroll region is restored.
+    process.on('beforeExit', unmountStatusBar);
+    process.on('exit',       unmountStatusBar);
+  }
+
   printBanner(auth);
 
   // ── Initialization ──
@@ -1235,6 +1260,10 @@ export async function startTerminalRepl() {
     session.turns++;
     session.toolCalls = 0;
 
+    // Tell the orbit a new turn started — switches to DISCOVERY and updates
+    // task / turn counters in the status bar.
+    if (_orbit) _orbit.onUserInput(input);
+
     // Start session tracking on first turn
     if (session.turns === 1) {
       sessionMgr.start(input);
@@ -1298,11 +1327,13 @@ export async function startTerminalRepl() {
             executionPaused = false;
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
             client.resume();
+            if (_orbit) _orbit.onResume();
           } else {
             executionPaused = true;
             stopSpinner();
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
             client.pause();
+            if (_orbit) _orbit.onPause();
           }
           return;
         }
