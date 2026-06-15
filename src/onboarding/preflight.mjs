@@ -37,25 +37,45 @@ const FAIL = (s) => `${paint.state.danger('[✗]')} ${s}`;
 
 // ── Individual checks (each returns { status, label, hint? }) ──────────
 
-async function checkAuthAndBackend(auth, { timeoutMs = 1500 } = {}) {
+async function checkAuthAndBackend(auth, { timeoutMs = 2500 } = {}) {
   const creds = auth.loadCredentials();
-  const signedIn = !!creds.token;
+  const hasToken = !!creds.token;
   const url = creds.backendUrl;
-  let reachable = false;
-  if (url) {
-    try { reachable = await ping(url, timeoutMs); } catch { reachable = false; }
+
+  // No token: just probe whether the backend is reachable so we can hint
+  // /login when it makes sense.
+  if (!hasToken) {
+    const reachable = url ? await ping(url, timeoutMs).catch(() => false) : false;
+    return reachable
+      ? { status: 'warn', label: 'Not signed in · backend ready', hint: '/login to sign in' }
+      : { status: 'warn', label: 'Not signed in · backend offline', hint: '/login once the network is back' };
   }
 
-  if (signedIn && reachable) {
-    return { status: 'ok', label: 'Signed in · connected' };
-  }
-  if (!signedIn && reachable) {
-    return { status: 'warn', label: 'Not signed in · backend ready', hint: '/login to sign in' };
-  }
-  if (signedIn && !reachable) {
+  // Token present: real authenticated round-trip against /api/user/me.
+  // Three outcomes: valid (200), expired (401/403), unreachable (network).
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    let resp;
+    try {
+      resp = await fetch(`${url}/api/user/me`, {
+        headers: { 'Authorization': `Bearer ${creds.token}` },
+        signal: ctrl.signal,
+      });
+    } finally { clearTimeout(t); }
+
+    if (resp.ok) {
+      const user = await resp.json().catch(() => null);
+      const who = user?.github_username || user?.email || 'user';
+      return { status: 'ok', label: `Signed in as ${who} · connected` };
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      return { status: 'warn', label: 'Token expired · connected', hint: '/login again to refresh' };
+    }
+    return { status: 'warn', label: `Backend returned ${resp.status}`, hint: 'try again shortly' };
+  } catch {
     return { status: 'warn', label: 'Signed in · backend offline', hint: 'check network or try again shortly' };
   }
-  return { status: 'warn', label: 'Not signed in · backend offline', hint: '/login once the network is back' };
 }
 
 function checkGit(cwd) {
