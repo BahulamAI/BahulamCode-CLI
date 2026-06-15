@@ -11,45 +11,42 @@
  */
 
 import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import {
+  classify as classifyTier,
+  TIERS,
+  requiresExplicitApproval,
+  requiresCheckpoint,
+  label as tierLabel,
+} from './risk-tier.mjs';
+import {
+  renderApprovalPrompt,
+  renderInlinePrompt,
+  defaultOptions as approvalOptions,
+} from '../ui/approval.mjs';
 
 // ── Tool Classification ──
+//
+// Risk tiering moved to src/core/risk-tier.mjs (PRD-055 §8.1). WRITE_TOOLS
+// stays here only because `planMode` blocks anything that writes.
 
 const WRITE_TOOLS = new Set([
     'shell', 'write_file', 'write_project', 'edit_file', 'delete_file',
     'validate_build', 'lint_check',
 ]);
 
-const NEVER_AUTO_APPROVE = new Set(['delete_file']);
-
-const FORCE_APPROVAL_SHELL = [
-    /\brm\s/,
-    /\bunlink\s/,
-    /\brmdir\s/,
-    /\bgit\s+clean/,
-    /\bgit\s+reset/,
-    /\bgit\s+push.*--force/,
-];
-
-const RISK_LEVELS = {
-    read_file: 'none', read_files: 'none', search_code: 'none',
-    search_files: 'none', list_files: 'none', get_file_info: 'none',
-    validate_file: 'none', validate_structure: 'none',
-    write_file: 'low', write_project: 'low', edit_file: 'low',
-    lint_check: 'low', validate_build: 'medium',
-    shell: 'medium',
-    delete_file: 'high',
-};
-
-function assessShellRisk(command) {
-    if (!command) return 'medium';
-    if (/rm\s+-r/i.test(command)) return 'high';
-    if (/git\s+(push|reset|clean|checkout\s+\.)/i.test(command)) return 'high';
-    if (/drop\s+(table|database)/i.test(command)) return 'high';
-    if (/sudo\s/i.test(command)) return 'high';
-    if (/^(ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)/i.test(command)) return 'low';
-    if (/^git\s+(status|log|diff|show|branch|tag|remote|stash\s+list|blame|shortlog|describe|rev-parse|ls-files|ls-tree)/i.test(command)) return 'low';
-    if (/^(npm\s+(test|run|list|ls|view|info|outdated|audit)|node\s+--check|python3?\s+-m\s+py_compile|cargo\s+(check|test|clippy))/i.test(command)) return 'low';
-    return 'medium';
+function defaultWhy(tier, tool, args) {
+    switch (tier) {
+        case TIERS.SHELL_DANGEROUS:
+            return `Shell command matches a high-risk pattern (rm -rf, sudo, force push, etc.). Confirm before running.`;
+        case TIERS.DESTRUCTIVE:
+            return `${tool} permanently mutates project state. Confirm before running.`;
+        case TIERS.SHELL_MEDIUM:
+            return `Mutates the workspace or environment (install, build, commit, push).`;
+        case TIERS.NETWORK:
+            return `Reaches an external network endpoint.`;
+        default:
+            return '';
+    }
 }
 
 // ── ANSI helpers ──
@@ -107,92 +104,145 @@ export class ApprovalManager {
         // Auto-approve everything in headless/autoApprove mode (no TTY prompts)
         if (this.autoApprove) {
             this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
-            return { approved: true };
+            return { approved: true, tier: classifyTier(toolName, args) };
         }
-        if (!WRITE_TOOLS.has(toolName) && !requireApproval) {
-            return { approved: true };
+
+        const tier = classifyTier(toolName, args);
+
+        // 'auto' tiers: read, shell-safe.
+        if (tier === TIERS.READ || tier === TIERS.SHELL_SAFE) {
+            this.history.push({ tool: toolName, decision: 'auto-tier', tier, time: Date.now() });
+            return { approved: true, tier };
         }
-        if (toolName === 'shell') {
-            const risk = assessShellRisk(args.command);
-            if (risk === 'low') {
-                this.history.push({ tool: toolName, decision: 'auto-safe', time: Date.now() });
-                return { approved: true };
+
+        // 'auto-with-undo' tier: local-edit. Checkpoint is taken by the tool
+        // executor before the edit; here we just approve.
+        if (tier === TIERS.LOCAL_EDIT) {
+            this.history.push({ tool: toolName, decision: 'auto-with-undo', tier, time: Date.now() });
+            return { approved: true, tier, requireCheckpoint: true };
+        }
+
+        // Honor approve-all / type-allow shortcuts for non-explicit tiers only.
+        if (!requiresExplicitApproval(tier)) {
+            if (this.approveAll) {
+                this.history.push({ tool: toolName, decision: 'auto-all', tier, time: Date.now() });
+                return { approved: true, tier };
             }
-            if (FORCE_APPROVAL_SHELL.some(p => p.test(args.command || ''))) {
-                return this._prompt(toolName, args, context);
+            if (this.approvedToolTypes.has(toolName)) {
+                this.history.push({ tool: toolName, decision: 'type-auto', tier, time: Date.now() });
+                return { approved: true, tier };
             }
         }
-        if (NEVER_AUTO_APPROVE.has(toolName)) {
-            return this._prompt(toolName, args, context);
-        }
-        if (this.approveAll) {
-            this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
-            return { approved: true };
-        }
-        if (this.approvedToolTypes.has(toolName)) {
-            this.history.push({ tool: toolName, decision: 'type-auto', time: Date.now() });
-            return { approved: true };
-        }
-        return this._prompt(toolName, args, context);
+
+        return this._prompt(toolName, args, { ...context, tier });
     }
 
     async _prompt(toolName, args, context = {}) {
-        const baseRisk = RISK_LEVELS[toolName] || 'medium';
-        const assessedRisk = toolName === 'shell' ? assessShellRisk(args.command) : baseRisk;
-        const risk = context.risk || assessedRisk;
-        const label = toolDisplayLabel(toolName);
+        const tier = context.tier || classifyTier(toolName, args);
+        const explicit = requiresExplicitApproval(tier);
+        const why = context.reason || context.why || defaultWhy(tier, toolName, args);
         const summary = toolDisplaySummary(toolName, args);
-        const isDestructive = risk === 'high';
+        const options = approvalOptions(tier);
 
-        write(`\n  ${isDestructive ? `${YELLOW}⚠${RST}` : `${CYAN}?${RST}`}  ${BOLD}Approval required${RST}\n`);
-        write(`  ${GRAY}Action${RST}  ${WHITE}${label}${RST}\n`);
-        if (summary) write(`  ${GRAY}Target${RST}  ${WHITE}${summary.slice(0, 160)}${RST}\n`);
-        write(`  ${GRAY}Risk${RST}    ${isDestructive ? YELLOW : CYAN}${risk}${RST}\n`);
-        if (context.reason) write(`  ${GRAY}Reason${RST}  ${DIM}${String(context.reason).slice(0, 160)}${RST}\n`);
+        let selected = 0; // arrow-driven cursor
+        let printedHeight = 0;
 
-        if (isDestructive) {
-            write(`  ${DIM}Choose${RST}  ${WHITE}[y]${RST} allow once  ${WHITE}[n]${RST} deny  ${WHITE}[d]${RST} details\n`);
-        } else {
-            write(`  ${DIM}Choose${RST}  ${WHITE}[y]${RST} once  ${WHITE}[n]${RST} deny  ${WHITE}[t]${RST} this action  ${WHITE}[a]${RST} all  ${WHITE}[d]${RST} details\n`);
+        // For TTYs we redraw in place on every arrow key so the prompt feels
+        // live. For non-TTYs / pipes we just print once and read a line.
+        const isInteractive = process.stdin.isTTY;
+        if (!isInteractive) {
+            write(explicit
+                ? renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n'
+                : renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
         }
 
-        const key = await this._readKey();
+        const drawExplicit = () => {
+            // Move up over the previous render before re-printing.
+            if (printedHeight > 0) {
+                write(`\x1b[${printedHeight}F`); // cursor to start of N lines above
+                write('\x1b[J');                   // clear from cursor to end of screen
+            }
+            const block = renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options });
+            write(block + '\n');
+            printedHeight = block.split('\n').length;
+        };
 
-        switch (key) {
-            case 'y':
-            case 'Y':
-            case 'return':
+        if (isInteractive && explicit) drawExplicit();
+        if (isInteractive && !explicit) write(renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
+
+        // ── Input loop ─────────────────────────────────────────────────
+        const choose = async () => {
+            for (;;) {
+                const k = await this._readKey();
+
+                if (k === 'up' || k === 'left') {
+                    if (!explicit || !isInteractive) continue;
+                    selected = (selected - 1 + options.length) % options.length;
+                    drawExplicit();
+                    continue;
+                }
+                if (k === 'down' || k === 'right' || k === 'tab') {
+                    if (!explicit || !isInteractive) continue;
+                    selected = (selected + 1) % options.length;
+                    drawExplicit();
+                    continue;
+                }
+                if (k === 'return') {
+                    return options[selected].value;
+                }
+                if (k === 'escape') return 'reject';
+
+                // Letter shortcut: match against option.key
+                if (typeof k === 'string' && k.length === 1) {
+                    const lower = k.toLowerCase();
+                    const idx = options.findIndex(o => o.key === lower);
+                    if (idx >= 0) {
+                        selected = idx;
+                        if (isInteractive && explicit) drawExplicit();
+                        return options[idx].value;
+                    }
+                }
+                // Anything else: ignore and re-read.
+            }
+        };
+
+        const value = await choose();
+
+        switch (value) {
+            case 'approve':
                 write(`  ${GREEN}✓${RST}  ${DIM}${toolName}${RST} ${DIM}${summary.slice(0, 60)}${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'yes', time: Date.now() });
-                return { approved: true };
+                this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
+                return { approved: true, tier };
 
-            case 'n':
-            case 'N':
-            case 'escape':
+            case 'reject':
                 write(`  ${RED}✗${RST}  ${DIM}denied${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'no', time: Date.now() });
-                return { approved: false, reason: 'User denied' };
+                this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now() });
+                return { approved: false, tier, reason: 'User denied' };
 
-            case 'a':
-            case 'A':
-                if (isDestructive) return this._prompt(toolName, args, context);
+            case 'allow-all':
+                if (explicit) return this._prompt(toolName, args, context);
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'approve-all', time: Date.now() });
-                return { approved: true };
+                this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
+                return { approved: true, tier };
 
-            case 't':
-            case 'T':
-                if (isDestructive) return this._prompt(toolName, args, context);
+            case 'allow-type':
+                if (explicit) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 write(`  ${GREEN}✓${RST}  ${DIM}always allow ${toolName}${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'type-approve', time: Date.now() });
-                return { approved: true };
+                this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
+                return { approved: true, tier };
 
-            case 'd':
-            case 'D':
-                write(`\n${DIM}${JSON.stringify(args, null, 2)}${RST}\n\n`);
+            case 'why':
+                write(`\n  ${DIM}${(context.reason || why).slice(0, 400)}${RST}\n\n`);
+                printedHeight = 0;
                 return this._prompt(toolName, args, context);
+
+            case 'edit':
+            case 'replan':
+                write(`  ${YELLOW}↩${RST}  ${DIM}reject with hint — rework the plan${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now() });
+                return { approved: false, tier, reason: 'User asked to re-plan' };
 
             default:
                 return this._prompt(toolName, args, context);
@@ -221,7 +271,16 @@ export class ApprovalManager {
                 const str = data.toString();
 
                 if (bytes[0] === 0x03) process.exit(0);
-                if (bytes[0] === 0x1b) { resolve('escape'); return; }
+                // Arrow keys: ESC [ A/B/C/D (3-byte CSI sequences)
+                if (bytes.length === 3 && bytes[0] === 0x1b && bytes[1] === 0x5b) {
+                    if (bytes[2] === 0x41) { resolve('up');    return; }
+                    if (bytes[2] === 0x42) { resolve('down');  return; }
+                    if (bytes[2] === 0x43) { resolve('right'); return; }
+                    if (bytes[2] === 0x44) { resolve('left');  return; }
+                }
+                // Bare Esc (single byte) — explicit reject signal
+                if (bytes.length === 1 && bytes[0] === 0x1b) { resolve('escape'); return; }
+                if (bytes[0] === 0x09) { resolve('tab'); return; }
                 if (str === '\r' || str === '\n') { resolve('return'); return; }
                 resolve(str);
             });

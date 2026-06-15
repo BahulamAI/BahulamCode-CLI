@@ -105,10 +105,14 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
             { risk: 'high', reason: 'Publishes this package publicly' },
         );
         assert.strictEqual(result.approved, false);
-        assert.ok(output.includes('Approval required'));
+        // Approval surface migrated to the Mission Control bordered prompt
+        // (PRD-055 §8). Risk levels are tier strings now.
+        assert.ok(output.includes('AWAITING APPROVAL') || output.includes('Tier'),
+          'expected Mission Control prompt header');
         assert.ok(output.includes('Run command'));
         assert.ok(output.includes('npm publish'));
-        assert.ok(output.includes('high'));
+        assert.ok(/SHELL-(MEDIUM|DANGEROUS)/.test(output),
+          'expected SHELL-MEDIUM or SHELL-DANGEROUS tier label');
         assert.ok(output.includes('Publishes this package publicly'));
     } finally {
         process.stderr.write = originalWrite;

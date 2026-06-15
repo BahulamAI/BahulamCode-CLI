@@ -22,6 +22,7 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { CheckpointManager } from '../core/checkpoints.mjs';
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
@@ -123,6 +124,8 @@ const COMMANDS = {
   '/last':     'Expand last tool output',
   '/expand':   'Expand tool output by index (or "all")',
   '/fold':     'Hide previously expanded tool output',
+  '/checkpoint':'List recent file checkpoints',
+  '/undo':     'Restore the last file checkpoint',
   '/compact':  'Compact conversation context',
   '/agents':   'List available agents',
   '/explore':  'Code explorer agent',
@@ -948,6 +951,35 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.gray('Output is folded by default — there is nothing to hide. Use /last or d to expand.')}\n`);
       return;
 
+    case '/undo': {
+      const result = ctx.checkpoints?.undo();
+      if (!result) {
+        process.stderr.write(`  ${c.gray('No checkpoints to undo.')}\n`);
+        return;
+      }
+      if (result.restored) {
+        process.stderr.write(`  ${c.green('↩')} ${c.dim('Restored')} ${result.filePath}\n`);
+      } else {
+        process.stderr.write(`  ${c.red('✗')} ${c.dim('Undo failed: ' + (result.error || 'unknown error'))}\n`);
+      }
+      return;
+    }
+
+    case '/checkpoint': {
+      const list = ctx.checkpoints?.list(10) || [];
+      if (!list.length) {
+        process.stderr.write(`  ${c.gray('No checkpoints recorded yet — they are taken automatically before each edit.')}\n`);
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Recent checkpoints')}\n  ${c.gray('─'.repeat(40))}\n`);
+      for (const ckpt of list) {
+        const when = String(ckpt.timestamp).slice(11, 19);
+        process.stderr.write(`  ${c.gray(when)}  ${c.white(ckpt.file)}  ${c.gray(formatTokens(ckpt.size) + ' bytes')}\n`);
+      }
+      process.stderr.write(`\n  ${c.gray('/undo restores the most recent one')}\n\n`);
+      return;
+    }
+
     case '/compact': {
       const before = session.history.length;
       if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
@@ -1172,7 +1204,9 @@ export async function startTerminalRepl() {
   const auth = new TarangAuth();
 
   // Projects are registered and indexed on demand through get_project_overview.
-  const toolExecutor = createToolExecutor();
+  // CheckpointManager records per-file snapshots before edits so /undo works.
+  const checkpoints = new CheckpointManager(safeCwd());
+  const toolExecutor = createToolExecutor({ checkpoints });
   const skipPerms = cliArgs.freeswim;
   const approval = new ApprovalManager({ autoApprove: skipPerms });
 
@@ -1186,7 +1220,7 @@ export async function startTerminalRepl() {
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints };
 
   // ── Mission Control orbit + status bar ──
   // Opt-out via KEPLER_STATUS_BAR=0 (debugging) or KEPLER_PLAIN=1 (PRD-055).
@@ -1329,6 +1363,7 @@ export async function startTerminalRepl() {
     let executionPaused = false;
     let keypressCleanup = null;
     let execListenerActive = false;
+    let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
 
     if (process.stdin.isTTY) {
       rl.pause();
@@ -1366,11 +1401,21 @@ export async function startTerminalRepl() {
           return;
         }
 
-        // Ctrl+C during execution
+        // Ctrl+C during execution — PRD-055 §8.4 two-step semantics:
+        //   first press → cancel current backend run, stay in REPL
+        //   second press within 2s → exit the CLI
         if (bytes[0] === 0x03) {
           stopSpinner();
-          client.cancel();
-          process.exit(0);
+          const now = Date.now();
+          if (lastCtrlCAt && (now - lastCtrlCAt) < 2000) {
+            process.stderr.write(`\n  ${c.dim('exiting…')}\n`);
+            try { client.cancel(); } catch {}
+            process.exit(0);
+          }
+          lastCtrlCAt = now;
+          process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
+          try { client.cancel(); } catch {}
+          return;
         }
 
         // `d` — expand last tool card (Mission Control §6.2)

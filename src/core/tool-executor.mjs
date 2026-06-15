@@ -28,6 +28,7 @@ import { execSync } from 'node:child_process';
 export function createToolExecutor({
     projectRegistry = new ProjectRegistry(),
     skillsLoader = new SkillsLoader().load(process.cwd()),
+    checkpoints = null,
 } = {}) {
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
@@ -309,6 +310,10 @@ export function createToolExecutor({
                     await occRegistry.call('Read', { file_path: filePath, limit: 1 });
                 }
             } catch { /* file may not exist yet */ }
+            // Checkpoint before overwrite so /undo can restore the previous content.
+            if (checkpoints && fs.existsSync(filePath)) {
+                try { checkpoints.save(filePath); } catch { /* best effort */ }
+            }
             const result = await occRegistry.call('Write', {
                 file_path: filePath,
                 content: args.content,
@@ -404,6 +409,11 @@ export function createToolExecutor({
             try {
                 await occRegistry.call('Read', { file_path: filePath, limit: 1 });
             } catch { /* best effort */ }
+
+            // Checkpoint before edit so /undo can restore the previous content.
+            if (checkpoints) {
+                try { checkpoints.save(filePath); } catch { /* best effort */ }
+            }
 
             let result;
             try {
@@ -642,13 +652,16 @@ print('OK: replaced')
             return { success: true, files: results, _tool: 'read_files' };
         },
 
-        // 9. delete_file + safety check
+        // 9. delete_file + safety check + checkpoint for undo
         delete_file: async (args) => {
             try {
                 const filePath = resolvePath(args.file_path || args.path, args);
                 const delCheck = validateDelete(filePath, projectRootFor(filePath));
                 if (!delCheck.safe) {
                     return { success: false, output: `🛡️ BLOCKED: ${delCheck.reason}`, _tool: 'delete_file', _blocked: true };
+                }
+                if (checkpoints) {
+                    try { checkpoints.save(filePath); } catch { /* best effort */ }
                 }
                 fs.unlinkSync(filePath);
                 updateProjectIndex(filePath);
