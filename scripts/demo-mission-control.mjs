@@ -15,10 +15,15 @@ import { attachOrbit, unmount } from '../src/ui/status-bar.mjs';
 import { createOrbit } from '../src/state/orbit.mjs';
 import { formatCard, recordCard, lastCard } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
+import {
+  renderSubAgentOpen,
+  renderSubAgentClose,
+  subAgentIndent,
+} from '../src/ui/sub-agent.mjs';
 
 let _cid = 0;
 function card({ tool, args, result, durationMs }) {
-  const head = formatCard({ tool, args, result, durationMs });
+  const head = formatCard({ tool, args, result, durationMs, indent: subAgentIndent() });
   process.stderr.write(`${head}\n`);
   recordCard({ id: `demo-${++_cid}`, tool, args, head, result, durationMs });
 }
@@ -58,12 +63,25 @@ try {
 
   o.onToolCall('explore');
   o.onSubAgentStart();
-  card({
-    tool: 'explore', args: { task: 'find all callers of validate_jwt' },
-    result: { output: 'Identified 3 caller files; suggest centralizing refresh logic in middleware/auth.py' },
-    durationMs: 2100,
-  });
-  await sleep(1200);
+  process.stderr.write(renderSubAgentOpen({
+    type: 'explore',
+    model: 'deepseek/deepseek-v4-flash',
+    query: 'find all callers of validate_jwt',
+  }) + '\n');
+  await sleep(800);
+  card({ tool: 'search_code', args: { query: 'validate_jwt' }, result: { match_count: 7, file_count: 3 }, durationMs: 90 });
+  await sleep(500);
+  card({ tool: 'read_file', args: { file_path: 'src/handlers.py', start_line: 1, end_line: 60 }, result: { _total_lines: 60 }, durationMs: 40 });
+  await sleep(700);
+  process.stderr.write(renderSubAgentClose({
+    type: 'explore',
+    success: true,
+    summary: 'identified 3 caller files',
+    tokens: 3800,
+    costUsd: 0.0042,
+    durationS: 2.1,
+    toolCalls: 2,
+  }) + '\n\n');
   o.onSubAgentEnd();
   await sleep(600);
 

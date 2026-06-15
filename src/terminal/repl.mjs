@@ -43,6 +43,13 @@ import {
 } from '../ui/tool-card.mjs';
 import { detailFor } from '../ui/tool-details.mjs';
 import { paint } from '../ui/palette.mjs';
+import {
+  renderSubAgentOpen,
+  renderSubAgentClose,
+  subAgentIndent,
+  inSubAgent as inSubAgentBlock,
+  resetSubAgents,
+} from '../ui/sub-agent.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -235,7 +242,7 @@ function updateStatusBar() {
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
-  const indent = session.inSubAgent ? '     ' : '  ';
+  const indent = subAgentIndent();
   const callId = data?.call_id || data?._callId || `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const head = formatCardHead(tool, args, {
@@ -261,7 +268,7 @@ function formatToolDuration(data) {
 
 function renderToolResult(data, eventType = 'tool_result') {
   if (!data) return;
-  const indent = session.inSubAgent ? '     ' : '  ';
+  const indent = subAgentIndent();
   const gutter = `${indent}${paint.text.dim('⎿')}  `;
   const callId = data.call_id || data._callId;
   if (eventType === 'tool_done' && callId && _renderedToolResults.has(callId)) return;
@@ -490,7 +497,7 @@ function renderEvent(event) {
     case 'approval_denied': {
       const reason = data?.reason || 'User denied';
       const toolName = data?.tool || '';
-      const indent = session.inSubAgent ? '     ' : '  ';
+      const indent = subAgentIndent();
       process.stderr.write(`${indent}${c.red('✗')} ${c.dim(`Denied ${toolName}: ${reason}`)}\n`);
       break;
     }
@@ -584,21 +591,18 @@ function renderEvent(event) {
 
     case 'sub_agent_start': {
       stopSpinner();
-      session.inSubAgent = true;
       const agentType = data?.type || 'sub-agent';
       const model = data?.model || '';
       const query = data?.query || '';
-      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
-      process.stderr.write(`\n  ${icon} ${c.bold(c.brand(`${agentType} agent`))} ${c.dim('started')}\n`);
-      if (model) process.stderr.write(`     ${c.gray('model:')} ${c.dim(model)}\n`);
-      if (query) process.stderr.write(`     ${c.gray('query:')} ${c.dim(query)}\n`);
+      process.stderr.write(renderSubAgentOpen({ type: agentType, model, query }) + '\n');
+      session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       startSpinner(`${agentType}: working...`);
       break;
     }
 
     case 'sub_agent_tool': {
-      // No separate display — the regular tool_call event shows full detail
-      // indented under the sub-agent block. Just update the spinner text.
+      // The regular tool_call event renders the card, indented by the
+      // sub-agent stack depth. Just update the spinner text here.
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
       if (tool) updateSpinner(`${agentType} → ${tool}`);
@@ -607,24 +611,24 @@ function renderEvent(event) {
 
     case 'sub_agent_complete': {
       stopSpinner();
-      session.inSubAgent = false;
       const agentType = data?.type || 'sub-agent';
-      const model = data?.model || '';
-      const resultLen = data?.result_length || 0;
       const usage = data?.usage || {};
       const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-      const parts = [];
-      if (data?.tool_calls > 0) parts.push(`${data.tool_calls} tools`);
-      if (data?.iterations > 0) parts.push(`${data.iterations} iterations`);
-      if (resultLen > 0) parts.push(`${resultLen} chars`);
-      if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
-      if (data?.duration_s != null) parts.push(`${Number(data.duration_s).toFixed(1)}s`);
-      const icon = agentType === 'explore' ? '🔭' : agentType === 'plan' ? '📐' : '🤖';
-      const marker = data?.success === false ? c.red('✗') : c.green('✓');
-      const label = data?.success === false ? `${agentType} agent failed` : `${agentType} agent complete`;
-      process.stderr.write(`  ${icon} ${marker} ${c.dim(label)}${parts.length ? '  ' + c.dim(parts.join(' · ')) : ''}\n`);
-      if (data?.error) process.stderr.write(`     ${c.red(String(data.error).slice(0, 140))}\n`);
-      process.stderr.write('\n');
+      const costUsd = usage.cost_usd ?? usage.total_cost_usd ?? data?.cost_usd ?? null;
+      const summary = data?.result_summary
+        || (data?.result_length > 0 ? `${agentType} returned ${data.result_length} chars` : '');
+      process.stderr.write(renderSubAgentClose({
+        type: agentType,
+        success: data?.success !== false,
+        summary,
+        costUsd,
+        tokens,
+        durationS: data?.duration_s,
+        toolCalls: data?.tool_calls,
+        iterations: data?.iterations,
+        error: data?.error,
+      }) + '\n\n');
+      session.inSubAgent = inSubAgentBlock();
       break;
     }
 
@@ -661,6 +665,8 @@ function renderEvent(event) {
     case 'complete': {
       stopSpinner();
       flushContent();
+      resetSubAgents();
+      session.inSubAgent = false;
 
       const summary = data?.summary || '';
       if (summary && !_renderedContentThisTurn) {

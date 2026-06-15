@@ -98,7 +98,8 @@ function buildLineOne(snap, cols) {
     segments.push(paint.text.dim('TASK: ') + paint.text.primary(snap.task));
   }
   if (snap.subAgents > 0) {
-    segments.push(paint.text.dim('SUB-AGENTS: ') + paint.brand.data(`${icons.subAgent} ${snap.subAgents}`));
+    const noun = snap.subAgents === 1 ? 'sub-agent' : 'sub-agents';
+    segments.push(paint.brand.data(`${icons.subAgent} ${snap.subAgents} ${noun}`) + ' ' + paint.text.dim('active'));
   }
   if (snap.turn > 0) {
     const turnText = snap.maxTurn > 0 ? `TURN ${snap.turn}/${snap.maxTurn}` : `TURN ${snap.turn}`;
