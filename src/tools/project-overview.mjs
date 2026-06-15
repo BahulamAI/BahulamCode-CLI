@@ -420,25 +420,64 @@ export class ProjectRegistry {
         if (!rawPath) {
             if (root) return root;
             if (this.projects.size === 1) return this.resources()[0].root;
-            throw new Error('Path requires project_id when multiple or no projects are registered');
+            // Fall back to the first registered project when the model omits
+            // both path and project_id. Beats throwing on an inferable case.
+            const first = this.resources()[0];
+            if (first) return first.root;
+            throw new Error('No projects registered. Call get_project_overview first.');
         }
 
-        let candidate;
-        if (path.isAbsolute(rawPath)) {
-            candidate = canonicalizeCandidate(path.resolve(rawPath));
-        } else {
-            if (!root) {
-                if (this.projects.size !== 1) {
-                    throw new Error('Relative path requires project_id when multiple or no projects are registered');
-                }
-                root = this.resources()[0].root;
+        // LLM frequently passes shell-quoted paths copied from a terminal,
+        // e.g. "Tarang\ Orca/src/app/\(kepler\)/page.tsx". Normalize here so
+        // every tool benefits, not just get_project_overview.
+        rawPath = normalizePathInput(rawPath);
+
+        const buildCandidate = (input) => {
+            if (path.isAbsolute(input)) {
+                return canonicalizeCandidate(path.resolve(input));
             }
-            candidate = canonicalizeCandidate(path.resolve(root, rawPath));
+            if (!root) {
+                if (this.projects.size === 1) {
+                    return canonicalizeCandidate(path.resolve(this.resources()[0].root, input));
+                }
+                if (this.projects.size > 1) {
+                    throw new Error('Relative path requires project_id when multiple projects are registered. Pass project_id or use an absolute path.');
+                }
+                throw new Error('No projects registered. Call get_project_overview first.');
+            }
+            return canonicalizeCandidate(path.resolve(root, input));
+        };
+
+        let candidate = buildCandidate(rawPath);
+
+        const findContaining = (cand) => [...this.projects.values()].find(({ resource }) =>
+            isWithin(resource.root, cand)
+        );
+
+        let containingProject = findContaining(candidate);
+
+        // Two reasons to try the unescaped variant:
+        //   (1) candidate is outside every project root (literal "Tarang\ Orca"
+        //       does not contain a real project), or
+        //   (2) candidate is inside a root but does not exist on disk because
+        //       a path segment like "\(kepler\)" only resolves once unescaped.
+        // We retry once on the unescaped form before raising.
+        const needsRetry = !containingProject ||
+                           (!allowMissing && !fs.existsSync(candidate));
+        if (needsRetry) {
+            const unescaped = unescapeShellPath(rawPath);
+            if (unescaped !== rawPath) {
+                try {
+                    const altCandidate = buildCandidate(unescaped);
+                    const altProject = findContaining(altCandidate);
+                    if (altProject && (allowMissing || fs.existsSync(altCandidate))) {
+                        candidate = altCandidate;
+                        containingProject = altProject;
+                    }
+                } catch { /* fall through to the original error */ }
+            }
         }
 
-        const containingProject = [...this.projects.values()].find(({ resource }) =>
-            isWithin(resource.root, candidate)
-        );
         if (!containingProject) {
             throw new Error(`Path is outside registered project roots: ${rawPath}`);
         }
@@ -449,10 +488,21 @@ export class ProjectRegistry {
     }
 
     projectForPath(filePath) {
-        const candidate = canonicalizeCandidate(path.resolve(filePath));
-        return [...this.projects.values()].find(({ resource }) =>
+        const normalized = normalizePathInput(filePath);
+        const candidate = canonicalizeCandidate(path.resolve(normalized));
+        const direct = [...this.projects.values()].find(({ resource }) =>
             isWithin(resource.root, candidate)
-        ) || null;
+        );
+        if (direct) return direct;
+        // Same unescape fallback used in resolvePath.
+        const unescaped = unescapeShellPath(normalized);
+        if (unescaped !== normalized) {
+            const altCandidate = canonicalizeCandidate(path.resolve(unescaped));
+            return [...this.projects.values()].find(({ resource }) =>
+                isWithin(resource.root, altCandidate)
+            ) || null;
+        }
+        return null;
     }
 
     reset() {
