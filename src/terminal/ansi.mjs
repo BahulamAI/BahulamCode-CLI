@@ -1,9 +1,15 @@
 /**
- * ANSI Terminal Renderer — zero dependencies, zero flickering.
+ * ANSI Terminal Renderer — cursor control, box drawing, status bars.
  *
- * Provides cursor control, colors, box drawing, progress bars,
- * in-place updates, and a persistent status bar.
+ * Color helpers (the `c` object) now route through the semantic palette
+ * (`src/ui/palette.mjs`) so the entire CLI honors the Kepler brand and
+ * tier fallbacks (truecolor, ansi256, ansi16, none) without touching
+ * each call site. Hot-swap-friendly: external semantics like `c.red`,
+ * `c.bold`, `c.cyan` are preserved as the legacy contract; new code
+ * should prefer importing `paint` directly.
  */
+
+import { paint } from '../ui/palette.mjs';
 
 const ESC = '\x1b[';
 const write = (s) => process.stderr.write(s);
@@ -27,27 +33,43 @@ export const cursor = {
 };
 
 // ── Colors ──
+// Legacy color names re-mapped onto semantic palette tokens. The CLI's
+// branding is centralized in palette.mjs; this object is preserved only
+// so existing imports keep compiling. Internal Kepler color choices are
+// documented next to each mapping for the next code review.
+
+const identity = (s) => String(s ?? '');
 
 export const c = {
-  reset:   (s) => `${ESC}0m${s}${ESC}0m`,
-  bold:    (s) => `${ESC}1m${s}${ESC}0m`,
-  dim:     (s) => `${ESC}2m${s}${ESC}0m`,
-  italic:  (s) => `${ESC}3m${s}${ESC}0m`,
-  underline: (s) => `${ESC}4m${s}${ESC}0m`,
-  red:     (s) => `${ESC}31m${s}${ESC}0m`,
-  green:   (s) => `${ESC}32m${s}${ESC}0m`,
-  yellow:  (s) => `${ESC}33m${s}${ESC}0m`,
-  blue:    (s) => `${ESC}34m${s}${ESC}0m`,
-  magenta: (s) => `${ESC}35m${s}${ESC}0m`,
-  brand:   (s) => `${ESC}36m${s}${ESC}0m`,
-  cyan:    (s) => `${ESC}94m${s}${ESC}0m`,
-  cyanRegular: (s) => `${ESC}36m${s}${ESC}0m`,
-  cyanBold: (s) => `${ESC}1;36m${s}${ESC}0m`,
-  white:   (s) => `${ESC}97m${s}${ESC}0m`,
-  gray:    (s) => `${ESC}90m${s}${ESC}0m`,
-  bgRed:   (s) => `${ESC}41m${s}${ESC}0m`,
-  bgGreen: (s) => `${ESC}42m${s}${ESC}0m`,
-  bgCyan:  (s) => `${ESC}46m${s}${ESC}0m`,
+  reset:       identity,                       // palette already wraps with RESET
+
+  // Styles — work at every tier
+  bold:        paint.bold,
+  dim:         paint.dim,
+  italic:      paint.italic,
+  underline:   paint.underline,
+
+  // State semantics
+  red:         paint.state.danger,             // failure / hard error
+  green:       paint.state.success,            // pass / aligned
+  yellow:      paint.state.warn,               // soft warn / retry
+
+  // Brand semantics
+  blue:        paint.brand.primary,            // headers, primary brand
+  magenta:     paint.brand.accent,             // attention required
+  brand:       paint.brand.primary,            // primary brand surface
+  cyan:        paint.brand.data,               // code / file paths
+  cyanRegular: paint.brand.data,
+  cyanBold:    (s) => paint.bold(paint.brand.data(s)),
+
+  // Text semantics
+  white:       paint.text.primary,             // primary text
+  gray:        paint.text.dim,                 // hints, metadata, dim text
+
+  // Backgrounds — kept as raw ANSI; rarely used and have no palette analog
+  bgRed:       (s) => `${ESC}41m${String(s ?? '')}${ESC}0m`,
+  bgGreen:     (s) => `${ESC}42m${String(s ?? '')}${ESC}0m`,
+  bgCyan:      (s) => `${ESC}46m${String(s ?? '')}${ESC}0m`,
 };
 
 // ── Box Drawing ──

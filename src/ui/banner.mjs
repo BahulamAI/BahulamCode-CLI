@@ -1,162 +1,173 @@
 /**
  * Banner & Branding — Kepler CLI startup display.
+ *
+ * Refreshed for Mission Control (PRD-055 §4.3). Uses the semantic palette
+ * (`paint.brand.*`) so the same banner renders correctly across truecolor,
+ * 256-color, ansi16, and monochrome terminals.
  */
 
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
 
-// ANSI color helpers
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-const GREEN = '\x1b[32m';
-const CYAN = '\x1b[36m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const BLUE = '\x1b[34m';
-const BOLD_GREEN = '\x1b[1;32m';
-const BOLD_CYAN = '\x1b[1;36m';
+import { icons } from './icons.mjs';
+import { paint, strip } from './palette.mjs';
+import { term } from './term.mjs';
+
+const out = process.stderr;
+const write = (s) => { try { out.write(s); } catch {} };
+
+// ── Brand banner ─────────────────────────────────────────────────────────
+
+const KEPLER_LETTERS = ['K', 'E', 'P', 'L', 'E', 'R'];
+
+/**
+ * Render `KEPLER` letter-by-letter as a purple→magenta→cyan gradient.
+ * Each letter picks the appropriate brand token; the palette handles tier
+ * fallbacks transparently.
+ *
+ * Falls back to a single solid color in monochrome / ascii mode so we
+ * still see something distinctive on hostile terminals.
+ */
+function gradientKepler() {
+  if (!term().color) return KEPLER_LETTERS.join(' · ');
+
+  // Three-stop gradient mapped onto six letters. Stop selection:
+  //   0,1 → primary  2,3 → accent  4,5 → data
+  const painters = [
+    paint.brand.primary, paint.brand.primary,
+    paint.brand.accent,  paint.brand.accent,
+    paint.brand.data,    paint.brand.data,
+  ];
+  return KEPLER_LETTERS.map((ch, i) => painters[i](ch)).join(paint.text.dim(' · '));
+}
 
 /**
  * Print the branded orbital banner.
  */
 export function printBanner() {
-    process.stderr.write('\n');
-    process.stderr.write(`${DIM}         ✦${RESET}\n`);
-    process.stderr.write(`${DIM}      ╭──────────────────────────╮${RESET}\n`);
-    process.stderr.write(`${DIM}      │${RESET}  ${BOLD}${CYAN}K · E · P · L · E · R${RESET}  ${DIM}│${RESET}\n`);
-    process.stderr.write(`${DIM}      ╰──────── ${YELLOW}◯${RESET}${DIM} ───────────────╯${RESET}\n`);
-    process.stderr.write(`${DIM}            ╱ ╲${RESET}\n`);
-    process.stderr.write(`${DIM}       the agentic os${RESET}\n`);
-    process.stderr.write('\n');
+  const dim = paint.text.dim;
+  const brandMark = paint.brand.primary(icons.brand);
+  const orbit = paint.brand.accent(icons.orbit);
+
+  write('\n');
+  write(`         ${brandMark}\n`);
+  write(`      ${dim('╭───────────────────────────╮')}\n`);
+  write(`      ${dim('│')}   ${gradientKepler()}   ${dim('│')}\n`);
+  write(`      ${dim('╰────── ')}${orbit}${dim(' ─────────────────╯')}\n`);
+  write(`            ${dim('╱ ╲')}\n`);
+  write(`       ${dim('the agentic os')}\n`);
+  write('\n');
 }
+
+// ── Project info bar ─────────────────────────────────────────────────────
+
+const BAR_WIDTH = 60;
 
 /**
  * Print project info bar with version, project name, and git info.
- * @param {string} version
  */
 export function printProjectInfo(version) {
-    const cwd = process.cwd();
-    const projectName = path.basename(cwd);
-    const gitInfo = getGitInfo(cwd);
+  const cwd = process.cwd();
+  const projectName = path.basename(cwd);
+  const gitInfo = getGitInfo(cwd);
 
-    const sep = `${DIM} │ ${RESET}`;
-    let info = `  ${DIM}v${version}${RESET}${sep}${BOLD}${projectName}${RESET}`;
-    if (gitInfo) {
-        info += `${sep}${YELLOW}${gitInfo}${RESET}`;
-    }
+  const sep = paint.text.dim(' │ ');
+  let info = `  ${paint.text.dim('v' + version)}${sep}${paint.bold(projectName)}`;
+  if (gitInfo) {
+    info += `${sep}${paint.state.warn(gitInfo)}`;
+  }
 
-    // Draw a boxed info bar
-    const barWidth = 60;
-    const topBorder = `${BLUE}┌${'─'.repeat(barWidth)}┐${RESET}`;
-    const bottomBorder = `${BLUE}└${'─'.repeat(barWidth)}┘${RESET}`;
+  const padCount = Math.max(0, BAR_WIDTH - strip(info).length - 1);
+  const border = paint.brand.primary;
 
-    process.stderr.write(`${topBorder}\n`);
-    process.stderr.write(`${BLUE}│${RESET} ${info}${' '.repeat(Math.max(0, barWidth - stripAnsi(info).length - 1))}${BLUE}│${RESET}\n`);
-    process.stderr.write(`${bottomBorder}\n`);
+  write(`${border('┌' + '─'.repeat(BAR_WIDTH) + '┐')}\n`);
+  write(`${border('│')} ${info}${' '.repeat(padCount)}${border('│')}\n`);
+  write(`${border('└' + '─'.repeat(BAR_WIDTH) + '┘')}\n`);
 }
 
-/**
- * Print keyboard hints and usage tips.
- */
+// ── Hints ────────────────────────────────────────────────────────────────
+
 export function printHints() {
-    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+  const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+  const dim = paint.text.dim;
+  const accent = paint.brand.data;
 
-    process.stderr.write(`${GREEN}Type your instructions${RESET}, or ${CYAN}/help${RESET} for commands\n`);
-    process.stderr.write(`${DIM}Ctrl+C${RESET}${DIM}=exit  ${RESET}${DIM}/clear${RESET}${DIM}=reset  ${RESET}${DIM}/config${RESET}${DIM}=settings  ${RESET}${DIM}/login${RESET}${DIM}=auth${RESET}\n`);
-    process.stderr.write(`${DIM}env:${env}  models:configured via browser (/config)${RESET}\n`);
-    process.stderr.write('\n');
+  write(`${paint.state.success('Type your instructions')}, or ${accent('/help')} for commands\n`);
+  write(`${dim('Ctrl+C')}${dim('=exit  ')}${dim('/clear')}${dim('=reset  ')}${dim('/config')}${dim('=settings  ')}${dim('/login')}${dim('=auth')}\n`);
+  write(`${dim('env:' + env + '  models:configured via browser (/config)')}\n`);
+  write('\n');
 }
 
-/**
- * Print auth status indicators.
- * @param {object} creds - { token, openRouterKey, anthropicKey, backendUrl, mode }
- */
+// ── Auth + config ────────────────────────────────────────────────────────
+
 export function printAuthStatus(creds) {
-    const check = `${GREEN}✓${RESET}`;
-    const cross = `${RED}✗${RESET}`;
+  const check = paint.state.success(icons.pass);
+  const cross = paint.state.danger(icons.fail);
+  const dim = paint.text.dim;
 
-    const tokenOk = !!creds.token;
-    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+  const tokenOk = !!creds.token;
+  const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-    process.stderr.write(`  Auth:     ${tokenOk ? `${check} logged in ${DIM}(/whoami for details)${RESET}` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
-    process.stderr.write(`  Env:      ${DIM}${env}${RESET}\n`);
-    process.stderr.write(`  Mode:     ${DIM}${creds.mode || 'auto'}${RESET}\n`);
-    process.stderr.write('\n');
+  write(`  Auth:     ${tokenOk
+    ? `${check} logged in ${dim('(/whoami for details)')}`
+    : `${cross} not logged in ${dim('(/login)')}`}\n`);
+  write(`  Env:      ${dim(env)}\n`);
+  write(`  Mode:     ${dim(creds.mode || 'auto')}\n`);
+  write('\n');
 }
 
-/**
- * Print config in a styled format.
- * @param {object} creds
- */
 export function printStyledConfig(creds) {
-    const check = `${GREEN}✓${RESET}`;
-    const cross = `${RED}✗${RESET}`;
-    const mask = (val) => {
-        if (!val) return `${cross} not set`;
-        if (val.length <= 8) return `${check} ****`;
-        return `${check} ${val.slice(0, 6)}...${val.slice(-4)}`;
-    };
+  const check = paint.state.success(icons.pass);
+  const cross = paint.state.danger(icons.fail);
+  const dim = paint.text.dim;
 
-    process.stderr.write(`\n${BOLD}Kepler Configuration${RESET} ${DIM}(~/.kepler/config.json)${RESET}\n`);
-    process.stderr.write(`${'─'.repeat(50)}\n`);
-    process.stderr.write(`  Token:          ${mask(creds.token)}\n`);
-    process.stderr.write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
-    process.stderr.write(`  Anthropic:      ${mask(creds.anthropicKey)}\n`);
-    const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
-    process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
-    process.stderr.write(`  Backend URL:    ${DIM}${creds.backendUrl}${RESET}\n`);
-    process.stderr.write(`  Mode:           ${DIM}${creds.mode || 'auto'}${RESET}\n`);
-    process.stderr.write('\n');
+  const mask = (val) => {
+    if (!val) return `${cross} not set`;
+    if (val.length <= 8) return `${check} ****`;
+    return `${check} ${val.slice(0, 6)}...${val.slice(-4)}`;
+  };
+
+  const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
+
+  write(`\n${paint.bold('Kepler Configuration')} ${dim('(~/.kepler/config.json)')}\n`);
+  write(`${dim('─'.repeat(50))}\n`);
+  write(`  Token:          ${mask(creds.token)}\n`);
+  write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
+  write(`  Anthropic:      ${mask(creds.anthropicKey)}\n`);
+  write(`  Environment:    ${dim(env)}\n`);
+  write(`  Backend URL:    ${dim(creds.backendUrl)}\n`);
+  write(`  Mode:           ${dim(creds.mode || 'auto')}\n`);
+  write('\n');
 }
 
-/**
- * Print a goodbye message.
- */
 export function printGoodbye() {
-    process.stderr.write(`\n${BOLD_CYAN}Goodbye!${RESET}\n\n`);
+  write(`\n${paint.bold(paint.brand.primary('Goodbye!'))}\n\n`);
 }
 
-/**
- * Get git branch and change count for current directory.
- * @param {string} cwd
- * @returns {string|null}
- */
+// ── Git probe ────────────────────────────────────────────────────────────
+
 function getGitInfo(cwd) {
-    try {
-        const branch = execSync('git branch --show-current', {
-            cwd, encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
+  try {
+    const branch = execSync('git branch --show-current', {
+      cwd, encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (!branch) return null;
 
-        if (!branch) return null;
+    const status = execSync('git status --porcelain', {
+      cwd, encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const changes = status ? status.split('\n').filter(Boolean).length : 0;
 
-        const status = execSync('git status --porcelain', {
-            cwd, encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
-
-        const changes = status ? status.split('\n').filter(Boolean).length : 0;
-
-        if (changes > 0) {
-            return `\u2387 ${branch} (${changes} changed)`;
-        }
-        return `\u2387 ${branch}`;
-    } catch {
-        return null;
-    }
+    return changes > 0 ? `⎇ ${branch} (${changes} changed)` : `⎇ ${branch}`;
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Strip ANSI escape codes for length calculation.
- */
-function stripAnsi(str) {
-    return str.replace(/\x1b\[[0-9;]*m/g, '');
-}
+// ── OAuth success page (unchanged from prior version) ────────────────────
 
-/**
- * Branded HTML for OAuth success page.
- */
 export function getLoginSuccessHTML() {
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
