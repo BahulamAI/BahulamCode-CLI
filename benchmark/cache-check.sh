@@ -179,11 +179,11 @@ PROMPT_TYPE="${PROMPT:-calculator}"
 if [ "$PROMPT_TYPE" = "dashboard" ]; then
     # Real-world prompt — tests against codekepler project
     TEST_DIR="/Users/sree/Sites/Tarang Orca/codekepler"
-    INSTRUCTION="so I have collected the amount, and users has subscribed, now where does it show on dashboard?"
+    INSTRUCTION="so I have collected the amount, and users has subscribed, what informatoin we show when they visit the dashboard and when subsciption expires?"
 elif [ "$PROMPT_TYPE" = "api" ]; then
     # Backend API prompt — tests against codekepler-backend
     TEST_DIR="/Users/sree/Sites/Tarang Orca/codekepler-backend"
-    INSTRUCTION="what is the api or other supported tables in backend that we need to use?"
+    INSTRUCTION="what is the api or other supported tables in backend that we need to use to improve this?"
 else
     # Default: calculator (deterministic, small project)
     INSTRUCTION="Fix the bugs in calculator.py in this project. The add() function subtracts instead of adding, and multiply() adds instead of multiplying. After fixing, run the tests with: python -m pytest test_calculator.py -v"
@@ -191,7 +191,8 @@ fi
 
 export TARANG_ENV=local
 cd "$TEST_DIR"
-timeout 300 node "${REPO_ROOT}/src/terminal/main.mjs" \
+TIMEOUT_CMD=$(command -v timeout || command -v gtimeout || echo "")
+${TIMEOUT_CMD:+$TIMEOUT_CMD 300} node "${REPO_ROOT}/src/terminal/main.mjs" \
     --headless --verbose \
     --instruction "$INSTRUCTION" \
     --model "$MODEL" \
