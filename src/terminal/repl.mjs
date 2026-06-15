@@ -23,6 +23,14 @@ import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
+import { runPreflight } from '../onboarding/preflight.mjs';
+import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
+import {
+  getVerbosity,
+  setVerbosity,
+  label as verbosityLabel,
+  MODES as V_MODES,
+} from '../state/verbosity.mjs';
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
@@ -103,6 +111,13 @@ const session = {
   inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
   filesChanged: [],    // files modified this session
   lastTurnDuration: 0,
+  toolCounts: {},      // per-tool histogram (mission report)
+  subAgentCounts: {},  // per-sub-agent histogram (mission report)
+  savedUsd: 0,         // total sub-agent cost (for "saved by routing")
+  lastTask: '',        // most recent user prompt (mission report title)
+  lastReasoning: '',   // captured from agent for /why
+  budgetUsd: null,     // /budget cap, null = unlimited
+  budgetExceeded: false,
   costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
@@ -126,6 +141,14 @@ const COMMANDS = {
   '/fold':     'Hide previously expanded tool output',
   '/checkpoint':'List recent file checkpoints',
   '/undo':     'Restore the last file checkpoint',
+  '/preflight':'Re-run the onboarding diagnostic',
+  '/report':   'Save the mission report as markdown',
+  '/why':      'Print the agent reasoning for the last decision',
+  '/map':      'Show the registered project tree',
+  '/budget':   'Set / clear a hard session cost cap',
+  '/quiet':    'Verbosity: hide sub-agent inner tools',
+  '/verbose':  'Verbosity: show sub-agent inner tools',
+  '/surgical': 'Verbosity: show everything (reasoning, expanded tools)',
   '/compact':  'Compact conversation context',
   '/agents':   'List available agents',
   '/explore':  'Code explorer agent',
@@ -221,6 +244,22 @@ function printPromptBlock() {
  * Print a turn summary after a response completes.
  * Shows only when there's something meaningful to report.
  */
+/**
+ * Pull blocker bullet points from the completion payload — used by the
+ * failure variant of the mission report.
+ */
+function extractBlockers(data) {
+  const out = [];
+  if (data?.error) out.push(String(data.error).slice(0, 160));
+  if (Array.isArray(data?.failed_tests)) {
+    for (const t of data.failed_tests.slice(0, 6)) {
+      if (typeof t === 'string') out.push(t);
+      else if (t?.name) out.push(`${t.name}${t.message ? ': ' + t.message : ''}`);
+    }
+  }
+  return out;
+}
+
 function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
@@ -255,6 +294,7 @@ function renderToolCall(data) {
   });
 
   recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
+  session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   process.stderr.write(`\n${head}\n`);
 }
 
@@ -439,6 +479,8 @@ function renderEvent(event) {
       const text = data?.message || data?.text || '';
       if (text && !text.startsWith('Processing')) {
         startSpinner(text.slice(0, 80));
+        // Capture reasoning so /why can replay it.
+        session.lastReasoning = text;
       }
       break;
     }
@@ -599,6 +641,7 @@ function renderEvent(event) {
       const query = data?.query || '';
       process.stderr.write(renderSubAgentOpen({ type: agentType, model, query }) + '\n');
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
+      session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       startSpinner(`${agentType}: working...`);
       break;
     }
@@ -618,6 +661,7 @@ function renderEvent(event) {
       const usage = data?.usage || {};
       const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
       const costUsd = usage.cost_usd ?? usage.total_cost_usd ?? data?.cost_usd ?? null;
+      if (typeof costUsd === 'number') session.savedUsd += costUsd;
       const summary = data?.result_summary
         || (data?.result_length > 0 ? `${agentType} returned ${data.result_length} chars` : '');
       process.stderr.write(renderSubAgentClose({
@@ -717,7 +761,33 @@ function renderEvent(event) {
 
       // Compact turn summary
       const tools = data?.tool_calls || session.toolCalls || 0;
-      printTurnSummary(tools, data?.duration_s, turnCost);
+
+      // Mission report — replaces the trailing "Done" when the turn did real
+      // work (touched files or invoked tools). Plain chat turns keep the
+      // tight printTurnSummary so the report does not feel ceremonial.
+      const didRealWork = tools > 0 || session.filesChanged.length > 0;
+      if (didRealWork) {
+        const successOverall = data?.success !== false;
+        const report = renderMissionReport({
+          task: session.lastTask,
+          success: successOverall,
+          filesChanged: session.filesChanged,
+          toolCounts: session.toolCounts,
+          subAgents: { ...session.subAgentCounts, savedUsd: session.savedUsd },
+          costUsd: turnCost || session.totalCost,
+          durationS: data?.duration_s,
+          testsPass: data?.tests_passed != null
+            ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
+            : null,
+          blockers: !successOverall ? (data?.blockers || extractBlockers(data)) : null,
+          nextActions: successOverall
+            ? ['/commit', '/pr', '/undo', '/report']
+            : ['/why', '/undo', '/re-plan'],
+        });
+        process.stderr.write(report + '\n');
+      } else {
+        printTurnSummary(tools, data?.duration_s, turnCost);
+      }
       break;
     }
 
@@ -980,6 +1050,92 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/preflight': {
+      await runPreflight({ auth: ctx.auth, cwd: safeCwd(), version: VERSION });
+      return;
+    }
+
+    case '/report': {
+      if (Object.keys(session.toolCounts).length === 0 && session.filesChanged.length === 0) {
+        process.stderr.write(`  ${c.gray('Nothing to report yet — run a task first.')}\n`);
+        return;
+      }
+      const state = {
+        task: session.lastTask,
+        success: true,
+        filesChanged: session.filesChanged,
+        toolCounts: session.toolCounts,
+        subAgents: { ...session.subAgentCounts, savedUsd: session.savedUsd },
+        costUsd: session.totalCost,
+        durationS: (Date.now() - session.startTime) / 1000,
+        nextActions: ['/commit', '/pr', '/undo'],
+      };
+      const out = saveReport(state, { cwd: safeCwd() });
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Saved')} ${out}\n`);
+      return;
+    }
+
+    case '/why': {
+      if (!session.lastReasoning) {
+        process.stderr.write(`  ${c.gray('No reasoning captured yet for this session.')}\n`);
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Last reasoning')}\n  ${c.gray('─'.repeat(40))}\n`);
+      for (const line of String(session.lastReasoning).split('\n')) {
+        process.stderr.write(`  ${c.dim(line)}\n`);
+      }
+      process.stderr.write('\n');
+      return;
+    }
+
+    case '/map': {
+      try {
+        const resources = ctx.toolExecutor?.getProjectResources?.() || [];
+        if (!resources.length) {
+          process.stderr.write(`  ${c.gray('No project resources registered yet. Use get_project_overview to register one.')}\n`);
+          return;
+        }
+        process.stderr.write(`\n  ${c.bold('Registered projects')}\n  ${c.gray('─'.repeat(40))}\n`);
+        for (const r of resources) {
+          process.stderr.write(`  ${c.brand('•')} ${c.white(r.id || r.name || '?')}  ${c.dim(r.root || r.path || '')}\n`);
+        }
+        process.stderr.write('\n');
+      } catch (err) {
+        process.stderr.write(`  ${c.red('/map failed: ' + err.message)}\n`);
+      }
+      return;
+    }
+
+    case '/budget': {
+      const arg = rest.trim();
+      if (!arg || arg === 'clear' || arg === 'off') {
+        session.budgetUsd = null;
+        session.budgetExceeded = false;
+        process.stderr.write(`  ${c.gray('Budget cap cleared.')}\n`);
+        return;
+      }
+      const n = Number(arg.replace(/^\$/, ''));
+      if (!Number.isFinite(n) || n <= 0) {
+        process.stderr.write(`  ${c.gray('Usage: /budget <amount in USD>  or  /budget clear')}\n`);
+        return;
+      }
+      session.budgetUsd = n;
+      session.budgetExceeded = false;
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Budget set: ')} $${n.toFixed(2)}\n`);
+      return;
+    }
+
+    case '/quiet':
+    case '/verbose':
+    case '/surgical': {
+      const mode = cmd === '/quiet' ? V_MODES.QUIET
+                : cmd === '/verbose' ? V_MODES.VERBOSE
+                : V_MODES.SURGICAL;
+      setVerbosity(mode);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Verbosity: ')} ${c.brand(verbosityLabel(mode))}\n`);
+      return;
+    }
+
     case '/compact': {
       const before = session.history.length;
       if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
@@ -1237,6 +1393,13 @@ export async function startTerminalRepl() {
 
   printBanner(auth);
 
+  // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
+  // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
+  if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.freeswim) {
+    try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
+    catch { /* preflight is best-effort */ }
+  }
+
   // ── Initialization ──
   process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
   await fetchUser(ctx);
@@ -1317,10 +1480,23 @@ export async function startTerminalRepl() {
       return;
     }
 
+    // Budget cap (PRD-055 §10). Stop before the next paid call when exceeded.
+    if (session.budgetUsd && session.totalCost >= session.budgetUsd) {
+      session.budgetExceeded = true;
+      process.stderr.write(`  ${c.yellow('⏹')} ${c.dim(`Budget reached ($${session.totalCost.toFixed(2)} of $${session.budgetUsd.toFixed(2)}). Use /budget clear to continue.`)}\n`);
+      showPrompt();
+      return;
+    }
+
     // Regular prompt
     session.history.push({ role: 'user', content: input });
     session.turns++;
     session.toolCalls = 0;
+    session.lastTask = input;
+    // Reset per-turn counts so the mission report reflects this turn only.
+    session.toolCounts = {};
+    session.subAgentCounts = {};
+    session.savedUsd = 0;
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.
