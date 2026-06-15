@@ -8,6 +8,35 @@ import { buildProjectSkeleton } from '../context/skeleton.mjs';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
 
 const RESOURCE_FILE = 'project-resource.json';
+
+/**
+ * Expand "~" and trim surrounding quotes/whitespace. Does NOT unescape shell
+ * meta characters — that is a separate, last-resort step done only if the
+ * literal path does not resolve.
+ */
+function normalizePathInput(p) {
+    let s = String(p || '').trim();
+    // Trim balanced surrounding quotes.
+    if ((s.startsWith('"') && s.endsWith('"')) ||
+        (s.startsWith("'") && s.endsWith("'"))) {
+        s = s.slice(1, -1);
+    }
+    // Tilde expansion (~ or ~/...).
+    if (s === '~' || s.startsWith('~/')) {
+        s = path.join(os.homedir(), s.slice(1));
+    }
+    return s;
+}
+
+/**
+ * Replace common shell escape sequences with their literal characters. Used
+ * as a fallback when the literal path does not resolve — the agent may have
+ * pasted a copy of what they would type at a shell prompt.
+ */
+function unescapeShellPath(p) {
+    return String(p || '').replace(/\\([ \t()&$;'"])/g, '$1');
+}
+
 const LANGUAGE_EXTENSIONS = new Map([
     ['.py', 'Python'],
     ['.js', 'JavaScript'],
@@ -280,6 +309,12 @@ export class ProjectRegistry {
         if (!rawPath) {
             throw new Error('get_project_overview requires a project path');
         }
+
+        // LLM sometimes passes shell-escaped paths ("Tarang\ Orca") or paths
+        // beginning with "~". Normalize defensively so the tool does not bounce
+        // back a "not found" error on a path that's correct apart from quoting.
+        rawPath = normalizePathInput(rawPath);
+
         if (!path.isAbsolute(rawPath)) {
             rawPath = path.resolve(process.cwd(), rawPath);
         }
@@ -288,7 +323,15 @@ export class ProjectRegistry {
         try {
             root = fs.realpathSync(rawPath);
         } catch {
-            throw new Error(`Project path not found: ${rawPath}`);
+            // Try the unescaped variant explicitly so the error message can
+            // tell the agent what it actually attempted.
+            const unescaped = unescapeShellPath(rawPath);
+            if (unescaped !== rawPath) {
+                try { root = fs.realpathSync(unescaped); }
+                catch { throw new Error(`Project path not found: ${rawPath} (also tried ${unescaped})`); }
+            } else {
+                throw new Error(`Project path not found: ${rawPath}`);
+            }
         }
         if (!fs.statSync(root).isDirectory()) {
             throw new Error(`Project path is not a directory: ${root}`);

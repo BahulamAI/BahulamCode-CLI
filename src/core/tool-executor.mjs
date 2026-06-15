@@ -91,6 +91,12 @@ export function createToolExecutor({
         '.rs':  (file) => `rustfmt --check "${file}" 2>&1`,
     };
 
+    // tsc --pretty and eslint emit ANSI codes (including background-red
+    // highlights) which bleed when our renderer slices the first 80 chars.
+    // Strip color codes so the stored lint string is always plain text.
+    const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+    function stripAnsi(s) { return String(s || '').replace(ANSI_RE, ''); }
+
     function autoLint(filePath) {
         const ext = path.extname(filePath);
         const cmdFn = LINT_COMMANDS[ext];
@@ -102,13 +108,14 @@ export function createToolExecutor({
                 timeout: 15_000,
                 cwd: process.cwd(),
                 stdio: ['pipe', 'pipe', 'pipe'],
+                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
             });
-            const trimmed = output.trim();
+            const trimmed = stripAnsi(output).trim();
             if (!trimmed) return null;
             return trimmed;
         } catch (err) {
             // Non-zero exit means lint errors found
-            const output = (err.stderr || err.stdout || '').trim();
+            const output = stripAnsi(err.stderr || err.stdout || '').trim();
             if (!output) return null;
             return output;
         }

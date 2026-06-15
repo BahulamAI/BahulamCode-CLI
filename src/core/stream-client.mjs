@@ -93,14 +93,23 @@ export class TarangStreamClient {
         };
         if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
+        // Abort controller so cancel() can break out of a stalled reader
+        // instead of waiting for the next SSE event to notice _cancelled.
+        this._abort = new AbortController();
+
         let response;
         try {
             response = await fetch(url, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(body),
+                signal: this._abort.signal,
             });
         } catch (err) {
+            if (err.name === 'AbortError') {
+                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
+                return;
+            }
             yield { type: EVENT_TYPES.ERROR, data: { message: `Network error: ${err.message}. Check your connection or use --local mode.`, fatal: true } };
             return;
         }
@@ -175,7 +184,15 @@ export class TarangStreamClient {
 
         try {
             while (true) {
-                const { done, value } = await reader.read();
+                let read;
+                try {
+                    read = await reader.read();
+                } catch (err) {
+                    // Aborted via cancel() — treat as a clean end-of-stream.
+                    if (err && (err.name === 'AbortError' || this._cancelled)) break;
+                    throw err;
+                }
+                const { done, value } = read;
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
@@ -335,6 +352,7 @@ export class TarangStreamClient {
     /** Cancel the current stream. */
     async cancel() {
         this._cancelled = true;
+        // Best-effort backend POST — the stream may already be torn down.
         if (this.currentTaskId) {
             try {
                 await fetch(`${this.baseUrl}/api/cancel/${this.currentTaskId}`, {
@@ -342,6 +360,11 @@ export class TarangStreamClient {
                     headers: { 'Authorization': `Bearer ${this.token}` },
                 });
             } catch { /* best effort */ }
+        }
+        // Force the in-flight SSE reader to abort so the REPL returns to the
+        // prompt immediately instead of waiting on a parked reader.read().
+        if (this._abort) {
+            try { this._abort.abort(); } catch {}
         }
     }
 

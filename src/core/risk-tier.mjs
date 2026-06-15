@@ -73,8 +73,14 @@ const NETWORK_TOOLS = new Set([
 // ── Shell sub-classifier ────────────────────────────────────────────────
 
 const SHELL_SAFE_RE = [
-  // Inspection / read-only
-  /^\s*(ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
+  // Inspection / read-only + harmless shell navigation built-ins.
+  // `cd` / `pushd` / `popd` only change the process working directory; if
+  // chained with something dangerous, the multi-segment classifier still
+  // catches the danger (`cd /x && rm -rf .` → SHELL_DANGEROUS).
+  /^\s*(cd|pushd|popd|ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
+  // mkdir -p / touch are creation primitives but harmless in scope.
+  /^\s*mkdir\s+-p\b/i,
+  /^\s*touch\s/i,
   /^\s*git\s+(status|log|diff|show|branch|tag|remote|stash\s+list|blame|shortlog|describe|rev-parse|ls-files|ls-tree|config\s+--get)\b/i,
   // Test-only invocations
   /^\s*(npm|pnpm|yarn)\s+(test|run\s+test|run\s+lint|list|ls|view|info|outdated)\b/i,

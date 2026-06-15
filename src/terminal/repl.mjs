@@ -122,6 +122,7 @@ const session = {
   costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
+  isByok: false,       // set from session_info; hides cost + credits when true
 };
 
 // ── Commands ──
@@ -202,12 +203,12 @@ function printBanner(auth) {
  */
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
-  const credits = formatCredits(costToCredits(session.totalCost));
   const elapsed = formatElapsed(session.startTime);
 
+  // BYOK: user pays the provider directly, suppress credits entirely.
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    c.dim(credits),
+    ...(session.isByok ? [] : [c.dim(formatCredits(costToCredits(session.totalCost)))]),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -254,7 +255,7 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
-  if (turnCost > 0) parts.push(formatCredits(costToCredits(turnCost)));
+  if (turnCost > 0 && !session.isByok) parts.push(formatCredits(costToCredits(turnCost)));
   if (parts.length > 0) {
     process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
   }
@@ -687,6 +688,9 @@ function renderEvent(event) {
       }
       if (data?.model) session.model = data.model;
       if (data?.user) session.user = { ...session.user, ...data.user };
+      // BYOK users pay their model provider directly; the platform does not
+      // charge them credits. Hide cost + credits when this flag is set.
+      if (typeof data?.is_byok === 'boolean') session.isByok = data.is_byok;
       break;
     }
 
@@ -763,8 +767,9 @@ function renderEvent(event) {
           success: successOverall,
           filesChanged: session.filesChanged,
           toolCounts: session.toolCounts,
-          subAgents: { ...session.subAgentCounts, savedUsd: session.savedUsd },
-          costUsd: turnCost || session.totalCost,
+          subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
+          // BYOK users pay their provider directly; suppress cost in the report.
+          costUsd: session.isByok ? null : (turnCost || session.totalCost),
           durationS: data?.duration_s,
           testsPass: data?.tests_passed != null
             ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
@@ -863,7 +868,11 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
-      process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      if (session.isByok) {
+        process.stderr.write(`  ${c.dim('Billing')}      ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
+      } else {
+        process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      }
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
 
       // Permissions
@@ -931,12 +940,20 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
       process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
       process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
-      process.stderr.write(`  ${c.gray('Credits:')}   ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      if (session.isByok) {
+        process.stderr.write(`  ${c.gray('Billing:')}   ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
+      } else {
+        process.stderr.write(`  ${c.gray('Credits:')}   ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+      }
       process.stderr.write(`  ${c.gray('Elapsed:')}  ${formatElapsed(session.startTime)}\n\n`);
       return;
     }
 
     case '/cost': {
+      if (session.isByok) {
+        process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Kepler does not charge credits for BYOK usage.')}\n\n`);
+        return;
+      }
       process.stderr.write(`\n  ${c.bold('Session Credits')}  ${c.brand(formatCredits(costToCredits(session.totalCost)))}`);
       if (!session.costAccurate) {
         process.stderr.write(`  ${c.yellow('(estimated)')}`);
@@ -1055,8 +1072,8 @@ async function handleCommand(input, ctx) {
         success: true,
         filesChanged: session.filesChanged,
         toolCounts: session.toolCounts,
-        subAgents: { ...session.subAgentCounts, savedUsd: session.savedUsd },
-        costUsd: session.totalCost,
+        subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
+        costUsd: session.isByok ? null : session.totalCost,
         durationS: (Date.now() - session.startTime) / 1000,
         nextActions: ['/commit', '/pr', '/undo'],
       };
@@ -1417,10 +1434,15 @@ export async function startTerminalRepl() {
 
   process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
-  // Mount the Mission Control status bar AFTER banner + preflight + init so
-  // none of that scrolls off before the user sees it. Opt-out via
-  // KEPLER_STATUS_BAR=0 (debugging) or KEPLER_PLAIN=1 (PRD-055).
-  const statusBarEnabled = process.env.KEPLER_STATUS_BAR !== '0' && term().isTTY && !term().plain;
+  // Mission Control status bar is OPT-IN as of v2.0.1.
+  // Set KEPLER_STATUS_BAR=1 (or KEPLER_MISSION=1) to enable the persistent
+  // bottom-anchored ORBIT bar. Default off because the DECSTBM scroll
+  // region was eating the prompt visibility on some terminals (issue
+  // observed during v2.0.0 testing). The orbit state machine and tool
+  // cards still work without the bar — the bar is just the rendering.
+  const statusBarEnabled = (
+    process.env.KEPLER_STATUS_BAR === '1' || process.env.KEPLER_MISSION === '1'
+  ) && term().isTTY && !term().plain;
   if (statusBarEnabled) {
     _orbit = createOrbit();
     attachOrbit(_orbit);
@@ -1428,12 +1450,25 @@ export async function startTerminalRepl() {
     process.on('exit',       unmountStatusBar);
   }
 
-  const PROMPT = `${c.brand('kepler')} ${c.dim('›')} `;
+  // The prompt label is the USER speaking, not the agent. Use the signed-in
+  // GitHub handle if known, otherwise fall back to "You".
+  //
+  // readline counts every byte of the prompt as a visible column when it
+  // computes cursor position for line-wrapping; ANSI color codes throw the
+  // math off and produce duplicated text on wrap. Wrap each escape sequence
+  // in SOH (\x01) ... STX (\x02) so readline skips it when measuring width.
+  function rlSafe(s) {
+    return String(s || '').replace(/\x1b\[[0-9;]*m/g, '\x01$&\x02');
+  }
+  function userPrompt() {
+    const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
+    return rlSafe(`${c.brand(who)} ${c.dim('›')} `);
+  }
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stderr,
-    prompt: PROMPT,
+    prompt: userPrompt(),
     completer: (line) => {
       if (line.startsWith('/')) {
         const hits = Object.keys(COMMANDS).filter(cmd => cmd.startsWith(line));
@@ -1452,6 +1487,7 @@ export async function startTerminalRepl() {
   function showPrompt() {
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
+    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
     rl.prompt();
   }
 
@@ -1546,7 +1582,10 @@ export async function startTerminalRepl() {
         // Esc key (single byte 0x1b, not part of arrow sequence)
         if (bytes.length === 1 && bytes[0] === 0x1b) {
           stopSpinner();
-          process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelling...')}\n`);
+          process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
+          // cancel() now aborts the in-flight SSE reader; the for-await loop
+          // wakes up immediately and the prompt returns. No more "stuck"
+          // Cancelling… message.
           client.cancel();
           return;
         }
