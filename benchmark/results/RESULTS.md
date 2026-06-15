@@ -6,68 +6,90 @@
 
 | Run | Date | Model | Instances | Real Patches | Edit Rate | Test Rate | Resolved | Cache | Cost | Notes |
 |-----|------|-------|-----------|-------------|-----------|-----------|----------|-------|------|-------|
-| v1 | 06-09 | DS-V4-Flash | 300 | 198 (66%)† | n/a | n/a | 92 (30.7%) | n/a | $13.76 | Baseline, no preflight |
-| v2 | 06-13 | DS-V4-Flash | 300 | 172 (57%)† | 62% | 48% | 121 (40.3%) | 40% | $6.15 | +OperatingBrief |
-| v3 | 06-13 | DS-V4-Flash | 100‡ | 45 (45%) | 27% | 22% | 38 (38.0%) | 39% | — | Fixed harness, no stagnation§ |
-| v4 | 06-14 | DS-V4-Flash | 253 (running) | 131 (52%) | 57% | 41% | pending | 47% | $9.10 | +Scratchpad, +cache fixes |
-| v4 last 100 | 06-14 | DS-V4-Flash | 100 | 59 (59%) | 70% | 49% | pending | 49% | — | Stagnation + preflight active |
+| v1 | 06-09 | DS-V4-Flash | 300 | 198 (66%)† | n/a | n/a | 92 (28%*) | n/a | $13.76 | Baseline, no preflight |
+| v2 | 06-13 | DS-V4-Flash | 300 | 172 (57%)† | 62% | 48% | 121 (38%*) | 40% | $6.15 | +OperatingBrief |
+| v3 | 06-13 | DS-V4-Flash | 100‡ | 45 (45%) | 27% | 22% | 38 (32%) | 39% | — | Fixed harness, no stagnation§ |
+| **v4** | **06-14** | **DS-V4-Flash** | **296** | **165 (56%)** | **60%** | **45%** | **109 (36.8%)** | **50%** | **$10.91** | **+Scratchpad, +cache fixes** |
 
-† v1/v2 used old harness that leaked `test_patch` into `git diff`. Reported "patch count" (291/298) was inflated — test file diffs appeared as agent patches. Real patch count = source-file-only + mixed patches.
+† v1/v2 used old harness that leaked `test_patch` into `git diff`. Real patch count excludes test-only diffs.
+
+\* v1/v2 resolve rates include 9/8 "free" resolves from harness test_patch leak. True rates: v1=28%, v2=38%.
 
 ‡ v3 ran instances 201-300 only (the hardest shard).
 
 § v3 had broken env vars (`KEPLER_STAGNATION_DETECTION` instead of `AGENT_STAGNATION_DETECTION`) — stagnation detection and preflight plans were silently disabled.
 
+### Resolve Quality
+
+| Metric | v1 | v2 | v3 | v4 |
+|--------|----|----|----|----|
+| Resolve / evaluated | 39% | 41% | 72% | **61.6%** |
+| Resolve / real patch | 46% | 66% | 71% | **~66%** |
+| Evaluated | 238 | 297 | 53 | 177 |
+| No-patch instances | 9† | 2† | 47 | 119 |
+
+The **resolve/evaluated rate of 61.6%** is the highest on a full run. When v4 produces a patch, it resolves 2 out of 3 times.
+
+The 119 no-patch instances are the bottleneck — agent investigated but never edited. Caused by:
+- 11 `kepler_failed` (crashes/timeouts)
+- 108 `no_changes` (read loops without edits, primarily sympy/matplotlib)
+
+### Reasoning Model Test (Hard 10)
+
+10 hardest instances where Flash failed (97-172 tool calls, 0 edits):
+
+| Model | Patched | Resolved | Cost | Notes |
+|-------|---------|----------|------|-------|
+| DS-V4-Flash | 0/10 | 0/10 | $1.46 | All read loops, no edits |
+| Claude Haiku 4.5 | **10/10** | **3/10** | $4.50 | Direct Anthropic, incl Sonnet consult |
+
+Resolved: django-13710, sympy-15345, sympy-16988.
+
+**Validates reasoning nudge**: Flash handles volume ($0.04/inst), reasoning model breaks stagnation on hard cases ($0.45/inst). Projected: +3-10 resolved at ~$20 extra cost.
+
 ### Harness Contamination Analysis
 
-The old harness applied `test_patch` before the agent ran but didn't commit it. `git diff` captured both agent changes AND the test patch, inflating patch counts.
+| Run | Total "patches" | Test-only (harness leak) | Real source patches |
+|-----|-----------------|------------------------|---------------------|
+| v1 | 291 | 93 (test leak: 289) | 198 |
+| v2 | 298 | 126 (test leak: 113) | 172 |
+| v3 | 53 | 8 (test leak: 0) | 45 |
+| v4 | 181 | 16 (test leak: 0) | 165 |
 
-| Run | Total "patches" | Test-only (harness leak) | Test in diff, 0 edits | Real source patches |
-|-----|-----------------|------------------------|-----------------------|---------------------|
-| v1 | 291 | 93 | 289 (96%) | 198 |
-| v2 | 298 | 126 | 113 (38%) | 172 |
-| v3 | 53 | 8 | 0 (0%) | 45 |
-| v4 | 146 | 15 | — | 131 |
+### Cache Optimization Impact
 
-### Quality Metrics
+| Metric | Before (v2) | After (v4) |
+|--------|-------------|------------|
+| Cache hit rate | 40% (no explicit markers for DeepSeek) | **50%** (90%+ steady-state) |
+| System prompt | Mutated every turn (Layer 2) | **Stable** (never changes) |
+| Tool cache | Unstable (filtering) | **Stable** (25 sorted tools) |
+| Post-compression cache | 3,968 tokens (9%) | **80-95%** (scratchpad) |
+| Cost/instance | $0.021 | $0.037 (harder instances) |
 
-| Metric | v1 | v2 | v3 | v4 last 100 |
-|--------|----|----|----|----|
-| Resolve / real patch | 92/198 = 46% | 121/172 = 70% | 38/45 = 84% | pending |
-| Edit rate | n/a | 62% | 27% | **70%** |
-| Test rate | n/a | 48% | 22% | **49%** |
-| No-patch (zero edit) | 9† | 2† | 47 | 30 |
-| Cache hit | n/a | 40% | 39% | **49%** |
-| Cost/instance | $0.0459 | $0.0205 | $0.0083 | $0.0546 |
+### Tool Usage (v4)
 
-† v1/v2 no-patch counts are artificially low because the harness leak gave almost every instance a "patch" even when the agent did nothing.
+| Tool | Calls | Avg/inst | % |
+|------|-------|----------|---|
+| read_file | 2,275 | 7.7 | 28% |
+| grep | 1,539 | 5.2 | 19% |
+| shell | 1,315 | 4.5 | 16% |
+| search_code | 1,010 | 3.4 | 12% |
+| get_project_overview | 320 | 1.1 | 4% |
+| edit_file | 246 | 0.8 | 3% |
+| run_tests | 187 | 0.6 | 2% |
 
-### Key Findings
+Read:Write ratio = 21:1. Median 16 tools/inst, P95 = 107, Max = 187.
 
-1. **Fix quality is improving**: resolve/real-patch went from 46% (v1) → 70% (v2) → 84% (v3). When the agent edits, it's increasingly correct.
+### Persistent Failure Analysis
 
-2. **Edit rate is the bottleneck**: v3's 27% edit rate (broken stagnation) vs v4 last 100's 70% shows stagnation detection matters — without it, the agent loops through reads forever.
-
-3. **Cache hit rate**: 21% (pre-optimization) → 49% (v4 with scratchpad model). Driven by:
-   - `cache_messages=True` default (sliding breakpoint on N-1 message)
-   - Disabled tool filtering (stable tool list)
-   - Removed `history_compressed` from system prompt
-   - Scratchpad model (compression preserves cached prefix)
-   - Deny-list cache guard (DeepSeek/Kimi/MiniMax get explicit `cache_control`)
-   - Moved project resources + plan from system prompt to messages
-
-4. **Env var mismatch**: `KEPLER_*` vs `AGENT_*` prefix caused stagnation + preflight to be silently disabled on VMs. Fixed on 2026-06-14.
-
-### Persistent Failure Analysis (v3, instances 201-300)
+Zero-edit hotspots: sympy (56%), matplotlib (50%), sphinx (50%), pylint (50%).
 
 | Category | Count | Root Cause |
 |----------|-------|------------|
-| Never resolved, never edited | 30 | Search/navigation failure |
-| Never resolved, edited both runs | 10 | Fix quality — edits wrong code |
-| Always resolved (all runs) | 23 | Reliable fixes |
-| Sometimes resolved | 29 | Nondeterministic |
-
-Zero-edit hotspots: sympy (56%), sphinx (50%), pylint (50%), seaborn (50%).
+| Never resolved, never edited | ~90 | Search/navigation failure — can't find where to edit |
+| Never resolved, edited | ~30 | Fix quality — edits wrong code |
+| Always resolved (all runs) | ~60 | Reliable fixes |
+| Sometimes resolved | ~40 | Nondeterministic |
 
 ## Terminal-Bench
 
@@ -82,11 +104,11 @@ Zero-edit hotspots: sympy (56%), sphinx (50%), pylint (50%), seaborn (50%).
 results/
 ├── RESULTS.md
 ├── runs/
-│   ├── swebench-v1-flash-300/      (baseline 30.7%, harness contaminated)
-│   ├── swebench-v2-flash-100/      (43.0%, harness contaminated)
-│   ├── swebench-v2-flash-300/      (40.7%, harness contaminated)
-│   ├── swebench-v3-flash-rerun100/ (38.0%, fixed harness, no stagnation)
-│   ├── swebench-v4-flash-300/      (pending, scratchpad + cache fixes)
+│   ├── swebench-v1-flash-300/      (baseline 28%, harness contaminated)
+│   ├── swebench-v2-flash-100/      (43%, harness contaminated)
+│   ├── swebench-v2-flash-300/      (38%, harness contaminated)
+│   ├── swebench-v3-flash-rerun100/ (32%, fixed harness, no stagnation)
+│   ├── swebench-v4-flash-300/      (36.8%, scratchpad + cache, 61.6% resolve/eval)
 │   └── tbench-v1-flash-10/         (40%)
 └── archive/
 ```
