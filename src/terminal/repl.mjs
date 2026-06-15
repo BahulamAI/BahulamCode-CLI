@@ -272,6 +272,14 @@ function updateStatusBar() {
  * args. The result arrives later via `renderToolResult` and is appended as a
  * gutter line. Sub-agent calls are indented per session.inSubAgent.
  */
+// Set by renderToolCall, consumed by renderToolResult so we can collapse the
+// "head\n  ⎿ → outcome\n" two-line shape into a single line whenever nothing
+// else printed in between. Cleared by any handler that writes interleaving
+// content (content/thinking/sub_agent_*/delegation/etc).
+let _pendingHead = null; // { callId, head }
+
+function clearPendingHead() { _pendingHead = null; }
+
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
@@ -287,6 +295,7 @@ function renderToolCall(data) {
   recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   process.stderr.write(`\n${head}\n`);
+  _pendingHead = { callId, head };
 }
 
 /**
@@ -324,10 +333,32 @@ function renderToolResult(data, eventType = 'tool_result') {
                                   : paint.text.dim;
   const duration = formatToolDuration(data);
   const tail = duration ? paint.text.dim(` · ${duration}`) : '';
-  process.stderr.write(`${gutter}${arrow} ${painter(text || 'done')}${tail}\n`);
+  const outcome = `${arrow} ${painter(text || 'done')}${tail}`;
+
+  // ── Single-line collapse ──
+  // If nothing has interleaved between renderToolCall and this result, rewrite
+  // the head line in-place as "<head>  → outcome · duration" — saves a full
+  // row per tool call. Falls back to the two-line gutter form when the head
+  // is gone (something scrolled it away) or the combined line would not fit.
+  const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
+  if (_pendingHead && _pendingHead.callId === callId && !hasLint) {
+    const cols = process.stderr.columns || 120;
+    const combined = `${_pendingHead.head}  ${outcome}`;
+    if (stripAnsi(combined).length <= cols) {
+      // Move up one line, clear it, rewrite as one line. No leading newline
+      // because the cursor is already at the start of the (now-cleared) line.
+      process.stderr.write(`\x1b[1A\x1b[2K\r${combined}\n`);
+      _pendingHead = null;
+      return;
+    }
+  }
+  _pendingHead = null;
+
+  // Default two-line shape.
+  process.stderr.write(`${gutter}${outcome}\n`);
 
   // Lint warnings stay visible alongside writes.
-  if ((tool === 'write_file' || tool === 'edit_file') && data.lint) {
+  if (hasLint) {
     process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
   }
 }
@@ -427,6 +458,9 @@ function startContentStream() {
 
 function appendContent(text) {
   if (!text) return;
+  // Any streamed content between renderToolCall and renderToolResult would
+  // scroll the head off "the line above", breaking the in-place collapse.
+  clearPendingHead();
   _streamBuffer += text;
   _streamedPartialText += text;
 
@@ -612,6 +646,7 @@ function renderEvent(event) {
 
     case 'delegation': {
       stopSpinner();
+      clearPendingHead();
       const from = data?.from || '';
       const to = data?.to || '';
       session.delegations.push({ from, to, time: Date.now() });
@@ -627,6 +662,7 @@ function renderEvent(event) {
 
     case 'sub_agent_start': {
       stopSpinner();
+      clearPendingHead();
       const agentType = data?.type || 'sub-agent';
       const model = data?.model || '';
       const query = data?.query || '';
@@ -648,6 +684,7 @@ function renderEvent(event) {
 
     case 'sub_agent_complete': {
       stopSpinner();
+      clearPendingHead();
       const agentType = data?.type || 'sub-agent';
       const usage = data?.usage || {};
       const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);

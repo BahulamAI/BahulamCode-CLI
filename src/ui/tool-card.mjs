@@ -129,12 +129,20 @@ export function summarizeResult(tool, data) {
       return { text: head || 'ok', tone: 'success' };
     }
 
+    case 'analyze_code': {
+      // Backend returns "filename (N lines, ext)" — the filename already
+      // appears in the card head, so strip it and keep just the metadata.
+      const head = firstOutputLine(data);
+      const m = head.match(/\((\d+)\s+lines?,?\s+([^)]+)\)/);
+      if (m) return { text: `${m[1]} lines · ${m[2].trim()}`, tone: 'success' };
+      return { text: head.slice(0, 80) || 'done', tone: 'success' };
+    }
+
     case 'plan':
     case 'explore':
     case 'verify':
     case 'debug':
-    case 'refactor':
-    case 'analyze_code': {
+    case 'refactor': {
       const head = firstOutputLine(data).slice(0, 100);
       return { text: head || 'done', tone: 'success' };
     }
