@@ -16,7 +16,6 @@
  */
 
 import * as readline from 'node:readline';
-import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
@@ -30,10 +29,20 @@ import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
-import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
+import { toolDisplayLabel } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
 import { term } from '../ui/term.mjs';
+import {
+  formatCardHead,
+  summarizeResult,
+  recordCard,
+  lastCard,
+  getCard,
+  allCards,
+} from '../ui/tool-card.mjs';
+import { detailFor } from '../ui/tool-details.mjs';
+import { paint } from '../ui/palette.mjs';
 
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
@@ -104,6 +113,9 @@ const COMMANDS = {
   '/diff':     'Git diff',
   '/cost':     'Show session cost',
   '/history':  'Show conversation',
+  '/last':     'Expand last tool output',
+  '/expand':   'Expand tool output by index (or "all")',
+  '/fold':     'Hide previously expanded tool output',
   '/compact':  'Compact conversation context',
   '/agents':   'List available agents',
   '/explore':  'Code explorer agent',
@@ -216,31 +228,24 @@ function updateStatusBar() {
 // ── Tool Display Renderer ──
 
 /**
- * Render a tool call in a transparent, informational way.
- * Shows tool name + key args on one line, no box borders for reads.
+ * Render a tool call as the head of a Mission Control card — icon + label +
+ * args. The result arrives later via `renderToolResult` and is appended as a
+ * gutter line. Sub-agent calls are indented per session.inSubAgent.
  */
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
-  const label = toolDisplayLabel(tool);
   const args = data?.args || {};
   const indent = session.inSubAgent ? '     ' : '  ';
+  const callId = data?.call_id || data?._callId || `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const summary = toolDisplaySummary(tool, args, { cwd: safeCwd() });
+  const head = formatCardHead(tool, args, {
+    cwd: safeCwd(),
+    columns: process.stderr.columns || 120,
+    indent,
+  });
 
-  // Render: ⏺ Human-readable action(summary)
-  // Use terminal width minus label and padding, minimum 60
-  const cols = process.stderr.columns || 120;
-  const maxSummary = Math.max(60, cols - label.length - 10);
-  let displaySummary = summary || '';
-  if (displaySummary.length > maxSummary) {
-    displaySummary = '...' + displaySummary.slice(-(maxSummary - 3));
-  }
-  const summaryStr = displaySummary
-    ? c.gray('(') + (tool === 'shell'
-      ? formatShellCommand(displaySummary, c)
-      : c.white(displaySummary)) + c.gray(')')
-    : '';
-  process.stderr.write(`\n${indent}${c.brand('⏺')} ${c.bold(label)}${summaryStr}\n`);
+  recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
+  process.stderr.write(`\n${head}\n`);
 }
 
 /**
@@ -254,77 +259,71 @@ function formatToolDuration(data) {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-function firstOutputLine(data) {
-  const output = data?.output_preview || data?.output || data?.message || '';
-  return String(output).split('\n').map(line => line.trim()).find(Boolean) || '';
-}
-
-function fileTypeLabel(filePath) {
-  const ext = path.extname(filePath || '').toLowerCase();
-  if (ext === '.md' || ext === '.mdx') return 'Markdown';
-  if (ext === '.json' || ext === '.jsonl') return 'JSON';
-  if (ext === '.yaml' || ext === '.yml') return 'YAML';
-  if (ext === '.toml') return 'TOML';
-  if (ext === '.csv' || ext === '.tsv') return 'tabular data';
-  if (['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.py', '.go', '.rs', '.java', '.rb', '.php', '.swift'].includes(ext)) {
-    return 'source';
-  }
-  return ext ? `${ext.slice(1).toUpperCase()} file` : 'file';
-}
-
 function renderToolResult(data, eventType = 'tool_result') {
   if (!data) return;
   const indent = session.inSubAgent ? '     ' : '  ';
-  const gutter = `${indent}${c.dim('⎿')}  `;
+  const gutter = `${indent}${paint.text.dim('⎿')}  `;
   const callId = data.call_id || data._callId;
   if (eventType === 'tool_done' && callId && _renderedToolResults.has(callId)) return;
   if (callId) _renderedToolResults.add(callId);
-  const duration = formatToolDuration(data);
-  const suffix = duration ? c.dim(` · ${duration}`) : '';
-
-  if (data._blocked) {
-    session.blockedOps++;
-    process.stderr.write(`${gutter}${c.red(firstOutputLine(data) || 'Blocked by safety guardrails')}${suffix}\n`);
-    return;
-  }
-
-  if (data.success === false) {
-    const msg = (data.error || firstOutputLine(data) || 'Failed').slice(0, 140);
-    process.stderr.write(`${gutter}${c.red(msg)}${suffix}\n`);
-    return;
-  }
 
   const tool = data.tool || data._tool || '';
-  let summary = 'Completed';
-  if (tool === 'read_file') {
-    const lines = data._total_lines || String(data.output || '').split('\n').length;
-    const filePath = data.args?.file_path || data.args?.path || '';
-    summary = `Read ${fileTypeLabel(filePath)} · ${lines} line${lines === 1 ? '' : 's'}`;
-  } else if (tool === 'read_files') {
-    summary = 'Files read';
-  } else if (tool === 'search_code' || tool === 'list_files') {
-    const lines = String(data.output || '').split('\n').filter(line => line.trim()).length;
-    summary = lines > 0 ? `${lines} result${lines === 1 ? '' : 's'}` : 'No results';
-  } else if (tool === 'write_file' || tool === 'edit_file' || tool === 'write_project') {
-    summary = 'Updated';
-  } else if (tool === 'delete_file') {
-    summary = 'Deleted';
-  } else if (data.server_side) {
-    summary = firstOutputLine(data).slice(0, 100) || 'Completed server-side';
-  } else if (tool === 'shell') {
-    summary = firstOutputLine(data).slice(0, 100) || 'Command completed';
+  const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+
+  // Update the card buffer so /last and `d` can find it.
+  if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
+
+  if (data._blocked) session.blockedOps++;
+
+  const { text, tone: t } = summarizeResult(tool, data);
+  const arrow = paint.text.dim('→');
+  const painter = t === 'success' ? paint.state.success
+                : t === 'warn'    ? paint.state.warn
+                : t === 'danger'  ? paint.state.danger
+                                  : paint.text.dim;
+  const duration = formatToolDuration(data);
+  const tail = duration ? paint.text.dim(` · ${duration}`) : '';
+  process.stderr.write(`${gutter}${arrow} ${painter(text || 'done')}${tail}\n`);
+
+  // Lint warnings stay visible alongside writes.
+  if ((tool === 'write_file' || tool === 'edit_file') && data.lint) {
+    process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
   }
+}
 
-  const renderedSummary = tool === 'shell' ? c.green(summary) : c.white(summary);
-  process.stderr.write(`${gutter}${renderedSummary}${suffix}\n`);
+// ── Expand handler — `d`, `/last`, `/expand` ───────────────────────────
+//
+// All three call into the same renderer so output is consistent across
+// keypress and slash-command paths. `expandLast` and `expandIndex` write
+// directly to stderr.
 
-  // For writes, show lint warnings
-  if (tool === 'write_file' || tool === 'edit_file') {
-    const lint = data.lint;
-    if (lint) {
-      process.stderr.write(`${gutter}${c.yellow('⚠ ' + lint.split('\n')[0].slice(0, 80))}\n`);
+function expandLast() {
+  const card = lastCard();
+  if (!card) {
+    process.stderr.write(`  ${paint.text.dim('(no tool to expand yet)')}\n`);
+    return;
+  }
+  process.stderr.write('\n' + detailFor(card) + '\n\n');
+}
+
+function expandIndex(idxOrAll) {
+  if (idxOrAll === 'all') {
+    const cards = allCards();
+    if (!cards.length) {
+      process.stderr.write(`  ${paint.text.dim('(no tools to expand yet)')}\n`);
+      return;
     }
+    process.stderr.write('\n');
+    for (const c of cards) process.stderr.write(detailFor(c) + '\n');
+    process.stderr.write('\n');
+    return;
   }
+  const card = getCard(idxOrAll);
+  if (!card) {
+    process.stderr.write(`  ${paint.text.dim('(no card at index ' + idxOrAll + ')')}\n`);
+    return;
+  }
+  process.stderr.write('\n' + detailFor(card) + '\n\n');
 }
 
 /**
@@ -748,7 +747,8 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
       }
       process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
-      process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n\n`);
+      process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
+      process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
       return;
 
     case '/login':
@@ -918,6 +918,28 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
       }
       process.stderr.write('\n');
+      return;
+
+    case '/last':
+      expandLast();
+      return;
+
+    case '/expand': {
+      const arg = rest.trim();
+      if (!arg) { expandLast(); return; }
+      if (arg === 'all') { expandIndex('all'); return; }
+      const n = Number(arg);
+      if (!Number.isFinite(n)) {
+        process.stderr.write(`  ${c.gray('Usage: /expand [n|all] — n is the 1-based index from the start of the session')}\n`);
+        return;
+      }
+      // Users pass 1-based; getCard accepts negative (-1 = last) or positive index.
+      expandIndex(n > 0 ? n - 1 : n);
+      return;
+    }
+
+    case '/fold':
+      process.stderr.write(`  ${c.gray('Output is folded by default — there is nothing to hide. Use /last or d to expand.')}\n`);
       return;
 
     case '/compact': {
@@ -1343,6 +1365,13 @@ export async function startTerminalRepl() {
           stopSpinner();
           client.cancel();
           process.exit(0);
+        }
+
+        // `d` — expand last tool card (Mission Control §6.2)
+        if (bytes.length === 1 && (bytes[0] === 0x64 || bytes[0] === 0x44)) {
+          stopSpinner();
+          expandLast();
+          return;
         }
       };
 
