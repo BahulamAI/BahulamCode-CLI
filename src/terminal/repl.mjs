@@ -272,19 +272,38 @@ function updateStatusBar() {
  * args. The result arrives later via `renderToolResult` and is appended as a
  * gutter line. Sub-agent calls are indented per session.inSubAgent.
  */
-// Set by renderToolCall, consumed by renderToolResult so we can collapse the
-// "head\n  ⎿ → outcome\n" two-line shape into a single line whenever nothing
-// else printed in between. Cleared by any handler that writes interleaving
-// content (content/thinking/sub_agent_*/delegation/etc).
-let _pendingHead = null; // { callId, head }
+// Deferred-head strategy: we DON'T print the tool head when tool_call fires.
+// Instead we buffer it and let renderToolResult emit one combined line
+// "head  → outcome · duration\n". A spinner shows what's running in the
+// meantime so the user still has feedback during slow tools.
+//
+// If something else needs to print before the result arrives (a streamed
+// content event, a sub-agent open, an error, completion), we flush the
+// buffered head as a regular two-line shape first so the interleaving
+// content lands below it.
+let _pendingHead = null; // { callId, head, indent }
 
-function clearPendingHead() { _pendingHead = null; }
+function flushPendingHead() {
+  if (!_pendingHead) return;
+  process.stderr.write(`\n${_pendingHead.head}\n`);
+  _pendingHead = null;
+}
+
+function clearPendingHead() {
+  // Called by interleaving handlers — flush as 2-line shape (because we are
+  // about to print something else) and continue.
+  flushPendingHead();
+}
 
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
   const indent = subAgentIndent();
   const callId = data?.call_id || data?._callId || `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  // If a previous head is still pending (no result yet), flush it as a
+  // regular two-line shape before starting the next one.
+  flushPendingHead();
 
   const head = formatCardHead(tool, args, {
     cwd: safeCwd(),
@@ -294,8 +313,9 @@ function renderToolCall(data) {
 
   recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  process.stderr.write(`\n${head}\n`);
-  _pendingHead = { callId, head };
+  _pendingHead = { callId, head, indent };
+  // Spinner shows what's running until the result arrives.
+  startSpinner(`${tool}…`);
 }
 
 /**
@@ -314,7 +334,9 @@ function renderToolResult(data, eventType = 'tool_result') {
   const indent = subAgentIndent();
   const gutter = `${indent}${paint.text.dim('⎿')}  `;
   const callId = data.call_id || data._callId;
-  if (eventType === 'tool_done' && callId && _renderedToolResults.has(callId)) return;
+  // Either tool_result or tool_done is allowed to render — whichever wins
+  // the race. Subsequent events for the same callId are duplicates.
+  if (callId && _renderedToolResults.has(callId)) return;
   if (callId) _renderedToolResults.add(callId);
 
   const tool = data.tool || data._tool || '';
@@ -326,35 +348,41 @@ function renderToolResult(data, eventType = 'tool_result') {
   if (data._blocked) session.blockedOps++;
 
   const { text, tone: t } = summarizeResult(tool, data);
-  const arrow = paint.text.dim('→');
+  // Em dash reads more like prose than a system arrow.
+  const arrow = paint.text.dim('—');
   const painter = t === 'success' ? paint.state.success
                 : t === 'warn'    ? paint.state.warn
                 : t === 'danger'  ? paint.state.danger
                                   : paint.text.dim;
-  const duration = formatToolDuration(data);
+  const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+  // Skip the duration tail when the tool was effectively instant (<200ms) —
+  // "1ms" / "0ms" was noise that hurt the prose feel.
+  const duration = (durationMs != null && durationMs < 200) ? '' : formatToolDuration(data);
   const tail = duration ? paint.text.dim(` · ${duration}`) : '';
   const outcome = `${arrow} ${painter(text || 'done')}${tail}`;
-
-  // ── Single-line collapse ──
-  // If nothing has interleaved between renderToolCall and this result, rewrite
-  // the head line in-place as "<head>  → outcome · duration" — saves a full
-  // row per tool call. Falls back to the two-line gutter form when the head
-  // is gone (something scrolled it away) or the combined line would not fit.
   const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
+
+  // ── Single-line combined emit ──
+  // If the head for this call is still buffered (no interleaving content
+  // landed), and the combined line fits the terminal width, emit ONE line
+  // and skip the gutter entirely.
   if (_pendingHead && _pendingHead.callId === callId && !hasLint) {
     const cols = process.stderr.columns || 120;
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
-      // Move up one line, clear it, rewrite as one line. No leading newline
-      // because the cursor is already at the start of the (now-cleared) line.
-      process.stderr.write(`\x1b[1A\x1b[2K\r${combined}\n`);
+      process.stderr.write(`\n${combined}\n`);
       _pendingHead = null;
       return;
     }
+    // Combined too wide — flush the head as 2-line and fall through.
+    flushPendingHead();
+  } else if (_pendingHead) {
+    // Stale pending head (different callId) — flush it before printing this
+    // result's gutter line below.
+    flushPendingHead();
   }
-  _pendingHead = null;
 
-  // Default two-line shape.
+  // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
 
   // Lint warnings stay visible alongside writes.
@@ -474,6 +502,9 @@ function flushContent() {
   if (!_streamBuffer) return;
 
   stopSpinner();
+  // Any buffered tool head needs to land BEFORE this content so the order
+  // is preserved on screen.
+  flushPendingHead();
   const rendered = renderMarkdown(_streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
@@ -503,6 +534,15 @@ function renderEvent(event) {
     case 'thinking': {
       const text = data?.message || data?.text || '';
       if (text && !text.startsWith('Processing')) {
+        // Surface substantive thinking text as visible prose so the user can
+        // follow the agent's reasoning, not just see a spinner blip. We
+        // print at most one line per distinct thought, dim italic.
+        if (text.length > 12 && text !== session._lastEmittedThinking) {
+          flushPendingHead();
+          stopSpinner();
+          process.stderr.write(`  ${c.italic(c.dim(text.slice(0, 200)))}\n`);
+          session._lastEmittedThinking = text;
+        }
         startSpinner(text.slice(0, 80));
         // Capture reasoning so /why can replay it.
         session.lastReasoning = text;
@@ -831,6 +871,7 @@ function renderEvent(event) {
 
     case 'paused':
       stopSpinner();
+      flushPendingHead();
       process.stderr.write(`  ${c.yellow('⏸')} Paused${data?.reason ? '  ' + c.dim(data.reason) : ''}\n`);
       break;
 
@@ -1561,6 +1602,7 @@ export async function startTerminalRepl() {
     session.toolCounts = {};
     session.subAgentCounts = {};
     session.savedUsd = 0;
+    session._lastEmittedThinking = '';
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.

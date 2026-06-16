@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, MessageSquare, DollarSign,
-  FolderOpen, Activity, Moon, Sun,
+  FolderOpen, Activity, Moon, Sun, Zap,
 } from 'lucide-react'
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
@@ -15,6 +15,7 @@ const NAV = [
   { href: '/costs',    label: 'Costs',     icon: DollarSign      },
   { href: '/projects', label: 'Projects',  icon: FolderOpen      },
   { href: '/activity', label: 'Activity',  icon: Activity        },
+  { href: '/benchmarks', label: 'Benchmarks', icon: Zap          },
 ]
 
 export function BottomNav() {

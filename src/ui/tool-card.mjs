@@ -240,9 +240,12 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
 
   if (!summary.text && !duration) return head;
 
-  const arrow = paint.text.dim('→');
+  const arrow = paint.text.dim('—');
   const body  = summary.text ? tone(summary.text, summary.tone) : '';
-  const tail  = duration ? paint.text.dim(` · ${duration}`) : '';
+  // Hide the duration tail when the tool was effectively instant (<200ms).
+  // For fast reads, "1ms" / "0ms" was noise that broke the prose feel.
+  const showDuration = duration && (durationMs == null || durationMs >= 200);
+  const tail  = showDuration ? paint.text.dim(` · ${duration}`) : '';
 
   const candidate = `${head}  ${arrow} ${body}${tail}`;
   if (visibleWidth(candidate) <= cols) return candidate;
