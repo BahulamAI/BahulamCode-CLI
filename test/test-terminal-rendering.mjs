@@ -40,12 +40,14 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
   assert.ok(rendered.includes('Documentation'));
 });
 
-test('uses action descriptions instead of raw tool identifiers', () => {
-  assert.strictEqual(toolDisplayLabel('shell'), 'Run command');
-  assert.strictEqual(toolDisplayLabel('read_file'), 'Read file');
-  assert.strictEqual(toolDisplayLabel('search_files'), 'Search files');
+test('uses present-progressive action verbs for conversational tone', () => {
+  // v2.0.2: labels read like the agent narrating ("Reading foo.py — 47 lines")
+  // instead of a structured log ("Read file foo.py · 47 lines"). See PRD-055.
+  assert.strictEqual(toolDisplayLabel('shell'), 'Running');
+  assert.strictEqual(toolDisplayLabel('read_file'), 'Reading');
+  assert.strictEqual(toolDisplayLabel('search_files'), 'Searching files');
   assert.strictEqual(toolDisplayLabel('mcp_fetch_weather'), 'Fetch weather');
-  assert.strictEqual(toolDisplayLabel('verify'), 'Verify implementation');
+  assert.strictEqual(toolDisplayLabel('verify'), 'Verifying');
 });
 
 test('uses concise structured tool summaries', () => {

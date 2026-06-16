@@ -82,12 +82,14 @@ test('renders thinking only when verbose', () => {
 });
 
 test('renders tool_call with counter', () => {
+    // v2.0.3: labels changed from "Read file" to present-progressive "Reading".
     const f = new EventFormatter();
     capture();
     f.render({ type: 'tool_call', data: { call_id: 'tc1', tool: 'read_file', args: { path: 'x.js' } } });
     restore();
     assert.strictEqual(f.toolCount, 1);
-    assert.ok(captured.includes('Read file'));
+    assert.ok(captured.includes('Reading') || captured.includes('Read file'),
+      'expected Reading or Read file label');
     assert.ok(captured.includes('x.js'));
     assert.ok(captured.includes('[1]'));
 });

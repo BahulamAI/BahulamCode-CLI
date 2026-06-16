@@ -22,7 +22,7 @@
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
-import { icon, toolFamily } from './icons.mjs';
+import { toolFamily } from './icons.mjs';
 import { term } from './term.mjs';
 import {
   toolDisplayLabel,
@@ -203,7 +203,15 @@ function tone(text, t) {
 // ── Card head (printed at invocation) ────────────────────────────────────
 
 /**
- * Render the leading half of a card — icon + colored label + args.
+ * Render the leading half of a card — colored verb + args.
+ *
+ * v2.0.3: dropped the leading tool icon (🔭/🛠️/⚙️). The label itself is a
+ * present-progressive verb so the line reads like prose:
+ *   "Reading src/ui/banner.mjs · lines 31-65 — 36 lines"
+ * The icon was decorative noise that broke the conversational feel.
+ * Mission report and sub-agent renderers still use the icons in their
+ * own contexts.
+ *
  * Width-aware: truncates args from the left when the line would overflow.
  */
 export function formatCardHead(tool, args, opts = {}) {
@@ -211,15 +219,14 @@ export function formatCardHead(tool, args, opts = {}) {
   const cols = opts.columns || term().columns || 120;
   const indent = opts.indent || '  ';
 
-  const iconText  = icon(tool);
   const label     = toolDisplayLabel(tool);
   const argsText  = formatArgs(tool, args, cwd);
 
-  const leadVisible = visibleWidth(`${indent}${iconText} ${label}`);
+  const leadVisible = visibleWidth(`${indent}${label}`);
   const budget = Math.max(20, cols - leadVisible - 4);
   const argsTruncated = truncateMiddle(argsText, budget);
 
-  const head = `${indent}${iconText} ${paintLabel(tool, label)}`;
+  const head = `${indent}${paintLabel(tool, label)}`;
   return argsTruncated ? `${head} ${argsTruncated}` : head;
 }
 

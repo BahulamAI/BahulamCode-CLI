@@ -354,7 +354,6 @@ function renderToolResult(data, eventType = 'tool_result') {
                 : t === 'warn'    ? paint.state.warn
                 : t === 'danger'  ? paint.state.danger
                                   : paint.text.dim;
-  const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
   // Skip the duration tail when the tool was effectively instant (<200ms) —
   // "1ms" / "0ms" was noise that hurt the prose feel.
   const duration = (durationMs != null && durationMs < 200) ? '' : formatToolDuration(data);

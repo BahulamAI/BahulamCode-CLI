@@ -109,7 +109,9 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         // (PRD-055 §8). Risk levels are tier strings now.
         assert.ok(output.includes('AWAITING APPROVAL') || output.includes('Tier'),
           'expected Mission Control prompt header');
-        assert.ok(output.includes('Run command'));
+        // v2.0.3: tool label is present-progressive "Running" (was "Run command").
+        assert.ok(output.includes('Running') || output.includes('Run command'),
+          'expected Running or Run command label');
         assert.ok(output.includes('npm publish'));
         assert.ok(/SHELL-(MEDIUM|DANGEROUS)/.test(output),
           'expected SHELL-MEDIUM or SHELL-DANGEROUS tier label');
