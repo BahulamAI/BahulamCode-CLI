@@ -123,6 +123,15 @@ const session = {
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
   isByok: false,       // set from session_info; hides cost + credits when true
+  // ── Subscription / credit state (server-authoritative; set from
+  //    session_info + complete events) ──
+  subscriptionTier: null,        // 'free' | 'cli' | 'pro' | 'pro_plus' | 'enterprise'
+  creditsTotal: null,            // remaining credits (included + purchased)
+  creditsIncluded: null,         // remaining included credits this period
+  creditsPurchased: null,        // remaining purchased credits
+  creditsLimit: null,            // per-period included credits limit
+  creditsCharged: 0,             // session-cumulative server-reported charges
+  creditsLowWarned: false,       // emit the low-balance hint only once per turn
 };
 
 // ── Commands ──
@@ -206,9 +215,14 @@ function buildContextStrip() {
   const elapsed = formatElapsed(session.startTime);
 
   // BYOK: user pays the provider directly, suppress credits entirely.
+  // Otherwise prefer the server-authoritative session counter, falling back
+  // to the local estimate when the backend hasn't pushed any number yet.
+  const usedCr = session.creditsCharged > 0
+    ? session.creditsCharged
+    : costToCredits(session.totalCost);
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    ...(session.isByok ? [] : [c.dim(formatCredits(costToCredits(session.totalCost)))]),
+    ...(session.isByok ? [] : [c.dim(formatCredits(usedCr))]),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -767,6 +781,15 @@ function renderEvent(event) {
       // BYOK users pay their model provider directly; the platform does not
       // charge them credits. Hide cost + credits when this flag is set.
       if (typeof data?.is_byok === 'boolean') session.isByok = data.is_byok;
+      // Subscription tier + credit balance — backend is authoritative.
+      if (data?.subscription_tier) session.subscriptionTier = data.subscription_tier;
+      if (typeof data?.credits_included_limit === 'number') session.creditsLimit = data.credits_included_limit;
+      const bal = data?.credits_balance;
+      if (bal && typeof bal === 'object') {
+        if (typeof bal.total === 'number')     session.creditsTotal = bal.total;
+        if (typeof bal.included === 'number')  session.creditsIncluded = bal.included;
+        if (typeof bal.purchased === 'number') session.creditsPurchased = bal.purchased;
+      }
       break;
     }
 
@@ -825,6 +848,33 @@ function renderEvent(event) {
       }
 
       session.lastTurnDuration = data?.duration_s || 0;
+
+      // ── Server-authoritative credits ──
+      // Backend sends usage.credits_charged (this turn) + balance (remaining)
+      // in the complete event. CLI uses these instead of the local
+      // costToCredits estimate so /status and /cost match the dashboard.
+      if (!session.isByok) {
+        const charged = data?.usage?.credits_charged;
+        if (typeof charged === 'number') session.creditsCharged += charged;
+        const bal = data?.balance;
+        if (bal && typeof bal === 'object') {
+          if (typeof bal.total === 'number')     session.creditsTotal = bal.total;
+          if (typeof bal.included === 'number')  session.creditsIncluded = bal.included;
+          if (typeof bal.purchased === 'number') session.creditsPurchased = bal.purchased;
+        }
+        // Warn once per turn when the remaining credits drop below 20% of the
+        // tier's included limit (or below 10 absolute for tiny tiers).
+        if (!session.creditsLowWarned && typeof session.creditsTotal === 'number' && session.creditsLimit) {
+          const threshold = Math.max(10, Math.floor(session.creditsLimit * 0.2));
+          if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
+            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade at codekepler.ai/pricing.`)}\n`);
+            session.creditsLowWarned = true;
+          } else if (session.creditsTotal <= 0) {
+            process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            session.creditsLowWarned = true;
+          }
+        }
+      }
 
       // Sync cumulative session cost into the orbit (status bar shows it).
       if (_orbit) _orbit.onCost(session.totalCost);
@@ -948,7 +998,18 @@ async function handleCommand(input, ctx) {
       if (session.isByok) {
         process.stderr.write(`  ${c.dim('Billing')}      ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
       } else {
-        process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+        // Server-authoritative remaining balance; fall back to the per-session
+        // charged tally when balance hasn't been pushed yet.
+        if (session.subscriptionTier) {
+          process.stderr.write(`  ${c.dim('Plan')}         ${c.brand(session.subscriptionTier.toUpperCase())}\n`);
+        }
+        if (typeof session.creditsTotal === 'number') {
+          const limit = session.creditsLimit ? ` ${c.dim('/ ' + formatCredits(session.creditsLimit))}` : '';
+          const used = session.creditsCharged ? ` ${c.dim(`(${formatCredits(session.creditsCharged)} used this session)`)}` : '';
+          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsTotal)}${limit}${used}\n`);
+        } else if (session.creditsCharged) {
+          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsCharged)} ${c.dim('(used this session)')}\n`);
+        }
       }
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
 
@@ -1031,11 +1092,17 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Kepler does not charge credits for BYOK usage.')}\n\n`);
         return;
       }
-      process.stderr.write(`\n  ${c.bold('Session Credits')}  ${c.brand(formatCredits(costToCredits(session.totalCost)))}`);
-      if (!session.costAccurate) {
-        process.stderr.write(`  ${c.yellow('(estimated)')}`);
-      }
+      // Prefer server-authoritative numbers when available.
+      const used = session.creditsCharged || 0;
+      const usedLabel = formatCredits(used);
+      process.stderr.write(`\n  ${c.bold('Session Credits')}  ${c.brand(usedLabel)}`);
+      if (used > 0 && !session.creditsCharged) process.stderr.write(`  ${c.yellow('(estimated)')}`);
       process.stderr.write('\n');
+      if (session.subscriptionTier && typeof session.creditsTotal === 'number') {
+        const remaining = formatCredits(session.creditsTotal);
+        const limit = session.creditsLimit ? ` / ${formatCredits(session.creditsLimit)}` : '';
+        process.stderr.write(`  ${c.dim('Plan')}            ${c.brand(session.subscriptionTier.toUpperCase())}  ${c.dim('· remaining')} ${c.brand(remaining)}${c.dim(limit)}\n`);
+      }
       process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
 
       if (session.costBreakdown.length > 0) {
@@ -1602,6 +1669,7 @@ export async function startTerminalRepl() {
     session.subAgentCounts = {};
     session.savedUsd = 0;
     session._lastEmittedThinking = '';
+    session.creditsLowWarned = false;
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.

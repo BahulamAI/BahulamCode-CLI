@@ -67,7 +67,7 @@ async function checkAuthAndBackend(auth, { timeoutMs = 2500 } = {}) {
     if (resp.ok) {
       const user = await resp.json().catch(() => null);
       const who = user?.github_username || user?.email || 'user';
-      return { status: 'ok', label: `Signed in as ${who} · connected` };
+      return { status: 'ok', label: `Signed in as ${who} · connected`, user };
     }
     if (resp.status === 401 || resp.status === 403) {
       return { status: 'warn', label: 'Token expired · connected', hint: '/login again to refresh' };
@@ -75,6 +75,51 @@ async function checkAuthAndBackend(auth, { timeoutMs = 2500 } = {}) {
     return { status: 'warn', label: `Backend returned ${resp.status}`, hint: 'try again shortly' };
   } catch {
     return { status: 'warn', label: 'Signed in · backend offline', hint: 'check network or try again shortly' };
+  }
+}
+
+/**
+ * Fetch subscription tier + remaining credits from /api/billing/balance.
+ * Skipped when not signed in or when the backend is offline.
+ *
+ * Returns one of:
+ *   { status, label }                 — shown as a preflight row
+ *   null                              — silent (e.g. BYOK or no signal)
+ */
+async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
+  const creds = auth.loadCredentials();
+  if (!creds.token || !creds.backendUrl) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    let resp;
+    try {
+      resp = await fetch(`${creds.backendUrl}/api/billing/balance`, {
+        headers: { 'Authorization': `Bearer ${creds.token}` },
+        signal: ctrl.signal,
+      });
+    } finally { clearTimeout(t); }
+    if (!resp.ok) return null;
+    const data = await resp.json().catch(() => null);
+    if (!data) return null;
+
+    if (data.byok_enabled) {
+      return { status: 'ok', label: `Plan: ${(data.tier || 'byok').toUpperCase()} · billed by your provider` };
+    }
+    const tier = (data.tier || 'free').toUpperCase();
+    const remaining = data.balance?.total;
+    if (typeof remaining !== 'number') {
+      return { status: 'ok', label: `Plan: ${tier}` };
+    }
+    if (remaining <= 0) {
+      return { status: 'fail', label: `Plan: ${tier} · 0 credits remaining`, hint: 'codekepler.ai/pricing to purchase or upgrade' };
+    }
+    if (remaining < 25) {
+      return { status: 'warn', label: `Plan: ${tier} · ${remaining} credits remaining`, hint: 'low balance — codekepler.ai/pricing' };
+    }
+    return { status: 'ok', label: `Plan: ${tier} · ${remaining} credits remaining` };
+  } catch {
+    return null;
   }
 }
 
@@ -272,7 +317,14 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   write('\n' + header + '\n\n');
 
   const checks = [];
-  checks.push(await checkAuthAndBackend(auth));
+  const authCheck = await checkAuthAndBackend(auth);
+  checks.push(authCheck);
+  // Only ask the backend for plan + credits when the auth row is OK; no point
+  // hitting /balance if we are not signed in or the backend is offline.
+  if (authCheck.status === 'ok') {
+    const plan = await checkCreditsAndPlan(auth);
+    if (plan) checks.push(plan);
+  }
   checks.push(checkGit(cwd));
   checks.push(checkLinters(cwd));
   checks.push(checkProjectMap(cwd));
