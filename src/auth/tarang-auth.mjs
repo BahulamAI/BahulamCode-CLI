@@ -38,7 +38,7 @@ export class TarangAuth {
             this._config = {};
         }
         return {
-            token: this._config.token || null,
+            token: process.env.KEPLER_TOKEN || this._config.token || null,
             openRouterKey: this._config.openrouter_key || process.env.OPENROUTER_API_KEY || null,
             anthropicKey: this._config.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null,
             openaiKey: this._config.openai_api_key || process.env.OPENAI_API_KEY || null,
