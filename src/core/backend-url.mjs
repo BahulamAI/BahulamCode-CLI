@@ -10,7 +10,7 @@
 const BACKEND_URLS = {
     local:       'http://127.0.0.1:8000',
     development: 'https://codekepler-backend-dev.kindisland-9034322d.eastus.azurecontainerapps.io',
-    production:  'https://codekepler-backend-prod.redsky-6d31f3e5.eastus.azurecontainerapps.io',
+    production:  'https://codekepler-backend-prod.gentlerock-9816c6b8.centralus.azurecontainerapps.io',
 };
 
 // Aliases
