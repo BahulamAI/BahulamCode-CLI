@@ -6,7 +6,7 @@
 # Use this after ANY change to framework, backend, or CLI to verify caching.
 #
 # Usage:
-#   ./benchmark/cache-check.sh                    # local backend on port 8000
+#   ./benchmark/cache-check.sh                    # local backend on port 8150
 #   ./benchmark/cache-check.sh 20.9.77.9          # remote VM
 #   ./benchmark/cache-check.sh local 8001         # local on custom port
 #
@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Parse args
 VM_HOST="${1:-local}"
-PORT="${2:-8000}"
+PORT="${2:-8150}"
 
 if [ "$VM_HOST" = "local" ]; then
     BACKEND_URL="http://127.0.0.1:${PORT}"
@@ -34,7 +34,7 @@ if [ "$VM_HOST" = "local" ]; then
     NPM_DIR="$REPO_ROOT"
     RESULTS_DIR="/tmp/cache-check"
 else
-    BACKEND_URL="http://127.0.0.1:8000"
+    BACKEND_URL="http://127.0.0.1:8150"
     RUN_CMD="ssh azureuser@${VM_HOST}"
     NPM_DIR="~/codekepler-npm"
     RESULTS_DIR="~/cache-check"
@@ -54,7 +54,7 @@ echo -n "[1/4] Backend health... "
 if [ "$VM_HOST" = "local" ]; then
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BACKEND_URL}/health" 2>/dev/null || echo "000")
 else
-    HTTP_CODE=$(ssh azureuser@${VM_HOST} "curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health" 2>/dev/null || echo "000")
+    HTTP_CODE=$(ssh azureuser@${VM_HOST} "curl -s -o /dev/null -w '%{http_code}' http://localhost:8150/health" 2>/dev/null || echo "000")
 fi
 
 if [ "$HTTP_CODE" != "200" ]; then
@@ -68,7 +68,7 @@ if [ "$HTTP_CODE" != "200" ]; then
         echo "  ssh azureuser@${VM_HOST}"
         echo "  set -a; source ~/.tarang-benchmark.env; set +a"
         echo "  cd ~/tarang-backend; source ~/backend-env/bin/activate"
-        echo "  uvicorn app.main:app --port 8000"
+        echo "  uvicorn app.main:app --port 8150"
     fi
     exit 1
 fi

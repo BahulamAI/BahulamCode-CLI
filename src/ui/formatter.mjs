@@ -307,7 +307,7 @@ export class EventFormatter {
         } else if (msg.includes('API key') || msg.includes('OpenRouter')) {
             process.stderr.write(`  ${DIM}Run /config to set up your provider${RESET}\n`);
         } else if (msg.includes('Backend') || msg.includes('Network')) {
-            process.stderr.write(`  ${DIM}Check if the backend is running at ${this.sessionInfo?.backend || 'localhost:8000'}${RESET}\n`);
+            process.stderr.write(`  ${DIM}Check if the backend is running at ${this.sessionInfo?.backend || 'localhost:8150'}${RESET}\n`);
         }
     }
 

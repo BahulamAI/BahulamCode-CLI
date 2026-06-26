@@ -32,7 +32,7 @@ class KeplerAgent:
     ):
         self.model = model
         self.backend_url = backend_url or os.environ.get(
-            "TARANG_BACKEND_URL", "http://localhost:8000"
+            "TARANG_BACKEND_URL", "http://localhost:8150"
         )
         self.default_timeout = timeout
 

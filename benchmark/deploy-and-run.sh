@@ -182,12 +182,12 @@ echo "Started: \$(date)"
 # Start backend
 cd ~/tarang-backend
 source ~/backend-env/bin/activate
-fuser -k 8000/tcp 2>/dev/null; sleep 1
-nohup uvicorn app.main:app --port 8000 > ~/backend-${RUN_ID}.log 2>&1 &
+fuser -k 8150/tcp 2>/dev/null; sleep 1
+nohup uvicorn app.main:app --port 8150 > ~/backend-${RUN_ID}.log 2>&1 &
 BACKEND_PID=\$!
 sleep 10
 
-if ! curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+if ! curl -fsS http://127.0.0.1:8150/health >/dev/null 2>&1; then
     echo "Backend failed!"; tail -20 ~/backend-${RUN_ID}.log
     kill \$BACKEND_PID 2>/dev/null; exit 1
 fi

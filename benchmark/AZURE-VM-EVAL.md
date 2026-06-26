@@ -99,10 +99,10 @@ set -a; source ~/.tarang-benchmark.env; set +a
 export LOG_DIR=~/kepler-logs
 source ~/backend-env/bin/activate
 cd ~/tarang-backend
-nohup uvicorn app.main:app --port 8000 > ~/backend.log 2>&1 &
+nohup uvicorn app.main:app --port 8150 > ~/backend.log 2>&1 &
 
 # Verify
-curl -s http://localhost:8000/health
+curl -s http://localhost:8150/health
 # Check env flags are loaded:
 tr "\0" "\n" < /proc/$(pgrep -x uvicorn | head -1)/environ | grep KEPLER
 ```
@@ -341,7 +341,7 @@ done
 
 **Backend won't start**:
 - Check `LICENSE_KEY` is set: `grep LICENSE_KEY ~/.tarang-benchmark.env`
-- Check port free: `fuser 8000/tcp` (kill if occupied)
+- Check port free: `fuser 8150/tcp` (kill if occupied)
 - Check logs: `tail -50 ~/backend.log`
 
 **Stale uvicorn from previous session**:

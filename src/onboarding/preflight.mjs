@@ -8,7 +8,7 @@
  *
  *     [✓] Auth token
  *     [✓] OpenRouter key
- *     [✓] Backend  http://127.0.0.1:8000
+ *     [✓] Backend  http://127.0.0.1:8150
  *     [✓] Git repository  main · clean
  *     [⚠] Linter (ruff) not found → /install ruff to enable lint_check
  *     [✓] Project map  142 files, Python + TypeScript

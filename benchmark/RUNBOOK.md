@@ -181,14 +181,14 @@ for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
     set -a; source ~/.tarang-benchmark.env; set +a; \
     export LOG_DIR=~/kepler-logs; \
     cd ~/tarang-backend; source ~/backend-env/bin/activate; \
-    nohup uvicorn app.main:app --port 8000 > ~/backend.log 2>&1 &'
+    nohup uvicorn app.main:app --port 8150 > ~/backend.log 2>&1 &'
 done
 
 # Verify (wait 15s)
 sleep 15
 for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
   echo -n "$IP: "
-  ssh azureuser@$IP 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health'
+  ssh azureuser@$IP 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8150/health'
   echo ""
 done
 ```
