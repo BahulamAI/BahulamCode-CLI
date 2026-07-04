@@ -208,19 +208,6 @@ export function getLoginSuccessHTML() {
             color: #8b949e;
             font-size: 16px;
         }
-        .hint {
-            margin-top: 32px;
-            padding: 16px;
-            background: #161b22;
-            border-radius: 8px;
-            border: 1px solid #30363d;
-        }
-        code {
-            background: #1f2937;
-            padding: 2px 6px;
-            border-radius: 4px;
-            color: #58a6ff;
-        }
     </style>
 </head>
 <body>
@@ -231,10 +218,6 @@ export function getLoginSuccessHTML() {
         <div class="check">&#10003;</div>
         <h1>Login Successful!</h1>
         <p>You can close this tab and return to your terminal.</p>
-        <div class="hint">
-            <p>Next step: set your API key</p>
-            <code>kepler config --openrouter-key YOUR_KEY</code>
-        </div>
     </div>
 </body>
 </html>`;
