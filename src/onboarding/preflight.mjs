@@ -30,6 +30,7 @@ import { URL } from 'node:url';
 import { paint } from '../ui/palette.mjs';
 import { icons } from '../ui/icons.mjs';
 import { term } from '../ui/term.mjs';
+import { formatMessageWindow, lowWindowStatus } from '../core/rate-limit-display.mjs';
 
 const OK   = (s) => `${paint.state.success('[✓]')} ${s}`;
 const WARN = (s) => `${paint.state.warn('[⚠]')} ${s}`;
@@ -103,10 +104,22 @@ async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
     const data = await resp.json().catch(() => null);
     if (!data) return null;
 
-    if (data.byok_enabled) {
-      return { status: 'ok', label: `Plan: ${(data.tier || 'byok').toUpperCase()} · billed by your provider` };
-    }
     const tier = (data.tier || 'free').toUpperCase();
+    const windowLabel = formatMessageWindow(data.rate_limit);
+    if (windowLabel) {
+      const status = lowWindowStatus(data.rate_limit);
+      if (status === 'exhausted') {
+        return { status: 'fail', label: windowLabel, hint: 'message window exhausted — try again after reset' };
+      }
+      if (status === 'low') {
+        return { status: 'warn', label: windowLabel, hint: 'low message window — codekepler.ai/pricing' };
+      }
+      return { status: 'ok', label: windowLabel };
+    }
+
+    if (data.byok_enabled) {
+      return { status: 'ok', label: `Plan: ${tier || 'BYOK'} · billed by your provider` };
+    }
     const remaining = data.balance?.total;
     if (typeof remaining !== 'number') {
       return { status: 'ok', label: `Plan: ${tier}` };

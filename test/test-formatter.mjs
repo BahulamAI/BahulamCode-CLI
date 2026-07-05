@@ -172,6 +172,26 @@ test('renders complete with summary', () => {
     assert.ok(captured.includes('5 tool calls'));
 });
 
+test('renders complete with message window', () => {
+    const f = new EventFormatter();
+    capture();
+    f.render({
+        type: 'complete',
+        data: {
+            summary: 'Done',
+            rate_limit: {
+                tier: 'pro',
+                msgs_used_in_window: 2,
+                msgs_per_window: 500,
+                window_reset_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            },
+        },
+    });
+    restore();
+    assert.ok(captured.includes('Messages:'));
+    assert.ok(captured.includes('498 / 500 messages this window'));
+});
+
 test('renders cancelled', () => {
     const f = new EventFormatter();
     capture();

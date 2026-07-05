@@ -81,6 +81,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     let toolCount = 0;
     let finalContent = '';
     let totalCost = 0;
+    let rateLimit = null;
 
     // ── Telemetry collectors ──
     const toolCalls = [];       // { tool, duration_ms, success }
@@ -149,7 +150,12 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 if (text) finalContent = text;
             }
 
+            if (type === 'session_info' && data?.rate_limit) {
+                rateLimit = data.rate_limit;
+            }
+
             if (type === 'complete') {
+                if (data?.rate_limit) rateLimit = data.rate_limit;
                 totalCost = data?.cost || data?.total_cost || 0;
                 if (data?.usage?.total_cost) totalCost = data.usage.total_cost;
                 // Capture token usage
@@ -164,7 +170,13 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             }
 
             if (type === 'error') {
-                emit({ type: 'error', error: data?.message || 'Unknown error' });
+                emit({
+                    type: 'error',
+                    error: data?.message || 'Unknown error',
+                    code: data?.code,
+                    retry_after: data?.retry_after,
+                    rate_limit: data?.rate_limit || null,
+                });
             }
 
             // ── Cost guard ──
@@ -202,6 +214,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         usage,
         duration_s: Math.round(durationS * 10) / 10,
         cost_usd: totalCost,
+        rate_limit: rateLimit,
         model: model || 'default',
         content_length: finalContent.length,
     });

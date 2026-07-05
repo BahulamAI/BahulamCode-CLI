@@ -36,6 +36,7 @@ import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
+import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -132,6 +133,8 @@ const session = {
   creditsLimit: null,            // per-period included credits limit
   creditsCharged: 0,             // session-cumulative server-reported charges
   creditsLowWarned: false,       // emit the low-balance hint only once per turn
+  rateLimit: null,               // rolling message-window state from backend
+  msgsLowWarned: false,          // emit the low-window hint only once per turn
 };
 
 // ── Commands ──
@@ -222,6 +225,7 @@ function buildContextStrip() {
     : costToCredits(session.totalCost);
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
+    ...(session.rateLimit && !session.isByok ? [c.dim(formatMessageChip(session.rateLimit))] : []),
     ...(session.isByok ? [] : [c.dim(formatCredits(usedCr))]),
     c.dim(elapsed),
   ].join(c.dim(' · '));
@@ -269,10 +273,21 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
+  if (session.rateLimit && !session.isByok) parts.push(formatMessageChip(session.rateLimit));
   if (turnCost > 0 && !session.isByok) parts.push(formatCredits(costToCredits(turnCost)));
   if (parts.length > 0) {
     process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
   }
+}
+
+function formatMessageChip(rateLimit) {
+  const remaining = messagesRemaining(rateLimit);
+  if (remaining === Infinity) return 'unlimited messages';
+  const limit = Number(rateLimit?.msgs_per_window);
+  if (typeof remaining === 'number' && Number.isFinite(limit)) {
+    return `${remaining}/${limit} messages`;
+  }
+  return 'messages';
 }
 
 function updateStatusBar() {
@@ -790,6 +805,7 @@ function renderEvent(event) {
         if (typeof bal.included === 'number')  session.creditsIncluded = bal.included;
         if (typeof bal.purchased === 'number') session.creditsPurchased = bal.purchased;
       }
+      if (data?.rate_limit) session.rateLimit = data.rate_limit;
       break;
     }
 
@@ -848,12 +864,24 @@ function renderEvent(event) {
       }
 
       session.lastTurnDuration = data?.duration_s || 0;
+      if (data?.rate_limit) session.rateLimit = data.rate_limit;
 
       // ── Server-authoritative credits ──
       // Backend sends usage.credits_charged (this turn) + balance (remaining)
       // in the complete event. CLI uses these instead of the local
       // costToCredits estimate so /status and /cost match the dashboard.
       if (!session.isByok) {
+        const msgStatus = lowWindowStatus(session.rateLimit);
+        if (!session.msgsLowWarned && msgStatus !== 'ok') {
+          const windowLine = formatMessageWindow(session.rateLimit);
+          if (msgStatus === 'exhausted') {
+            process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at codekepler.ai/pricing.`)}\n`);
+          } else {
+            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
+          }
+          session.msgsLowWarned = true;
+        }
+
         const charged = data?.usage?.credits_charged;
         if (typeof charged === 'number') session.creditsCharged += charged;
         const bal = data?.balance;
@@ -1003,6 +1031,10 @@ async function handleCommand(input, ctx) {
         if (session.subscriptionTier) {
           process.stderr.write(`  ${c.dim('Plan')}         ${c.brand(session.subscriptionTier.toUpperCase())}\n`);
         }
+        const messageWindow = formatMessageWindow(session.rateLimit);
+        if (messageWindow) {
+          process.stderr.write(`  ${c.dim('Messages')}     ${messageWindow}\n`);
+        }
         if (typeof session.creditsTotal === 'number') {
           const limit = session.creditsLimit ? ` ${c.dim('/ ' + formatCredits(session.creditsLimit))}` : '';
           const used = session.creditsCharged ? ` ${c.dim(`(${formatCredits(session.creditsCharged)} used this session)`)}` : '';
@@ -1102,6 +1134,10 @@ async function handleCommand(input, ctx) {
         const remaining = formatCredits(session.creditsTotal);
         const limit = session.creditsLimit ? ` / ${formatCredits(session.creditsLimit)}` : '';
         process.stderr.write(`  ${c.dim('Plan')}            ${c.brand(session.subscriptionTier.toUpperCase())}  ${c.dim('· remaining')} ${c.brand(remaining)}${c.dim(limit)}\n`);
+      }
+      const messageWindow = formatMessageWindow(session.rateLimit);
+      if (messageWindow) {
+        process.stderr.write(`  ${c.dim('Messages')}        ${messageWindow}\n`);
       }
       process.stderr.write(`  ${c.dim('─'.repeat(70))}\n`);
 
@@ -1670,6 +1706,7 @@ export async function startTerminalRepl() {
     session.savedUsd = 0;
     session._lastEmittedThinking = '';
     session.creditsLowWarned = false;
+    session.msgsLowWarned = false;
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.

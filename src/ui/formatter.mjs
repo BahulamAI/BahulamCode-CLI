@@ -9,6 +9,7 @@
  */
 
 import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { formatMessageWindow } from '../core/rate-limit-display.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -65,6 +66,9 @@ export class EventFormatter {
                 this._toolDone(data);
                 return true;
             case 'complete':
+                if (data?.rate_limit) {
+                    this.sessionInfo = { ...(this.sessionInfo || {}), rate_limit: data.rate_limit };
+                }
                 this._complete(data);
                 return true;
             case 'error':
@@ -332,6 +336,11 @@ export class EventFormatter {
             process.stderr.write(`\n  ${GREEN}✓ ${summary}${stats}${RESET}\n`);
         } else {
             process.stderr.write(`\n  ${GREEN}✓ Done${stats}${RESET}\n`);
+        }
+
+        const rateLimitLine = formatMessageWindow(data?.rate_limit || this.sessionInfo?.rate_limit);
+        if (rateLimitLine) {
+            process.stderr.write(`  ${DIM}Messages: ${rateLimitLine}${RESET}\n`);
         }
 
         // Token usage if available

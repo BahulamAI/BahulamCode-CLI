@@ -175,6 +175,40 @@ await test('401 yields auth error', async () => {
     assert.ok(events[0].data.message.includes('Authentication failed'));
 });
 
+// Test 5: 429 yields message-window error
+await test('429 yields friendly rate limit error', async () => {
+    const server = http.createServer((req, res) => {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            detail: {
+                code: 'message_limit_reached',
+                retry_after: 3660,
+                rate_limit: {
+                    tier: 'pro',
+                    msgs_used_in_window: 500,
+                    msgs_per_window: 500,
+                    retry_after: 3660,
+                },
+            },
+        }));
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+    assert.strictEqual(events[0].type, 'error');
+    assert.strictEqual(events[0].data.code, 'message_limit_reached');
+    assert.ok(events[0].data.message.includes('Message limit reached'));
+    assert.ok(events[0].data.message.includes('1h 1m'));
+});
+
 // Test 5: Plan event with milestones
 await test('plan event with milestones', async () => {
     const { server, port } = await createMockServer([

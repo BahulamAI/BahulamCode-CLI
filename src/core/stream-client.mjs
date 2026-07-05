@@ -11,6 +11,7 @@
 
 import { sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
+import { rateLimitErrorMessage } from './rate-limit-display.mjs';
 
 export const EVENT_TYPES = Object.freeze({
     // Phase 1 — handled
@@ -116,6 +117,27 @@ export class TarangStreamClient {
 
         if (response.status === 401) {
             yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `kepler login` to re-authenticate.', fatal: true } };
+            return;
+        }
+        if (response.status === 429) {
+            const text = await response.text().catch(() => '');
+            let payload = null;
+            try {
+                payload = text ? JSON.parse(text) : null;
+            } catch {
+                payload = { detail: { message: text } };
+            }
+            const detail = payload?.detail && typeof payload.detail === 'object' ? payload.detail : payload;
+            yield {
+                type: EVENT_TYPES.ERROR,
+                data: {
+                    message: rateLimitErrorMessage(payload),
+                    code: detail?.code || 'rate_limited',
+                    retry_after: detail?.retry_after ?? detail?.rate_limit?.retry_after,
+                    rate_limit: detail?.rate_limit || null,
+                    fatal: true,
+                },
+            };
             return;
         }
         if (!response.ok) {
