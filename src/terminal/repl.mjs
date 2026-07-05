@@ -921,9 +921,8 @@ function renderEvent(event) {
           success: successOverall,
           filesChanged: session.filesChanged,
           toolCounts: session.toolCounts,
-          subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
-          // BYOK users pay their provider directly; suppress cost in the report.
-          costUsd: session.isByok ? null : (turnCost || session.totalCost),
+          subAgents: { ...session.subAgentCounts, savedUsd: 0 },
+          costUsd: null,
           durationS: data?.duration_s,
           testsPass: data?.tests_passed != null
             ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
