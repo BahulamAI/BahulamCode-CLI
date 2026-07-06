@@ -125,12 +125,11 @@ export class EventFormatter {
 
     _status(data) {
         const msg = data?.message || '';
-        // Skip noisy statuses
+        // Skip noisy per-turn statuses. Backend emits "Creating agent..." and
+        // "Task type: ..." on every SSE turn (v3_sse.py:566), not just the first —
+        // repeating them clutters the transcript.
         if (!msg || msg === 'Agent started') return;
-        if (msg.startsWith('Creating agent') || msg.startsWith('Task type:')) {
-            process.stderr.write(`${DIM}  ${msg}${RESET}\n`);
-            return;
-        }
+        if (msg.startsWith('Creating agent') || msg.startsWith('Task type:')) return;
         process.stderr.write(`  ${this._spinner()} ${CYAN}${msg}${RESET}\n`);
     }
 

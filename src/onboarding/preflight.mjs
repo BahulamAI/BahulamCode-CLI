@@ -38,18 +38,22 @@ const FAIL = (s) => `${paint.state.danger('[✗]')} ${s}`;
 
 // ── Individual checks (each returns { status, label, hint? }) ──────────
 
-async function checkAuthAndBackend(auth, { timeoutMs = 2500 } = {}) {
+async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
   const creds = auth.loadCredentials();
   const hasToken = !!creds.token;
   const url = creds.backendUrl;
+  // Local Docker backends round-trip Supabase and often take 2–4s. Give them
+  // more headroom so preflight doesn't falsely report Offline.
+  const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:|$|\/)/i.test(url || '');
+  timeoutMs = timeoutMs ?? (isLocal ? 8000 : 2500);
 
   // No token: just probe whether the backend is reachable so we can hint
   // /login when it makes sense.
   if (!hasToken) {
     const reachable = url ? await ping(url, timeoutMs).catch(() => false) : false;
     return reachable
-      ? { status: 'warn', label: 'Not signed in · backend ready', hint: '/login to sign in' }
-      : { status: 'warn', label: 'Not signed in · backend offline', hint: '/login once the network is back' };
+      ? { status: 'warn', label: 'Online', hint: '/login to sign in' }
+      : { status: 'warn', label: 'Offline' };
   }
 
   // Token present: real authenticated round-trip against /api/user/me.
@@ -67,15 +71,14 @@ async function checkAuthAndBackend(auth, { timeoutMs = 2500 } = {}) {
 
     if (resp.ok) {
       const user = await resp.json().catch(() => null);
-      const who = user?.github_username || user?.email || 'user';
-      return { status: 'ok', label: `Signed in as ${who} · connected`, user };
+      return { status: 'ok', label: 'Online', user };
     }
     if (resp.status === 401 || resp.status === 403) {
-      return { status: 'warn', label: 'Token expired · connected', hint: '/login again to refresh' };
+      return { status: 'warn', label: 'Online', hint: '/login again to refresh' };
     }
-    return { status: 'warn', label: `Backend returned ${resp.status}`, hint: 'try again shortly' };
+    return { status: 'warn', label: 'Offline' };
   } catch {
-    return { status: 'warn', label: 'Signed in · backend offline', hint: 'check network or try again shortly' };
+    return { status: 'warn', label: 'Offline' };
   }
 }
 
