@@ -99,6 +99,11 @@ const sessionBLines = [
 
 fs.writeFileSync(sessionAPath, sessionALines.map((line) => JSON.stringify(line)).join('\n') + '\n');
 fs.writeFileSync(sessionBPath, sessionBLines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+const now = Date.now();
+const sessionAMtime = new Date(now - 120_000);
+const sessionBMtime = new Date(now - 60_000);
+fs.utimesSync(sessionAPath, sessionAMtime, sessionAMtime);
+fs.utimesSync(sessionBPath, sessionBMtime, sessionBMtime);
 fs.writeFileSync(historyPath, [
   JSON.stringify({ display: 'Build the Kepler dashboard', timestamp: Date.parse('2026-04-26T10:00:00.000Z'), project: '/tmp/demo-project', sessionId: 'sess-A' }),
   JSON.stringify({ display: 'Show usage history', timestamp: Date.parse('2026-04-27T08:30:00.000Z'), project: '/tmp/demo-project', sessionId: 'sess-B' }),
