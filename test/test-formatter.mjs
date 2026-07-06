@@ -37,6 +37,27 @@ test('renders status event', () => {
     assert.ok(captured.includes('Working...'));
 });
 
+test('suppresses noisy agent creation statuses', () => {
+    const f = new EventFormatter();
+    capture();
+    const handledCreating = f.render({ type: 'status', data: { message: 'Creating agent...' } });
+    const handledTaskType = f.render({ type: 'status', data: { message: 'Task type: code' } });
+    const handledAgentStarted = f.render({ type: 'status', data: { message: 'Agent started' } });
+    restore();
+    assert.ok(handledCreating);
+    assert.ok(handledTaskType);
+    assert.ok(handledAgentStarted);
+    assert.strictEqual(captured, '');
+});
+
+test('still renders useful status after suppression', () => {
+    const f = new EventFormatter();
+    capture();
+    f.render({ type: 'status', data: { message: 'Indexing project...' } });
+    restore();
+    assert.ok(captured.includes('Indexing project...'));
+});
+
 test('renders session_info (verbose)', () => {
     const f = new EventFormatter({ verbose: true });
     capture();

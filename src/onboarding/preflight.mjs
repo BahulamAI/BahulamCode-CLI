@@ -38,7 +38,7 @@ const FAIL = (s) => `${paint.state.danger('[✗]')} ${s}`;
 
 // ── Individual checks (each returns { status, label, hint? }) ──────────
 
-async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
+export async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
   const creds = auth.loadCredentials();
   const hasToken = !!creds.token;
   const url = creds.backendUrl;
@@ -90,7 +90,7 @@ async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
  *   { status, label }                 — shown as a preflight row
  *   null                              — silent (e.g. BYOK or no signal)
  */
-async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
+export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
   const creds = auth.loadCredentials();
   if (!creds.token || !creds.backendUrl) return null;
   try {
