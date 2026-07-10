@@ -329,7 +329,7 @@ export class TarangStreamClient {
         }
 
         // Use the same ApprovalManager for consistent UX
-        const { approved, reason: denyReason } = await this.approval.check(
+        const { approved, reason: denyReason, scope: approvedScope } = await this.approval.check(
             tool,
             args || {},
             true,
@@ -345,6 +345,8 @@ export class TarangStreamClient {
                 scope = 'all';
             } else if (this.approval.approvedToolTypes.has(tool)) {
                 scope = 'type';
+            } else if (approvedScope) {
+                scope = String(approvedScope).toLowerCase();
             } else {
                 scope = 'once';
             }

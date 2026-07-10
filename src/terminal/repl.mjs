@@ -23,6 +23,7 @@ import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
+import { HookRunner } from '../config/hook-runner.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -40,6 +41,9 @@ import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
+import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
+import { loadProjectContext } from '../core/project-context-loader.mjs';
+import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { toolDisplayLabel } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
@@ -150,6 +154,7 @@ const COMMANDS = {
   '/diff':     'Git diff',
   '/cost':     'Show session cost',
   '/history':  'Show conversation',
+  '/settings': 'Show policy/settings',
   '/last':     'Expand last tool output',
   '/expand':   'Expand tool output by index (or "all")',
   '/fold':     'Hide previously expanded tool output',
@@ -217,16 +222,8 @@ function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const elapsed = formatElapsed(session.startTime);
 
-  // BYOK: user pays the provider directly, suppress credits entirely.
-  // Otherwise prefer the server-authoritative session counter, falling back
-  // to the local estimate when the backend hasn't pushed any number yet.
-  const usedCr = session.creditsCharged > 0
-    ? session.creditsCharged
-    : costToCredits(session.totalCost);
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    ...(session.rateLimit && !session.isByok ? [c.dim(formatMessageChip(session.rateLimit))] : []),
-    ...(session.isByok ? [] : [c.dim(formatCredits(usedCr))]),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -273,8 +270,6 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   const parts = [];
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
-  if (session.rateLimit && !session.isByok) parts.push(formatMessageChip(session.rateLimit));
-  if (turnCost > 0 && !session.isByok) parts.push(formatCredits(costToCredits(turnCost)));
   if (parts.length > 0) {
     process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
   }
@@ -891,11 +886,12 @@ function renderEvent(event) {
           if (typeof bal.purchased === 'number') session.creditsPurchased = bal.purchased;
         }
         // Warn once per turn when the remaining credits drop below 20% of the
-        // tier's included limit (or below 10 absolute for tiny tiers).
+        // tier's included limit (or below 10 absolute for tiny tiers). Credits
+        // stay out of the always-on prompt strip; this warning is the exception.
         if (!session.creditsLowWarned && typeof session.creditsTotal === 'number' && session.creditsLimit) {
           const threshold = Math.max(10, Math.floor(session.creditsLimit * 0.2));
           if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
-            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade at codekepler.ai/pricing.`)}\n`);
+            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
             process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
@@ -931,6 +927,7 @@ function renderEvent(event) {
           nextActions: successOverall
             ? ['/commit', '/pr', '/undo', '/report']
             : ['/why', '/undo', '/re-plan'],
+          cwd: safeCwd(),
         });
         process.stderr.write(report + '\n');
       } else {
@@ -1004,6 +1001,42 @@ async function handleCommand(input, ctx) {
     }
 
     case '/status': {
+      if (rest.trim() === 'context') {
+        const current = ctx.latestProjectContext || loadProjectContext({ cwd: safeCwd() });
+        const envelope = ctx.latestEnvelope || buildContextEnvelope({
+          cwd: safeCwd(),
+          effectivePolicy: ctx.effectivePolicy,
+          projectContext: current,
+          projectResources: ctx.toolExecutor?.getProjectResources?.() || [],
+          agentContext: ctx.toolExecutor?.getAgentContext?.() || {},
+        });
+        process.stderr.write(`\n  ${c.bold('Context')}\n`);
+        process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+        const loaded = current.loaded || [];
+        if (!loaded.length) {
+          process.stderr.write(`  ${c.dim('No .kepler context files loaded yet.')}\n`);
+        } else {
+          for (const file of loaded) {
+            const changed = file.changed ? ` ${c.yellow('updated')}` : '';
+            process.stderr.write(`  ${c.brand(file.label.padEnd(18))} ${c.dim(file.hash)} ${c.dim(file.path)}${changed}\n`);
+          }
+        }
+        process.stderr.write(`\n  ${c.bold('Command Context')}\n`);
+        process.stderr.write(`  ${c.dim('Active')}       ${envelope.command_context.active_command || c.dim('(none)')}\n`);
+        process.stderr.write(`  ${c.dim('Source')}       ${envelope.command_context.source}\n`);
+        process.stderr.write(`  ${c.dim('Timeout')}      ${envelope.command_context.runtime_limits.command_timeout_seconds}s command, ${envelope.command_context.runtime_limits.tool_timeout_seconds}s tool\n`);
+        process.stderr.write(`  ${c.dim('Plan owner')}   ${envelope.effective_options.plan_owner}\n`);
+        process.stderr.write(`  ${c.dim('HITL scope')}   ${envelope.effective_options.hitl_default_scope} ${c.dim(`(reask ${envelope.effective_options.reask_after_minutes}m)`)}\n`);
+        if (envelope.available_skills.length) {
+          process.stderr.write(`\n  ${c.bold('Skills')}\n`);
+          for (const skill of envelope.available_skills.slice(0, 12)) {
+            process.stderr.write(`  ${c.brand(skill.name)} ${c.dim(skill.scope)} ${c.dim(skill.description || '')}\n`);
+          }
+        }
+        process.stderr.write('\n');
+        return;
+      }
+
       const creds = ctx.auth.loadCredentials();
       const env = process.env.TARANG_ENV || 'production';
       const os = await import('node:os');
@@ -1054,6 +1087,9 @@ async function handleCommand(input, ctx) {
       if (approvalSummary.autoApprovedTypes.length > 0) {
         process.stderr.write(`  ${c.dim('Auto-types')}   ${approvalSummary.autoApprovedTypes.join(', ')}\n`);
       }
+      if (approvalSummary.trust) {
+        process.stderr.write(`  ${c.dim('Trust')}        ${approvalSummary.trust.sessionRules} session, ${approvalSummary.trust.projectRules} project rules\n`);
+      }
       process.stderr.write(`  ${c.dim('Blocked')}      ${session.blockedOps} by safety guardrails\n`);
 
       // Orchestration
@@ -1090,6 +1126,30 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('Platform')}     ${process.platform} ${os.arch()}\n`);
       process.stderr.write(`  ${c.dim('Heap')}         ${(mem.heapUsed / 1024 / 1024).toFixed(0)} MB\n`);
       process.stderr.write(`  ${c.dim('Memory')}       ${((os.totalmem() - os.freemem()) / 1024 / 1024 / 1024).toFixed(1)}G / ${(os.totalmem() / 1024 / 1024 / 1024).toFixed(1)}G\n\n`);
+      return;
+    }
+
+    case '/settings': {
+      const sub = rest.trim() || 'policy';
+      if (sub !== 'policy') {
+        process.stderr.write(`  ${c.gray('Usage: /settings policy')}\n`);
+        return;
+      }
+      const effective = loadEffectivePolicy({ cwd: safeCwd() });
+      ctx.effectivePolicy = effective;
+      const rows = formatPolicySourceRows(effective);
+      process.stderr.write(`\n  ${c.bold('Effective Policy')}\n`);
+      process.stderr.write(`  ${c.dim('─'.repeat(86))}\n`);
+      for (const row of rows.slice(0, 80)) {
+        const value = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+        process.stderr.write(`  ${c.brand(row.key.padEnd(38))} ${c.dim(row.source.padEnd(8))} ${String(value).slice(0, 34)}\n`);
+      }
+      if (rows.length > 80) process.stderr.write(`  ${c.dim(`...and ${rows.length - 80} more`)}\n`);
+      const projectLayer = effective.layers.find(l => l.name === 'project');
+      if (projectLayer?.error) {
+        process.stderr.write(`\n  ${c.yellow('Project config error:')} ${projectLayer.error}\n`);
+      }
+      process.stderr.write('\n');
       return;
     }
 
@@ -1170,11 +1230,27 @@ async function handleCommand(input, ctx) {
         `${''.padStart(10)}` +
         `${formatCredits(costToCredits(session.totalCost)).padStart(10)}\n`
       );
-      process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}  Provider: ${formatCostValue(session.totalCost)}`)}\n\n`);
+      process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}`)}\n\n`);
       return;
     }
 
     case '/history':
+      if (rest.trim() === 'approvals') {
+        const entries = ctx.approval?.approvalLog?.readRecent?.(20) || [];
+        if (!entries.length) {
+          process.stderr.write(`  ${c.gray('No approval log entries yet.')}\n`);
+          return;
+        }
+        process.stderr.write(`\n  ${c.bold('Approval History')}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+        for (const e of entries) {
+          const when = e.ts ? String(e.ts).slice(0, 19).replace('T', ' ') : '';
+          const decision = e.decision?.includes('reject') || e.decision?.includes('deny') ? c.red(e.decision) : c.green(e.decision);
+          process.stderr.write(`  ${c.dim(when)}  ${decision}  ${c.brand(e.tool || '?')}  ${c.dim(e.scope || 'once')}  ${c.dim(e.args || '')}\n`);
+        }
+        process.stderr.write('\n');
+        return;
+      }
       if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
       process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
@@ -1255,6 +1331,7 @@ async function handleCommand(input, ctx) {
         costUsd: session.isByok ? null : session.totalCost,
         durationS: (Date.now() - session.startTime) / 1000,
         nextActions: ['/commit', '/pr', '/undo'],
+        cwd: safeCwd(),
       };
       const out = saveReport(state, { cwd: safeCwd() });
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Saved')} ${out}\n`);
@@ -1548,9 +1625,13 @@ export async function startTerminalRepl() {
   // Projects are registered and indexed on demand through get_project_overview.
   // CheckpointManager records per-file snapshots before edits so /undo works.
   const checkpoints = new CheckpointManager(safeCwd());
-  const toolExecutor = createToolExecutor({ checkpoints });
+  let effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
+  let latestProjectContext = null;
+  let latestEnvelope = null;
+  const hookRunner = new HookRunner({ cwd: safeCwd() });
+  const toolExecutor = createToolExecutor({ checkpoints, hookRunner });
   const skipPerms = cliArgs.freeswim;
-  const approval = new ApprovalManager({ autoApprove: skipPerms });
+  const approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
   // Session manager — persists conversation messages to .kepler/conversations/
   const sessionMgr = new SessionManager(safeCwd());
@@ -1562,7 +1643,7 @@ export async function startTerminalRepl() {
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
 
   // ── Print banner + preflight + init BEFORE mounting the status bar ──
   // The status bar shrinks the scroll region; if it mounts first, the
@@ -1836,8 +1917,36 @@ export async function startTerminalRepl() {
 
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;
-      execContext.project_resources = toolExecutor.getProjectResources();
-      execContext.agent_context = toolExecutor.getAgentContext();
+      effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
+      approval.policy = effectivePolicy.policy;
+      if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
+      hookRunner.reload();
+      latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous: latestProjectContext });
+      const promptHook = await hookRunner.run('UserPromptSubmit', {
+        input: { prompt: input },
+        turnId: String(session.turns),
+      });
+      latestEnvelope = buildContextEnvelope({
+        cwd: safeCwd(),
+        effectivePolicy,
+        projectContext: latestProjectContext,
+        activeHints: (promptHook.results || [])
+          .map(r => r.parsed?.feedback)
+          .filter(Boolean)
+          .map(text => ({ source: 'hook', kind: 'feedback', text, ttl_turns: 1, priority: 'medium' })),
+        projectResources: toolExecutor.getProjectResources(),
+        agentContext: toolExecutor.getAgentContext(),
+      });
+      ctx.effectivePolicy = effectivePolicy;
+      ctx.latestProjectContext = latestProjectContext;
+      ctx.latestEnvelope = latestEnvelope;
+      Object.assign(execContext, latestEnvelope);
+      if (skipPerms) execContext.freeswim = true;
+      for (const file of latestProjectContext.changed || []) {
+        if (effectivePolicy.policy.context?.showReloadNotice) {
+          process.stderr.write(`  ${c.dim(`[Context] ${file.label} updated — re-read`)}\n`);
+        }
+      }
 
       for await (const event of client.execute(input, execContext, session.history)) {
         if (event.type === 'plan_created' || event.type === 'goal_created') {
@@ -1869,6 +1978,7 @@ export async function startTerminalRepl() {
         // Local JSONL: capture session ID from backend
         if (event.type === 'session_info' && event.data?.session_id) {
           jsonlWriter.setSessionId(event.data.session_id);
+          hookRunner.sessionId = event.data.session_id;
         }
 
         // Local JSONL: accumulate tool calls
@@ -1910,6 +2020,7 @@ export async function startTerminalRepl() {
 
   rl.on('close', async () => {
     stopSpinner();
+    await hookRunner.run('Stop', { input: { session_id: session.id || '' } });
     await jsonlWriter.close();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);
     process.exit(0);

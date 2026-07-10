@@ -233,6 +233,9 @@ function formatResource(resource) {
     if (resource.project_context) {
         lines.push('', '--- Project Context ---', resource.project_context);
     }
+    if (resource.style) {
+        lines.push('', '--- Project Style ---', resource.style);
+    }
     if (resource.goal) {
         lines.push('', '--- Current Goal ---', resource.goal);
     }
@@ -261,16 +264,21 @@ function _scanSkills(keplerDir) {
     const skillsDir = path.join(keplerDir, 'skills');
     if (!fs.existsSync(skillsDir)) return [];
     try {
-        return fs.readdirSync(skillsDir)
-            .filter(f => f.endsWith('.md'))
-            .map(f => {
-                const content = fs.readFileSync(path.join(skillsDir, f), 'utf-8');
+        return fs.readdirSync(skillsDir, { withFileTypes: true })
+            .map(entry => {
+                const file = entry.isDirectory()
+                    ? path.join(skillsDir, entry.name, 'SKILL.md')
+                    : path.join(skillsDir, entry.name);
+                if (!fs.existsSync(file) || !file.endsWith('.md')) return null;
+                const content = fs.readFileSync(file, 'utf-8');
                 const descMatch = content.match(/^#\s+.*\n+(.+)/);
                 return {
-                    name: f.replace('.md', ''),
-                    description: descMatch ? descMatch[1].slice(0, 100) : f.replace('.md', ''),
+                    name: entry.isDirectory() ? entry.name : entry.name.replace('.md', ''),
+                    description: content.match(/^description:\s*(.+)$/mi)?.[1]?.trim()
+                        || (descMatch ? descMatch[1].slice(0, 100) : entry.name.replace('.md', '')),
                 };
-            });
+            })
+            .filter(Boolean);
     } catch { return []; }
 }
 
@@ -382,10 +390,13 @@ export class ProjectRegistry {
             fs.writeFileSync(resourcePath, JSON.stringify(resource));
         }
 
-        // Read project-level context files (.kepler/project.md, goal.md, skills/)
+        // Read project-level context files (.kepler/KEPLER.md, project.md, goal.md, plan.md, style.md, skills/)
         const keplerDir = path.join(root, '.kepler');
         resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(keplerDir, 'project.md', 8000);
+        resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
+            _readIfExists(root, 'KEPLER.md', 10000) ||
+            _readIfExists(keplerDir, 'project.md', 8000);
+        resource.style = _readIfExists(keplerDir, 'style.md', 4000);
         resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
         resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
         resource.skills_index = _scanSkills(keplerDir);

@@ -1,5 +1,5 @@
 /**
- * System Prompt Builder — loads and merges CLAUDE.md files.
+ * System Prompt Builder — loads and merges CLAUDE.md and KEPLER.md files.
  *
  * Features:
  * - Loads CLAUDE.md from: ~/.claude/CLAUDE.md, project root, parent dirs
@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { loadKeplerMemory } from '../config/memory-loader.mjs';
 
 /**
  * Load all CLAUDE.md files and merge them in order.
@@ -85,6 +86,10 @@ export function buildSystemPrompt({ cwd, tools, override, addDirs } = {}) {
     }
 
     for (const f of mdFiles) {
+        parts.push(f.content);
+    }
+
+    for (const f of loadKeplerMemory({ cwd })) {
         parts.push(f.content);
     }
 

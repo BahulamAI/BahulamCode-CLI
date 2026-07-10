@@ -47,6 +47,12 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'init') {
+    const { runInitCommand } = await import('./init.mjs');
+    await runInitCommand(subcommandArgs);
+    return;
+  }
+
   if (subcommand === 'skills' || subcommand === 'skill') {
     const { runSkillsCommand } = await import('./skills.mjs');
     try {
@@ -103,6 +109,7 @@ async function main() {
     kepler dashboard          Open Kepler Pulse analytics dashboard
     kepler login              Sign in via browser
     kepler logout             Sign out and clear credentials
+    kepler init               Scaffold .kepler config, memory, hooks, tasks
     kepler version            Show version
 
   \x1b[1mAnalytics:\x1b[0m

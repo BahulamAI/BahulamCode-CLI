@@ -6,6 +6,7 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
+import { renderMissionReport } from '../src/ui/mission-report.mjs';
 
 let passed = 0;
 
@@ -121,6 +122,20 @@ test('renders diff additions and removals with semantic colors', () => {
   const rendered = renderDiff('@@ -1 +1 @@\n-old\n+new');
   assert.ok(rendered.includes('\x1b[31m-old'));
   assert.ok(rendered.includes('\x1b[32m+new'));
+});
+
+test('mission report omits old title and keeps tools/time on one line', () => {
+  const rendered = stripAnsi(renderMissionReport({
+    task: 'fix auth',
+    success: true,
+    toolCounts: { shell: 5 },
+    durationS: 19.9,
+    repo: 'codekepler-npm',
+    author: 'Ravi',
+  }));
+  assert.ok(!rendered.includes('MISSION ACCOMPLISHED'));
+  assert.ok(rendered.includes('Repo codekepler-npm · Author Ravi'));
+  assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

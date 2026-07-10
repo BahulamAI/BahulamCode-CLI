@@ -15,6 +15,7 @@ import { classifyCommand, isExitCodeError } from '../permissions/command-classif
 import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
+import { HookRunner } from '../config/hook-runner.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -29,6 +30,7 @@ export function createToolExecutor({
     projectRegistry = new ProjectRegistry(),
     skillsLoader = new SkillsLoader().load(process.cwd()),
     checkpoints = null,
+    hookRunner = null,
 } = {}) {
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
@@ -875,8 +877,21 @@ print('OK: replaced')
             if (!handler) {
                 return { success: false, output: `Unknown tool: ${name}`, _tool: name };
             }
+            const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
             try {
-                return await handler(args);
+                const pre = await hooks.run('PreToolUse', { toolName: name, input: args || {} });
+                if (pre.blocked) {
+                    return { success: false, output: `BLOCKED by hook: ${pre.message}`, _tool: name, _blocked: true };
+                }
+                let result = await handler(args);
+                const post = await hooks.run('PostToolUse', { toolName: name, input: args || {}, result });
+                for (const item of post.results || []) {
+                    if (item.parsed?.modifiedResult !== undefined) result = item.parsed.modifiedResult;
+                    if (item.parsed?.feedback && result && typeof result === 'object') {
+                        result.output = `${result.output || ''}\n\n--- Hook Feedback ---\n${item.parsed.feedback}`.trim();
+                    }
+                }
+                return result;
             } catch (err) {
                 return { success: false, output: `Tool error (${name}): ${err.message}`, _tool: name };
             }
