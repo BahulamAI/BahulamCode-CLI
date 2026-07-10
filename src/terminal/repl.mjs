@@ -116,6 +116,7 @@ const session = {
   phases: [],          // phase history: { name, time }
   inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
   filesChanged: [],    // files modified this session
+  filesRead: [],       // files read this turn
   lastTurnDuration: 0,
   toolCounts: {},      // per-tool histogram (mission report)
   subAgentCounts: {},  // per-sub-agent histogram (mission report)
@@ -365,6 +366,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   const tool = data.tool || data._tool || '';
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+  recordReadActivity(tool, data.args || {});
 
   // Update the card buffer so /last and `d` can find it.
   if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
@@ -459,6 +461,31 @@ function shortPath(p) {
   // Show last 2 segments
   const parts = p.split('/');
   return parts.length > 2 ? parts.slice(-2).join('/') : p;
+}
+
+function rememberReadFile(filePath) {
+  const file = shortPath(String(filePath || '').trim());
+  if (file && !session.filesRead.includes(file)) session.filesRead.push(file);
+}
+
+function recordReadActivity(tool, args = {}) {
+  const normalized = String(tool || '').toLowerCase();
+  if (normalized === 'read_file' || normalized === 'read') {
+    rememberReadFile(args.file_path || args.path);
+    return;
+  }
+  if (normalized === 'read_files') {
+    const files = args.file_paths || args.paths || args.files || [];
+    for (const file of Array.isArray(files) ? files : []) {
+      rememberReadFile(typeof file === 'string' ? file : file?.file_path || file?.path);
+    }
+  }
+}
+
+function thinkingKind(text) {
+  return /\b(read|reading|inspect|scan|search|open|trace|look(?:ing)?\s+at)\b/i.test(text)
+    ? 'Reading'
+    : 'Thinking';
 }
 
 // ── Live Spinner ──
@@ -563,7 +590,7 @@ function renderEvent(event) {
         if (text.length > 12 && text !== session._lastEmittedThinking) {
           flushPendingHead();
           stopSpinner();
-          process.stderr.write(`  ${c.italic(c.dim(text.slice(0, 200)))}\n`);
+          process.stderr.write(`  ${c.dim(thinkingKind(text) + ' · ')}${c.italic(c.dim(text.slice(0, 200)))}\n`);
           session._lastEmittedThinking = text;
         }
         startSpinner(text.slice(0, 80));
@@ -916,6 +943,7 @@ function renderEvent(event) {
           task: session.lastTask,
           success: successOverall,
           filesChanged: session.filesChanged,
+          filesRead: session.filesRead,
           toolCounts: session.toolCounts,
           subAgents: { ...session.subAgentCounts, savedUsd: 0 },
           costUsd: null,
@@ -1318,7 +1346,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/report': {
-      if (Object.keys(session.toolCounts).length === 0 && session.filesChanged.length === 0) {
+      if (Object.keys(session.toolCounts).length === 0 && session.filesChanged.length === 0 && session.filesRead.length === 0) {
         process.stderr.write(`  ${c.gray('Nothing to report yet — run a task first.')}\n`);
         return;
       }
@@ -1326,6 +1354,7 @@ async function handleCommand(input, ctx) {
         task: session.lastTask,
         success: true,
         filesChanged: session.filesChanged,
+        filesRead: session.filesRead,
         toolCounts: session.toolCounts,
         subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
         costUsd: session.isByok ? null : session.totalCost,
@@ -1783,6 +1812,7 @@ export async function startTerminalRepl() {
     // Reset per-turn counts so the mission report reflects this turn only.
     session.toolCounts = {};
     session.subAgentCounts = {};
+    session.filesRead = [];
     session.savedUsd = 0;
     session._lastEmittedThinking = '';
     session.creditsLowWarned = false;
@@ -1926,14 +1956,23 @@ export async function startTerminalRepl() {
         input: { prompt: input },
         turnId: String(session.turns),
       });
+      const hookHints = (promptHook.results || [])
+        .map(r => r.parsed?.feedback)
+        .filter(Boolean)
+        .map(text => ({ source: 'hook', kind: 'feedback', text, ttl_turns: 1, priority: 'medium' }));
+      const rejectionHints = (approval.consumeRejectionHints?.() || [])
+        .map(h => ({
+          source: 'hitl',
+          kind: 'approval_rejection',
+          text: `${h.decision === 'replan' ? 'User requested a re-plan' : 'User rejected approval'} for ${h.tool}. ${h.note ? `Reason: ${h.note}` : h.reason}. Adjust the approach before retrying.`,
+          ttl_turns: 1,
+          priority: 'high',
+        }));
       latestEnvelope = buildContextEnvelope({
         cwd: safeCwd(),
         effectivePolicy,
         projectContext: latestProjectContext,
-        activeHints: (promptHook.results || [])
-          .map(r => r.parsed?.feedback)
-          .filter(Boolean)
-          .map(text => ({ source: 'hook', kind: 'feedback', text, ttl_turns: 1, priority: 'medium' })),
+        activeHints: [...hookHints, ...rejectionHints],
         projectResources: toolExecutor.getProjectResources(),
         agentContext: toolExecutor.getAgentContext(),
       });

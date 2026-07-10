@@ -121,5 +121,21 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
     }
 });
 
+await test('approval rejection captures reason for next context', async () => {
+    const mgr = new ApprovalManager();
+    mgr._readKey = async () => 'n';
+    mgr._readLinePrompt = async () => 'too broad; use a narrower command';
+
+    const result = await mgr.check('shell', { command: 'npm publish' });
+    assert.strictEqual(result.approved, false);
+    assert.ok(result.reason.includes('too broad'));
+
+    const hints = mgr.consumeRejectionHints();
+    assert.strictEqual(hints.length, 1);
+    assert.strictEqual(hints[0].decision, 'reject');
+    assert.strictEqual(hints[0].note, 'too broad; use a narrower command');
+    assert.strictEqual(mgr.consumeRejectionHints().length, 0);
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

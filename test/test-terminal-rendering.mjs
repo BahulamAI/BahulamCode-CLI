@@ -128,6 +128,7 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   const rendered = stripAnsi(renderMissionReport({
     task: 'fix auth',
     success: true,
+    filesRead: ['src/core/approval.mjs', 'src/terminal/repl.mjs'],
     toolCounts: { shell: 5 },
     durationS: 19.9,
     repo: 'codekepler-npm',
@@ -135,6 +136,7 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   }));
   assert.ok(!rendered.includes('MISSION ACCOMPLISHED'));
   assert.ok(rendered.includes('Repo codekepler-npm · Author Ravi'));
+  assert.ok(rendered.includes('Read        approval.mjs, repl.mjs'));
   assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
 });
 

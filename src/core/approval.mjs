@@ -79,6 +79,7 @@ export class ApprovalManager {
         this.approveAll = false;
         this.approvedToolTypes = new Set();
         this.history = [];
+        this.rejectionHints = [];
         this._rl = null;
     }
 
@@ -259,10 +260,15 @@ export class ApprovalManager {
             }
 
             case 'reject':
-                write(`  ${RED}✗${RST}  ${DIM}denied${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now() });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason: 'User denied' });
-                return { approved: false, tier, reason: 'User denied' };
+            {
+                const note = await this._readLinePrompt(`  ${DIM}Reason (optional): ${RST}`);
+                const reason = note ? `User denied: ${note}` : 'User denied';
+                write(`  ${RED}✗${RST}  ${DIM}${note ? `denied — ${truncateNote(note)}` : 'denied'}${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason });
+                this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note });
+                return { approved: false, tier, reason };
+            }
 
             case 'allow-all':
                 if (explicit) return this._prompt(toolName, args, context);
@@ -287,10 +293,15 @@ export class ApprovalManager {
 
             case 'edit':
             case 'replan':
-                write(`  ${YELLOW}↩${RST}  ${DIM}reject with hint — rework the plan${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now() });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason: 'User asked to re-plan' });
-                return { approved: false, tier, reason: 'User asked to re-plan' };
+            {
+                const note = await this._readLinePrompt(`  ${DIM}Re-plan note (optional): ${RST}`);
+                const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
+                write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason });
+                this._rememberRejection({ tool: toolName, args, tier, decision: 'replan', reason, note });
+                return { approved: false, tier, reason };
+            }
 
             default:
                 return this._prompt(toolName, args, context);
@@ -335,6 +346,57 @@ export class ApprovalManager {
         });
     }
 
+    _readLinePrompt(label) {
+        return new Promise((resolve) => {
+            if (!process.stdin.isTTY) {
+                resolve('');
+                return;
+            }
+
+            if (this._execPause) this._execPause();
+            if (this._rl) this._rl.pause();
+
+            const wasRaw = process.stdin.isRaw;
+            if (typeof process.stdin.setRawMode === 'function') {
+                process.stdin.setRawMode(false);
+            }
+            process.stdin.resume();
+            write(label);
+
+            let buffer = '';
+            const cleanup = () => {
+                process.stdin.off('data', onData);
+                if (typeof process.stdin.setRawMode === 'function') {
+                    process.stdin.setRawMode(wasRaw || false);
+                }
+                if (this._rl) this._rl.resume();
+                if (this._execResume) this._execResume();
+            };
+            const finish = () => {
+                cleanup();
+                resolve(buffer.trim());
+            };
+            const onData = (data) => {
+                const str = data.toString();
+                if (data[0] === 0x03) process.exit(0);
+                if (data[0] === 0x1b) {
+                    buffer = '';
+                    write('\n');
+                    finish();
+                    return;
+                }
+                if (str.includes('\n') || str.includes('\r')) {
+                    buffer += str.replace(/[\r\n].*$/s, '');
+                    finish();
+                    return;
+                }
+                buffer += str;
+            };
+
+            process.stdin.on('data', onData);
+        });
+    }
+
     _optionsFor(tier) {
         const options = approvalOptions(tier);
         if (requiresExplicitApproval(tier)) {
@@ -360,4 +422,22 @@ export class ApprovalManager {
             trust: this.trustStore?.summary?.() || { sessionRules: 0, projectRules: 0 },
         };
     }
+
+    _rememberRejection(entry) {
+        this.rejectionHints.push({ ...entry, time: Date.now() });
+        if (this.rejectionHints.length > 10) {
+            this.rejectionHints.splice(0, this.rejectionHints.length - 10);
+        }
+    }
+
+    consumeRejectionHints() {
+        const hints = [...this.rejectionHints];
+        this.rejectionHints = [];
+        return hints;
+    }
+}
+
+function truncateNote(note) {
+    const text = String(note || '').trim();
+    return text.length <= 120 ? text : text.slice(0, 119) + '…';
 }

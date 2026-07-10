@@ -39,6 +39,7 @@ const WIDTH = 56;
  *   task         — string (the user's prompt for this session)
  *   success      — boolean (overall outcome)
  *   filesChanged — string[]
+ *   filesRead    — string[]
  *   toolCounts   — { [tool]: count } or array of {tool}
  *   subAgents    — array of { type, costUsd?, tokens? } or { explore:1, plan:1 }
  *   costUsd      — number
@@ -65,6 +66,9 @@ export function renderMissionReport(state) {
 
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     lines.push(row('📂', 'Files',      formatFiles(state.filesChanged)));
+  }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    lines.push(row('📖', 'Read',       formatFiles(state.filesRead)));
   }
 
   const toolSummary = formatToolCounts(state.toolCounts);
@@ -129,6 +133,9 @@ export function toMarkdown(state) {
   out.push('**Author**: ' + meta.author);
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     out.push('**Files**: ' + state.filesChanged.join(', '));
+  }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    out.push('**Read**: ' + state.filesRead.join(', '));
   }
   const toolSummary = stripAnsi(formatToolCounts(state.toolCounts) || '');
   if (toolSummary) out.push('**Tools**: ' + toolSummary);
