@@ -168,6 +168,34 @@ test('listResumable exposes saved project path', () => {
     assert.strictEqual(listed.messageCount, 1);
 });
 
+test('listResumable defaults to all sessions sorted by latest activity', () => {
+    const projectDir = path.join(testDir, 'sorted-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const mgr = new SessionManager(projectDir);
+
+    mgr.start('older activity');
+    mgr.setSessionInfo({ session_id: 'resume-sort-old' });
+    mgr.saveMessage('user', 'older prompt');
+
+    mgr.start('newer activity');
+    mgr.setSessionInfo({ session_id: 'resume-sort-new' });
+    mgr.saveMessage('user', 'newer prompt');
+
+    const oldDate = new Date('2026-01-01T00:00:00.000Z');
+    const newDate = new Date('2026-01-02T00:00:00.000Z');
+    fs.utimesSync(mgr._conversationPath('resume-sort-old'), oldDate, oldDate);
+    fs.utimesSync(mgr._conversationPath('resume-sort-new'), newDate, newDate);
+
+    const sessions = mgr.listResumable();
+    const ids = sessions.map(s => s.sessionId);
+    assert.ok(ids.includes('resume-sort-old'));
+    assert.ok(ids.includes('resume-sort-new'));
+    assert.ok(ids.indexOf('resume-sort-new') < ids.indexOf('resume-sort-old'));
+
+    const listed = sessions.find(s => s.sessionId === 'resume-sort-new');
+    assert.strictEqual(listed.updatedAt, newDate.toISOString());
+});
+
 // Cleanup
 cleanup();
 delete process.env.KEPLER_HOME;

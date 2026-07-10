@@ -294,23 +294,25 @@ export class SessionManager {
     /**
      * List sessions that have conversation history (resumable).
      * Reads metadata from JSONL header line — no cross-referencing needed.
-     * @param {number} [limit=10]
-     * @returns {Array<{ sessionId, instruction, startedAt, project, messageCount }>}
+     * @param {number} [limit=Infinity]
+     * @returns {Array<{ sessionId, instruction, startedAt, updatedAt, project, messageCount }>}
      */
-    listResumable(limit = 10) {
+    listResumable(limit = Infinity) {
         if (!fs.existsSync(this.conversationsDir)) return [];
 
-        // Sort by modification time (most recent first)
+        // Sort by latest activity (conversation file mtime) so resumed sessions
+        // move back to the top. The UI displays this same timestamp.
         const files = fs.readdirSync(this.conversationsDir)
             .filter(f => f.endsWith('.jsonl'))
             .map(f => ({
                 name: f,
                 mtime: fs.statSync(path.join(this.conversationsDir, f)).mtimeMs,
             }))
-            .sort((a, b) => b.mtime - a.mtime)
-            .slice(0, limit);
+            .sort((a, b) => b.mtime - a.mtime);
 
-        return files.map(({ name }) => {
+        const limited = Number.isFinite(limit) ? files.slice(0, limit) : files;
+
+        return limited.map(({ name, mtime }) => {
             const sessionId = name.replace('.jsonl', '');
             const convPath = path.join(this.conversationsDir, name);
             const lines = fs.readFileSync(convPath, 'utf-8').split('\n').filter(Boolean);
@@ -323,6 +325,7 @@ export class SessionManager {
                 sessionId,
                 instruction: header?.instruction || '(no instruction)',
                 startedAt: header?.started_at || '',
+                updatedAt: new Date(mtime).toISOString(),
                 project: header?.project_name || '',
                 projectPath: header?.project || '',
                 messageCount,

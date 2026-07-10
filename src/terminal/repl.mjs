@@ -100,6 +100,16 @@ function messageCountLabel(count) {
   return `${count} ${count === 1 ? 'message' : 'messages'}`;
 }
 
+function sessionListTimestamp(s) {
+  const value = s.updatedAt || s.startedAt;
+  return value ? new Date(value).toLocaleString() : '?';
+}
+
+function oneLineInstruction(text, max = 72) {
+  const compact = String(text || '(no instruction)').replace(/\s+/g, ' ').trim();
+  return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
+}
+
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
@@ -1904,7 +1914,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/sessions': {
-      const resumable = ctx.sessionMgr.listResumable(10);
+      const resumable = ctx.sessionMgr.listResumable();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -1912,9 +1922,10 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Resumable Sessions')}\n`);
       process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
       for (const s of resumable) {
-        const date = s.startedAt ? new Date(s.startedAt).toLocaleDateString() : '?';
-        const instr = s.instruction ? s.instruction.slice(0, 40) : '(no instruction)';
-        process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+        const date = sessionListTimestamp(s);
+        const instr = oneLineInstruction(s.instruction, 72);
+        const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
+        process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Resume with:')} kepler --resume <sessionId>\n`);
       return;
@@ -1940,7 +1951,7 @@ async function handleCommand(input, ctx) {
       }
 
       // No ID given — list sessions and let user pick by number
-      const resumable = ctx.sessionMgr.listResumable(10);
+      const resumable = ctx.sessionMgr.listResumable();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -1949,31 +1960,51 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Pick a session to resume:')}\n\n`);
       for (let i = 0; i < resumable.length; i++) {
         const s = resumable[i];
-        const date = s.startedAt ? new Date(s.startedAt).toLocaleString() : '?';
-        const instr = (s.instruction || '(no instruction)').slice(0, 45);
-        const proj = s.project ? c.brand(s.project) + ' ' : '';
+        const date = sessionListTimestamp(s);
+        const instr = oneLineInstruction(s.instruction, 72);
+        const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
         const num = `[${i + 1}]`;
-        process.stderr.write(`  ${c.brand(num)} ${proj}${c.dim(date)}  ${s.messageCount} msgs\n`);
-        process.stderr.write(`      ${c.dim(instr)}\n`);
+        process.stderr.write(`  ${c.brand(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
 
-      // Read single key for selection
+      // Read a numeric selection. Raw mode lets Esc/Ctrl-C cancel without
+      // submitting a normal readline line, while still supporting 10+ items.
       const rl = ctx._rl || null;
       if (rl) rl.pause();
       const choice = await new Promise((resolve) => {
         if (!process.stdin.isTTY) { resolve(null); return; }
         const wasRaw = process.stdin.isRaw;
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.once('data', (data) => {
+        let buffer = '';
+        const cleanup = (value) => {
+          process.stdin.removeListener('data', onData);
           process.stdin.setRawMode(wasRaw || false);
           if (rl) rl.resume();
+          resolve(value);
+        };
+        const onData = (data) => {
           const bytes = [...data];
-          if (bytes[0] === 0x1b || bytes[0] === 0x03) { resolve(null); return; }
-          const num = parseInt(data.toString(), 10);
-          resolve(isNaN(num) ? null : num);
-        });
+          if (bytes[0] === 0x1b || bytes[0] === 0x03) { cleanup(null); return; }
+          if (bytes[0] === 0x0d || bytes[0] === 0x0a) {
+            cleanup(buffer ? parseInt(buffer, 10) : null);
+            return;
+          }
+          if (bytes[0] === 0x7f || bytes[0] === 0x08) {
+            if (buffer.length > 0) {
+              buffer = buffer.slice(0, -1);
+              process.stderr.write('\b \b');
+            }
+            return;
+          }
+          const text = data.toString();
+          if (/^\d+$/.test(text)) {
+            buffer += text;
+            process.stderr.write(text);
+          }
+        };
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', onData);
       });
 
       if (!choice || choice < 1 || choice > resumable.length) {
