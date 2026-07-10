@@ -210,16 +210,54 @@ export class SessionManager {
      * @returns {{ role: string, content: string }[]}
      */
     loadMessages(sessionId) {
+        return this.loadConversation(sessionId).messages;
+    }
+
+    /**
+     * Load the header and all messages from a session conversation file.
+     * @param {string} sessionId
+     * @returns {{ header: object|null, messages: { role: string, content: string }[] }}
+     */
+    loadConversation(sessionId) {
         const filePath = this._conversationPath(sessionId);
-        if (!fs.existsSync(filePath)) return [];
+        if (!fs.existsSync(filePath)) return { header: null, messages: [] };
 
         const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
-        return lines
+        const entries = lines
             .map(line => {
                 try { return JSON.parse(line); } catch { return null; }
             })
-            .filter(entry => entry && entry.role) // skip header (type=header, no role)
+            .filter(Boolean);
+        const header = entries.find(entry => entry.type === 'header') || null;
+        const messages = entries
+            .filter(entry => entry.role) // skip header (type=header, no role)
             .map(entry => ({ role: entry.role, content: entry.content }));
+        return { header, messages };
+    }
+
+    /**
+     * Activate an existing conversation as the current session so additional
+     * turns append to the same JSONL file.
+     * @param {string} sessionId
+     * @param {object|null} header
+     * @param {{ role: string, content: string }[]} messages
+     */
+    activateSession(sessionId, header = null, messages = []) {
+        this._ensureDirs();
+        this.currentState = {
+            instruction: header?.instruction || messages.find(m => m.role === 'user')?.content || '',
+            started_at: header?.started_at || new Date().toISOString(),
+            status: 'running',
+            task_id: null,
+            job_id: null,
+            session_id: sessionId,
+            tool_count: 0,
+            turn_count: messages.filter(m => m.role === 'user').length,
+            events: [],
+            resumed_at: new Date().toISOString(),
+        };
+        this._writeState();
+        return this.currentState;
     }
 
     /**
@@ -249,6 +287,7 @@ export class SessionManager {
             instruction: header?.instruction || '',
             startedAt: header?.started_at || '',
             project: header?.project_name || '',
+            projectPath: header?.project || '',
         };
     }
 
@@ -285,6 +324,7 @@ export class SessionManager {
                 instruction: header?.instruction || '(no instruction)',
                 startedAt: header?.started_at || '',
                 project: header?.project_name || '',
+                projectPath: header?.project || '',
                 messageCount,
             };
         });

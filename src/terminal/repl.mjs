@@ -17,6 +17,7 @@
 
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -93,6 +94,10 @@ function safeCwd() {
       return process.env.HOME || '/tmp';
     }
   }
+}
+
+function messageCountLabel(count) {
+  return `${count} ${count === 1 ? 'message' : 'messages'}`;
 }
 
 // ── Session State ──
@@ -1921,15 +1926,16 @@ async function handleCommand(input, ctx) {
 
       if (targetId) {
         // Direct resume by ID
-        const messages = ctx.sessionMgr.loadMessages(targetId);
-        if (messages.length === 0) {
-          process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + targetId)}\n`);
+        const resumed = await ctx.activateResumedSession(targetId, 'direct');
+        if (!resumed.ok) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason)}\n`);
           return;
         }
-        session.history = messages;
-        session.id = targetId;
-        session.turns = Math.floor(messages.length / 2);
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}\n`);
+        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
+        process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+        if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
+        if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
+        process.stderr.write('\n');
         return;
       }
 
@@ -1976,18 +1982,18 @@ async function handleCommand(input, ctx) {
       }
 
       const picked = resumable[choice - 1];
-      const messages = ctx.sessionMgr.loadMessages(picked.sessionId);
-      if (messages.length === 0) {
-        process.stderr.write(`\n  ${c.yellow('!')} ${c.dim('No messages in that session.')}\n`);
+      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker');
+      if (!resumed.ok) {
+        process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
         return;
       }
 
-      session.history = messages;
-      session.id = picked.sessionId;
-      session.turns = Math.floor(messages.length / 2);
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}`);
-      if (picked.instruction) {
-        process.stderr.write(` ${c.dim('—')} ${c.dim(picked.instruction.slice(0, 50))}`);
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
+      process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+      if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
+      if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
+      if (resumed.instruction) {
+        process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
       return;
@@ -2063,26 +2069,100 @@ export async function startTerminalRepl() {
 
   // Projects are registered and indexed on demand through get_project_overview.
   // CheckpointManager records per-file snapshots before edits so /undo works.
-  const checkpoints = new CheckpointManager(safeCwd());
+  let checkpoints = new CheckpointManager(safeCwd());
   let effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
   let latestProjectContext = null;
   let latestEnvelope = null;
-  const hookRunner = new HookRunner({ cwd: safeCwd() });
-  const toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+  let hookRunner = new HookRunner({ cwd: safeCwd() });
+  let toolExecutor = createToolExecutor({ checkpoints, hookRunner });
   const skipPerms = cliArgs.freeswim;
-  const approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
   // Session manager — persists conversation messages to .kepler/conversations/
-  const sessionMgr = new SessionManager(safeCwd());
+  let sessionMgr = new SessionManager(safeCwd());
   _sessionMgr = sessionMgr; // expose to renderEvent
 
   // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
-  const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+  let jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
+
+  async function activateResumedSession(sessionId, source = 'resume') {
+    const currentMgr = new SessionManager(safeCwd());
+    const conversation = currentMgr.loadConversation(sessionId);
+    if (!conversation.messages.length) {
+      return { ok: false, reason: `No conversation found for session ${sessionId}` };
+    }
+
+    const projectPath = conversation.header?.project || '';
+    let switchedProject = false;
+    let projectMissing = false;
+    if (projectPath && projectPath !== safeCwd()) {
+      if (fs.existsSync(projectPath)) {
+        try {
+          process.chdir(projectPath);
+          _cachedCwd = process.cwd();
+          switchedProject = true;
+        } catch {
+          projectMissing = true;
+        }
+      } else {
+        projectMissing = true;
+      }
+    }
+
+    checkpoints = new CheckpointManager(safeCwd());
+    effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
+    hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    if (ctx._rl) approval.setReadline(ctx._rl);
+    sessionMgr = new SessionManager(safeCwd());
+    sessionMgr.activateSession(sessionId, conversation.header, conversation.messages);
+    _sessionMgr = sessionMgr;
+
+    try { await jsonlWriter.close(); } catch {}
+    jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+    jsonlWriter.setSessionId(sessionId);
+
+    streamClient = null;
+    latestProjectContext = loadProjectContext({ cwd: safeCwd() });
+    latestEnvelope = null;
+
+    try {
+      await toolExecutor.execute('get_project_overview', { path: safeCwd() });
+    } catch { /* best-effort hydration; agent can retry */ }
+
+    session.history = conversation.messages;
+    session.id = sessionId;
+    session.turns = conversation.messages.filter(m => m.role === 'user').length;
+    session.lastTask = conversation.header?.instruction || session.history.find(m => m.role === 'user')?.content || '';
+
+    Object.assign(ctx, {
+      toolExecutor,
+      approval,
+      jsonlWriter,
+      sessionMgr,
+      checkpoints,
+      effectivePolicy,
+      latestProjectContext,
+      latestEnvelope,
+    });
+
+    return {
+      ok: true,
+      messages: conversation.messages.length,
+      projectPath: projectPath || safeCwd(),
+      switchedProject,
+      projectMissing,
+      instruction: conversation.header?.instruction || '',
+      source,
+    };
+  }
+  ctx.activateResumedSession = activateResumedSession;
 
   // ── Print banner + preflight + init BEFORE mounting the status bar ──
   // The status bar shrinks the scroll region; if it mounts first, the
@@ -2113,18 +2193,16 @@ export async function startTerminalRepl() {
         : sessionMgr.getLastSession();
 
     if (lastSession) {
-      const messages = sessionMgr.loadMessages(lastSession.sessionId);
-      if (messages.length > 0) {
-        session.history = messages;
-        session.id = lastSession.sessionId;
-        session.turns = Math.floor(messages.length / 2);
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messages.length} messages`)}`);
-        if (lastSession.instruction) {
-          process.stderr.write(` ${c.dim('—')} ${c.dim(lastSession.instruction.slice(0, 50))}`);
-        }
+      const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
+      if (resumed.ok) {
+        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
+        process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+        if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
+        if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
+        if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
         process.stderr.write('\n');
       } else {
-        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + lastSession.sessionId)}\n`);
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
     } else {
       process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
@@ -2261,6 +2339,9 @@ export async function startTerminalRepl() {
       });
     }
     const client = streamClient;
+    if (session.id && !client.sessionId) {
+      client.sessionId = session.id;
+    }
 
     let assistantContent = '';
 

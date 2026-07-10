@@ -114,6 +114,60 @@ test('loadState returns null when no state', () => {
     assert.strictEqual(state, null);
 });
 
+test('loadConversation returns header and messages', () => {
+    const projectDir = path.join(testDir, 'resume-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const mgr = new SessionManager(projectDir);
+    mgr.start('resume work');
+    mgr.setSessionInfo({ session_id: 'resume-session-1' });
+    mgr.saveMessage('user', 'first prompt');
+    mgr.saveMessage('assistant', 'first answer');
+
+    const conversation = mgr.loadConversation('resume-session-1');
+    assert.strictEqual(conversation.header.project, projectDir);
+    assert.strictEqual(conversation.header.project_name, 'resume-project');
+    assert.deepStrictEqual(conversation.messages, [
+        { role: 'user', content: 'first prompt' },
+        { role: 'assistant', content: 'first answer' },
+    ]);
+});
+
+test('activateSession appends future turns to resumed conversation', () => {
+    const projectDir = path.join(testDir, 'append-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const mgr = new SessionManager(projectDir);
+    mgr.start('append work');
+    mgr.setSessionInfo({ session_id: 'resume-session-2' });
+    mgr.saveMessage('user', 'first prompt');
+
+    const conversation = mgr.loadConversation('resume-session-2');
+    const resumedMgr = new SessionManager(projectDir);
+    resumedMgr.activateSession('resume-session-2', conversation.header, conversation.messages);
+    resumedMgr.saveMessage('assistant', 'continued answer');
+
+    const messages = resumedMgr.loadMessages('resume-session-2');
+    assert.deepStrictEqual(messages, [
+        { role: 'user', content: 'first prompt' },
+        { role: 'assistant', content: 'continued answer' },
+    ]);
+});
+
+test('listResumable exposes saved project path', () => {
+    const projectDir = path.join(testDir, 'listed-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const mgr = new SessionManager(projectDir);
+    mgr.start('listed work');
+    mgr.setSessionInfo({ session_id: 'resume-session-3' });
+    mgr.saveMessage('user', 'listed prompt');
+
+    const sessions = mgr.listResumable(20);
+    const listed = sessions.find(s => s.sessionId === 'resume-session-3');
+    assert.ok(listed);
+    assert.strictEqual(listed.project, 'listed-project');
+    assert.strictEqual(listed.projectPath, projectDir);
+    assert.strictEqual(listed.messageCount, 1);
+});
+
 // Cleanup
 cleanup();
 delete process.env.KEPLER_HOME;
