@@ -149,6 +149,7 @@ const COMMANDS = {
   '/login':    'Sign in via browser',
   '/whoami':   'Show logged-in user',
   '/status':   'Session status & system info',
+  '/plan':     'Show plan/tasks',
   '/stats':    'Progress bars & metrics',
   '/clear':    'Clear conversation',
   '/git':      'Git status',
@@ -181,6 +182,226 @@ const COMMANDS = {
   '/logout':   'Sign out and clear credentials',
   '/exit':     'Exit CLI',
 };
+
+const HELP_GROUPS = [
+  {
+    key: 'status',
+    title: 'Status',
+    summary: 'session, usage, budget',
+    commands: [
+      ['/status', 'Session snapshot'],
+      ['/status context', 'Loaded .kepler context'],
+      ['/status metrics', 'Progress bars and runtime metrics'],
+      ['/status cost', 'Credits and message window'],
+      ['/status budget <amount|clear>', 'Set or clear session budget'],
+    ],
+  },
+  {
+    key: 'history',
+    title: 'History',
+    summary: 'transcript, reports, undo',
+    commands: [
+      ['/history', 'Recent transcript'],
+      ['/history approvals', 'Approval log'],
+      ['/history last', 'Expand last tool output'],
+      ['/history expand [n|all]', 'Expand tool output'],
+      ['/history checkpoint', 'List checkpoints'],
+      ['/history undo', 'Restore latest checkpoint'],
+      ['/history report', 'Save mission report'],
+    ],
+  },
+  {
+    key: 'settings',
+    title: 'Settings',
+    summary: 'auth, policy, verbosity',
+    commands: [
+      ['/settings policy', 'Effective project policy'],
+      ['/settings login', 'Sign in'],
+      ['/settings logout', 'Sign out'],
+      ['/settings whoami', 'Current user'],
+      ['/settings quiet|verbose|surgical', 'Verbosity'],
+      ['/settings revoke', 'Revoke auto-approvals'],
+    ],
+  },
+  {
+    key: 'worktree',
+    title: 'Worktree',
+    summary: 'git and files',
+    commands: [
+      ['/git', 'Git status'],
+      ['/diff', 'Git diff'],
+      ['/map', 'Registered project tree'],
+      ['/preflight', 'Onboarding diagnostic'],
+      ['/safety', 'Safety guardrail status'],
+    ],
+  },
+  {
+    key: 'agents',
+    title: 'Agents',
+    summary: 'specialist modes',
+    commands: [
+      ['/agents', 'List built-in agents'],
+      ['/explore <instruction>', 'Explore code'],
+      ['/review <instruction>', 'Review code'],
+      ['/architect <instruction>', 'Design an approach'],
+    ],
+  },
+  {
+    key: 'session',
+    title: 'Session',
+    summary: 'resume and clear',
+    commands: [
+      ['/sessions', 'List resumable sessions'],
+      ['/resume [id]', 'Resume a session'],
+      ['/compact', 'Compact conversation context'],
+      ['/clear', 'Clear conversation'],
+      ['/exit', 'Exit CLI'],
+    ],
+  },
+];
+
+const HELP_GROUP_ALIASES = new Map(
+  HELP_GROUPS.flatMap(group => [[group.key, group], [group.title.toLowerCase(), group]])
+);
+
+const LEGACY_COMMAND_HINTS = {
+  '/stats': '/status metrics',
+  '/cost': '/status cost',
+  '/budget': '/status budget',
+  '/last': '/history last',
+  '/expand': '/history expand',
+  '/fold': '/history fold',
+  '/undo': '/history undo',
+  '/checkpoint': '/history checkpoint',
+  '/report': '/history report',
+  '/login': '/settings login',
+  '/logout': '/settings logout',
+  '/whoami': '/settings whoami',
+  '/quiet': '/settings quiet',
+  '/verbose': '/settings verbose',
+  '/surgical': '/settings surgical',
+  '/revoke': '/settings revoke',
+};
+
+const NAMESPACED_COMMANDS = {
+  '/status': {
+    metrics: '/stats',
+    stats: '/stats',
+    cost: '/cost',
+    credits: '/cost',
+    budget: '/budget',
+  },
+  '/history': {
+    last: '/last',
+    expand: '/expand',
+    fold: '/fold',
+    undo: '/undo',
+    checkpoint: '/checkpoint',
+    checkpoints: '/checkpoint',
+    report: '/report',
+  },
+  '/settings': {
+    login: '/login',
+    logout: '/logout',
+    whoami: '/whoami',
+    quiet: '/quiet',
+    verbose: '/verbose',
+    surgical: '/surgical',
+    revoke: '/revoke',
+  },
+};
+
+function normalizeCommandInput(input) {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const rawCmd = (parts[0] || '').toLowerCase();
+  const restParts = parts.slice(1);
+  const sub = (restParts[0] || '').toLowerCase();
+  const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
+  if (namespaced) {
+    return {
+      cmd: namespaced,
+      rest: restParts.slice(1).join(' '),
+      rawCmd,
+      aliasTarget: null,
+    };
+  }
+  return {
+    cmd: rawCmd,
+    rest: restParts.join(' '),
+    rawCmd,
+    aliasTarget: LEGACY_COMMAND_HINTS[rawCmd] || null,
+  };
+}
+
+function renderHelp(topic = '') {
+  const key = String(topic || '').trim().toLowerCase();
+  if (!key) {
+    process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    const top = [
+      ['/help', 'Grouped command help'],
+      ['/status', 'Session snapshot'],
+      ['/plan', 'Task list and plan'],
+      ['/history', 'Transcript, approvals, undo'],
+      ['/settings', 'Policy, auth, verbosity'],
+      ['/why', 'Explain last reasoning'],
+    ];
+    for (const [name, desc] of top) {
+      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
+    }
+    process.stderr.write(`\n  ${c.bold('Categories')}\n`);
+    for (const group of HELP_GROUPS) {
+      process.stderr.write(`  ${c.brand(('/help ' + group.key).padEnd(20))} ${c.dim(group.summary)}\n`);
+    }
+    process.stderr.write(`\n  ${c.dim('Use /help all for legacy command aliases.')}\n`);
+    renderKeyboardHelp();
+    return;
+  }
+
+  if (key === 'all' || key === 'commands') {
+    process.stderr.write(`\n  ${c.bold('All Commands')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    for (const [name, desc] of Object.entries(COMMANDS)) {
+      const alias = LEGACY_COMMAND_HINTS[name] ? c.dim(`  alias for ${LEGACY_COMMAND_HINTS[name]}`) : '';
+      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}${alias}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  const group = HELP_GROUP_ALIASES.get(key);
+  if (!group) {
+    process.stderr.write(`  ${c.gray(`Unknown help category: ${key}. Use /help.`)}\n`);
+    return;
+  }
+
+  process.stderr.write(`\n  ${c.bold(group.title)} ${c.dim(group.summary)}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+  for (const [name, desc] of group.commands) {
+    process.stderr.write(`  ${c.brand(name.padEnd(30))} ${desc}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function renderKeyboardHelp() {
+  process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
+  process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
+  process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+}
+
+function commandCompletions(line) {
+  if (line.startsWith('/help ')) {
+    const topic = line.slice('/help '.length).toLowerCase();
+    const categories = ['all', ...HELP_GROUPS.map(g => g.key)];
+    const hits = categories.map(c => `/help ${c}`).filter(cmd => cmd.startsWith(`/help ${topic}`));
+    return hits.length ? hits : categories.map(c => `/help ${c}`);
+  }
+  const top = ['/help', '/status', '/plan', '/history', '/settings', '/why'];
+  const namespaced = HELP_GROUPS.flatMap(g => g.commands.map(([name]) => name.split(/\s+/)[0]));
+  const all = [...new Set([...top, ...namespaced, ...Object.keys(COMMANDS), '/quit'])].sort();
+  const hits = all.filter(cmd => cmd.startsWith(line));
+  return hits.length ? hits : all;
+}
 
 // ── Banner ──
 
@@ -988,21 +1209,56 @@ function renderEvent(event) {
 // ── Slash Commands ──
 
 async function handleCommand(input, ctx) {
-  const parts = input.split(/\s+/);
-  const cmd = parts[0].toLowerCase();
-  const rest = parts.slice(1).join(' ');
+  const { cmd, rest, aliasTarget } = normalizeCommandInput(input);
+  if (aliasTarget) {
+    process.stderr.write(`  ${c.dim(`Legacy alias: use ${aliasTarget}`)}\n`);
+  }
 
   switch (cmd) {
-    case '/help':
-      process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-      for (const [name, desc] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
-      }
-      process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
-      process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
-      process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+    case '/help': {
+      renderHelp(rest);
       return;
+    }
+
+    case '/plan':
+      process.stderr.write(`  ${c.gray('/plan is reserved for the durable task workflow in PRD-068 Phase 3. For now, use /status context to inspect loaded plan.md/tasks context.')}\n`);
+      return;
+
+    case '/history': {
+      if (rest.trim() === 'fold') {
+        process.stderr.write(`  ${c.gray('Output is folded by default — there is nothing to hide. Use /history last or d to expand.')}\n`);
+        return;
+      }
+      if (rest.trim() === 'help') {
+        renderHelp('history');
+        return;
+      }
+      if (rest.trim() === 'approvals') {
+        const entries = ctx.approval?.approvalLog?.readRecent?.(20) || [];
+        if (!entries.length) {
+          process.stderr.write(`  ${c.gray('No approval log entries yet.')}\n`);
+          return;
+        }
+        process.stderr.write(`\n  ${c.bold('Approval History')}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+        for (const e of entries) {
+          const when = e.ts ? String(e.ts).slice(0, 19).replace('T', ' ') : '';
+          const decision = e.decision?.includes('reject') || e.decision?.includes('deny') ? c.red(e.decision) : c.green(e.decision);
+          process.stderr.write(`  ${c.dim(when)}  ${decision}  ${c.brand(e.tool || '?')}  ${c.dim(e.scope || 'once')}  ${c.dim(e.args || '')}\n`);
+        }
+        process.stderr.write('\n');
+        return;
+      }
+      if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
+      process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
+      for (const msg of session.history.slice(-20)) {
+        const role = msg.role === 'user' ? c.white('You') : c.brand('Kepler');
+        process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
+      }
+      process.stderr.write('\n');
+      return;
+    }
 
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
@@ -1029,6 +1285,10 @@ async function handleCommand(input, ctx) {
     }
 
     case '/status': {
+      if (rest.trim() === 'help') {
+        renderHelp('status');
+        return;
+      }
       if (rest.trim() === 'context') {
         const current = ctx.latestProjectContext || loadProjectContext({ cwd: safeCwd() });
         const envelope = ctx.latestEnvelope || buildContextEnvelope({
@@ -1159,8 +1419,12 @@ async function handleCommand(input, ctx) {
 
     case '/settings': {
       const sub = rest.trim() || 'policy';
+      if (sub === 'help') {
+        renderHelp('settings');
+        return;
+      }
       if (sub !== 'policy') {
-        process.stderr.write(`  ${c.gray('Usage: /settings policy')}\n`);
+        process.stderr.write(`  ${c.gray('Usage: /settings policy  or  /help settings')}\n`);
         return;
       }
       const effective = loadEffectivePolicy({ cwd: safeCwd() });
@@ -1261,33 +1525,6 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}`)}\n\n`);
       return;
     }
-
-    case '/history':
-      if (rest.trim() === 'approvals') {
-        const entries = ctx.approval?.approvalLog?.readRecent?.(20) || [];
-        if (!entries.length) {
-          process.stderr.write(`  ${c.gray('No approval log entries yet.')}\n`);
-          return;
-        }
-        process.stderr.write(`\n  ${c.bold('Approval History')}\n`);
-        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-        for (const e of entries) {
-          const when = e.ts ? String(e.ts).slice(0, 19).replace('T', ' ') : '';
-          const decision = e.decision?.includes('reject') || e.decision?.includes('deny') ? c.red(e.decision) : c.green(e.decision);
-          process.stderr.write(`  ${c.dim(when)}  ${decision}  ${c.brand(e.tool || '?')}  ${c.dim(e.scope || 'once')}  ${c.dim(e.args || '')}\n`);
-        }
-        process.stderr.write('\n');
-        return;
-      }
-      if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
-      process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-      for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user' ? c.white('You') : c.brand('Kepler');
-        process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
-      }
-      process.stderr.write('\n');
-      return;
 
     case '/last':
       expandLast();
@@ -1400,7 +1637,12 @@ async function handleCommand(input, ctx) {
 
     case '/budget': {
       const arg = rest.trim();
-      if (!arg || arg === 'clear' || arg === 'off') {
+      if (!arg) {
+        const current = session.budgetUsd ? `$${session.budgetUsd.toFixed(2)}` : 'not set';
+        process.stderr.write(`  ${c.dim('Budget cap:')} ${c.brand(current)} ${c.dim('· set with /status budget <amount> or clear with /status budget clear')}\n`);
+        return;
+      }
+      if (arg === 'clear' || arg === 'off') {
         session.budgetUsd = null;
         session.budgetExceeded = false;
         process.stderr.write(`  ${c.gray('Budget cap cleared.')}\n`);
@@ -1760,8 +2002,7 @@ export async function startTerminalRepl() {
     prompt: userPrompt(),
     completer: (line) => {
       if (line.startsWith('/')) {
-        const hits = Object.keys(COMMANDS).filter(cmd => cmd.startsWith(line));
-        return [hits.length ? hits : Object.keys(COMMANDS), line];
+        return [commandCompletions(line), line];
       }
       return [[], line];
     },
