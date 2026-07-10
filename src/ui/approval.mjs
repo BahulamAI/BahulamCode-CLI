@@ -187,6 +187,8 @@ export { TIERS };
 
 function riskIcon(tier) {
   switch (tier) {
+    case TIERS.SENSITIVE_READ:
+      return '🔐';
     case TIERS.SHELL_DANGEROUS:
     case TIERS.DESTRUCTIVE:
       return '🔴';
@@ -203,6 +205,7 @@ function riskIcon(tier) {
 
 function tierTitle(tier) {
   switch (tier) {
+    case TIERS.SENSITIVE_READ: return 'SENSITIVE';
     case TIERS.SHELL_DANGEROUS: return 'DANGEROUS';
     case TIERS.DESTRUCTIVE: return 'DESTRUCTIVE';
     case TIERS.SHELL_MEDIUM: return 'MEDIUM';

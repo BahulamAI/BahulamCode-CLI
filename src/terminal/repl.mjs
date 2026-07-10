@@ -44,7 +44,7 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
-import { toolDisplayLabel } from './tool-display.mjs';
+import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
 import { term } from '../ui/term.mjs';
@@ -870,8 +870,17 @@ function renderEvent(event) {
     }
 
     case 'approval_granted': {
-      // approval.mjs _prompt already rendered the result line for human approvals.
-      // Nothing extra needed here — avoid duplicate output.
+      // Human approvals are rendered by approval.mjs. Auto-read grants are
+      // otherwise invisible, so show one dim confirmation before the tool card.
+      const scope = data?.grant_scope || data?.scope || '';
+      if (scope === 'auto_read') {
+        const toolName = data?.tool || data?.tool_name || '';
+        const args = data?.args || data?.input || {};
+        const summary = toolDisplaySummary(toolName, args);
+        const label = toolDisplayLabel(toolName);
+        const subject = summary ? `${label} ${summary}` : label;
+        process.stderr.write(`  ${c.green('✓')} ${c.dim(`${subject} · auto-approved read`)}\n`);
+      }
       break;
     }
 

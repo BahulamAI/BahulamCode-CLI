@@ -40,6 +40,8 @@ const WRITE_TOOLS = new Set([
 
 function defaultWhy(tier, tool, args) {
     switch (tier) {
+        case TIERS.SENSITIVE_READ:
+            return `Reads a sensitive path (${toolDisplaySummary(tool, args) || 'secret-like file'}). Confirm before exposing its contents to the agent.`;
         case TIERS.SHELL_DANGEROUS:
             return `Shell command matches a high-risk pattern (rm -rf, sudo, force push, etc.). Confirm before running.`;
         case TIERS.DESTRUCTIVE:

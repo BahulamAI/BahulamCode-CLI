@@ -132,12 +132,16 @@ test('mission report omits old title and keeps tools/time on one line', () => {
     success: true,
     filesRead: ['src/core/approval.mjs', 'src/terminal/repl.mjs'],
     toolCounts: { shell: 5 },
+    costUsd: 0.0003,
     durationS: 19.9,
     repo: 'codekepler-npm',
     author: 'Ravi',
   }));
   assert.ok(!rendered.includes('MISSION ACCOMPLISHED'));
-  assert.ok(rendered.includes('Repo codekepler-npm · Author Ravi'));
+  assert.ok(!rendered.includes('Repo codekepler-npm'));
+  assert.ok(!rendered.includes('Author Ravi'));
+  assert.ok(!rendered.includes('Cost'));
+  assert.ok(!rendered.includes('$0.0003'));
   assert.ok(rendered.includes('Read        approval.mjs, repl.mjs'));
   assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
 });

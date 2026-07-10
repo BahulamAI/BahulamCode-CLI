@@ -30,6 +30,13 @@ console.log('\n\x1b[1mtest-risk-tier.mjs\x1b[0m\n');
 test('read_file → READ', () => {
   assert.equal(classify('read_file', { file_path: 'a.txt' }), TIERS.READ);
 });
+test('sensitive read paths require explicit approval', () => {
+  assert.equal(classify('read_file', { path: '.env' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_file', { path: 'certs/client.pem' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_file', { path: 'secrets/api-key.txt' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_files', { paths: ['src/a.js', 'secrets/token.txt'] }), TIERS.SENSITIVE_READ);
+  assert.equal(requiresExplicitApproval(TIERS.SENSITIVE_READ), true);
+});
 test('search_code → READ', () => {
   assert.equal(classify('search_code', { query: 'jwt' }), TIERS.READ);
 });
@@ -168,6 +175,10 @@ test('safe + install upgrades to MEDIUM', () => {
 
 test('behavior(READ) === auto', () => {
   assert.equal(behavior(TIERS.READ), 'auto');
+});
+test('behavior(SENSITIVE_READ) === prompt-explicit', () => {
+  assert.equal(behavior(TIERS.SENSITIVE_READ), 'prompt-explicit');
+  assert.equal(label(TIERS.SENSITIVE_READ), 'SENSITIVE-READ');
 });
 test('behavior(SHELL_DANGEROUS) === prompt-explicit', () => {
   assert.equal(behavior(TIERS.SHELL_DANGEROUS), 'prompt-explicit');

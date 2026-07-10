@@ -18,6 +18,7 @@
 
 export const TIERS = Object.freeze({
   READ:            'read',
+  SENSITIVE_READ:  'sensitive-read',
   LOCAL_EDIT:      'local-edit',
   SHELL_SAFE:      'shell-safe',
   SHELL_MEDIUM:    'shell-medium',
@@ -35,6 +36,7 @@ export const TIERS = Object.freeze({
  */
 export const BEHAVIOR = Object.freeze({
   [TIERS.READ]:            'auto',
+  [TIERS.SENSITIVE_READ]:  'prompt-explicit',
   [TIERS.LOCAL_EDIT]:      'auto-with-undo',
   [TIERS.SHELL_SAFE]:      'auto',
   [TIERS.SHELL_MEDIUM]:    'prompt-safe',
@@ -57,6 +59,15 @@ const READ_TOOLS = new Set([
   'analyze_code',
   'validate_file', 'validate_structure',
 ]);
+
+const READ_PATH_KEYS = [
+  'path', 'file_path', 'file', 'target',
+  'pattern', 'glob',
+];
+
+const READ_PATH_ARRAY_KEYS = [
+  'paths', 'file_paths', 'files', 'targets', 'patterns', 'globs',
+];
 
 const LOCAL_EDIT_TOOLS = new Set([
   'edit_file', 'write_file', 'write_project',
@@ -168,6 +179,7 @@ function splitShellSegments(cmd) {
 
 const TIER_ORDER = [
   TIERS.READ,
+  TIERS.SENSITIVE_READ,
   TIERS.SHELL_SAFE,
   TIERS.LOCAL_EDIT,
   TIERS.NETWORK,
@@ -191,7 +203,9 @@ function riskier(a, b) {
 export function classify(tool, args = {}) {
   if (!tool) return TIERS.SHELL_MEDIUM;
 
-  if (READ_TOOLS.has(tool))        return TIERS.READ;
+  if (READ_TOOLS.has(tool)) {
+    return isSensitiveRead(args) ? TIERS.SENSITIVE_READ : TIERS.READ;
+  }
   if (LOCAL_EDIT_TOOLS.has(tool))  return TIERS.LOCAL_EDIT;
   if (DESTRUCTIVE_TOOLS.has(tool)) return TIERS.DESTRUCTIVE;
   if (NETWORK_TOOLS.has(tool))     return TIERS.NETWORK;
@@ -220,6 +234,7 @@ export function classify(tool, args = {}) {
 export function label(tier) {
   switch (tier) {
     case TIERS.READ:            return 'READ';
+    case TIERS.SENSITIVE_READ:  return 'SENSITIVE-READ';
     case TIERS.LOCAL_EDIT:      return 'LOCAL-EDIT';
     case TIERS.SHELL_SAFE:      return 'SHELL-SAFE';
     case TIERS.SHELL_MEDIUM:    return 'SHELL-MEDIUM';
@@ -242,4 +257,44 @@ export function requiresExplicitApproval(tier) {
  */
 export function requiresCheckpoint(tier) {
   return behavior(tier) === 'auto-with-undo';
+}
+
+export function isSensitiveRead(args = {}) {
+  return extractReadPaths(args).some(isSensitiveReadPath);
+}
+
+export function isSensitiveReadPath(filePath = '') {
+  const normalized = String(filePath || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '')
+    .trim();
+  if (!normalized) return false;
+
+  const parts = normalized.split('/').filter(Boolean);
+  const base = parts[parts.length - 1] || normalized;
+  if (base === '.env') return true;
+  if (/\.pem$/i.test(base)) return true;
+  return parts.includes('secrets');
+}
+
+function extractReadPaths(args = {}) {
+  const paths = [];
+  for (const key of READ_PATH_KEYS) {
+    if (typeof args[key] === 'string') paths.push(args[key]);
+  }
+  for (const key of READ_PATH_ARRAY_KEYS) {
+    const value = args[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (typeof item === 'string') {
+        paths.push(item);
+      } else if (item && typeof item === 'object') {
+        for (const nestedKey of READ_PATH_KEYS) {
+          if (typeof item[nestedKey] === 'string') paths.push(item[nestedKey]);
+        }
+      }
+    }
+  }
+  return paths;
 }

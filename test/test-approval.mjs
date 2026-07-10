@@ -27,6 +27,28 @@ await test('read tools auto-approve', async () => {
     assert.strictEqual(r.approved, true);
 });
 
+await test('sensitive reads prompt instead of auto-approving', async () => {
+    const mgr = new ApprovalManager();
+    mgr._readKey = async () => 'n';
+    mgr._readLinePrompt = async () => 'contains secrets';
+
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+
+    try {
+        const r = await mgr.check('read_file', { path: '.env' });
+        assert.strictEqual(r.approved, false);
+        assert.ok(output.includes('SENSITIVE-READ'));
+        assert.ok(output.includes('.env'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+});
+
 await test('list_files auto-approves', async () => {
     const mgr = new ApprovalManager();
     const r = await mgr.check('list_files', { pattern: '*' });
