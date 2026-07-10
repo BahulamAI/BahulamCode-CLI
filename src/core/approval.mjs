@@ -21,6 +21,7 @@ import {
 import {
   renderApprovalPrompt,
   renderInlinePrompt,
+  renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
 import { ApprovalLog } from './approval-log.mjs';
@@ -140,6 +141,7 @@ export class ApprovalManager {
         if (trust?.decision === 'allow') {
             this.history.push({ tool: toolName, decision: 'auto_trusted', tier, time: Date.now(), rule_id: trust.rule?.id });
             this.approvalLog.append({ tool: toolName, args, tier, decision: 'auto_trusted', scope: trust.rule?.scope, rule_id: trust.rule?.id });
+            write(renderTrustedApproval({ tool: toolName, args, scope: trust.rule?.scope, ruleId: trust.rule?.id }));
             return { approved: true, tier, scope: trust.rule?.scope, rule_id: trust.rule?.id };
         }
         if (trust?.decision === 'reask' && trust.reason) {
@@ -261,7 +263,7 @@ export class ApprovalManager {
 
             case 'reject':
             {
-                const note = await this._readLinePrompt(`  ${DIM}Reason (optional): ${RST}`);
+                const note = await this._readLinePrompt(`  ${DIM}Reject reason (optional, one line): ${RST}`);
                 const reason = note ? `User denied: ${note}` : 'User denied';
                 write(`  ${RED}✗${RST}  ${DIM}${note ? `denied — ${truncateNote(note)}` : 'denied'}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
@@ -294,7 +296,7 @@ export class ApprovalManager {
             case 'edit':
             case 'replan':
             {
-                const note = await this._readLinePrompt(`  ${DIM}Re-plan note (optional): ${RST}`);
+                const note = await this._readLinePrompt(`  ${DIM}Note to the agent (optional, one line): ${RST}`);
                 const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
                 write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });

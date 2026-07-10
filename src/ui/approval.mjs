@@ -36,16 +36,17 @@ const PAD_X = 3;
 export function defaultOptions(tier) {
   if (requiresExplicitApproval(tier)) {
     return [
-      { key: 'y', label: 'approve',  value: 'approve',  hint: 'run this once' },
-      { key: 'e', label: 'edit',     value: 'edit',     hint: 'tweak the args before running' },
-      { key: 'r', label: 're-plan',  value: 'replan',   hint: 'send back to the agent' },
-      { key: 'n', label: 'reject',   value: 'reject',   hint: 'do not run' },
+      { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' },
+      { key: 'e', label: 'edit args',     value: 'edit',     hint: 'send back with changes' },
+      { key: 'r', label: 're-plan with note...',  value: 'replan',   hint: 'steer the agent' },
+      { key: 'n', label: 'reject with reason...', value: 'reject',   hint: 'do not run' },
       { key: '?', label: 'why',      value: 'why',      hint: 'show reasoning' },
     ];
   }
   return [
     { key: 'y', label: 'approve',         value: 'approve',     hint: 'run this once' },
     { key: 't', label: 'always allow',    value: 'allow-type',  hint: 'auto-approve future calls to this tool' },
+    { key: 'r', label: 're-plan with note...', value: 'replan', hint: 'steer the agent' },
     { key: 'n', label: 'reject',          value: 'reject',      hint: 'do not run' },
     { key: '?', label: 'why',             value: 'why',         hint: 'show reasoning' },
   ];
@@ -88,22 +89,30 @@ export function renderApprovalPrompt({
   const explicit = requiresExplicitApproval(tier);
   const accent = explicit ? paint.brand.accent : paint.brand.data;
   const opts = options || defaultOptions(tier);
-
-  const summary = toolDisplaySummary(tool, args, {});
-  const toolLine = `${icon(tool)} ${paint.text.primary(toolDisplayLabel(tool))} ${paint.text.muted(summary ? `"${truncate(summary, cols - 20)}"` : '')}`;
+  const available = cols - 2 - PAD_X * 2;
+  const title = `${riskIcon(tier)}  ${tierTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
     bar(cols, accent),
-    fill(' AWAITING APPROVAL', cols, accent, paint.bold(accent('AWAITING APPROVAL'))),
+    fill(' ' + ' '.repeat(PAD_X - 1) + paint.bold(accent(title)), cols, accent),
     fill('', cols, accent),
-    fill(' ' + ' '.repeat(PAD_X - 1) + toolLine, cols, accent),
+    ...subjectRows(tool, args, cols, accent),
     fill('', cols, accent),
-    fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Tier: ') + accent(tierLabel(tier)), cols, accent),
   ];
   if (why) {
-    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why:  ') + paint.text.primary(truncate(why, cols - PAD_X - 12)), cols, accent));
+    const whyLines = wrapText(why, Math.max(20, available - 6));
+    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why  ') + paint.text.primary(whyLines[0]), cols, accent));
+    for (const line of whyLines.slice(1, 4)) {
+      lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('     ') + paint.text.primary(line), cols, accent));
+    }
+    if (whyLines.length > 4) {
+      lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('     ...'), cols, accent));
+    }
+  } else {
+    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why  ') + paint.text.muted('No additional reason provided'), cols, accent));
   }
   lines.push(fill('', cols, accent));
+  lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Scope of this decision:'), cols, accent));
 
   for (let i = 0; i < opts.length; i++) {
     const o = opts[i];
@@ -111,7 +120,7 @@ export function renderApprovalPrompt({
     const cursor = isSel ? accent('▸ ') : paint.text.dim('  ');
     const keyTag = paint.text.dim('[') + (isSel ? accent(o.key) : paint.brand.data(o.key)) + paint.text.dim('] ');
     const label = isSel ? paint.bold(accent(o.label)) : paint.text.primary(o.label);
-    const hint = o.hint ? '   ' + paint.text.muted(o.hint) : '';
+    const hint = o.hint ? '  ' + paint.text.muted(o.hint) : '';
     lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + cursor + keyTag + label + hint, cols, accent));
   }
 
@@ -119,10 +128,18 @@ export function renderApprovalPrompt({
   lines.push(fill(' ' + ' '.repeat(PAD_X - 1) +
     paint.text.dim('↑↓ ') + paint.brand.data('move') +
     paint.text.dim('  ·  Enter ') + paint.brand.data('pick') +
-    paint.text.dim('  ·  or press a letter'), cols, accent));
+    paint.text.dim('  ·  letter shortcut  ·  Esc reject'), cols, accent));
   lines.push(bar(cols, accent));
 
   return '\n' + lines.join('\n');
+}
+
+export function renderTrustedApproval({ tool, args = {}, scope = 'session', ruleId = '', delaySeconds = 0 } = {}) {
+  const summary = toolDisplaySummary(tool, args, {});
+  const subject = `${tool || 'tool'}${summary ? ` "${truncate(summary, 80)}"` : ''}`;
+  const rule = ruleId ? ` · rule ${ruleId}` : '';
+  const delay = delaySeconds > 0 ? ` · auto-approved after ${delaySeconds}s` : '';
+  return `  ${paint.state.success('✓')} ${paint.text.primary(subject)} ${paint.text.dim(`· pre-approved (${String(scope || 'session').toLowerCase()}${rule})${delay}`)}\n`;
 }
 
 function bar(width, painter) {
@@ -153,15 +170,119 @@ function truncate(text, n) {
 export function renderInlinePrompt({ tool, args = {}, tier, why = '' } = {}) {
   const summary = toolDisplaySummary(tool, args, {});
   const label = toolDisplayLabel(tool);
+  const rail = paint.text.dim('│');
   const lines = [];
-  const head = `${paint.brand.data('?')} ${paint.text.primary(label)} ${paint.text.muted(summary ? `"${truncate(summary, 80)}"` : '')}`;
+  const head = `${riskIcon(tier)}  ${paint.text.primary(label)} ${paint.text.muted(summary ? `"${truncate(summary, 80)}"` : '')}`;
   lines.push('  ' + head);
-  lines.push('  ' + paint.text.dim('Tier ') + paint.brand.data(tierLabel(tier)) +
-             (why ? '   ' + paint.text.dim('Why ') + paint.text.muted(truncate(why, 60)) : ''));
-  lines.push('  ' + paint.text.dim('[') + paint.brand.data('Enter') + paint.text.dim('=yes  ') +
+  lines.push(`  ${rail}  ${paint.text.dim('Tier')} ${paint.brand.data(tierTitle(tier))} ${paint.text.dim('·')} ${paint.brand.data(tierLabel(tier))}` +
+             (why ? ' · ' + paint.text.muted(truncate(why, 80)) : ''));
+  lines.push(`  ${rail}  ` + paint.text.dim('[') + paint.brand.data('Enter') + paint.text.dim('=approve  ') +
              paint.brand.data('n') + paint.text.dim('=no  ') +
+             paint.brand.data('r') + paint.text.dim('=note  ') +
              paint.brand.data('?') + paint.text.dim('=why]'));
   return '\n' + lines.join('\n');
 }
 
 export { TIERS };
+
+function riskIcon(tier) {
+  switch (tier) {
+    case TIERS.SHELL_DANGEROUS:
+    case TIERS.DESTRUCTIVE:
+      return '🔴';
+    case TIERS.SHELL_MEDIUM:
+      return '⚠';
+    case TIERS.NETWORK:
+      return '🌐';
+    case TIERS.LOCAL_EDIT:
+      return '✎';
+    default:
+      return '◈';
+  }
+}
+
+function tierTitle(tier) {
+  switch (tier) {
+    case TIERS.SHELL_DANGEROUS: return 'DANGEROUS';
+    case TIERS.DESTRUCTIVE: return 'DESTRUCTIVE';
+    case TIERS.SHELL_MEDIUM: return 'MEDIUM';
+    case TIERS.NETWORK: return 'NETWORK';
+    case TIERS.LOCAL_EDIT: return 'EDIT';
+    case TIERS.SHELL_SAFE: return 'SAFE';
+    case TIERS.READ: return 'READ';
+    default: return tierLabel(tier);
+  }
+}
+
+function subjectRows(tool, args, cols, accent) {
+  const available = cols - 2 - PAD_X * 2;
+  const prefix = ' ' + ' '.repeat(PAD_X - 1);
+  const rows = [];
+  const summary = toolDisplaySummary(tool, args, {});
+  const label = `${icon(tool)} ${paint.text.primary(toolDisplayLabel(tool))}`;
+  rows.push(fill(prefix + label, cols, accent));
+
+  for (const line of subjectDetails(tool, args, summary, available)) {
+    rows.push(fill(prefix + paint.text.primary(line), cols, accent));
+  }
+  return rows;
+}
+
+function subjectDetails(tool, args = {}, summary = '', available = 72) {
+  if (tool === 'shell') {
+    const command = args.command || args.cmd || summary || '';
+    const lines = wrapText(command, available);
+    return lines.length ? lines.slice(0, 4) : ['(empty command)'];
+  }
+  if (tool === 'write_file') {
+    const file = args.file_path || args.path || summary || '';
+    const lineCount = typeof args.content === 'string' ? args.content.split('\n').length : null;
+    return [`${file}${lineCount ? ` · ${lineCount} lines` : ''}`];
+  }
+  if (tool === 'edit_file') {
+    const file = args.file_path || args.path || '';
+    const search = String(args.search || args.old_string || '').trim();
+    const replacement = String(args.replace || args.new_string || '').trim();
+    const details = [`${file || summary}`];
+    if (search) details.push(`match: ${truncate(search, available - 7)}`);
+    if (replacement) details.push(`replace: ${truncate(replacement, available - 9)}`);
+    return details.slice(0, 4);
+  }
+  if (tool === 'delete_file') {
+    return [args.file_path || args.path || summary || ''];
+  }
+  if (tool === 'WebFetch' || tool === 'fetch_url') {
+    const url = args.url || summary || '';
+    return [`Target ${hostFromUrl(url) || url}`];
+  }
+  return wrapText(summary || JSON.stringify(args || {}), available).slice(0, 4);
+}
+
+function hostFromUrl(url) {
+  try {
+    return new URL(String(url)).host;
+  } catch {
+    return '';
+  }
+}
+
+function wrapText(text, width) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    if (!line) {
+      line = word;
+      continue;
+    }
+    if ((line + ' ' + word).length <= width) {
+      line += ' ' + word;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}

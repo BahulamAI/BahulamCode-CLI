@@ -7,6 +7,8 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
+import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
+import { TIERS } from '../src/core/risk-tier.mjs';
 
 let passed = 0;
 
@@ -138,6 +140,40 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   assert.ok(rendered.includes('Repo codekepler-npm · Author Ravi'));
   assert.ok(rendered.includes('Read        approval.mjs, repl.mjs'));
   assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
+});
+
+test('approval prompt uses risk title, scoped menu, and wrapped why', () => {
+  const rendered = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command: 'rm -rf node_modules && npm install' },
+    tier: TIERS.SHELL_DANGEROUS,
+    why: 'Resetting dependencies after a Node upgrade, but this removes a directory and needs explicit confirmation.',
+    width: 82,
+  }));
+  assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('Scope of this decision'));
+  assert.ok(rendered.includes('reject with reason'));
+  assert.ok(rendered.includes('rm -rf node_modules'));
+});
+
+test('approval inline and trusted modes are compact', () => {
+  const inline = stripAnsi(renderInlinePrompt({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'verify the change',
+  }));
+  assert.ok(inline.includes('MEDIUM · SHELL-MEDIUM'));
+  assert.ok(inline.includes('r=note'));
+
+  const trusted = stripAnsi(renderTrustedApproval({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    scope: 'SESSION',
+    ruleId: 'shell-test',
+  }));
+  assert.ok(trusted.includes('pre-approved (session'));
+  assert.ok(trusted.includes('rule shell-test'));
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);
