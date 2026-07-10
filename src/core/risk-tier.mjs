@@ -88,7 +88,7 @@ const SHELL_SAFE_RE = [
   // `cd` / `pushd` / `popd` only change the process working directory; if
   // chained with something dangerous, the multi-segment classifier still
   // catches the danger (`cd /x && rm -rf .` → SHELL_DANGEROUS).
-  /^\s*(cd|pushd|popd|ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
+  /^\s*(cd|pushd|popd|ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|sed|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
   // mkdir -p / touch are creation primitives but harmless in scope.
   /^\s*mkdir\s+-p\b/i,
   /^\s*touch\s/i,
@@ -122,6 +122,8 @@ const SHELL_DANGEROUS_RE = [
   /\bcurl\b.*\|\s*(sh|bash|zsh)/i,
   /\bwget\b.*\|\s*(sh|bash|zsh)/i,
   /\beval\s+["'$(]/i,
+  /\bfind\s+\/(?:\s|$)/i,
+  /\bfind\b.*\s-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fprintf)\b/i,
   /\bkubectl\s+delete/i,
   /\bdocker\s+(rm|rmi|system\s+prune|volume\s+rm|network\s+rm)/i,
   /\bdrop\s+(table|database|schema)/i,
@@ -143,6 +145,8 @@ const SHELL_MEDIUM_RE = [
   /^\s*make(\s|$)/i,
   /^\s*git\s+(commit|push|pull|merge|rebase|fetch|checkout(?!\s+\.)|cherry-pick|revert|tag|stash(?!\s+drop))/i,
   /^\s*docker\s+(build|run|exec|compose|pull|push|tag)/i,
+  /^\s*sed\b.*\s-i\S*(?:\s|$)/i,
+  /^\s*sed\b.*\s--in-place(?:=|\s|$)/i,
 ];
 
 export function classifyShell(command) {
@@ -151,6 +155,8 @@ export function classifyShell(command) {
 
   // Dangerous wins over safe — never let a safe-looking prefix mask `&& rm -rf`.
   if (SHELL_DANGEROUS_RE.some(re => re.test(cmd))) return TIERS.SHELL_DANGEROUS;
+
+  if (hasUnsafeOutputRedirection(cmd)) return TIERS.SHELL_MEDIUM;
 
   // For a chained command, classify each segment and take the riskiest —
   // never let a safe-looking prefix mask `&& npm install` or worse.
@@ -170,6 +176,31 @@ export function classifyShell(command) {
   if (SHELL_MEDIUM_RE.some(re => re.test(cmd))) return TIERS.SHELL_MEDIUM;
   if (SHELL_SAFE_RE.some(re => re.test(cmd)))   return TIERS.SHELL_SAFE;
   return TIERS.SHELL_MEDIUM;
+}
+
+function hasUnsafeOutputRedirection(cmd) {
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && !inSingle) { escaped = true; continue; }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble || ch !== '>') continue;
+
+    const prev = cmd[i - 1] || '';
+    const next = cmd[i + 1] || '';
+    if (next === '&') continue;
+    let cursor = next === '>' ? i + 2 : i + 1;
+    while (/\s/.test(cmd[cursor] || '')) cursor++;
+    const target = cmd.slice(cursor).match(/^[^\s;&|]+/)?.[0] || '';
+    if (target === '/dev/null') continue;
+    if (prev === '2' && target === '/dev/null') continue;
+    return true;
+  }
+  return false;
 }
 
 function splitShellSegments(cmd) {

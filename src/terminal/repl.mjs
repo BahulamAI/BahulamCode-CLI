@@ -44,6 +44,7 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
@@ -150,6 +151,7 @@ const COMMANDS = {
   '/whoami':   'Show logged-in user',
   '/status':   'Session status & system info',
   '/plan':     'Show plan/tasks',
+  '/tasks':    'Show or update project tasks',
   '/stats':    'Progress bars & metrics',
   '/clear':    'Clear conversation',
   '/git':      'Git status',
@@ -184,6 +186,19 @@ const COMMANDS = {
 };
 
 const HELP_GROUPS = [
+  {
+    key: 'plan',
+    title: 'Plan',
+    summary: 'plan and project tasks',
+    commands: [
+      ['/plan', 'Plan and task overview'],
+      ['/plan status', 'Plan owner and task files'],
+      ['/plan edit', 'Show editable task/plan paths'],
+      ['/tasks', 'List project tasks'],
+      ['/tasks add <text>', 'Add backlog task'],
+      ['/tasks active|blocked|done <text>', 'Append to a task list'],
+    ],
+  },
   {
     key: 'status',
     title: 'Status',
@@ -342,6 +357,7 @@ function renderHelp(topic = '') {
       ['/help', 'Grouped command help'],
       ['/status', 'Session snapshot'],
       ['/plan', 'Task list and plan'],
+      ['/tasks', 'Project task files'],
       ['/history', 'Transcript, approvals, undo'],
       ['/settings', 'Policy, auth, verbosity'],
       ['/why', 'Explain last reasoning'],
@@ -396,7 +412,7 @@ function commandCompletions(line) {
     const hits = categories.map(c => `/help ${c}`).filter(cmd => cmd.startsWith(`/help ${topic}`));
     return hits.length ? hits : categories.map(c => `/help ${c}`);
   }
-  const top = ['/help', '/status', '/plan', '/history', '/settings', '/why'];
+  const top = ['/help', '/status', '/plan', '/tasks', '/history', '/settings', '/why'];
   const namespaced = HELP_GROUPS.flatMap(g => g.commands.map(([name]) => name.split(/\s+/)[0]));
   const all = [...new Set([...top, ...namespaced, ...Object.keys(COMMANDS), '/quit'])].sort();
   const hits = all.filter(cmd => cmd.startsWith(line));
@@ -1217,6 +1233,128 @@ function renderEvent(event) {
 
 // ── Slash Commands ──
 
+function taskListLabel(list) {
+  return {
+    active: 'Active',
+    backlog: 'Backlog',
+    blocked: 'Blocked',
+    done: 'Done',
+  }[list] || list;
+}
+
+function firstMeaningfulLines(content, limit = 6) {
+  return String(content || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .slice(0, limit);
+}
+
+function renderTaskBoard(board, { showDone = false } = {}) {
+  const order = showDone
+    ? ['active', 'blocked', 'backlog', 'done']
+    : ['active', 'blocked', 'backlog'];
+  let any = false;
+  for (const list of order) {
+    const tasks = board.lists[list]?.tasks || [];
+    if (!tasks.length) continue;
+    any = true;
+    process.stderr.write(`\n  ${c.bold(taskListLabel(list))} ${c.dim(board.lists[list].fileName)}\n`);
+    for (const task of tasks.slice(0, 12)) {
+      const marker = task.checked ? c.green('[x]') : c.dim('[ ]');
+      const section = task.section && task.section !== taskListLabel(list) ? c.dim(` · ${task.section}`) : '';
+      process.stderr.write(`  ${marker} ${task.text}${section}\n`);
+    }
+    if (tasks.length > 12) {
+      process.stderr.write(`  ${c.dim(`+${tasks.length - 12} more`)}\n`);
+    }
+  }
+  if (!any) {
+    process.stderr.write(`  ${c.dim('No project tasks yet. Add one with /tasks add <text>.')}\n`);
+  }
+}
+
+function renderPlanOverview({ ctx, mode = 'overview' } = {}) {
+  const cwd = safeCwd();
+  ensureTaskFiles({ cwd });
+  const board = loadTaskBoard({ cwd });
+  const counts = taskCounts(board);
+  const planLines = firstMeaningfulLines(board.plan.content, 8);
+  const goalLines = firstMeaningfulLines(board.goal.content, 3);
+  const effective = ctx.effectivePolicy || loadEffectivePolicy({ cwd });
+  const owner = effective.policy?.planning?.owner || 'auto';
+
+  process.stderr.write(`\n  ${c.bold('Plan')}\n`);
+  process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+  process.stderr.write(`  ${c.dim('Owner')}       ${c.brand(owner)}\n`);
+  process.stderr.write(`  ${c.dim('Tasks')}       ${counts.active} active, ${counts.blocked} blocked, ${counts.backlog} backlog, ${counts.done} done\n`);
+  if (mode === 'status') {
+    process.stderr.write(`  ${c.dim('Plan file')}   ${board.plan.exists ? board.plan.path : c.dim('(none)')}\n`);
+    process.stderr.write(`  ${c.dim('Tasks dir')}   ${board.dir}\n`);
+  }
+
+  if (goalLines.length) {
+    process.stderr.write(`\n  ${c.bold('Goal')}\n`);
+    for (const line of goalLines) process.stderr.write(`  ${line}\n`);
+  }
+  if (planLines.length) {
+    process.stderr.write(`\n  ${c.bold('Current Plan')}\n`);
+    for (const line of planLines) process.stderr.write(`  ${line}\n`);
+  }
+
+  renderTaskBoard(board, { showDone: mode === 'status' });
+  process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|blocked|done <text>')}\n\n`);
+}
+
+function refreshTaskContext(ctx) {
+  try {
+    const previous = ctx.latestProjectContext || null;
+    ctx.latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous });
+    ctx.latestEnvelope = null;
+  } catch { /* best effort */ }
+}
+
+function handleTasksCommand(rest, ctx) {
+  const raw = String(rest || '').trim();
+  ensureTaskFiles({ cwd: safeCwd() });
+  if (!raw || raw === 'list') {
+    const board = loadTaskBoard({ cwd: safeCwd() });
+    process.stderr.write(`\n  ${c.bold('Tasks')}\n`);
+    process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+    renderTaskBoard(board, { showDone: true });
+    process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|backlog|blocked|done <text>')}\n\n`);
+    return;
+  }
+
+  if (raw === 'help') {
+    renderHelp('plan');
+    return;
+  }
+
+  const parts = raw.split(/\s+/);
+  let verb = (parts.shift() || '').toLowerCase();
+  let list = 'backlog';
+  if (verb === 'add' || verb === 'new') {
+    const maybeList = (parts[0] || '').toLowerCase();
+    if (maybeList in TASK_FILES || ['todo', 'pending', 'current', 'doing', 'complete', 'completed'].includes(maybeList)) {
+      list = parts.shift();
+    }
+  } else if (verb in TASK_FILES || ['todo', 'pending', 'current', 'doing', 'complete', 'completed'].includes(verb)) {
+    list = verb;
+  } else {
+    parts.unshift(verb);
+    verb = 'add';
+  }
+
+  try {
+    const result = appendTask({ cwd: safeCwd(), list, text: parts.join(' ') });
+    refreshTaskContext(ctx);
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`added to ${result.list}`)} ${result.text}\n`);
+  } catch (err) {
+    process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+  }
+}
+
 async function handleCommand(input, ctx) {
   const { cmd, rest, aliasTarget } = normalizeCommandInput(input);
   if (aliasTarget) {
@@ -1229,8 +1367,29 @@ async function handleCommand(input, ctx) {
       return;
     }
 
-    case '/plan':
-      process.stderr.write(`  ${c.gray('/plan is reserved for the durable task workflow in PRD-068 Phase 3. For now, use /status context to inspect loaded plan.md/tasks context.')}\n`);
+    case '/plan': {
+      const mode = rest.trim().toLowerCase();
+      if (mode === 'help') {
+        renderHelp('plan');
+        return;
+      }
+      if (mode === 'edit') {
+        ensureTaskFiles({ cwd: safeCwd() });
+        const board = loadTaskBoard({ cwd: safeCwd() });
+        process.stderr.write(`\n  ${c.bold('Editable Plan Files')}\n`);
+        process.stderr.write(`  ${c.dim('Plan')}      ${board.plan.path}\n`);
+        process.stderr.write(`  ${c.dim('Active')}    ${board.lists.active.path}\n`);
+        process.stderr.write(`  ${c.dim('Backlog')}   ${board.lists.backlog.path}\n`);
+        process.stderr.write(`  ${c.dim('Blocked')}   ${board.lists.blocked.path}\n`);
+        process.stderr.write(`  ${c.dim('Done')}      ${board.lists.done.path}\n\n`);
+        return;
+      }
+      renderPlanOverview({ ctx, mode: mode === 'status' ? 'status' : 'overview' });
+      return;
+    }
+
+    case '/tasks':
+      handleTasksCommand(rest, ctx);
       return;
 
     case '/history': {

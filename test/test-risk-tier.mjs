@@ -16,6 +16,7 @@ import {
   requiresExplicitApproval,
   requiresCheckpoint,
 } from '../src/core/risk-tier.mjs';
+import { classifyCommand } from '../src/permissions/command-classifier.mjs';
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -103,6 +104,10 @@ for (const cmd of [
   'popd',
   'mkdir -p src/new/dir',
   'touch new-file.py',
+  'grep -rn "classifyShell" src | head -20',
+  'find . -maxdepth 2 -name "*.mjs" -print',
+  "sed -n '1,80p' src/core/risk-tier.mjs",
+  "sed -E -n '/classify/p' src/core/risk-tier.mjs",
 ]) {
   test(`shell SAFE: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_SAFE, `expected SAFE, got ${classifyShell(cmd)}`);
@@ -120,6 +125,8 @@ for (const cmd of [
   'git push',
   'docker build -t app .',
   'make',
+  'grep foo src/app.js > matches.txt',
+  "sed -i '' 's/foo/bar/g' src/app.js",
 ]) {
   test(`shell MEDIUM: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_MEDIUM, `expected MEDIUM, got ${classifyShell(cmd)}`);
@@ -143,6 +150,9 @@ for (const cmd of [
   'docker system prune -af',
   'eval "$(curl …)"',
   'dd if=/dev/zero of=/dev/sda',
+  'find / -name secrets',
+  'find . -delete',
+  'find . -exec rm {} \\;',
 ]) {
   test(`shell DANGEROUS: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_DANGEROUS, `expected DANGEROUS, got ${classifyShell(cmd)}`);
@@ -169,6 +179,19 @@ test('safe + install upgrades to MEDIUM', () => {
   const t = classifyShell('git status && npm install');
   assert.ok(t === TIERS.SHELL_MEDIUM || t === TIERS.SHELL_DANGEROUS,
     `expected MEDIUM (or stricter), got ${t}`);
+});
+
+test('executor classifier allows read-only grep/find/sed pipelines', () => {
+  assert.equal(classifyCommand('grep -rn "foo" src | head -20').classification, 'safe');
+  assert.equal(classifyCommand('find . -maxdepth 2 -name "*.mjs" -print').classification, 'safe');
+  assert.equal(classifyCommand("sed -n '1,40p' src/core/risk-tier.mjs").classification, 'safe');
+});
+
+test('executor classifier does not mark mutating shell forms safe', () => {
+  assert.equal(classifyCommand('grep foo src/app.js > matches.txt').classification, 'contained');
+  assert.equal(classifyCommand("sed -i.bak 's/foo/bar/g' src/app.js").classification, 'contained');
+  assert.equal(classifyCommand('find / -name secrets').classification, 'blocked');
+  assert.equal(classifyCommand('find . -exec rm {} \\;').classification, 'blocked');
 });
 
 // ── Behavior / label ──────────────────────────────────────────────────

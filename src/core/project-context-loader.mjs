@@ -123,6 +123,14 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
 
 export function contextToPromptBlock(context) {
   const parts = [];
+  if (context?.root) {
+    parts.push([
+      '--- task workflow ---',
+      'Keep .kepler/tasks/active.md current for the work in progress.',
+      'Use .kepler/tasks/backlog.md for deferred work, .kepler/tasks/blocked.md for items waiting on input, and .kepler/tasks/done.md for completed work.',
+      'When the task state changes materially, update the appropriate task markdown file before the turn finishes.',
+    ].join('\n'));
+  }
   for (const file of context?.files || []) {
     if (!file.content || file.label === 'config.json') continue;
     parts.push(`--- ${file.label} (${file.hash}) ---\n${file.content}`);

@@ -207,6 +207,10 @@ const COMMAND_ALLOWLIST = {
     find: { flags: { '-name': 'string', '-iname': 'string', '-path': 'string', '-ipath': 'string', '-type': 'string', '-maxdepth': 'number', '-mindepth': 'number', '-newer': 'string', '-size': 'string', '-mtime': 'string', '-atime': 'string', '-ctime': 'string', '-perm': 'string', '-user': 'string', '-group': 'string', '-not': 'none', '!': 'none', '-or': 'none', '-o': 'none', '-and': 'none', '-a': 'none', '-print': 'none', '-print0': 'none', '-empty': 'none', '-readable': 'none', '-writable': 'none', '-executable': 'none', '-follow': 'none', '-L': 'none', '-P': 'none', '-H': 'none', '-xdev': 'none', '-mount': 'none', '-daystart': 'none', '-regextype': 'string', '-regex': 'string', '-iregex': 'string' },
         blocked: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fls', '-fprintf'] },
 
+    // ── sed (read-only subset — NO -i/--in-place) ──
+    sed: { flags: { '-n': 'none', '--quiet': 'none', '--silent': 'none', '-E': 'none', '-r': 'none', '--regexp-extended': 'none', '-e': 'string', '--expression': 'string', '-f': 'string', '--file': 'string', '-l': 'number', '--line-length': 'number', '-u': 'none', '--unbuffered': 'none' },
+        blocked: ['-i', '--in-place', '-z', '--null-data', '-s', '--separate'] },
+
     // ── ls ──
     ls: { flags: { '-l': 'none', '-a': 'none', '-A': 'none', '-h': 'none', '--human-readable': 'none', '-R': 'none', '--recursive': 'none', '-S': 'none', '-t': 'none', '-r': 'none', '--reverse': 'none', '-1': 'none', '-d': 'none', '--directory': 'none', '-F': 'none', '--classify': 'none', '-i': 'none', '--inode': 'none', '-s': 'none', '--size': 'none', '--color': 'string', '--sort': 'string', '--time': 'string', '--group-directories-first': 'none', '-p': 'none', '-G': 'none', '-n': 'none', '--numeric-uid-gid': 'none' } },
 
@@ -295,6 +299,7 @@ const BLOCKED_PATTERNS = [
     /curl.*\|\s*(ba)?sh/,                                     // pipe curl to shell
     /wget.*\|\s*(ba)?sh/,                                     // pipe wget to shell
     /eval\s*\$\(/,                                            // eval command substitution
+    /\bfind\s+\/(?:\s|$)/,                                    // find / scans the whole VM
     /find\s.*-exec/,                                           // find with -exec (code execution)
     /find\s.*-delete/,                                         // find with -delete
 ];
@@ -349,6 +354,7 @@ function validateFlags(tokens, startIdx, config) {
         if (blocked) {
             for (const b of blocked) {
                 if (token === b || token.startsWith(b + '=')) return false;
+                if (/^-[A-Za-z]$/.test(b) && token.startsWith(b) && token.length > b.length) return false;
             }
         }
 
@@ -461,6 +467,10 @@ export function classifyCommand(command) {
         return { classification: 'blocked', reason: 'Contains command substitution (backticks or $())' };
     }
 
+    if (containsUnsafeOutputRedirection(trimmed)) {
+        return { classification: 'contained', reason: 'Writes shell output via redirection' };
+    }
+
     // ── Step 3: Split compound commands and classify each ──
     const subcommands = splitCommand(trimmed);
 
@@ -498,6 +508,31 @@ export function classifyCommand(command) {
         reason: worstLevel === 'safe' ? 'All subcommands are read-only' : 'Contains write/execute or high-risk operations',
         highRisk,
     };
+}
+
+function containsUnsafeOutputRedirection(command) {
+    let inSingle = false;
+    let inDouble = false;
+    let escaped = false;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\' && !inSingle) { escaped = true; continue; }
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+        if (inSingle || inDouble || ch !== '>') continue;
+
+        const prev = command[i - 1] || '';
+        const next = command[i + 1] || '';
+        if (next === '&') continue;
+        let cursor = next === '>' ? i + 2 : i + 1;
+        while (/\s/.test(command[cursor] || '')) cursor++;
+        const target = command.slice(cursor).match(/^[^\s;&|]+/)?.[0] || '';
+        if (target === '/dev/null') continue;
+        if (prev === '2' && target === '/dev/null') continue;
+        return true;
+    }
+    return false;
 }
 
 /**
