@@ -536,7 +536,10 @@ function renderResumePreview(resumed) {
   }
 
   if (resumed.replayEvents?.length) {
-    process.stderr.write(`\n  ${c.bold('Replayed Live Session Events')} (${resumed.replayEvents.length} events)\n`);
+    const replayEvents = filterResumeReplayEvents(resumed.replayEvents);
+    const userTurns = (resumed.history || []).filter(m => m.role === 'user');
+    const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
+    process.stderr.write(`\n  ${c.bold('Replayed Live Session Events')} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
     const sessionSnapshot = JSON.parse(JSON.stringify(session));
     const savedOrbit = _orbit;
@@ -545,8 +548,15 @@ function renderResumePreview(resumed) {
     _sessionMgr = null;
     try {
       startContentStream();
-      for (const item of resumed.replayEvents) {
-        renderEvent(item.event);
+      for (const item of replayItems) {
+        if (item.kind === 'user') {
+          flushContent();
+          stopSpinner();
+          const content = String(item.message.content || '').replace(/\s+/g, ' ').trim();
+          process.stderr.write(`\n  ${historyRoleLabel('user')}: ${content}\n`);
+          continue;
+        }
+        renderEvent(item.event.event);
       }
       flushContent();
       stopSpinner();
@@ -567,6 +577,85 @@ function renderResumePreview(resumed) {
       title: 'Replayed Session History',
     });
   }
+}
+
+function filterResumeReplayEvents(events = []) {
+  return events.filter(item => {
+    const type = item?.event?.type;
+    return !['status', 'session_info', 'complete', 'resumed', 'paused'].includes(type);
+  });
+}
+
+function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
+  const items = [];
+  let order = 0;
+  for (const message of userTurns) {
+    items.push({
+      kind: 'user',
+      message,
+      fileOrder: Number.isFinite(Number(message.order)) ? Number(message.order) : null,
+      order: order++,
+      time: Date.parse(message.timestamp || '') || 0,
+    });
+  }
+  for (const event of replayEvents) {
+    items.push({
+      kind: 'event',
+      event,
+      fileOrder: Number.isFinite(Number(event.order)) ? Number(event.order) : null,
+      order: order++,
+      time: Date.parse(event.timestamp || '') || 0,
+    });
+  }
+  return items.sort((a, b) => {
+    if (a.fileOrder !== null && b.fileOrder !== null && a.fileOrder !== b.fileOrder) {
+      return a.fileOrder - b.fileOrder;
+    }
+    if (a.fileOrder !== null && b.fileOrder === null) return -1;
+    if (a.fileOrder === null && b.fileOrder !== null) return 1;
+    const at = a.time || Number.MAX_SAFE_INTEGER;
+    const bt = b.time || Number.MAX_SAFE_INTEGER;
+    return at - bt || a.order - b.order;
+  });
+}
+
+function resumeProgressBar(percent, width = 12) {
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  const filled = Math.round((p / 100) * width);
+  return `${c.brand('█'.repeat(filled))}${c.gray('░'.repeat(width - filled))} ${String(p).padStart(3)}%`;
+}
+
+function startResumeProgress(mode = 'full') {
+  let percent = 8;
+  let label = `resuming as ${mode}`;
+  let active = true;
+  const started = Date.now();
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let frame = 0;
+
+  const render = () => {
+    if (!active) return;
+    const glyph = frames[frame % frames.length];
+    frame++;
+    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
+  };
+
+  render();
+  const timer = setInterval(render, 100);
+  return {
+    update(nextLabel, nextPercent) {
+      if (!active) return;
+      if (nextLabel) label = nextLabel;
+      if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
+      render();
+    },
+    stop() {
+      if (!active) return;
+      active = false;
+      clearInterval(timer);
+      inPlace('');
+    },
+  };
 }
 
 // ── Session State ──
@@ -2470,15 +2559,18 @@ async function handleCommand(input, ctx) {
         }
       }
 
-      // Progress signal — the picker + overlay leave their last frames on the
-      // scrollback. Without this line, users don't see anything happen while
-      // activation runs. PRD-068 §5.14.9 rationale: one honest line beats a
-      // fake replay.
-      process.stderr.write(`\n  ${c.dim('→ resuming as')} ${c.brand(mode)}${c.dim('…')}\n`);
-
       // 3. Activate.
       const source = targetId ? 'direct' : 'picker';
-      const resumed = await ctx.activateResumedSession(picked.sessionId, source, mode, picked);
+      const progress = startResumeProgress(mode);
+      let resumed;
+      try {
+        resumed = await ctx.activateResumedSession(picked.sessionId, source, mode, picked, {
+          onProgress: progress.update,
+          onProgressStop: progress.stop,
+        });
+      } finally {
+        progress.stop();
+      }
       if (!resumed.ok) {
         if (resumed.reason === 'cwd-cancelled') {
           process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
@@ -2502,10 +2594,9 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      // 5. Show the historical conversation so the user can pick up where they
-      //    left off. PRD-068 §5.14.9 kills the fake "replay events" theater;
-      //    this render is honest — just the messages the agent will see next
-      //    turn, no state manipulation.
+      // 5. Show continuity context. Full mode uses the captured kepler_event
+      //    stream when available so the terminal replay matches the original
+      //    styled interaction; older sessions fall back to reconstructed text.
       if (mode === 'summary' && resumed.summary) {
         // In summary mode the agent gets only the summary block. Show it so
         // the user knows what continuity context was included.
@@ -2515,6 +2606,8 @@ async function handleCommand(input, ctx) {
           process.stderr.write(`  ${c.dim(line)}\n`);
         }
         process.stderr.write('\n');
+      } else if (mode === 'full' && resumed.replayEvents?.length) {
+        renderResumePreview(resumed);
       } else if (resumed.history?.length) {
         // full and recap+tail both feed real conversation to the agent — show
         // the tail so the user has visual context. Cap at 30 entries to avoid
@@ -2636,12 +2729,16 @@ export async function startTerminalRepl() {
    *      what the agent will see next turn; it is NOT written back to the
    *      transcript at activation time.
    */
-  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'full', resumeEntry = null) {
+  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'full', resumeEntry = null, options = {}) {
+    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    const onProgressStop = typeof options.onProgressStop === 'function' ? options.onProgressStop : () => {};
     // PRD-068 §5.14.6: JSONL is the only source. No legacy conversation fallback.
+    onProgress('reading saved transcript', 14);
     const detail = await getSessionDetail(sessionId, { filePath: resumeEntry?.transcriptPath });
     if (!detail) {
       return { ok: false, reason: `No transcript found for session ${sessionId}` };
     }
+    onProgress('building resume context', 28);
     const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, historyMode);
     const displayHistory = richHistory.displayHistory;
     const agentHistory = richHistory.agentHistory;
@@ -2655,8 +2752,10 @@ export async function startTerminalRepl() {
     let switchedProject = false;
     let projectMissing = false;
     let stayedInCwd = false;
+    onProgress('checking project cwd', 40);
     if (savedProjectPath && savedProjectPath !== originalCwd) {
       if (fs.existsSync(savedProjectPath)) {
+        onProgressStop();
         const choice = await confirmCwdSwitch(ctx, savedProjectPath, originalCwd);
         if (choice === 'cancel') return { ok: false, reason: 'cwd-cancelled' };
         if (choice === 'switch') {
@@ -2676,6 +2775,7 @@ export async function startTerminalRepl() {
       }
     }
 
+    onProgress('rebuilding local session state', 55);
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
@@ -2701,7 +2801,10 @@ export async function startTerminalRepl() {
     const hydrationFailures = [];
     const resumeRoots = getTranscriptProjectRoots(detail);
     const rootsToRegister = [...new Set([safeCwd(), ...resumeRoots].filter(Boolean))];
-    for (const root of rootsToRegister) {
+    onProgress('hydrating project roots', 68);
+    for (let i = 0; i < rootsToRegister.length; i++) {
+      const root = rootsToRegister[i];
+      onProgress(`hydrating project root ${i + 1}/${rootsToRegister.length}`, 68 + Math.round((i / Math.max(1, rootsToRegister.length)) * 18));
       try {
         await toolExecutor.execute('get_project_overview', { path: root });
       } catch {
@@ -2709,6 +2812,7 @@ export async function startTerminalRepl() {
       }
     }
 
+    onProgress('preparing replay', 92);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
     session.id = sessionId;
@@ -2737,9 +2841,9 @@ export async function startTerminalRepl() {
       hydrationFailures,
       instruction: detail?.meta?.firstPrompt || '',
       historyMode,
-      // PRD-068 §5.14.9: no visual replay. `replayEvents` intentionally dropped.
       summary: richHistory.summary || '',
       history: displayHistory,
+      replayEvents: detail.replayEvents || [],
       stats: richHistory.stats,
       source,
     };

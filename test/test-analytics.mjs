@@ -138,6 +138,8 @@ await test('getSessionDetail normalizes tool blocks', async () => {
   assert.strictEqual(detail.entries.length, 3);
   assert.strictEqual(detail.replayEvents.length, 1);
   assert.strictEqual(detail.replayEvents[0].event.type, 'tool_call');
+  assert.deepStrictEqual(detail.entries.map(e => e.order), [0, 1, 3]);
+  assert.strictEqual(detail.replayEvents[0].order, 2);
   assert.ok(Array.isArray(detail.entries[1].content));
   assert.strictEqual(detail.entries[1].content[1].type, 'tool_use');
   assert.strictEqual(detail.entries[1].content[1].name, 'read_file');
@@ -150,6 +152,7 @@ await test('buildResumeHistory reconstructs display history and continuity paylo
   const compact = localStore.buildResumeHistory(detail, 'compact');
   assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'call'));
   assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'result'));
+  assert.strictEqual(compact.displayHistory.find(m => m.role === 'user')?.order, 0);
   assert.strictEqual(compact.agentHistory.length, 1);
   assert.ok(compact.agentHistory[0].content.includes('Session continuity summary'));
   assert.ok(compact.agentHistory[0].content.includes('read_file x1'));

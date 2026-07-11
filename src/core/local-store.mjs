@@ -350,6 +350,7 @@ export async function getSessionDetail(sessionId, options = {}) {
   const replayEvents = [];
   const fileStream = fs.createReadStream(file.filePath, { encoding: 'utf-8' });
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  let order = 0;
 
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -359,9 +360,11 @@ export async function getSessionDetail(sessionId, options = {}) {
     } catch {
       continue;
     }
+    const entryOrder = order++;
 
     if (obj.type === 'kepler_event' && obj.event?.type) {
       replayEvents.push({
+        order: entryOrder,
         timestamp: obj.timestamp || null,
         event: obj.event,
       });
@@ -370,6 +373,7 @@ export async function getSessionDetail(sessionId, options = {}) {
 
     const message = obj.message || {};
     entries.push({
+      order: entryOrder,
       type: obj.type || null,
       timestamp: obj.timestamp || null,
       cwd: obj.cwd || null,
@@ -424,7 +428,7 @@ export function buildResumeHistory(detail, mode = 'compact') {
   for (const entry of detail.entries || []) {
     if (entry.role === 'user' && typeof entry.content === 'string') {
       const content = entry.content;
-      displayHistory.push({ role: 'user', content, timestamp: entry.timestamp });
+      displayHistory.push({ role: 'user', content, timestamp: entry.timestamp, order: entry.order });
       fullAgentHistory.push({ role: 'user', content });
       userPrompts.push(content);
       continue;
@@ -441,12 +445,13 @@ export function buildResumeHistory(detail, mode = 'compact') {
           role: 'tool',
           content: line,
           timestamp: entry.timestamp,
+          order: entry.order,
           tool: tool.name,
           kind: 'call',
         });
       }
       if (text) {
-        displayHistory.push({ role: 'assistant', content: text, timestamp: entry.timestamp });
+        displayHistory.push({ role: 'assistant', content: text, timestamp: entry.timestamp, order: entry.order });
         assistantTexts.push(text);
       }
 
@@ -468,6 +473,7 @@ export function buildResumeHistory(detail, mode = 'compact') {
           role: 'tool',
           content: label,
           timestamp: entry.timestamp,
+          order: entry.order,
           tool: result.tool_use_id || 'tool',
           kind: 'result',
         });
