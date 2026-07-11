@@ -1958,24 +1958,42 @@ async function handleCommand(input, ctx) {
       }
 
       process.stderr.write(`\n  ${c.bold('Pick a session to resume:')}\n\n`);
-      for (let i = 0; i < resumable.length; i++) {
-        const s = resumable[i];
-        const date = sessionListTimestamp(s);
-        const instr = oneLineInstruction(s.instruction, 72);
-        const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
-        const num = `[${i + 1}]`;
-        process.stderr.write(`  ${c.brand(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
-      }
-      process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
 
-      // Read a numeric selection. Raw mode lets Esc/Ctrl-C cancel without
-      // submitting a normal readline line, while still supporting 10+ items.
       const rl = ctx._rl || null;
       if (rl) rl.pause();
       const choice = await new Promise((resolve) => {
         if (!process.stdin.isTTY) { resolve(null); return; }
         const wasRaw = process.stdin.isRaw;
-        let buffer = '';
+        const pageSize = Math.min(10, resumable.length);
+        const numWidth = String(resumable.length).length;
+        let selected = 0;
+        let offset = 0;
+        let renderedLines = 0;
+
+        const renderMenu = () => {
+          if (renderedLines > 0) {
+            process.stderr.write(`\x1b[${renderedLines}A\x1b[0J`);
+          }
+          if (selected < offset) offset = selected;
+          if (selected >= offset + pageSize) offset = selected - pageSize + 1;
+
+          const lines = [];
+          const end = Math.min(offset + pageSize, resumable.length);
+          for (let i = offset; i < end; i++) {
+            const s = resumable[i];
+            const date = sessionListTimestamp(s);
+            const instr = oneLineInstruction(s.instruction, 64);
+            const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
+            const marker = i === selected ? c.brand('›') : ' ';
+            const num = `[${String(i + 1).padStart(numWidth, ' ')}]`;
+            lines.push(`  ${marker} ${c.dim(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}`);
+          }
+          lines.push('');
+          lines.push(`  ${c.dim(`↑↓ move  ·  PgUp/PgDn scroll  ·  Enter resume  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`);
+          process.stderr.write(lines.join('\n') + '\n');
+          renderedLines = lines.length;
+        };
+
         const cleanup = (value) => {
           process.stdin.removeListener('data', onData);
           process.stdin.setRawMode(wasRaw || false);
@@ -1983,28 +2001,48 @@ async function handleCommand(input, ctx) {
           resolve(value);
         };
         const onData = (data) => {
-          const bytes = [...data];
-          if (bytes[0] === 0x1b || bytes[0] === 0x03) { cleanup(null); return; }
-          if (bytes[0] === 0x0d || bytes[0] === 0x0a) {
-            cleanup(buffer ? parseInt(buffer, 10) : null);
+          const key = data.toString('utf8');
+          if (key === '\u0003' || key === '\u001b') { cleanup(null); return; }
+          if (key === '\r' || key === '\n') { cleanup(selected + 1); return; }
+          if (key === '\u001b[A') {
+            selected = Math.max(0, selected - 1);
+            renderMenu();
             return;
           }
-          if (bytes[0] === 0x7f || bytes[0] === 0x08) {
-            if (buffer.length > 0) {
-              buffer = buffer.slice(0, -1);
-              process.stderr.write('\b \b');
-            }
+          if (key === '\u001b[B') {
+            selected = Math.min(resumable.length - 1, selected + 1);
+            renderMenu();
             return;
           }
-          const text = data.toString();
-          if (/^\d+$/.test(text)) {
-            buffer += text;
-            process.stderr.write(text);
+          if (key === '\u001b[5~') {
+            selected = Math.max(0, selected - pageSize);
+            renderMenu();
+            return;
+          }
+          if (key === '\u001b[6~') {
+            selected = Math.min(resumable.length - 1, selected + pageSize);
+            renderMenu();
+            return;
+          }
+          if (key === '\u001b[H' || key === '\u001b[1~') {
+            selected = 0;
+            renderMenu();
+            return;
+          }
+          if (key === '\u001b[F' || key === '\u001b[4~') {
+            selected = resumable.length - 1;
+            renderMenu();
+            return;
+          }
+          if (/^[1-9]$/.test(key)) {
+            const index = Number(key) - 1;
+            if (index < resumable.length) cleanup(index + 1);
           }
         };
         process.stdin.setRawMode(true);
         process.stdin.resume();
         process.stdin.on('data', onData);
+        renderMenu();
       });
 
       if (!choice || choice < 1 || choice > resumable.length) {
