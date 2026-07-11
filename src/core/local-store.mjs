@@ -118,6 +118,59 @@ function findSessionFile(sessionId) {
   return listSessionFiles().find((entry) => entry.sessionId === sessionId) || null;
 }
 
+function looksLikeProjectRoot(dirPath) {
+  return [
+    '.git',
+    'package.json',
+    'pyproject.toml',
+    'setup.py',
+    'go.mod',
+    'Cargo.toml',
+  ].some(name => fs.existsSync(path.join(dirPath, name)));
+}
+
+function inferProjectRoot(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string' || !path.isAbsolute(rawPath)) return '';
+  let current = rawPath;
+  try {
+    if (fs.existsSync(current) && fs.statSync(current).isFile()) {
+      current = path.dirname(current);
+    }
+  } catch {
+    current = path.dirname(current);
+  }
+  while (current && current !== path.dirname(current)) {
+    if (fs.existsSync(current) && looksLikeProjectRoot(current)) return current;
+    current = path.dirname(current);
+  }
+  return fs.existsSync(rawPath) && fs.statSync(rawPath).isDirectory() ? rawPath : '';
+}
+
+function collectAbsoluteStrings(value, out = []) {
+  if (typeof value === 'string') {
+    if (path.isAbsolute(value)) out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectAbsoluteStrings(item, out);
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectAbsoluteStrings(item, out);
+  }
+  return out;
+}
+
+function collectAbsolutePathsFromText(text) {
+  const out = [];
+  const pattern = /\/(?:[^/\s'"`]+(?:[ /][^/\s'"`]+)*)/g;
+  for (const match of String(text || '').matchAll(pattern)) {
+    const raw = match[0].replace(/[),.;:]+$/, '');
+    if (raw && path.isAbsolute(raw)) out.push(raw);
+  }
+  return out;
+}
+
 /**
  * Parse a session JSONL file and extract metadata.
  * Reads line-by-line (streaming) to handle large files.
@@ -218,6 +271,7 @@ export async function getRecentSessions(n = 10) {
     sessions.push({
       ...meta,
       slug: f.slug,
+      filePath: f.filePath,
       mtime: f.mtime,
     });
   }
@@ -228,8 +282,15 @@ export async function getRecentSessions(n = 10) {
  * Return normalized entries for a single session transcript.
  * @param {string} sessionId
  */
-export async function getSessionDetail(sessionId) {
-  const file = findSessionFile(sessionId);
+export async function getSessionDetail(sessionId, options = {}) {
+  const file = options.filePath
+    ? {
+        sessionId,
+        slug: path.basename(path.dirname(options.filePath)),
+        filePath: options.filePath,
+        mtime: fs.statSync(options.filePath).mtimeMs,
+      }
+    : findSessionFile(sessionId);
   if (!file) return null;
 
   const entries = [];
@@ -359,10 +420,12 @@ export function buildResumeHistory(detail, mode = 'compact') {
     .join(', ') || 'none recorded';
   const latestUser = userPrompts[userPrompts.length - 1] || detail.meta?.firstPrompt || '';
   const latestAssistant = assistantTexts[assistantTexts.length - 1] || '';
+  const projectRoots = getTranscriptProjectRoots(detail);
   const summaryLines = [
     'Session continuity summary from the resumed local transcript.',
     `Session: ${detail.sessionId}`,
     detail.meta?.project ? `Project: ${detail.meta.project}` : '',
+    projectRoots.length ? `Registered project roots: ${projectRoots.join(', ')}` : '',
     detail.meta?.startTime ? `Started: ${detail.meta.startTime}` : '',
     detail.meta?.endTime ? `Last activity: ${detail.meta.endTime}` : '',
     `Prior user requests (${userPrompts.length}):`,
@@ -390,6 +453,34 @@ export function buildResumeHistory(detail, mode = 'compact') {
       toolResults,
     },
   };
+}
+
+export function getTranscriptProjectRoots(detail) {
+  const roots = new Set();
+  if (detail?.meta?.project && fs.existsSync(detail.meta.project)) {
+    roots.add(detail.meta.project);
+  }
+
+  for (const entry of detail?.entries || []) {
+    if (typeof entry.content === 'string') {
+      for (const candidate of collectAbsolutePathsFromText(entry.content)) {
+        const root = inferProjectRoot(candidate);
+        if (root) roots.add(root);
+      }
+    }
+    for (const tool of entryToolUses(entry)) {
+      if (tool.name === 'get_project_overview') {
+        const root = inferProjectRoot(tool.input?.path || tool.input?.root || tool.input?.cwd);
+        if (root) roots.add(root);
+      }
+      for (const candidate of collectAbsoluteStrings(tool.input)) {
+        const root = inferProjectRoot(candidate);
+        if (root) roots.add(root);
+      }
+    }
+  }
+
+  return [...roots];
 }
 
 /**

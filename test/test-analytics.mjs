@@ -30,7 +30,11 @@ process.env.KEPLER_HOME = tempRoot;
 
 const projectSlug = '-tmp-demo-project';
 const projectsDir = path.join(tempRoot, 'projects', projectSlug);
+const demoProject = path.join(tempRoot, 'demo-project');
 fs.mkdirSync(projectsDir, { recursive: true });
+fs.mkdirSync(path.join(demoProject, 'src'), { recursive: true });
+fs.writeFileSync(path.join(demoProject, 'package.json'), JSON.stringify({ name: 'demo-project' }));
+fs.writeFileSync(path.join(demoProject, 'src', 'index.mjs'), 'export default 1;\n');
 
 const sessionAPath = path.join(projectsDir, 'sess-A.jsonl');
 const sessionBPath = path.join(projectsDir, 'sess-B.jsonl');
@@ -40,15 +44,15 @@ const sessionALines = [
   {
     type: 'user',
     timestamp: '2026-04-26T10:00:00.000Z',
-    cwd: '/tmp/demo-project',
+    cwd: demoProject,
     sessionId: 'sess-A',
     gitBranch: 'main',
-    message: { role: 'user', content: 'Build the Kepler dashboard' },
+    message: { role: 'user', content: `Build the Kepler dashboard in ${demoProject}` },
   },
   {
     type: 'assistant',
     timestamp: '2026-04-26T10:00:02.000Z',
-    cwd: '/tmp/demo-project',
+    cwd: demoProject,
     sessionId: 'sess-A',
     message: {
       role: 'assistant',
@@ -56,14 +60,14 @@ const sessionALines = [
       usage: { input_tokens: 120, output_tokens: 80, cache_read_input_tokens: 12 },
       content: [
         { type: 'text', text: 'Inspecting local transcripts.' },
-        { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'src/index.mjs' } },
+        { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: path.join(demoProject, 'src', 'index.mjs') } },
       ],
     },
   },
   {
     type: 'user',
     timestamp: '2026-04-26T10:00:03.000Z',
-    cwd: '/tmp/demo-project',
+    cwd: demoProject,
     sessionId: 'sess-A',
     message: {
       role: 'user',
@@ -78,7 +82,7 @@ const sessionBLines = [
   {
     type: 'user',
     timestamp: '2026-04-27T08:30:00.000Z',
-    cwd: '/tmp/demo-project',
+    cwd: demoProject,
     sessionId: 'sess-B',
     gitBranch: 'feature/analytics',
     message: { role: 'user', content: 'Show usage history' },
@@ -86,7 +90,7 @@ const sessionBLines = [
   {
     type: 'assistant',
     timestamp: '2026-04-27T08:30:05.000Z',
-    cwd: '/tmp/demo-project',
+    cwd: demoProject,
     sessionId: 'sess-B',
     message: {
       role: 'assistant',
@@ -105,8 +109,8 @@ const sessionBMtime = new Date(now - 60_000);
 fs.utimesSync(sessionAPath, sessionAMtime, sessionAMtime);
 fs.utimesSync(sessionBPath, sessionBMtime, sessionBMtime);
 fs.writeFileSync(historyPath, [
-  JSON.stringify({ display: 'Build the Kepler dashboard', timestamp: Date.parse('2026-04-26T10:00:00.000Z'), project: '/tmp/demo-project', sessionId: 'sess-A' }),
-  JSON.stringify({ display: 'Show usage history', timestamp: Date.parse('2026-04-27T08:30:00.000Z'), project: '/tmp/demo-project', sessionId: 'sess-B' }),
+  JSON.stringify({ display: 'Build the Kepler dashboard', timestamp: Date.parse('2026-04-26T10:00:00.000Z'), project: demoProject, sessionId: 'sess-A' }),
+  JSON.stringify({ display: 'Show usage history', timestamp: Date.parse('2026-04-27T08:30:00.000Z'), project: demoProject, sessionId: 'sess-B' }),
 ].join('\n') + '\n');
 
 const localStore = await import('../src/core/local-store.mjs');
@@ -123,7 +127,7 @@ await test('getRecentSessions returns most recent transcript first', async () =>
 await test('getSessionDetail normalizes tool blocks', async () => {
   const detail = await localStore.getSessionDetail('sess-A');
   assert.ok(detail);
-  assert.strictEqual(detail.meta.project, '/tmp/demo-project');
+  assert.strictEqual(detail.meta.project, demoProject);
   assert.strictEqual(detail.entries.length, 3);
   assert.ok(Array.isArray(detail.entries[1].content));
   assert.strictEqual(detail.entries[1].content[1].type, 'tool_use');
@@ -140,6 +144,7 @@ await test('buildResumeHistory reconstructs display history and continuity paylo
   assert.strictEqual(compact.agentHistory.length, 1);
   assert.ok(compact.agentHistory[0].content.includes('Session continuity summary'));
   assert.ok(compact.agentHistory[0].content.includes('read_file x1'));
+  assert.deepStrictEqual(localStore.getTranscriptProjectRoots(detail), [demoProject]);
 
   const full = localStore.buildResumeHistory(detail, 'full');
   assert.ok(full.agentHistory.some(m => m.content.includes('[tool_call] read_file')));

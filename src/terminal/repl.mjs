@@ -45,7 +45,7 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
-import { buildResumeHistory, getRecentSessions, getSessionDetail } from '../core/local-store.mjs';
+import { buildResumeHistory, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
@@ -119,6 +119,7 @@ function normalizeResumableSession(s) {
     updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
     project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
     projectPath: s.project || s.projectPath || '',
+    transcriptPath: s.filePath || s.transcriptPath || '',
     messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
     source: s.source || 'transcript',
   };
@@ -2122,7 +2123,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.dim('Cancelled.')}\n`);
         return;
       }
-      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker', historyMode);
+      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker', historyMode, picked);
       if (!resumed.ok) {
         process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
         return;
@@ -2231,9 +2232,9 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
 
-  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'compact') {
+  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'compact', resumeEntry = null) {
     const currentMgr = new SessionManager(safeCwd());
-    const detail = await getSessionDetail(sessionId);
+    const detail = await getSessionDetail(sessionId, { filePath: resumeEntry?.transcriptPath });
     const richHistory = detail ? buildResumeHistory(detail, historyMode) : null;
     const conversation = detail ? null : currentMgr.loadConversation(sessionId);
     const displayHistory = richHistory?.displayHistory || conversation?.messages || [];
@@ -2280,9 +2281,13 @@ export async function startTerminalRepl() {
     latestProjectContext = loadProjectContext({ cwd: safeCwd() });
     latestEnvelope = null;
 
-    try {
-      await toolExecutor.execute('get_project_overview', { path: safeCwd() });
-    } catch { /* best-effort hydration; agent can retry */ }
+    const resumeRoots = detail ? getTranscriptProjectRoots(detail) : [safeCwd()];
+    const rootsToRegister = [...new Set([safeCwd(), ...resumeRoots].filter(Boolean))];
+    for (const root of rootsToRegister) {
+      try {
+        await toolExecutor.execute('get_project_overview', { path: root });
+      } catch { /* best-effort hydration; agent can retry */ }
+    }
 
     session.history = displayHistory;
     session.agentHistory = agentHistory;
