@@ -2595,6 +2595,23 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
 
+  /**
+   * Activate a previously-recorded session for continuation.
+   *
+   * Contract (PRD-068 §5.14 and follow-up clarification):
+   *   1. Keep the same sessionId. The resumed session IS the same session,
+   *      not a fork. Future turns are appended to the SAME .jsonl file that
+   *      was read here.
+   *   2. Do not re-write the loaded transcript back to disk. The file already
+   *      contains every historical entry; the load path is read-only. Any
+   *      duplication would double-count tokens on the next resume.
+   *   3. Fresh sessions (kepler started without /resume) get a fresh UUID
+   *      the first time jsonlWriter.writeUserTurn() runs — that path is
+   *      untouched by resume, so brand-new sessions never inherit an old id.
+   *   4. In-memory history (session.history / session.agentHistory) mirrors
+   *      what the agent will see next turn; it is NOT written back to the
+   *      transcript at activation time.
+   */
   async function activateResumedSession(sessionId, source = 'resume', historyMode = 'full', resumeEntry = null) {
     // PRD-068 §5.14.6: JSONL is the only source. No legacy conversation fallback.
     const detail = await getSessionDetail(sessionId, { filePath: resumeEntry?.transcriptPath });
