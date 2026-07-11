@@ -195,6 +195,31 @@ function renderResumePreview(resumed) {
     return;
   }
 
+  if (resumed.replayEvents?.length) {
+    process.stderr.write(`\n  ${c.bold('Replayed Live Session Events')} (${resumed.replayEvents.length} events)\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    const sessionSnapshot = JSON.parse(JSON.stringify(session));
+    const savedOrbit = _orbit;
+    const savedSessionMgr = _sessionMgr;
+    _orbit = null;
+    _sessionMgr = null;
+    try {
+      startContentStream();
+      for (const item of resumed.replayEvents) {
+        renderEvent(item.event);
+      }
+      flushContent();
+      stopSpinner();
+    } finally {
+      _orbit = savedOrbit;
+      _sessionMgr = savedSessionMgr;
+      for (const key of Object.keys(session)) delete session[key];
+      Object.assign(session, sessionSnapshot);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
   if (resumed.history?.length) {
     renderHistoryEntries(resumed.history, {
       limit: Infinity,
@@ -2348,6 +2373,7 @@ export async function startTerminalRepl() {
       richTranscript: !!detail,
       summary: richHistory?.summary || '',
       history: displayHistory,
+      replayEvents: detail?.replayEvents || [],
       source,
     };
   }
@@ -2674,6 +2700,7 @@ export async function startTerminalRepl() {
       }
 
       for await (const event of client.execute(input, execContext, session.agentHistory)) {
+        jsonlWriter.writeKeplerEvent(event);
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,

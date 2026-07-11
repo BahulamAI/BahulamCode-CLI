@@ -40,6 +40,23 @@ function normalizeToolResultContent(output) {
   }
 }
 
+function sanitizeEventValue(value, depth = 0) {
+  if (depth > 8) return '[truncated-depth]';
+  if (typeof value === 'string') {
+    return value.length > 10000 ? value.slice(0, 10000) + '\n[...truncated...]' : value;
+  }
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeEventValue(item, depth + 1));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      out[key] = sanitizeEventValue(item, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+
 export class JsonlWriter {
   /**
    * @param {string} cwd — project working directory
@@ -68,6 +85,7 @@ export class JsonlWriter {
     this._turnToolResults = []; // [{tool_use_id, content, is_error}, ...]
     this._turnUsage = null;
     this._turnModel = null;
+    this._pendingKeplerEvents = [];
 
     // Git branch (captured once at construction)
     this._gitBranch = this._detectGitBranch();
@@ -83,6 +101,11 @@ export class JsonlWriter {
     this.sessionId = id;
     this._transcriptPath = path.join(this.projectDir, `${id}.jsonl`);
     this._ready = true;
+    if (this._pendingKeplerEvents.length > 0) {
+      const pending = this._pendingKeplerEvents;
+      this._pendingKeplerEvents = [];
+      for (const event of pending) this.writeKeplerEvent(event);
+    }
     // Flush any buffered entries now that we have a path
     if (this._buffer.length > 0) this._flush();
   }
@@ -117,6 +140,33 @@ export class JsonlWriter {
     };
     this._appendEntry(entry);
     this.lastUuid = uuid;
+  }
+
+  /**
+   * Write a Kepler UI/SSE event for exact-ish terminal replay on /resume.
+   * This is a Kepler extension; cc-lens readers should ignore unknown types.
+   */
+  writeKeplerEvent(event) {
+    if (!event || !event.type) return;
+    const sanitized = sanitizeEventValue({
+      type: event.type,
+      data: event.data || {},
+    });
+
+    if (!this.sessionId) {
+      this._pendingKeplerEvents.push(sanitized);
+      return;
+    }
+
+    const entry = {
+      type: 'kepler_event',
+      timestamp: new Date().toISOString(),
+      cwd: this.cwd,
+      sessionId: this.sessionId,
+      version: this.version,
+      event: sanitized,
+    };
+    this._appendEntry(entry);
   }
 
   /**

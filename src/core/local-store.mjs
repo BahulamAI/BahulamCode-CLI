@@ -294,6 +294,7 @@ export async function getSessionDetail(sessionId, options = {}) {
   if (!file) return null;
 
   const entries = [];
+  const replayEvents = [];
   const fileStream = fs.createReadStream(file.filePath, { encoding: 'utf-8' });
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
@@ -303,6 +304,14 @@ export async function getSessionDetail(sessionId, options = {}) {
     try {
       obj = JSON.parse(line);
     } catch {
+      continue;
+    }
+
+    if (obj.type === 'kepler_event' && obj.event?.type) {
+      replayEvents.push({
+        timestamp: obj.timestamp || null,
+        event: obj.event,
+      });
       continue;
     }
 
@@ -328,6 +337,7 @@ export async function getSessionDetail(sessionId, options = {}) {
     mtime: file.mtime,
     meta,
     entries,
+    replayEvents,
   };
 }
 

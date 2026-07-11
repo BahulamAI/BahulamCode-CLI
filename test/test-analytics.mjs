@@ -65,6 +65,13 @@ const sessionALines = [
     },
   },
   {
+    type: 'kepler_event',
+    timestamp: '2026-04-26T10:00:02.500Z',
+    cwd: demoProject,
+    sessionId: 'sess-A',
+    event: { type: 'tool_call', data: { tool: 'read_file', args: { path: path.join(demoProject, 'src', 'index.mjs') } } },
+  },
+  {
     type: 'user',
     timestamp: '2026-04-26T10:00:03.000Z',
     cwd: demoProject,
@@ -129,6 +136,8 @@ await test('getSessionDetail normalizes tool blocks', async () => {
   assert.ok(detail);
   assert.strictEqual(detail.meta.project, demoProject);
   assert.strictEqual(detail.entries.length, 3);
+  assert.strictEqual(detail.replayEvents.length, 1);
+  assert.strictEqual(detail.replayEvents[0].event.type, 'tool_call');
   assert.ok(Array.isArray(detail.entries[1].content));
   assert.strictEqual(detail.entries[1].content[1].type, 'tool_use');
   assert.strictEqual(detail.entries[1].content[1].name, 'read_file');
