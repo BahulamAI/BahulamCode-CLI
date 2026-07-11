@@ -2416,8 +2416,18 @@ async function handleCommand(input, ctx) {
         while (!picked) {
           const pickResult = await pickResumableSession(resumable, ctx);
           if (!pickResult) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
-          if (pickResult.action === 'resume') { picked = pickResult.session; break; }
+          if (pickResult.action === 'resume') {
+            if (!pickResult.session) {
+              process.stderr.write(`\n  ${c.yellow('!')} ${c.dim('Empty session — pick another.')}\n`);
+              continue;
+            }
+            picked = pickResult.session;
+            break;
+          }
           if (pickResult.action === 'preview') {
+            // Yield to the event loop so any queued keystrokes from the picker
+            // don't spill into the preview's stdin listener (PRD-068 §5.14 bugfix).
+            await new Promise(r => setImmediate(r));
             const previewResult = await previewResumeSession(pickResult.session, ctx);
             if (previewResult && previewResult.action === 'resume') {
               picked = pickResult.session;
@@ -2425,7 +2435,14 @@ async function handleCommand(input, ctx) {
               picked._presetMode = previewResult.mode;
               break;
             }
-            // Otherwise loop back to the picker.
+            if (previewResult === null) {
+              // getSessionDetail failed — file missing, unreadable, or huge.
+              // Tell the user why before looping back to the picker.
+              process.stderr.write(`  ${c.yellow('!')} ${c.dim('Could not load transcript for preview — pick another session or press Enter to resume without preview.')}\n`);
+            }
+            // Yield again so the loop-back render doesn't collide with the
+            // just-closed preview's stdin cleanup.
+            await new Promise(r => setImmediate(r));
           }
         }
       }
@@ -2442,11 +2459,22 @@ async function handleCommand(input, ctx) {
         if (decision.mode === 'full') {
           mode = 'full';
         } else {
+          // Yield before attaching the overlay listener — same race guard as
+          // the preview branch above. Prevents a queued Enter from the picker
+          // slipping into the overlay's stdin, which otherwise looked like a
+          // duplicate picker render.
+          await new Promise(r => setImmediate(r));
           const chosen = await chooseThresholdMode(ctx, decision);
           if (!chosen) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
           mode = chosen;
         }
       }
+
+      // Progress signal — the picker + overlay leave their last frames on the
+      // scrollback. Without this line, users don't see anything happen while
+      // activation runs. PRD-068 §5.14.9 rationale: one honest line beats a
+      // fake replay.
+      process.stderr.write(`\n  ${c.dim('→ resuming as')} ${c.brand(mode)}${c.dim('…')}\n`);
 
       // 3. Activate.
       const source = targetId ? 'direct' : 'picker';
