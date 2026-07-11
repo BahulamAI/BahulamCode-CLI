@@ -2501,6 +2501,30 @@ async function handleCommand(input, ctx) {
       if (resumed.stayedInCwd) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
+
+      // 5. Show the historical conversation so the user can pick up where they
+      //    left off. PRD-068 §5.14.9 kills the fake "replay events" theater;
+      //    this render is honest — just the messages the agent will see next
+      //    turn, no state manipulation.
+      if (mode === 'summary' && resumed.summary) {
+        // In summary mode the agent gets only the summary block. Show it so
+        // the user knows what continuity context was included.
+        process.stderr.write(`\n  ${c.bold('Continuity Summary')}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+        for (const line of resumed.summary.split('\n')) {
+          process.stderr.write(`  ${c.dim(line)}\n`);
+        }
+        process.stderr.write('\n');
+      } else if (resumed.history?.length) {
+        // full and recap+tail both feed real conversation to the agent — show
+        // the tail so the user has visual context. Cap at 30 entries to avoid
+        // flooding the terminal on long sessions.
+        renderHistoryEntries(resumed.history, {
+          limit: 30,
+          maxChars: 200,
+          title: mode === 'recap+tail' ? 'Recent conversation (last 30 entries)' : 'Conversation history (last 30 entries)',
+        });
+      }
       return;
     }
 
