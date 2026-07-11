@@ -46,6 +46,7 @@ import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-reso
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { buildResumeHistory, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
+import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
@@ -144,23 +145,339 @@ function normalizeResumableSession(s) {
     projectPath: s.project || s.projectPath || '',
     transcriptPath: s.filePath || s.transcriptPath || '',
     messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
-    source: s.source || 'transcript',
+    // PRD-068 §5.14.11 derived fields for the picker
+    endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
+    contextTokens: s.contextTokens || 0,       // projected transcript token count
+    costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
+    partial: !!s.partial,                      // true if the transcript file was partially malformed
+    source: 'transcript',
   };
 }
 
-async function listResumableSessions(ctx) {
+async function listResumableSessions() {
+  // PRD-068 §5.14.6: JSONL is the single source of truth. The legacy
+  // per-project state-only entries never had a transcript, so they can't be
+  // replayed — silently dropping them removes a source of "picked a session
+  // and got a flat history" surprises.
   const rich = (await getRecentSessions(Infinity)).map(normalizeResumableSession);
-  const seen = new Set(rich.map(s => s.sessionId));
-  const legacy = ctx.sessionMgr.listResumable()
-    .filter(s => !seen.has(s.sessionId))
-    .map(s => ({ ...s, source: 'legacy' }));
-  return [...rich, ...legacy].sort((a, b) => {
+  return rich.sort((a, b) => {
     const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
     const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
     return bt - at;
   });
 }
 
+// ── PRD-068 §5.14 helpers ────────────────────────────────────────────
+
+function endStatusMarker(status) {
+  switch (status) {
+    case 'completed':   return c.green('✓');
+    case 'interrupted': return c.yellow('⚠');
+    case 'errored':     return c.red('✗');
+    default:            return c.dim('·');
+  }
+}
+
+function formatSessionCost(usd) {
+  const n = Number(usd);
+  if (!Number.isFinite(n) || n <= 0) return c.dim('     ');
+  if (n < 0.01) return c.dim('<$0.01');
+  return c.dim(`$${n.toFixed(2)}`);
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const ago = Date.now() - t;
+  const m = Math.floor(ago / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
+}
+
+/**
+ * PRD-068 §5.14.2 — enriched one-prompt picker.
+ * Returns the picked session, `null` on cancel, or `{ action: 'preview', session }`
+ * when the user hits P.
+ */
+async function pickResumableSession(resumable, ctx) {
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  return await new Promise((resolve) => {
+    if (!process.stdin.isTTY) { resolve(null); return; }
+    const wasRaw = process.stdin.isRaw;
+    const pageSize = Math.min(10, resumable.length);
+    const numWidth = String(resumable.length).length;
+    let selected = 0;
+    let offset = 0;
+    let renderedLines = 0;
+
+    const renderMenu = () => {
+      if (renderedLines > 0) {
+        process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      }
+      if (selected < offset) offset = selected;
+      if (selected >= offset + pageSize) offset = selected - pageSize + 1;
+
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const lines = [];
+      lines.push(`  ${c.bold('Resume a session')}`);
+      lines.push('');
+      const end = Math.min(offset + pageSize, resumable.length);
+      for (let i = offset; i < end; i++) {
+        const s = resumable[i];
+        const marker = i === selected ? c.brand('▸') : ' ';
+        const num = c.dim(`[${String(i + 1).padStart(numWidth, ' ')}]`);
+        const project = (s.project || '(unknown)').padEnd(18, ' ').slice(0, 18);
+        const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
+        const status = endStatusMarker(s.endStatus);
+        const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
+        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`);
+        const cost = formatSessionCost(s.costUsd);
+        const partial = s.partial ? c.yellow(' ⚠partial') : '';
+        const instr = oneLineInstruction(s.instruction, 48);
+        lines.push(fitAnsiLine(
+          `  ${marker} ${num} ${c.brand(project)} ${c.dim(ago)} ${status} ${c.dim(msgs)} ${ctx} ${cost}${partial}  ${c.dim(instr)}`,
+          cols - 1
+        ));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(
+        `  ${c.dim(`↑↓ move  ·  Enter resume  ·  P preview  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`,
+        cols - 1
+      ));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8');
+      if (key === '' || key === '') { cleanup(null); return; }
+      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', session: resumable[selected] }); return; }
+      if (key === 'p' || key === 'P') { cleanup({ action: 'preview', session: resumable[selected] }); return; }
+      if (key === '[A') { selected = Math.max(0, selected - 1); renderMenu(); return; }
+      if (key === '[B') { selected = Math.min(resumable.length - 1, selected + 1); renderMenu(); return; }
+      if (key === '[5~') { selected = Math.max(0, selected - pageSize); renderMenu(); return; }
+      if (key === '[6~') { selected = Math.min(resumable.length - 1, selected + pageSize); renderMenu(); return; }
+      if (key === '[H' || key === '[1~') { selected = 0; renderMenu(); return; }
+      if (key === '[F' || key === '[4~') { selected = resumable.length - 1; renderMenu(); return; }
+      if (/^[1-9]$/.test(key)) {
+        const index = Number(key) - 1;
+        if (index < resumable.length) cleanup({ action: 'resume', session: resumable[index] });
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    renderMenu();
+  });
+}
+
+/**
+ * PRD-068 §5.14.4 — tri-choice overlay shown only when projected ctx > highWatermark.
+ * Returns 'full' | 'recap+tail' | 'summary' | null (cancel).
+ */
+async function chooseThresholdMode(ctx, decision) {
+  if (!process.stdin.isTTY) return decision.defaultChoice;
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  const canFull = decision.mode !== 'no-full-allowed';
+  const options = [
+    { key: 'f', value: 'full',        label: 'full transcript',                enabled: canFull },
+    { key: 'r', value: 'recap+tail',  label: 'recap + tail (last 8 msgs)',    enabled: true },
+    { key: 's', value: 'summary',     label: 'summary only',                   enabled: true },
+  ];
+  let selected = options.findIndex(o => o.enabled);
+
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    let renderedLines = 0;
+
+    const render = () => {
+      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const pct = Math.round(decision.usageRatio * 100);
+      const projected = formatCtxTokens(decision.projected);
+      const win = formatCtxTokens(decision.windowSize);
+      const lines = [];
+      lines.push(`  This session would use  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      lines.push(canFull
+        ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
+        : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
+      lines.push('');
+      for (let i = 0; i < options.length; i++) {
+        const o = options[i];
+        const disabled = !o.enabled;
+        const marker = i === selected && !disabled ? c.brand('▸') : ' ';
+        const keyTag = c.dim('[') + (disabled ? c.dim(o.key) : c.brand(o.key)) + c.dim(']');
+        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected));
+        const label = disabled ? c.dim(o.label) : (i === selected ? c.brand(o.label) : o.label);
+        const projCol = c.dim(`${proj.padStart(5, ' ')} ctx`);
+        const suffix = disabled ? c.dim('  (over hardCap)') : '';
+        lines.push(fitAnsiLine(`  ${marker} ${keyTag} ${label.padEnd(30, ' ')} ${projCol}${suffix}`, cols - 1));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/r/s shortcut  ·  Esc cancel')}`, cols - 1));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8').toLowerCase();
+      if (key === '' || key === '') { cleanup(null); return; }
+      if (key === '\r' || key === '\n') { cleanup(options[selected]?.value || null); return; }
+      if (key === '[A') {
+        // step to previous enabled option
+        for (let i = selected - 1; i >= 0; i--) if (options[i].enabled) { selected = i; render(); return; }
+        return;
+      }
+      if (key === '[B') {
+        for (let i = selected + 1; i < options.length; i++) if (options[i].enabled) { selected = i; render(); return; }
+        return;
+      }
+      for (let i = 0; i < options.length; i++) {
+        if (options[i].key === key && options[i].enabled) { cleanup(options[i].value); return; }
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    render();
+  });
+}
+
+/**
+ * PRD-068 §5.14.5 — preview overlay for a session/mode. Read-only, `q` to return.
+ * If user hits Enter, resolve to the currently-previewed mode so caller can activate.
+ */
+async function previewResumeSession(session, ctx) {
+  if (!process.stdin.isTTY) return null;
+  const detail = await getSessionDetail(session.sessionId, { filePath: session.transcriptPath });
+  if (!detail) return null;
+
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  let mode = 'summary';
+  const rich = () => buildResumeHistory({ ...detail, recapTailTurns: 8 }, mode);
+  let history = rich();
+
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    let renderedLines = 0;
+    let scrollOffset = 0;
+
+    const render = () => {
+      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
+      const contentLines = (history.summary || '').split('\n');
+      // For recap+tail / full, also append serialized tail so preview reflects
+      // what the agent will actually receive.
+      if (mode !== 'summary') {
+        contentLines.push('', c.dim('── conversation tail ──'));
+        for (const msg of history.agentHistory.slice(1)) {
+          contentLines.push(`${msg.role === 'user' ? c.dim('You:') : c.brand('Kepler:')} ${String(msg.content).slice(0, 300)}`);
+        }
+      }
+      const totalLines = contentLines.length;
+      const maxOffset = Math.max(0, totalLines - rows);
+      if (scrollOffset > maxOffset) scrollOffset = maxOffset;
+
+      const lines = [];
+      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(mode)}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
+      lines.push(`  ${c.dim('─'.repeat(60))}`);
+      for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
+        lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/r/s switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8');
+      const low = key.toLowerCase();
+      if (key === '' || key === '' || low === 'q') { cleanup({ action: 'back' }); return; }
+      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', mode }); return; }
+      if (key === '[A') { scrollOffset = Math.max(0, scrollOffset - 1); render(); return; }
+      if (key === '[B') { scrollOffset += 1; render(); return; }
+      if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
+      if (key === '[6~') { scrollOffset += 10; render(); return; }
+      if (low === 'f') { mode = 'full'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === 'r') { mode = 'recap+tail'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    render();
+  });
+}
+
+/**
+ * PRD-068 §5.14.7 — explicit cwd confirmation when the picked session lives
+ * elsewhere. Returns 'switch' | 'stay' | 'cancel'.
+ */
+async function confirmCwdSwitch(ctx, savedPath, currentPath) {
+  if (!process.stdin.isTTY) return 'switch';
+  process.stderr.write(`\n  ${c.dim('This session lives in another repo:')}\n`);
+  process.stderr.write(`  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}\n`);
+  process.stderr.write(`  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel  `);
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      process.stderr.write('\n');
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8').toLowerCase();
+      if (key === '' || key === '' || key === 'n') { cleanup('cancel'); return; }
+      if (key === '\r' || key === '\n') { cleanup('switch'); return; }
+      if (key === 's') { cleanup('stay'); return; }
+    };
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
+// Legacy prompt (kept as a fallback for callers that force compact/full explicitly).
 async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
   if (!process.stdin.isTTY) return defaultMode;
   process.stderr.write(`\n  ${c.dim('Load history for agent:')} ${c.brand('[c]')} ${c.dim('compact summary')}  ${c.brand('[f]')} ${c.dim('full transcript')}  ${c.dim('(Enter = compact, Esc = cancel):')} `);
@@ -2052,7 +2369,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/sessions': {
-      const resumable = await listResumableSessions(ctx);
+      const resumable = await listResumableSessions();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -2070,154 +2387,92 @@ async function handleCommand(input, ctx) {
     }
 
     case '/resume': {
-      const parts = input.split(/\s+/);
-      const targetId = parts[1]; // /resume <sessionId>
+      // PRD-068 §5.14: one-prompt picker, context-length driven auto-decision,
+      // direct-resume mode flags (--full, --recap, --summary).
+      const parts = input.split(/\s+/).filter(Boolean);
+      const forcedFlag = parts.find(p => /^(--full|--recap|--summary|-f|-r|-s)$/.test(p));
+      const forcedMode = forcedFlag
+        ? ({ '--full': 'full', '-f': 'full',
+             '--recap': 'recap+tail', '-r': 'recap+tail',
+             '--summary': 'summary', '-s': 'summary' })[forcedFlag]
+        : null;
+      const targetId = parts.slice(1).find(p => !p.startsWith('-'));
 
-      if (targetId) {
-        // Direct resume by ID
-        const historyMode = await chooseResumeHistoryMode(ctx);
-        if (!historyMode) {
-          process.stderr.write(`  ${c.dim('Cancelled.')}\n`);
-          return;
-        }
-        const resumed = await ctx.activateResumedSession(targetId, 'direct', historyMode);
-        if (!resumed.ok) {
-          process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason)}\n`);
-          return;
-        }
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
-        process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
-        process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
-        if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
-        if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
-        process.stderr.write('\n');
-        renderResumePreview(resumed);
-        return;
-      }
-
-      // No ID given — list sessions and let user pick by number
-      const resumable = await listResumableSessions(ctx);
+      const resumable = await listResumableSessions();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
       }
 
-      process.stderr.write(`\n  ${c.bold('Pick a session to resume:')}\n\n`);
-
-      const rl = ctx._rl || null;
-      if (rl) rl.pause();
-      const choice = await new Promise((resolve) => {
-        if (!process.stdin.isTTY) { resolve(null); return; }
-        const wasRaw = process.stdin.isRaw;
-        const pageSize = Math.min(10, resumable.length);
-        const numWidth = String(resumable.length).length;
-        let selected = 0;
-        let offset = 0;
-        let renderedLines = 0;
-
-        const renderMenu = () => {
-          if (renderedLines > 0) {
-            process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      // 1. Resolve which session to resume.
+      let picked = null;
+      if (targetId) {
+        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId));
+        if (!picked) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim(`No session found matching id: ${targetId}`)}\n`);
+          return;
+        }
+      } else {
+        while (!picked) {
+          const pickResult = await pickResumableSession(resumable, ctx);
+          if (!pickResult) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
+          if (pickResult.action === 'resume') { picked = pickResult.session; break; }
+          if (pickResult.action === 'preview') {
+            const previewResult = await previewResumeSession(pickResult.session, ctx);
+            if (previewResult && previewResult.action === 'resume') {
+              picked = pickResult.session;
+              // Preview already committed to a mode — skip the threshold overlay.
+              picked._presetMode = previewResult.mode;
+              break;
+            }
+            // Otherwise loop back to the picker.
           }
-          if (selected < offset) offset = selected;
-          if (selected >= offset + pageSize) offset = selected - pageSize + 1;
-
-          const cols = Math.max(40, process.stderr.columns || 120);
-          const lines = [];
-          const end = Math.min(offset + pageSize, resumable.length);
-          for (let i = offset; i < end; i++) {
-            const s = resumable[i];
-            const date = sessionListTimestamp(s);
-            const instr = oneLineInstruction(s.instruction, 64);
-            const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
-            const marker = i === selected ? c.brand('›') : ' ';
-            const num = `[${String(i + 1).padStart(numWidth, ' ')}]`;
-            lines.push(fitAnsiLine(`  ${marker} ${c.dim(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}`, cols - 1));
-          }
-          lines.push('');
-          lines.push(fitAnsiLine(`  ${c.dim(`↑↓ move  ·  PgUp/PgDn scroll  ·  Enter resume  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`, cols - 1));
-          process.stderr.write(lines.join('\n') + '\n');
-          renderedLines = lines.length;
-        };
-
-        const cleanup = (value) => {
-          process.stdin.removeListener('data', onData);
-          process.stdin.setRawMode(wasRaw || false);
-          if (rl) rl.resume();
-          resolve(value);
-        };
-        const onData = (data) => {
-          const key = data.toString('utf8');
-          if (key === '\u0003' || key === '\u001b') { cleanup(null); return; }
-          if (key === '\r' || key === '\n') { cleanup(selected + 1); return; }
-          if (key === '\u001b[A') {
-            selected = Math.max(0, selected - 1);
-            renderMenu();
-            return;
-          }
-          if (key === '\u001b[B') {
-            selected = Math.min(resumable.length - 1, selected + 1);
-            renderMenu();
-            return;
-          }
-          if (key === '\u001b[5~') {
-            selected = Math.max(0, selected - pageSize);
-            renderMenu();
-            return;
-          }
-          if (key === '\u001b[6~') {
-            selected = Math.min(resumable.length - 1, selected + pageSize);
-            renderMenu();
-            return;
-          }
-          if (key === '\u001b[H' || key === '\u001b[1~') {
-            selected = 0;
-            renderMenu();
-            return;
-          }
-          if (key === '\u001b[F' || key === '\u001b[4~') {
-            selected = resumable.length - 1;
-            renderMenu();
-            return;
-          }
-          if (/^[1-9]$/.test(key)) {
-            const index = Number(key) - 1;
-            if (index < resumable.length) cleanup(index + 1);
-          }
-        };
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.on('data', onData);
-        renderMenu();
-      });
-
-      if (!choice || choice < 1 || choice > resumable.length) {
-        process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
-        return;
+        }
       }
 
-      const picked = resumable[choice - 1];
-      const historyMode = await chooseResumeHistoryMode(ctx);
-      if (!historyMode) {
-        process.stderr.write(`  ${c.dim('Cancelled.')}\n`);
-        return;
+      // 2. Decide the mode. Force-flag > preview-preset > auto-decide > overlay.
+      let mode = forcedMode || picked._presetMode || null;
+      if (!mode) {
+        const currentModel = session?.model || session?.user?.default_reasoning_model || null;
+        const decision = decideResumeMode({
+          transcriptTokens: picked.contextTokens,
+          model: currentModel,
+          settings: ctx.effectivePolicy?.policy?.resume ? { resume: ctx.effectivePolicy.policy.resume } : {},
+        });
+        if (decision.mode === 'full') {
+          mode = 'full';
+        } else {
+          const chosen = await chooseThresholdMode(ctx, decision);
+          if (!chosen) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
+          mode = chosen;
+        }
       }
-      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker', historyMode, picked);
+
+      // 3. Activate.
+      const source = targetId ? 'direct' : 'picker';
+      const resumed = await ctx.activateResumedSession(picked.sessionId, source, mode, picked);
       if (!resumed.ok) {
-        process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
+        if (resumed.reason === 'cwd-cancelled') {
+          process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
+        } else {
+          process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
+        }
         return;
       }
 
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
-      process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
-      process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
-      if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
-      if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
-      if (resumed.instruction) {
-        process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
+      // 4. Report — succinct honest single line, then optional hydration warning.
+      const toolSummary = resumed.stats && resumed.stats.toolCalls
+        ? `${resumed.stats.toolCalls} tool calls`
+        : `${resumed.messages} msgs`;
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${mode}`)}\n`);
+      if (resumed.hydrationFailures?.length) {
+        for (const failure of resumed.hydrationFailures) {
+          process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`could not re-read project root: ${failure}`)}\n`);
+        }
       }
-      process.stderr.write('\n');
-      renderResumePreview(resumed);
+      if (resumed.stayedInCwd) {
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
+      }
       return;
     }
 
@@ -2312,31 +2567,43 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
 
-  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'compact', resumeEntry = null) {
-    const currentMgr = new SessionManager(safeCwd());
+  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'full', resumeEntry = null) {
+    // PRD-068 §5.14.6: JSONL is the only source. No legacy conversation fallback.
     const detail = await getSessionDetail(sessionId, { filePath: resumeEntry?.transcriptPath });
-    const richHistory = detail ? buildResumeHistory(detail, historyMode) : null;
-    const conversation = detail ? null : currentMgr.loadConversation(sessionId);
-    const displayHistory = richHistory?.displayHistory || conversation?.messages || [];
-    const agentHistory = richHistory?.agentHistory || conversation?.messages || [];
-    if (!displayHistory.length) {
+    if (!detail) {
       return { ok: false, reason: `No transcript found for session ${sessionId}` };
     }
+    const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, historyMode);
+    const displayHistory = richHistory.displayHistory;
+    const agentHistory = richHistory.agentHistory;
+    if (!displayHistory.length) {
+      return { ok: false, reason: `Session ${sessionId} has no readable messages` };
+    }
 
-    const projectPath = detail?.meta?.project || conversation?.header?.project || '';
+    // PRD-068 §5.14.7: explicit cwd confirmation if saved path differs.
+    const savedProjectPath = detail?.meta?.project || '';
+    const originalCwd = safeCwd();
     let switchedProject = false;
     let projectMissing = false;
-    if (projectPath && projectPath !== safeCwd()) {
-      if (fs.existsSync(projectPath)) {
-        try {
-          process.chdir(projectPath);
-          _cachedCwd = process.cwd();
-          switchedProject = true;
-        } catch {
-          projectMissing = true;
+    let stayedInCwd = false;
+    if (savedProjectPath && savedProjectPath !== originalCwd) {
+      if (fs.existsSync(savedProjectPath)) {
+        const choice = await confirmCwdSwitch(ctx, savedProjectPath, originalCwd);
+        if (choice === 'cancel') return { ok: false, reason: 'cwd-cancelled' };
+        if (choice === 'switch') {
+          try {
+            process.chdir(savedProjectPath);
+            _cachedCwd = process.cwd();
+            switchedProject = true;
+          } catch {
+            projectMissing = true;
+          }
+        } else if (choice === 'stay') {
+          stayedInCwd = true;
         }
       } else {
         projectMissing = true;
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`saved project path unavailable: ${savedProjectPath} — using current cwd`)}\n`);
       }
     }
 
@@ -2348,8 +2615,8 @@ export async function startTerminalRepl() {
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgr.activateSession(sessionId, {
-      instruction: detail?.meta?.firstPrompt || conversation?.header?.instruction || '',
-      started_at: detail?.meta?.startTime || conversation?.header?.started_at || new Date().toISOString(),
+      instruction: detail?.meta?.firstPrompt || '',
+      started_at: detail?.meta?.startTime || new Date().toISOString(),
     }, displayHistory.filter(m => m.role === 'user' || m.role === 'assistant'));
     _sessionMgr = sessionMgr;
 
@@ -2361,19 +2628,23 @@ export async function startTerminalRepl() {
     latestProjectContext = loadProjectContext({ cwd: safeCwd() });
     latestEnvelope = null;
 
-    const resumeRoots = detail ? getTranscriptProjectRoots(detail) : [safeCwd()];
+    // PRD-068 §5.14.8: report hydration failures instead of swallowing them.
+    const hydrationFailures = [];
+    const resumeRoots = getTranscriptProjectRoots(detail);
     const rootsToRegister = [...new Set([safeCwd(), ...resumeRoots].filter(Boolean))];
     for (const root of rootsToRegister) {
       try {
         await toolExecutor.execute('get_project_overview', { path: root });
-      } catch { /* best-effort hydration; agent can retry */ }
+      } catch {
+        hydrationFailures.push(root);
+      }
     }
 
     session.history = displayHistory;
     session.agentHistory = agentHistory;
     session.id = sessionId;
     session.turns = displayHistory.filter(m => m.role === 'user').length;
-    session.lastTask = detail?.meta?.firstPrompt || conversation?.header?.instruction || session.history.find(m => m.role === 'user')?.content || '';
+    session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
 
     Object.assign(ctx, {
       toolExecutor,
@@ -2389,15 +2660,18 @@ export async function startTerminalRepl() {
     return {
       ok: true,
       messages: displayHistory.length,
-      projectPath: projectPath || safeCwd(),
+      projectPath: savedProjectPath || safeCwd(),
+      savedProjectPath,
       switchedProject,
       projectMissing,
-      instruction: detail?.meta?.firstPrompt || conversation?.header?.instruction || '',
+      stayedInCwd,
+      hydrationFailures,
+      instruction: detail?.meta?.firstPrompt || '',
       historyMode,
-      richTranscript: !!detail,
-      summary: richHistory?.summary || '',
+      // PRD-068 §5.14.9: no visual replay. `replayEvents` intentionally dropped.
+      summary: richHistory.summary || '',
       history: displayHistory,
-      replayEvents: detail?.replayEvents || [],
+      stats: richHistory.stats,
       source,
     };
   }

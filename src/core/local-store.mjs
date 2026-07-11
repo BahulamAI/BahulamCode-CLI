@@ -176,6 +176,8 @@ function collectAbsolutePathsFromText(text) {
  * Reads line-by-line (streaming) to handle large files.
  */
 async function parseSessionMeta(filePath) {
+  // PRD-068 §5.14.11: adds endStatus / contextTokens / costUsd / partial for
+  // the /resume picker columns and the context-length driven mode decision.
   const meta = {
     sessionId: null,
     project: null,
@@ -191,19 +193,33 @@ async function parseSessionMeta(filePath) {
     startTime: null,
     endTime: null,
     gitBranch: null,
+    // ── PRD-068 §5.14 derived fields ───────────────────────────────────
+    endStatus: 'unknown',   // 'completed' | 'interrupted' | 'errored' | 'unknown'
+    contextTokens: 0,       // projected transcript size when serialized
+    costUsd: 0,             // sum of per-turn provider costs recorded in transcript
+    partial: false,         // true if some lines failed to parse
+    fileBytes: 0,           // raw file size (byte-based ctx fallback if no usage totals)
   };
 
   const toolCounts = {};
   const modelSet = new Set();
 
+  // endStatus tracking
+  let lastMessageRole = null;
+  let hadError = false;
+  const pendingToolCalls = new Set(); // tool_use_ids awaiting a tool_result
+
   try {
+    try { meta.fileBytes = fs.statSync(filePath).size; } catch {}
+
     const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
     for await (const line of rl) {
       if (!line.trim()) continue;
       let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
+      try { obj = JSON.parse(line); }
+      catch { meta.partial = true; continue; }
 
       if (obj.sessionId && !meta.sessionId) meta.sessionId = obj.sessionId;
       if (obj.cwd && !meta.project) meta.project = obj.cwd;
@@ -215,8 +231,17 @@ async function parseSessionMeta(filePath) {
         if (!meta.endTime || ts > meta.endTime) meta.endTime = ts;
       }
 
+      // Backend kepler_event payloads may carry cost / error markers.
+      if (obj.type === 'kepler_event' && obj.event) {
+        const ev = obj.event;
+        if (ev.type === 'complete' && typeof ev.cost_usd === 'number') meta.costUsd += ev.cost_usd;
+        if (ev.type === 'session_info' && typeof ev.total_cost_usd === 'number') meta.costUsd = ev.total_cost_usd;
+        if (ev.type === 'error' || ev.error === true) hadError = true;
+      }
+
       if (obj.type === 'user') {
         meta.userMessages++;
+        lastMessageRole = 'user';
         // Capture first user prompt (string content only)
         if (!meta.firstPrompt) {
           const content = obj.message?.content;
@@ -224,10 +249,21 @@ async function parseSessionMeta(filePath) {
             meta.firstPrompt = content.slice(0, 100);
           }
         }
+        // A user turn may carry tool_results — clear matched pending calls
+        const content = obj.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              pendingToolCalls.delete(block.tool_use_id);
+              if (block.is_error) hadError = true;
+            }
+          }
+        }
       }
 
       if (obj.type === 'assistant') {
         meta.assistantMessages++;
+        lastMessageRole = 'assistant';
         const usage = obj.message?.usage;
         if (usage) {
           meta.inputTokens += usage.input_tokens || 0;
@@ -238,23 +274,40 @@ async function parseSessionMeta(filePath) {
         const model = obj.message?.model;
         if (model) modelSet.add(model);
 
-        // Count tool_use blocks
+        // Count tool_use blocks — and track them as pending until we see the result
         const content = obj.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_use' && block.name) {
               toolCounts[block.name] = (toolCounts[block.name] || 0) + 1;
+              if (block.id) pendingToolCalls.add(block.id);
             }
           }
         }
       }
     }
-  } catch { /* file read error — return partial meta */ }
+  } catch { meta.partial = true; }
 
   meta.toolCalls = Object.entries(toolCounts)
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
   meta.models = [...modelSet];
+
+  // Projected context size — prefer recorded usage totals if available, else
+  // fall back to the byte-based estimate (~4 chars/token for English).
+  const usageTotal = meta.inputTokens + meta.outputTokens + meta.cacheReadTokens;
+  meta.contextTokens = usageTotal > 0 ? usageTotal : Math.round(meta.fileBytes / 4);
+
+  // Derive endStatus from the tail of the transcript.
+  if (hadError) {
+    meta.endStatus = 'errored';
+  } else if (pendingToolCalls.size > 0 || lastMessageRole === 'user') {
+    meta.endStatus = 'interrupted';
+  } else if (lastMessageRole === 'assistant') {
+    meta.endStatus = 'completed';
+  } else {
+    meta.endStatus = 'unknown';
+  }
 
   return meta;
 }
@@ -450,12 +503,34 @@ export function buildResumeHistory(detail, mode = 'compact') {
   ].filter(Boolean);
   const summary = summaryLines.join('\n');
 
+  // PRD-068 §5.14.4: three-way mode picker.
+  //   'full'       — every turn sent verbatim (unchanged)
+  //   'recap+tail' — recap block as system prime + last N raw messages so the
+  //                  agent has real conversation to reference for the recent
+  //                  work. Best default when full won't fit.
+  //   'summary'    — recap block only. Cheapest continuity, biggest lossiness.
+  let agentHistory;
+  if (mode === 'full') {
+    agentHistory = fullAgentHistory;
+  } else if (mode === 'recap+tail') {
+    const tailTurns = Number.isFinite(Number(detail.recapTailTurns))
+      ? Number(detail.recapTailTurns)
+      : 8;
+    // Keep the last `tailTurns` entries from the FULL history. This means
+    // real assistant messages + tool_use / tool_result markers, matching how
+    // the agent expects to see prior conversation.
+    const tail = fullAgentHistory.slice(-tailTurns);
+    agentHistory = [{ role: 'user', content: summary }, ...tail];
+  } else {
+    // 'summary' (was 'compact' — renamed per PRD-068 §5.14.4)
+    agentHistory = [{ role: 'user', content: summary }];
+  }
+
   return {
     displayHistory,
-    agentHistory: mode === 'full'
-      ? fullAgentHistory
-      : [{ role: 'user', content: summary }],
+    agentHistory,
     summary,
+    mode,
     stats: {
       userMessages: userPrompts.length,
       assistantMessages: assistantTexts.length,
