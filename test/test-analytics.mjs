@@ -132,6 +132,21 @@ await test('getSessionDetail normalizes tool blocks', async () => {
   assert.strictEqual(detail.entries[2].content[0].content, 'ok');
 });
 
+await test('buildResumeHistory reconstructs display history and continuity payloads', async () => {
+  const detail = await localStore.getSessionDetail('sess-A');
+  const compact = localStore.buildResumeHistory(detail, 'compact');
+  assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'call'));
+  assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'result'));
+  assert.strictEqual(compact.agentHistory.length, 1);
+  assert.ok(compact.agentHistory[0].content.includes('Session continuity summary'));
+  assert.ok(compact.agentHistory[0].content.includes('read_file x1'));
+
+  const full = localStore.buildResumeHistory(detail, 'full');
+  assert.ok(full.agentHistory.some(m => m.content.includes('[tool_call] read_file')));
+  assert.ok(full.agentHistory.some(m => m.content.includes('[tool_result]')));
+  assert.ok(full.agentHistory.length > compact.agentHistory.length);
+});
+
 await test('report formatters include expected analytics sections', async () => {
   const sessions = await localStore.getRecentSessions(10);
   const stats = await localStore.getSessionStats(30);

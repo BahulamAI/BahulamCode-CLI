@@ -45,6 +45,7 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
+import { buildResumeHistory, getRecentSessions, getSessionDetail } from '../core/local-store.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
@@ -110,6 +111,58 @@ function oneLineInstruction(text, max = 72) {
   return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
 }
 
+function normalizeResumableSession(s) {
+  return {
+    sessionId: s.sessionId,
+    instruction: s.firstPrompt || s.instruction || '(no instruction)',
+    startedAt: s.startTime || s.startedAt || '',
+    updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
+    project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
+    projectPath: s.project || s.projectPath || '',
+    messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
+    source: s.source || 'transcript',
+  };
+}
+
+async function listResumableSessions(ctx) {
+  const rich = (await getRecentSessions(Infinity)).map(normalizeResumableSession);
+  const seen = new Set(rich.map(s => s.sessionId));
+  const legacy = ctx.sessionMgr.listResumable()
+    .filter(s => !seen.has(s.sessionId))
+    .map(s => ({ ...s, source: 'legacy' }));
+  return [...rich, ...legacy].sort((a, b) => {
+    const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
+    const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
+    return bt - at;
+  });
+}
+
+async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
+  if (!process.stdin.isTTY) return defaultMode;
+  process.stderr.write(`\n  ${c.dim('Load history for agent:')} ${c.brand('[c]')} ${c.dim('compact summary')}  ${c.brand('[f]')} ${c.dim('full transcript')}  ${c.dim('(Enter = compact, Esc = cancel):')} `);
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      process.stderr.write('\n');
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8').toLowerCase();
+      if (key === '\u0003' || key === '\u001b') { cleanup(null); return; }
+      if (key === '\r' || key === '\n' || key === 'c') { cleanup('compact'); return; }
+      if (key === 'f') { cleanup('full'); }
+    };
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
@@ -123,7 +176,8 @@ const session = {
   toolCalls: 0,
   totalToolCalls: 0,   // across all turns
   turns: 0,
-  history: [],         // conversation messages
+  history: [],         // display transcript (can include reconstructed tool entries)
+  agentHistory: [],    // backend continuity payload (compact or full)
   inputHistory: [],    // previous prompts (for Up/Down)
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
@@ -1436,8 +1490,13 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
       process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
       for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user' ? c.white('You') : c.brand('Kepler');
-        process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
+        const role = msg.role === 'user'
+          ? c.white('You')
+          : msg.role === 'tool'
+            ? c.dim('Tool')
+            : c.brand('Kepler');
+        const content = String(msg.content || '');
+        process.stderr.write(`  ${role}: ${content.slice(0, 120)}${content.length > 120 ? '...' : ''}\n`);
       }
       process.stderr.write('\n');
       return;
@@ -1854,15 +1913,16 @@ async function handleCommand(input, ctx) {
     }
 
     case '/compact': {
-      const before = session.history.length;
+      const before = session.agentHistory.length || session.history.length;
       if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
-      session.history.splice(2, session.history.length - 6);
-      process.stderr.write(`  ${c.gray(`Compacted: ${before} → ${session.history.length} messages`)}\n`);
+      session.agentHistory.splice(2, session.agentHistory.length - 6);
+      process.stderr.write(`  ${c.gray(`Compacted agent context: ${before} → ${session.agentHistory.length} messages`)}\n`);
       return;
     }
 
     case '/clear':
       session.history.length = 0;
+      session.agentHistory.length = 0;
       session.toolCalls = 0;
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
@@ -1914,7 +1974,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/sessions': {
-      const resumable = ctx.sessionMgr.listResumable();
+      const resumable = await listResumableSessions(ctx);
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -1937,13 +1997,19 @@ async function handleCommand(input, ctx) {
 
       if (targetId) {
         // Direct resume by ID
-        const resumed = await ctx.activateResumedSession(targetId, 'direct');
+        const historyMode = await chooseResumeHistoryMode(ctx);
+        if (!historyMode) {
+          process.stderr.write(`  ${c.dim('Cancelled.')}\n`);
+          return;
+        }
+        const resumed = await ctx.activateResumedSession(targetId, 'direct', historyMode);
         if (!resumed.ok) {
           process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason)}\n`);
           return;
         }
         process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
         process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+        process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
         if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         process.stderr.write('\n');
@@ -1951,7 +2017,7 @@ async function handleCommand(input, ctx) {
       }
 
       // No ID given — list sessions and let user pick by number
-      const resumable = ctx.sessionMgr.listResumable();
+      const resumable = await listResumableSessions(ctx);
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -2051,7 +2117,12 @@ async function handleCommand(input, ctx) {
       }
 
       const picked = resumable[choice - 1];
-      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker');
+      const historyMode = await chooseResumeHistoryMode(ctx);
+      if (!historyMode) {
+        process.stderr.write(`  ${c.dim('Cancelled.')}\n`);
+        return;
+      }
+      const resumed = await ctx.activateResumedSession(picked.sessionId, 'picker', historyMode);
       if (!resumed.ok) {
         process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
         return;
@@ -2059,6 +2130,7 @@ async function handleCommand(input, ctx) {
 
       process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messageCountLabel(resumed.messages)}`)}`);
       process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+      process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
       if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
       if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
       if (resumed.instruction) {
@@ -2159,14 +2231,18 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
 
-  async function activateResumedSession(sessionId, source = 'resume') {
+  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'compact') {
     const currentMgr = new SessionManager(safeCwd());
-    const conversation = currentMgr.loadConversation(sessionId);
-    if (!conversation.messages.length) {
-      return { ok: false, reason: `No conversation found for session ${sessionId}` };
+    const detail = await getSessionDetail(sessionId);
+    const richHistory = detail ? buildResumeHistory(detail, historyMode) : null;
+    const conversation = detail ? null : currentMgr.loadConversation(sessionId);
+    const displayHistory = richHistory?.displayHistory || conversation?.messages || [];
+    const agentHistory = richHistory?.agentHistory || conversation?.messages || [];
+    if (!displayHistory.length) {
+      return { ok: false, reason: `No transcript found for session ${sessionId}` };
     }
 
-    const projectPath = conversation.header?.project || '';
+    const projectPath = detail?.meta?.project || conversation?.header?.project || '';
     let switchedProject = false;
     let projectMissing = false;
     if (projectPath && projectPath !== safeCwd()) {
@@ -2190,7 +2266,10 @@ export async function startTerminalRepl() {
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
-    sessionMgr.activateSession(sessionId, conversation.header, conversation.messages);
+    sessionMgr.activateSession(sessionId, {
+      instruction: detail?.meta?.firstPrompt || conversation?.header?.instruction || '',
+      started_at: detail?.meta?.startTime || conversation?.header?.started_at || new Date().toISOString(),
+    }, displayHistory.filter(m => m.role === 'user' || m.role === 'assistant'));
     _sessionMgr = sessionMgr;
 
     try { await jsonlWriter.close(); } catch {}
@@ -2205,10 +2284,11 @@ export async function startTerminalRepl() {
       await toolExecutor.execute('get_project_overview', { path: safeCwd() });
     } catch { /* best-effort hydration; agent can retry */ }
 
-    session.history = conversation.messages;
+    session.history = displayHistory;
+    session.agentHistory = agentHistory;
     session.id = sessionId;
-    session.turns = conversation.messages.filter(m => m.role === 'user').length;
-    session.lastTask = conversation.header?.instruction || session.history.find(m => m.role === 'user')?.content || '';
+    session.turns = displayHistory.filter(m => m.role === 'user').length;
+    session.lastTask = detail?.meta?.firstPrompt || conversation?.header?.instruction || session.history.find(m => m.role === 'user')?.content || '';
 
     Object.assign(ctx, {
       toolExecutor,
@@ -2223,11 +2303,13 @@ export async function startTerminalRepl() {
 
     return {
       ok: true,
-      messages: conversation.messages.length,
+      messages: displayHistory.length,
       projectPath: projectPath || safeCwd(),
       switchedProject,
       projectMissing,
-      instruction: conversation.header?.instruction || '',
+      instruction: detail?.meta?.firstPrompt || conversation?.header?.instruction || '',
+      historyMode,
+      richTranscript: !!detail,
       source,
     };
   }
@@ -2266,6 +2348,7 @@ export async function startTerminalRepl() {
       if (resumed.ok) {
         process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
         process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+        process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
         if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
@@ -2361,7 +2444,9 @@ export async function startTerminalRepl() {
     }
 
     // Regular prompt
-    session.history.push({ role: 'user', content: input });
+    const userMessage = { role: 'user', content: input };
+    session.history.push(userMessage);
+    session.agentHistory.push(userMessage);
     session.turns++;
     session.toolCalls = 0;
     session.lastTask = input;
@@ -2382,11 +2467,14 @@ export async function startTerminalRepl() {
     if (session.turns === 1) {
       sessionMgr.start(input);
     }
-    sessionMgr.saveMessage('user', input);
-
-    // Local JSONL: write user turn + history
-    jsonlWriter.writeUserTurn(input);
-    jsonlWriter.writeHistory(input);
+    let userTurnWritten = false;
+    const writeCurrentUserTurn = () => {
+      if (userTurnWritten) return;
+      jsonlWriter.writeUserTurn(input);
+      jsonlWriter.writeHistory(input);
+      userTurnWritten = true;
+    };
+    if (session.id) writeCurrentUserTurn();
 
     const creds = auth.loadCredentials();
     if (!creds.token) {
@@ -2546,7 +2634,7 @@ export async function startTerminalRepl() {
         }
       }
 
-      for await (const event of client.execute(input, execContext, session.history)) {
+      for await (const event of client.execute(input, execContext, session.agentHistory)) {
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,
@@ -2577,6 +2665,7 @@ export async function startTerminalRepl() {
         if (event.type === 'session_info' && event.data?.session_id) {
           jsonlWriter.setSessionId(event.data.session_id);
           hookRunner.sessionId = event.data.session_id;
+          writeCurrentUserTurn();
         }
 
         // Local JSONL: accumulate tool calls
@@ -2609,8 +2698,9 @@ export async function startTerminalRepl() {
     }
 
     if (assistantContent) {
-      session.history.push({ role: 'assistant', content: assistantContent });
-      sessionMgr.saveMessage('assistant', assistantContent);
+      const assistantMessage = { role: 'assistant', content: assistantContent };
+      session.history.push(assistantMessage);
+      session.agentHistory.push(assistantMessage);
     }
 
     showPrompt();

@@ -50,6 +50,42 @@ function normalizeMessageContent(content) {
   }
 }
 
+function truncateText(text, max = 1200) {
+  const compact = String(text || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= max) return compact;
+  return compact.slice(0, max - 3) + '...';
+}
+
+function stringifyInput(input) {
+  try {
+    return JSON.stringify(input || {});
+  } catch {
+    return String(input || {});
+  }
+}
+
+function entryText(entry) {
+  if (typeof entry.content === 'string') return entry.content;
+  if (!Array.isArray(entry.content)) return '';
+  return entry.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text || '')
+    .filter(Boolean)
+    .join('\n');
+}
+
+function entryToolUses(entry) {
+  return Array.isArray(entry.content)
+    ? entry.content.filter(block => block.type === 'tool_use')
+    : [];
+}
+
+function entryToolResults(entry) {
+  return Array.isArray(entry.content)
+    ? entry.content.filter(block => block.type === 'tool_result')
+    : [];
+}
+
 /**
  * List all session JSONL files across all projects.
  * Returns [{slug, sessionId, filePath, mtime}] sorted by mtime desc.
@@ -231,6 +267,128 @@ export async function getSessionDetail(sessionId) {
     mtime: file.mtime,
     meta,
     entries,
+  };
+}
+
+/**
+ * Convert a rich transcript into display history and backend continuity.
+ * Display history is intentionally richer than backend history: it includes
+ * tool calls/results so /history can reconstruct prior work.
+ *
+ * @param {object} detail - result from getSessionDetail()
+ * @param {'compact'|'full'} mode
+ */
+export function buildResumeHistory(detail, mode = 'compact') {
+  if (!detail) {
+    return {
+      displayHistory: [],
+      agentHistory: [],
+      summary: '',
+      stats: { userMessages: 0, assistantMessages: 0, toolCalls: 0, toolResults: 0 },
+    };
+  }
+
+  const displayHistory = [];
+  const fullAgentHistory = [];
+  const userPrompts = [];
+  const assistantTexts = [];
+  const toolCounts = new Map();
+  const importantResults = [];
+  let toolCalls = 0;
+  let toolResults = 0;
+
+  for (const entry of detail.entries || []) {
+    if (entry.role === 'user' && typeof entry.content === 'string') {
+      const content = entry.content;
+      displayHistory.push({ role: 'user', content, timestamp: entry.timestamp });
+      fullAgentHistory.push({ role: 'user', content });
+      userPrompts.push(content);
+      continue;
+    }
+
+    if (entry.role === 'assistant') {
+      const text = entryText(entry);
+      const tools = entryToolUses(entry);
+      for (const tool of tools) {
+        toolCalls++;
+        toolCounts.set(tool.name, (toolCounts.get(tool.name) || 0) + 1);
+        const line = `${tool.name} ${stringifyInput(tool.input)}`;
+        displayHistory.push({
+          role: 'tool',
+          content: line,
+          timestamp: entry.timestamp,
+          tool: tool.name,
+          kind: 'call',
+        });
+      }
+      if (text) {
+        displayHistory.push({ role: 'assistant', content: text, timestamp: entry.timestamp });
+        assistantTexts.push(text);
+      }
+
+      const fullContent = [
+        text,
+        ...tools.map(tool => `[tool_call] ${tool.name} ${stringifyInput(tool.input)}`),
+      ].filter(Boolean).join('\n\n');
+      if (fullContent) fullAgentHistory.push({ role: 'assistant', content: fullContent });
+      continue;
+    }
+
+    if (entry.role === 'user' && Array.isArray(entry.content)) {
+      const results = entryToolResults(entry);
+      for (const result of results) {
+        toolResults++;
+        const content = truncateText(result.content, 1200);
+        const label = `[tool_result] ${result.tool_use_id || 'tool'}${result.is_error ? ' (error)' : ''}: ${content}`;
+        displayHistory.push({
+          role: 'tool',
+          content: label,
+          timestamp: entry.timestamp,
+          tool: result.tool_use_id || 'tool',
+          kind: 'result',
+        });
+        fullAgentHistory.push({ role: 'user', content: label });
+        if (importantResults.length < 12 && content) importantResults.push(label);
+      }
+    }
+  }
+
+  const toolSummary = [...toolCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${name} x${count}`)
+    .join(', ') || 'none recorded';
+  const latestUser = userPrompts[userPrompts.length - 1] || detail.meta?.firstPrompt || '';
+  const latestAssistant = assistantTexts[assistantTexts.length - 1] || '';
+  const summaryLines = [
+    'Session continuity summary from the resumed local transcript.',
+    `Session: ${detail.sessionId}`,
+    detail.meta?.project ? `Project: ${detail.meta.project}` : '',
+    detail.meta?.startTime ? `Started: ${detail.meta.startTime}` : '',
+    detail.meta?.endTime ? `Last activity: ${detail.meta.endTime}` : '',
+    `Prior user requests (${userPrompts.length}):`,
+    ...userPrompts.slice(-8).map(text => `- ${truncateText(text, 300)}`),
+    `Assistant progress notes (${assistantTexts.length}):`,
+    ...assistantTexts.slice(-6).map(text => `- ${truncateText(text, 400)}`),
+    `Tools used: ${toolSummary}`,
+    importantResults.length ? 'Important recent tool results:' : '',
+    ...importantResults.slice(-8).map(text => `- ${truncateText(text, 500)}`),
+    latestUser ? `Most recent user request: ${truncateText(latestUser, 500)}` : '',
+    latestAssistant ? `Most recent assistant response: ${truncateText(latestAssistant, 500)}` : '',
+  ].filter(Boolean);
+  const summary = summaryLines.join('\n');
+
+  return {
+    displayHistory,
+    agentHistory: mode === 'full'
+      ? fullAgentHistory
+      : [{ role: 'user', content: summary }],
+    summary,
+    stats: {
+      userMessages: userPrompts.length,
+      assistantMessages: assistantTexts.length,
+      toolCalls,
+      toolResults,
+    },
   };
 }
 
