@@ -9,6 +9,7 @@ import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead } from '../src/ui/tool-card.mjs';
+import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
 
 let passed = 0;
@@ -98,6 +99,15 @@ test('long shell tool heads wrap without hiding command text', () => {
   assert.ok(rendered.includes('2>&1 | head -80'));
   assert.ok(!rendered.includes('…'));
 
+  const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
+  const azRendered = stripAnsi(formatCardHead('shell', { command: azCommand }, { columns: 80, cwd: '/tmp' }));
+  assert.ok(azRendered.includes('Running'));
+  assert.ok(azRendered.includes('az network nsg create'));
+  assert.ok(azRendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
+  assert.ok(azRendered.includes('codekepler-microvm-prod-02'));
+  assert.ok(azRendered.includes('service=microvm'));
+  assert.ok(!azRendered.includes('…'));
+
   const full = stripAnsi(formatCard({
     tool: 'shell',
     args: { command },
@@ -124,6 +134,29 @@ test('long shell tool heads wrap without hiding command text', () => {
     cwd: '/tmp',
   }));
   assert.ok(observed.includes('observed 15.0s tail'));
+});
+
+test('legacy formatter wraps full shell commands without ellipsis', () => {
+  const command = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
+  const formatter = new EventFormatter();
+  const originalWrite = process.stderr.write;
+  let output = '';
+  process.stderr.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    formatter.render({ type: 'tool_call', data: { tool: 'shell', args: { command } } });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  const rendered = stripAnsi(output);
+  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('az network nsg create'));
+  assert.ok(rendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
+  assert.ok(rendered.includes('codekepler-microvm-prod-02'));
+  assert.ok(rendered.includes('service=microvm'));
+  assert.ok(!rendered.includes('…'));
 });
 
 test('renders Markdown pipe tables as aligned terminal tables', () => {

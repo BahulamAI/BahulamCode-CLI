@@ -230,7 +230,7 @@ function subjectDetails(tool, args = {}, summary = '', available = 72) {
   if (tool === 'shell') {
     const command = args.command || args.cmd || summary || '';
     const lines = wrapText(command, available);
-    return lines.length ? lines.slice(0, 4) : ['(empty command)'];
+    return lines.length ? lines : ['(empty command)'];
   }
   if (tool === 'write_file') {
     const file = args.file_path || args.path || summary || '';

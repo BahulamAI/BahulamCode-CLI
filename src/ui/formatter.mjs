@@ -186,6 +186,14 @@ export class EventFormatter {
 
         const label = toolDisplayLabel(tool);
         const summary = toolDisplaySummary(tool, args);
+        if (tool === 'shell' && summary) {
+            process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${label}${RESET}\n`);
+            for (const line of wrapShellSummary(summary, 100)) {
+                process.stderr.write(`  ${DIM}  ${line}${RESET}\n`);
+            }
+            this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
+            return;
+        }
         const detail = summary ? `${DIM}${summary}${RESET}` : '';
         process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${label}${RESET}${detail ? `  ${detail}` : ''}\n`);
 
@@ -350,4 +358,22 @@ export class EventFormatter {
             process.stderr.write(`  ${DIM}Tokens: ${inp.toLocaleString()} in / ${out.toLocaleString()} out${RESET}\n`);
         }
     }
+}
+
+function wrapShellSummary(command, width = 100) {
+    const max = Math.max(32, Number(width) || 100);
+    const text = String(command || '');
+    const lines = [];
+    let line = '';
+    for (const token of text.match(/\S+\s*/g) || [text]) {
+        const next = line + token;
+        if (line && next.trimEnd().length > max) {
+            lines.push(line.trimEnd());
+            line = token;
+            continue;
+        }
+        line = next;
+    }
+    if (line.trimEnd()) lines.push(line.trimEnd());
+    return lines.length ? lines : ['(empty command)'];
 }
