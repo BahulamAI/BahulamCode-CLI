@@ -528,7 +528,8 @@ function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Co
 }
 
 function renderResumePreview(resumed) {
-  if (resumed.historyMode === 'compact') {
+  const tailTurns = resumeTailTurnCount(resumed.historyMode);
+  if (resumed.historyMode === 'compact' || resumed.historyMode === 'summary') {
     if (!resumed.summary) return;
     process.stderr.write(`\n  ${c.bold('Continuity Summary Sent To Agent')}\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
@@ -539,6 +540,15 @@ function renderResumePreview(resumed) {
     return;
   }
 
+  if (tailTurns && resumed.summary) {
+    process.stderr.write(`\n  ${c.bold(`Summary + Last ${tailTurns} Turns`)}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.summary.split('\n')) {
+      process.stderr.write(`  ${c.dim(line)}\n`);
+    }
+    process.stderr.write('\n');
+  }
+
   if (resumed.replayEvents?.length) {
     const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
     const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
@@ -547,7 +557,8 @@ function renderResumePreview(resumed) {
       .filter(m => m.role === 'user')
       .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
     const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
-    process.stderr.write(`\n  ${c.bold('Replayed Live Session Events')} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
+    const replayTitle = tailTurns ? `Last ${tailTurns} Turns Replay` : 'Replayed Live Session Events';
+    process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
     const sessionSnapshot = JSON.parse(JSON.stringify(session));
     const savedOrbit = _orbit;
@@ -582,9 +593,15 @@ function renderResumePreview(resumed) {
     renderHistoryEntries(resumed.history, {
       limit: Infinity,
       maxChars: 220,
-      title: 'Replayed Session History',
+      title: tailTurns ? `Last ${tailTurns} Turns` : 'Replayed Session History',
     });
   }
+}
+
+function resumeTailTurnCount(mode = '') {
+  const match = String(mode || '').match(/^tail-(\d+)$/);
+  if (!match) return null;
+  return Math.max(1, Number(match[1]) || 1);
 }
 
 function replayStartOrderForMode(history = [], mode = '') {
