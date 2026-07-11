@@ -153,18 +153,21 @@ await test('buildResumeHistory reconstructs display history and continuity paylo
   assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'call'));
   assert.ok(compact.displayHistory.some(m => m.role === 'tool' && m.kind === 'result'));
   assert.strictEqual(compact.displayHistory.find(m => m.role === 'user')?.order, 0);
-  assert.strictEqual(compact.agentHistory.length, 1);
-  assert.ok(compact.agentHistory[0].content.includes('Session continuity summary'));
-  assert.ok(compact.agentHistory[0].content.includes('read_file x1'));
+  assert.strictEqual(compact.agentHistory.length, 3);
+  assert.strictEqual(compact.summaryMessageIndex, 2);
+  assert.ok(compact.agentHistory[0].content.includes('Resume metadata'));
+  assert.ok(compact.agentHistory[1].content.includes('Original user request'));
+  assert.ok(compact.agentHistory[2].content.includes('Session continuity summary'));
+  assert.ok(compact.agentHistory[2].content.includes('read_file x1'));
   assert.deepStrictEqual(localStore.getTranscriptProjectRoots(detail), [demoProject]);
 
   const full = localStore.buildResumeHistory(detail, 'full');
   assert.ok(full.agentHistory.some(m => m.content.includes('[tool_call] read_file')));
   assert.ok(full.agentHistory.some(m => m.content.includes('[tool_result]')));
-  assert.ok(full.agentHistory.length > compact.agentHistory.length);
+  assert.strictEqual(full.sourceMessages.length, full.agentHistory.length);
 });
 
-await test('buildResumeHistory tail modes keep the last N user turns', async () => {
+await test('buildResumeHistory tail modes summarize older messages and keep the last N conversation messages', async () => {
   const detail = {
     entries: [
       { role: 'user', content: 'turn 1: old request', timestamp: '2026-04-26T10:00:00.000Z', order: 0 },
@@ -196,16 +199,26 @@ await test('buildResumeHistory tail modes keep the last N user turns', async () 
     ],
   };
 
-  const tail = localStore.buildResumeHistory(detail, 'tail-2');
-  const summary = tail.agentHistory[0]?.content || '';
-  const payload = tail.agentHistory.slice(1).map(m => m.content).join('\n');
+  const tail = localStore.buildResumeHistory(detail, 'tail-4');
+  const metadata = tail.agentHistory[0]?.content || '';
+  const original = tail.agentHistory[1]?.content || '';
+  const summary = tail.agentHistory[tail.summaryMessageIndex]?.content || '';
+  const payload = tail.agentHistory.slice(tail.summaryMessageIndex + 1).map(m => m.content).join('\n');
+  const summarySource = tail.sourceMessages.map(m => m.content).join('\n');
 
-  assert.ok(summary.includes('Session continuity summary'));
-  assert.ok(payload.includes('turn 2: recent request'));
+  assert.ok(metadata.includes('Resume metadata'));
+  assert.ok(original.includes('turn 1: old request'));
+  assert.ok(summary.includes('Summary of earlier turns before the last 4 conversation messages'));
+  assert.ok(payload.includes('answer 2'));
   assert.ok(payload.includes('recent tool result'));
   assert.ok(payload.includes('turn 3: latest request'));
+  assert.ok(!payload.includes('turn 2: recent request'));
   assert.ok(!payload.includes('turn 1: old request'));
   assert.ok(!payload.includes('old tool result'));
+  assert.ok(summarySource.includes('turn 1: old request'));
+  assert.ok(summarySource.includes('old tool result'));
+  assert.ok(summarySource.includes('turn 2: recent request'));
+  assert.ok(!summarySource.includes('recent tool result'));
 });
 
 await test('report formatters include expected analytics sections', async () => {

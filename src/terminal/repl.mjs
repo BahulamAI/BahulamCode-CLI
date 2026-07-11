@@ -300,8 +300,8 @@ async function chooseThresholdMode(ctx, decision) {
   const options = [
     { key: 'f', value: 'full',    label: 'full transcript', enabled: canFull },
     { key: 's', value: 'summary', label: 'summary only',    enabled: true },
-    { key: '1', value: 'tail-10', label: 'last 10 turns',   enabled: true },
-    { key: '2', value: 'tail-20', label: 'last 20 turns',   enabled: true },
+    { key: '1', value: 'tail-10', label: 'summary + last 10 turns', enabled: true },
+    { key: '2', value: 'tail-20', label: 'summary + last 20 turns', enabled: true },
   ];
   let selected = options.findIndex(o => o.value === decision.defaultChoice && o.enabled);
   if (selected < 0) selected = options.findIndex(o => o.enabled);
@@ -371,6 +371,13 @@ async function chooseThresholdMode(ctx, decision) {
   });
 }
 
+function resumeModeLabel(mode = 'full') {
+  if (mode === 'summary') return 'summary only';
+  const tailTurns = resumeTailTurnCount(mode);
+  if (tailTurns) return `summary + last ${tailTurns} turns`;
+  return mode || 'full';
+}
+
 /**
  * PRD-068 §5.14.5 — preview overlay for a session/mode. Read-only, `q` to return.
  * If user hits Enter, resolve to the currently-previewed mode so caller can activate.
@@ -410,7 +417,7 @@ async function previewResumeSession(session, ctx) {
       if (scrollOffset > maxOffset) scrollOffset = maxOffset;
 
       const lines = [];
-      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(mode)}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
+      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
       lines.push(`  ${c.dim('─'.repeat(60))}`);
       for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
         lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
@@ -598,6 +605,43 @@ function renderResumePreview(resumed) {
   }
 }
 
+async function summarizeResumeTranscript({
+  auth,
+  toolExecutor,
+  sessionId,
+  projectPath,
+  messages,
+}) {
+  const creds = auth?.loadCredentials?.() || {};
+  if (!creds.backendUrl || !creds.token || !Array.isArray(messages) || messages.length === 0) {
+    return {
+      ok: false,
+      source: 'local',
+      reason: !creds.backendUrl || !creds.token ? 'missing backend credentials' : 'empty transcript',
+    };
+  }
+  try {
+    const client = new TarangStreamClient({
+      baseUrl: creds.backendUrl,
+      token: creds.token,
+      toolExecutor,
+    });
+    const result = await client.summarizeSession(messages, {
+      sessionId,
+      projectPath,
+      maxTokens: 800,
+      timeoutMs: 15000,
+    });
+    return { ...result, ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      source: 'local',
+      reason: err?.message || 'backend summary request failed',
+    };
+  }
+}
+
 function resumeTailTurnCount(mode = '') {
   const match = String(mode || '').match(/^tail-(\d+)$/);
   if (!match) return null;
@@ -668,7 +712,7 @@ function resumeProgressBar(percent, width = 12) {
 
 function startResumeProgress(mode = 'full') {
   let percent = 8;
-  let label = `resuming as ${mode}`;
+  let label = `resuming as ${resumeModeLabel(mode)}`;
   let active = true;
   const started = Date.now();
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -2627,7 +2671,13 @@ async function handleCommand(input, ctx) {
       const toolSummary = resumed.stats && resumed.stats.toolCalls
         ? `${resumed.stats.toolCalls} tool calls`
         : `${resumed.messages} msgs`;
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${mode}`)}\n`);
+      const summaryLabel = mode !== 'full' && resumed.summarySource
+        ? ` · summary: ${resumed.summarySource}`
+        : '';
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
+      if (resumed.summaryWarning) {
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — using local summary (${resumed.summaryWarning})`)}\n`);
+      }
       if (resumed.hydrationFailures?.length) {
         for (const failure of resumed.hydrationFailures) {
           process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`could not re-read project root: ${failure}`)}\n`);
@@ -2785,13 +2835,50 @@ export async function startTerminalRepl() {
     onProgress('building resume context', 28);
     const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, historyMode);
     const displayHistory = richHistory.displayHistory;
-    const agentHistory = richHistory.agentHistory;
     if (!displayHistory.length) {
       return { ok: false, reason: `Session ${sessionId} has no readable messages` };
     }
 
     // PRD-068 §5.14.7: explicit cwd confirmation if saved path differs.
     const savedProjectPath = detail?.meta?.project || '';
+    let summarySource = 'local';
+    let summaryWarning = '';
+    if (historyMode !== 'full' && richHistory.sourceMessages?.length) {
+      onProgress('summarizing transcript', 34);
+      const backendSummary = await summarizeResumeTranscript({
+        auth,
+        toolExecutor,
+        sessionId,
+        projectPath: savedProjectPath || safeCwd(),
+        messages: richHistory.sourceMessages,
+      });
+      if (backendSummary?.summary) {
+        richHistory.summary = backendSummary.summary;
+        const summaryIndex = Number.isInteger(richHistory.summaryMessageIndex)
+          ? richHistory.summaryMessageIndex
+          : 0;
+        if (richHistory.agentHistory?.[summaryIndex]) {
+          const tailTurns = resumeTailTurnCount(historyMode);
+          const prefix = tailTurns
+            ? `Summary of earlier turns before the retained last ${tailTurns} conversation messages:\n`
+            : 'Session continuity summary:\n';
+          richHistory.agentHistory[summaryIndex] = {
+            ...richHistory.agentHistory[summaryIndex],
+            content: `${prefix}${backendSummary.summary}`,
+          };
+        }
+        summarySource = backendSummary.source || 'backend';
+      } else {
+        summarySource = 'local fallback';
+        summaryWarning = backendSummary?.reason || 'backend summary unavailable';
+      }
+    } else if (historyMode !== 'full') {
+      summarySource = 'not needed';
+      summaryWarning = resumeTailTurnCount(historyMode)
+        ? 'retained tail covers the whole transcript'
+        : 'empty transcript';
+    }
+    const agentHistory = richHistory.agentHistory;
     const originalCwd = safeCwd();
     let switchedProject = false;
     let projectMissing = false;
@@ -2836,6 +2923,20 @@ export async function startTerminalRepl() {
     try { await jsonlWriter.close(); } catch {}
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
     jsonlWriter.setSessionId(sessionId);
+    jsonlWriter.writeKeplerEvent({
+      type: 'resume_context',
+      data: {
+        session_id: sessionId,
+        source,
+        mode: historyMode,
+        mode_label: resumeModeLabel(historyMode),
+        messages: displayHistory.length,
+        summary_source: summarySource,
+        summary_injected: historyMode !== 'full' && Boolean(richHistory.agentHistory?.[richHistory.summaryMessageIndex ?? 0]?.content),
+        summary_warning: summaryWarning || null,
+        project_path: savedProjectPath || safeCwd(),
+      },
+    });
 
     streamClient = null;
     latestProjectContext = loadProjectContext({ cwd: safeCwd() });
@@ -2886,6 +2987,8 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || '',
       historyMode,
       summary: richHistory.summary || '',
+      summarySource,
+      summaryWarning,
       history: displayHistory,
       replayEvents: detail.replayEvents || [],
       stats: richHistory.stats,

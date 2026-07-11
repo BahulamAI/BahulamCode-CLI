@@ -58,16 +58,24 @@ export class TarangStreamClient {
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null }) {
+    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null, product = null }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
+        this.product = product || process.env.TARANG_PRODUCT || process.env.KEPLER_PRODUCT || 'kepler';
         this.currentTaskId = null;
         this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
         this._cancelled = false;
         this._paused = false;
+    }
+
+    _headers(extra = {}) {
+        const headers = { ...extra };
+        if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+        if (this.product) headers['X-Product'] = this.product;
+        return headers;
     }
 
     /**
@@ -88,11 +96,10 @@ export class TarangStreamClient {
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
 
-        const headers = {
+        const headers = this._headers({
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
-        };
-        if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+        });
 
         // Abort controller so cancel() can break out of a stalled reader
         // instead of waiting for the next SSE event to notice _cancelled.
@@ -381,7 +388,7 @@ export class TarangStreamClient {
             try {
                 await fetch(`${this.baseUrl}/api/cancel/${this.currentTaskId}`, {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${this.token}` },
+                    headers: this._headers(),
                 });
             } catch { /* best effort */ }
         }
@@ -397,7 +404,7 @@ export class TarangStreamClient {
         if (this.currentTaskId) {
             await fetch(`${this.baseUrl}/api/pause/${this.currentTaskId}`, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${this.token}` },
+                headers: this._headers(),
             });
         }
     }
@@ -408,12 +415,40 @@ export class TarangStreamClient {
             const body = instruction ? JSON.stringify({ instruction }) : undefined;
             await fetch(`${this.baseUrl}/api/resume/${this.currentTaskId}`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${this.token}`,
+                headers: this._headers({
                     'Content-Type': 'application/json',
-                },
+                }),
                 body,
             });
         }
+    }
+
+    /**
+     * Summarize a prior transcript for resume continuity.
+     *
+     * @param {Array<{role:string,content:string}>} messages
+     * @param {Object} [opts]
+     * @returns {Promise<{summary:string,source:string,model:string}>}
+     */
+    async summarizeSession(messages, opts = {}) {
+        const response = await fetch(`${this.baseUrl}/api/summarize/session`, {
+            method: 'POST',
+            headers: this._headers({
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            }),
+            body: JSON.stringify({
+                messages,
+                session_id: opts.sessionId || null,
+                project_path: opts.projectPath || null,
+                max_tokens: opts.maxTokens || 800,
+            }),
+            signal: AbortSignal.timeout(opts.timeoutMs || 15000),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`summary request failed (${response.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
+        }
+        return await response.json();
     }
 }

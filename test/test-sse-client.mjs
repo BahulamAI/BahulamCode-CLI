@@ -256,5 +256,50 @@ await test('server-side tool_call is not executed locally', async () => {
     assert.ok(events.some(e => e.type === 'tool_done' && e.data.server_side));
 });
 
+await test('summarizeSession posts transcript with auth and product headers', async () => {
+    let received = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/summarize/session' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                received = {
+                    auth: req.headers.authorization,
+                    product: req.headers['x-product'],
+                    body: JSON.parse(body),
+                };
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ summary: 'backend summary', source: 'llm', model: 'gpt-4.1-mini' }));
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        product: 'appstak',
+        toolExecutor: mockToolExecutor,
+    });
+    const result = await client.summarizeSession(
+        [{ role: 'user', content: 'hello' }],
+        { sessionId: 'sess-1', projectPath: '/tmp/project', maxTokens: 500 },
+    );
+    server.close();
+
+    assert.strictEqual(result.summary, 'backend summary');
+    assert.strictEqual(result.source, 'llm');
+    assert.strictEqual(received.auth, 'Bearer test-token');
+    assert.strictEqual(received.product, 'appstak');
+    assert.strictEqual(received.body.session_id, 'sess-1');
+    assert.strictEqual(received.body.project_path, '/tmp/project');
+    assert.strictEqual(received.body.max_tokens, 500);
+    assert.deepStrictEqual(received.body.messages, [{ role: 'user', content: 'hello' }]);
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

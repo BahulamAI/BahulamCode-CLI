@@ -508,27 +508,49 @@ export function buildResumeHistory(detail, mode = 'compact') {
     latestAssistant ? `Most recent assistant response: ${truncateText(latestAssistant, 500)}` : '',
   ].filter(Boolean);
   const summary = summaryLines.join('\n');
+  const metadata = buildResumeMetadata({ detail, projectRoots, userPrompts, assistantTexts, toolCalls, toolResults, toolSummary });
+  const originalRequest = userPrompts[0] || detail.meta?.firstPrompt || '';
 
   // PRD-068 §5.14.4: resume mode picker.
   //   'full'       — every turn sent verbatim (unchanged)
-  //   'tail-N'     — recap block as system prime + last N user turns so the
+  //   'tail-N'     — recap block as system prime + last N conversation messages so the
   //                  agent has real recent conversation to reference.
   //   'summary'    — recap block only. Cheapest continuity, biggest lossiness.
   let agentHistory;
+  let sourceMessages = fullAgentHistory;
+  let summaryMessageIndex = -1;
   if (mode === 'full') {
     agentHistory = fullAgentHistory;
   } else if (mode === 'recap+tail' || /^tail-\d+$/.test(String(mode || ''))) {
     const tailTurns = tailTurnsForMode(mode, detail);
-    const tail = tailHistoryByUserTurns(fullAgentHistory, tailTurns);
-    agentHistory = [{ role: 'user', content: summary }, ...tail];
+    const { tail, startIndex } = tailHistorySliceByRecentMessages(fullAgentHistory, tailTurns);
+    sourceMessages = fullAgentHistory.slice(0, startIndex);
+    const scopedSummary = summaryForMessages(sourceMessages, {
+      fallback: summary,
+      label: `Summary of earlier turns before the last ${tailTurns} conversation messages`,
+    });
+    agentHistory = [
+      { role: 'user', content: metadata },
+      { role: 'user', content: `Original user request from this resumed session:\n${originalRequest || '(unknown)'}` },
+      { role: 'user', content: scopedSummary },
+      ...tail,
+    ];
+    summaryMessageIndex = 2;
   } else {
     // 'summary' (was 'compact' — renamed per PRD-068 §5.14.4)
-    agentHistory = [{ role: 'user', content: summary }];
+    agentHistory = [
+      { role: 'user', content: metadata },
+      { role: 'user', content: `Original user request from this resumed session:\n${originalRequest || '(unknown)'}` },
+      { role: 'user', content: summary },
+    ];
+    summaryMessageIndex = 2;
   }
 
   return {
     displayHistory,
     agentHistory,
+    sourceMessages,
+    summaryMessageIndex,
     summary,
     mode,
     stats: {
@@ -540,6 +562,35 @@ export function buildResumeHistory(detail, mode = 'compact') {
   };
 }
 
+function buildResumeMetadata({ detail, projectRoots, userPrompts, assistantTexts, toolCalls, toolResults, toolSummary }) {
+  return [
+    'Resume metadata.',
+    `Session: ${detail.sessionId}`,
+    detail.meta?.project ? `Project: ${detail.meta.project}` : '',
+    projectRoots.length ? `Registered project roots: ${projectRoots.join(', ')}` : '',
+    detail.meta?.startTime ? `Started: ${detail.meta.startTime}` : '',
+    detail.meta?.endTime ? `Last activity: ${detail.meta.endTime}` : '',
+    `Total user turns: ${userPrompts.length}`,
+    `Assistant messages: ${assistantTexts.length}`,
+    `Tool calls/results: ${toolCalls}/${toolResults}`,
+    `Tools used: ${toolSummary}`,
+  ].filter(Boolean).join('\n');
+}
+
+function summaryForMessages(messages, { fallback, label }) {
+  const list = Array.isArray(messages) ? messages : [];
+  if (!list.length) {
+    return `${label}:\nNo earlier turns before the retained tail.`;
+  }
+  const lines = [label + ':'];
+  for (const msg of list.slice(-24)) {
+    const role = msg.role || 'message';
+    lines.push(`- ${role}: ${truncateText(msg.content, 450)}`);
+  }
+  const text = lines.join('\n');
+  return text.trim() || fallback;
+}
+
 function tailTurnsForMode(mode, detail) {
   const match = String(mode || '').match(/^tail-(\d+)$/);
   if (match) return Math.max(1, Number(match[1]) || 1);
@@ -548,26 +599,11 @@ function tailTurnsForMode(mode, detail) {
     : 8;
 }
 
-function isUserPromptHistoryMessage(message) {
-  if (message?.role !== 'user') return false;
-  const content = String(message.content || '');
-  return !content.startsWith('[tool_result]') &&
-         !content.startsWith('Session continuity summary');
-}
-
-function tailHistoryByUserTurns(history, turns) {
+function tailHistorySliceByRecentMessages(history, turns) {
   const list = Array.isArray(history) ? history : [];
-  let seen = 0;
-  let start = 0;
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (!isUserPromptHistoryMessage(list[i])) continue;
-    seen++;
-    if (seen >= turns) {
-      start = i;
-      break;
-    }
-  }
-  return list.slice(start);
+  const count = Math.max(1, Number(turns) || 1);
+  const start = Math.max(0, list.length - count);
+  return { tail: list.slice(start), startIndex: start };
 }
 
 export function getTranscriptProjectRoots(detail) {
