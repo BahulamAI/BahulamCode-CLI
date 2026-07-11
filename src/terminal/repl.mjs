@@ -164,6 +164,46 @@ async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
   });
 }
 
+function historyRoleLabel(role) {
+  return role === 'user'
+    ? c.white('You')
+    : role === 'tool'
+      ? c.dim('Tool')
+      : c.brand('Kepler');
+}
+
+function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
+  const shown = limit === Infinity ? entries : entries.slice(-limit);
+  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+  for (const msg of shown) {
+    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
+    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function renderResumePreview(resumed) {
+  if (resumed.historyMode === 'compact') {
+    if (!resumed.summary) return;
+    process.stderr.write(`\n  ${c.bold('Continuity Summary Sent To Agent')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.summary.split('\n')) {
+      process.stderr.write(`  ${c.dim(line)}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  if (resumed.history?.length) {
+    renderHistoryEntries(resumed.history, {
+      limit: Infinity,
+      maxChars: 220,
+      title: 'Replayed Session History',
+    });
+  }
+}
+
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
@@ -1488,18 +1528,7 @@ async function handleCommand(input, ctx) {
         return;
       }
       if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
-      process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-      for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user'
-          ? c.white('You')
-          : msg.role === 'tool'
-            ? c.dim('Tool')
-            : c.brand('Kepler');
-        const content = String(msg.content || '');
-        process.stderr.write(`  ${role}: ${content.slice(0, 120)}${content.length > 120 ? '...' : ''}\n`);
-      }
-      process.stderr.write('\n');
+      renderHistoryEntries(session.history, { limit: 20, maxChars: 120 });
       return;
     }
 
@@ -2014,6 +2043,7 @@ async function handleCommand(input, ctx) {
         if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         process.stderr.write('\n');
+        renderResumePreview(resumed);
         return;
       }
 
@@ -2138,6 +2168,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
+      renderResumePreview(resumed);
       return;
     }
 
@@ -2315,6 +2346,8 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || conversation?.header?.instruction || '',
       historyMode,
       richTranscript: !!detail,
+      summary: richHistory?.summary || '',
+      history: displayHistory,
       source,
     };
   }
@@ -2358,6 +2391,7 @@ export async function startTerminalRepl() {
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
         process.stderr.write('\n');
+        renderResumePreview(resumed);
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
