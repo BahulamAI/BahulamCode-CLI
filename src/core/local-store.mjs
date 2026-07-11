@@ -199,6 +199,7 @@ async function parseSessionMeta(filePath) {
     costUsd: 0,             // sum of per-turn provider costs recorded in transcript
     partial: false,         // true if some lines failed to parse
     fileBytes: 0,           // raw file size (byte-based ctx fallback if no usage totals)
+    resumeSummary: null,    // latest resume_summary marker, if the session has been checkpointed
   };
 
   const toolCounts = {};
@@ -237,6 +238,18 @@ async function parseSessionMeta(filePath) {
         if (ev.type === 'complete' && typeof ev.cost_usd === 'number') meta.costUsd += ev.cost_usd;
         if (ev.type === 'session_info' && typeof ev.total_cost_usd === 'number') meta.costUsd = ev.total_cost_usd;
         if (ev.type === 'error' || ev.error === true) hadError = true;
+        if (ev.type === 'resume_summary' && typeof ev.data?.summary === 'string') {
+          meta.resumeSummary = {
+            sourceMessageCount: Number(ev.data.source_message_count) || 0,
+            previousSourceMessageCount: Number(ev.data.previous_source_message_count) || 0,
+            fullMessageCount: Number(ev.data.full_message_count) || 0,
+            summaryChars: ev.data.summary.length,
+            summarySource: ev.data.summary_source || '',
+            mode: ev.data.mode || '',
+            modeLabel: ev.data.mode_label || '',
+            timestamp: obj.timestamp || null,
+          };
+        }
       }
 
       if (obj.type === 'user') {

@@ -148,6 +148,7 @@ function normalizeResumableSession(s) {
     // PRD-068 §5.14.11 derived fields for the picker
     endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
     contextTokens: s.contextTokens || 0,       // projected transcript token count
+    resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
     costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
     partial: !!s.partial,                      // true if the transcript file was partially malformed
     source: 'transcript',
@@ -183,6 +184,15 @@ function formatSessionCost(usd) {
   if (!Number.isFinite(n) || n <= 0) return c.dim('     ');
   if (n < 0.01) return c.dim('<$0.01');
   return c.dim(`$${n.toFixed(2)}`);
+}
+
+function formatResumeCheckpointStatus(session) {
+  const marker = session?.resumeSummary;
+  if (!marker || !Number(marker.sourceMessageCount)) return '';
+  const full = Number(marker.fullMessageCount) || 0;
+  const covered = Number(marker.sourceMessageCount) || 0;
+  const pct = full > 0 ? ` ${Math.min(100, Math.round((covered / full) * 100))}%` : '';
+  return c.dim(` · summarized${pct}`);
 }
 
 function formatRelativeTime(iso) {
@@ -239,7 +249,7 @@ async function pickResumableSession(resumable, ctx) {
         const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
         const status = endStatusMarker(s.endStatus);
         const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
-        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`);
+        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`) + formatResumeCheckpointStatus(s);
         const cost = formatSessionCost(s.costUsd);
         const partial = s.partial ? c.yellow(' ⚠partial') : '';
         const instr = oneLineInstruction(s.instruction, 48);
@@ -318,6 +328,12 @@ async function chooseThresholdMode(ctx, decision) {
       const win = formatCtxTokens(decision.windowSize);
       const lines = [];
       lines.push(`  This session would use  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      if (decision.resumeSummary?.sourceMessageCount) {
+        const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
+        const full = Number(decision.resumeSummary.fullMessageCount) || 0;
+        const suffix = full > 0 ? ` (${covered}/${full} resume messages)` : '';
+        lines.push(`  ${c.green('✓')} ${c.dim(`summary checkpoint available${suffix}; summary/tail modes reuse it`)}`);
+      }
       lines.push(canFull
         ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
         : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
@@ -2632,6 +2648,7 @@ async function handleCommand(input, ctx) {
           model: currentModel,
           settings: ctx.effectivePolicy?.policy?.resume ? { resume: ctx.effectivePolicy.policy.resume } : {},
         });
+        decision.resumeSummary = picked.resumeSummary || null;
         if (decision.mode === 'full') {
           mode = 'full';
         } else {

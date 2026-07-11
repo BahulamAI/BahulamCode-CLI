@@ -106,6 +106,24 @@ const sessionBLines = [
       content: 'Pulled recent history.',
     },
   },
+  {
+    type: 'kepler_event',
+    timestamp: '2026-04-27T08:30:06.000Z',
+    cwd: demoProject,
+    sessionId: 'sess-B',
+    event: {
+      type: 'resume_summary',
+      data: {
+        summary: 'Prior summary for sess-B.',
+        source_message_count: 2,
+        previous_source_message_count: 0,
+        full_message_count: 2,
+        summary_source: 'backend',
+        mode: 'summary',
+        mode_label: 'summary only',
+      },
+    },
+  },
 ];
 
 fs.writeFileSync(sessionAPath, sessionALines.map((line) => JSON.stringify(line)).join('\n') + '\n');
@@ -129,6 +147,8 @@ await test('getRecentSessions returns most recent transcript first', async () =>
   assert.strictEqual(sessions[0].sessionId, 'sess-B');
   assert.strictEqual(sessions[1].sessionId, 'sess-A');
   assert.strictEqual(sessions[1].toolCalls[0].name, 'read_file');
+  assert.strictEqual(sessions[0].resumeSummary.sourceMessageCount, 2);
+  assert.strictEqual(sessions[0].resumeSummary.summarySource, 'backend');
 });
 
 await test('getSessionDetail normalizes tool blocks', async () => {
