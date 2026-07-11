@@ -20,7 +20,6 @@ import {
 } from './risk-tier.mjs';
 import {
   renderApprovalPrompt,
-  renderInlinePrompt,
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
@@ -169,7 +168,6 @@ export class ApprovalManager {
 
     async _prompt(toolName, args, context = {}) {
         const tier = context.tier || classifyTier(toolName, args);
-        const explicit = requiresExplicitApproval(tier);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
         const summary = toolDisplaySummary(toolName, args);
         const options = this._optionsFor(tier);
@@ -181,12 +179,10 @@ export class ApprovalManager {
         // live. For non-TTYs / pipes we just print once and read a line.
         const isInteractive = process.stdin.isTTY;
         if (!isInteractive) {
-            write(explicit
-                ? renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n'
-                : renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
+            write(renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n');
         }
 
-        const drawExplicit = () => {
+        const drawPrompt = () => {
             // Move up over the previous render before re-printing.
             if (printedHeight > 0) {
                 write(`\x1b[${printedHeight}F`); // cursor to start of N lines above
@@ -197,8 +193,7 @@ export class ApprovalManager {
             printedHeight = block.split('\n').length;
         };
 
-        if (isInteractive && explicit) drawExplicit();
-        if (isInteractive && !explicit) write(renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
+        if (isInteractive) drawPrompt();
 
         // ── Input loop ─────────────────────────────────────────────────
         const choose = async () => {
@@ -206,15 +201,15 @@ export class ApprovalManager {
                 const k = await this._readKey();
 
                 if (k === 'up' || k === 'left') {
-                    if (!explicit || !isInteractive) continue;
+                    if (!isInteractive) continue;
                     selected = (selected - 1 + options.length) % options.length;
-                    drawExplicit();
+                    drawPrompt();
                     continue;
                 }
                 if (k === 'down' || k === 'right' || k === 'tab') {
-                    if (!explicit || !isInteractive) continue;
+                    if (!isInteractive) continue;
                     selected = (selected + 1) % options.length;
-                    drawExplicit();
+                    drawPrompt();
                     continue;
                 }
                 if (k === 'return') {
@@ -228,7 +223,7 @@ export class ApprovalManager {
                     const idx = options.findIndex(o => o.key === lower);
                     if (idx >= 0) {
                         selected = idx;
-                        if (isInteractive && explicit) drawExplicit();
+                        if (isInteractive) drawPrompt();
                         return options[idx].value;
                     }
                 }
@@ -265,17 +260,16 @@ export class ApprovalManager {
 
             case 'reject':
             {
-                const note = await this._readLinePrompt(`  ${DIM}Reject reason (optional, one line): ${RST}`);
-                const reason = note ? `User denied: ${note}` : 'User denied';
-                write(`  ${RED}✗${RST}  ${DIM}${note ? `denied — ${truncateNote(note)}` : 'denied'}${RST}\n\n`);
+                const reason = 'User stopped the command';
+                write(`  ${RED}✗${RST}  ${DIM}stopped${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason });
-                this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note });
+                this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note: '' });
                 return { approved: false, tier, reason };
             }
 
             case 'allow-all':
-                if (explicit) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
@@ -283,7 +277,7 @@ export class ApprovalManager {
                 return { approved: true, tier };
 
             case 'allow-type':
-                if (explicit) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 write(`  ${GREEN}✓${RST}  ${DIM}always allow ${toolName}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
@@ -298,7 +292,7 @@ export class ApprovalManager {
             case 'edit':
             case 'replan':
             {
-                const note = await this._readLinePrompt(`  ${DIM}Note to the agent (optional, one line): ${RST}`);
+                const note = await this._readLinePrompt(`  ${DIM}How would you like to proceed? ${RST}`);
                 const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
                 write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });

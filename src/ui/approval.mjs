@@ -34,21 +34,19 @@ const PAD_X = 3;
  *   hint  — secondary description shown to the right of the label
  */
 export function defaultOptions(tier) {
+  const shared = [
+    { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' },
+    { key: 'r', label: 're-plan with note...',  value: 'replan',   hint: 'steer the agent' },
+    { key: 'n', label: 'stop', value: 'reject',   hint: 'do not run' },
+    { key: '?', label: 'why',      value: 'why',      hint: 'show reasoning' },
+  ];
   if (requiresExplicitApproval(tier)) {
-    return [
-      { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' },
-      { key: 'e', label: 'edit args',     value: 'edit',     hint: 'send back with changes' },
-      { key: 'r', label: 're-plan with note...',  value: 'replan',   hint: 'steer the agent' },
-      { key: 'n', label: 'reject with reason...', value: 'reject',   hint: 'do not run' },
-      { key: '?', label: 'why',      value: 'why',      hint: 'show reasoning' },
-    ];
+    return shared;
   }
   return [
-    { key: 'y', label: 'approve',         value: 'approve',     hint: 'run this once' },
+    shared[0],
     { key: 't', label: 'always allow',    value: 'allow-type',  hint: 'auto-approve future calls to this tool' },
-    { key: 'r', label: 're-plan with note...', value: 'replan', hint: 'steer the agent' },
-    { key: 'n', label: 'reject',          value: 'reject',      hint: 'do not run' },
-    { key: '?', label: 'why',             value: 'why',         hint: 'show reasoning' },
+    ...shared.slice(1),
   ];
 }
 
@@ -90,7 +88,7 @@ export function renderApprovalPrompt({
   const accent = explicit ? paint.brand.accent : paint.brand.data;
   const opts = options || defaultOptions(tier);
   const available = cols - 2 - PAD_X * 2;
-  const title = `${riskIcon(tier)}  ${tierTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
+  const title = `${riskIcon(tier)}  ${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
     bar(cols, accent),
@@ -112,7 +110,7 @@ export function renderApprovalPrompt({
     lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why  ') + paint.text.muted('No additional reason provided'), cols, accent));
   }
   lines.push(fill('', cols, accent));
-  lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Scope of this decision:'), cols, accent));
+  lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Decision:'), cols, accent));
 
   for (let i = 0; i < opts.length; i++) {
     const o = opts[i];
@@ -128,7 +126,7 @@ export function renderApprovalPrompt({
   lines.push(fill(' ' + ' '.repeat(PAD_X - 1) +
     paint.text.dim('↑↓ ') + paint.brand.data('move') +
     paint.text.dim('  ·  Enter ') + paint.brand.data('pick') +
-    paint.text.dim('  ·  letter shortcut  ·  Esc reject'), cols, accent));
+    paint.text.dim('  ·  letter shortcut  ·  Esc stop'), cols, accent));
   lines.push(bar(cols, accent));
 
   return '\n' + lines.join('\n');
@@ -159,28 +157,14 @@ function truncate(text, n) {
   return s.slice(0, Math.max(0, n - 1)) + '…';
 }
 
-// ── Inline (safe-default) prompt for shell-medium / network ────────────
+// ── Compatibility wrapper ──────────────────────────────────────────────
 
 /**
- * Render the compact one-line prompt used for safe-default tiers.
- * The bordered block is reserved for explicit-approval tiers.
- *
- *   ? Run `npm install lodash`?  Tier: SHELL-MEDIUM   [Enter=yes  n=no  ?=why]
+ * Render the unified approval prompt. Kept as a named export for older call
+ * sites/tests that imported the previous inline renderer.
  */
 export function renderInlinePrompt({ tool, args = {}, tier, why = '' } = {}) {
-  const summary = toolDisplaySummary(tool, args, {});
-  const label = toolDisplayLabel(tool);
-  const rail = paint.text.dim('│');
-  const lines = [];
-  const head = `${riskIcon(tier)}  ${paint.text.primary(label)} ${paint.text.muted(summary ? `"${truncate(summary, 80)}"` : '')}`;
-  lines.push('  ' + head);
-  lines.push(`  ${rail}  ${paint.text.dim('Tier')} ${paint.brand.data(tierTitle(tier))} ${paint.text.dim('·')} ${paint.brand.data(tierLabel(tier))}` +
-             (why ? ' · ' + paint.text.muted(truncate(why, 80)) : ''));
-  lines.push(`  ${rail}  ` + paint.text.dim('[') + paint.brand.data('Enter') + paint.text.dim('=approve  ') +
-             paint.brand.data('n') + paint.text.dim('=no  ') +
-             paint.brand.data('r') + paint.text.dim('=note  ') +
-             paint.brand.data('?') + paint.text.dim('=why]'));
-  return '\n' + lines.join('\n');
+  return renderApprovalPrompt({ tool, args, tier, why });
 }
 
 export { TIERS };
@@ -214,6 +198,17 @@ function tierTitle(tier) {
     case TIERS.SHELL_SAFE: return 'SAFE';
     case TIERS.READ: return 'READ';
     default: return tierLabel(tier);
+  }
+}
+
+function approvalTitle(tier) {
+  switch (tier) {
+    case TIERS.SENSITIVE_READ:
+    case TIERS.SHELL_DANGEROUS:
+    case TIERS.DESTRUCTIVE:
+      return tierTitle(tier);
+    default:
+      return 'APPROVAL';
   }
 }
 

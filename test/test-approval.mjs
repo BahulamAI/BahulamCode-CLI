@@ -129,7 +129,7 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         assert.strictEqual(result.approved, false);
         // Approval surface migrated to the Mission Control bordered prompt
         // (PRD-055 §8). Risk levels are tier strings now.
-        assert.ok(output.includes('AWAITING APPROVAL') || output.includes('Tier'),
+        assert.ok(output.includes('APPROVAL') || output.includes('Decision'),
           'expected Mission Control prompt header');
         // v2.0.3: tool label is present-progressive "Running" (was "Run command").
         assert.ok(output.includes('Running') || output.includes('Run command'),
@@ -143,9 +143,9 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
     }
 });
 
-await test('approval rejection captures reason for next context', async () => {
+await test('approval re-plan captures note for next context', async () => {
     const mgr = new ApprovalManager();
-    mgr._readKey = async () => 'n';
+    mgr._readKey = async () => 'r';
     mgr._readLinePrompt = async () => 'too broad; use a narrower command';
 
     const result = await mgr.check('shell', { command: 'npm publish' });
@@ -154,9 +154,24 @@ await test('approval rejection captures reason for next context', async () => {
 
     const hints = mgr.consumeRejectionHints();
     assert.strictEqual(hints.length, 1);
-    assert.strictEqual(hints[0].decision, 'reject');
+    assert.strictEqual(hints[0].decision, 'replan');
     assert.strictEqual(hints[0].note, 'too broad; use a narrower command');
     assert.strictEqual(mgr.consumeRejectionHints().length, 0);
+});
+
+await test('approval stop does not prompt for a reason', async () => {
+    const mgr = new ApprovalManager();
+    let prompted = false;
+    mgr._readKey = async () => 'n';
+    mgr._readLinePrompt = async () => {
+        prompted = true;
+        return 'should not be requested';
+    };
+
+    const result = await mgr.check('shell', { command: 'npm publish' });
+    assert.strictEqual(result.approved, false);
+    assert.strictEqual(prompted, false);
+    assert.ok(result.reason.includes('stopped'));
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

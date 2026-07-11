@@ -193,20 +193,21 @@ test('approval prompt uses risk title, scoped menu, and wrapped why', () => {
     width: 82,
   }));
   assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
-  assert.ok(rendered.includes('Scope of this decision'));
-  assert.ok(rendered.includes('reject with reason'));
+  assert.ok(rendered.includes('Decision'));
+  assert.ok(rendered.includes('stop'));
   assert.ok(rendered.includes('rm -rf node_modules'));
 });
 
-test('approval inline and trusted modes are compact', () => {
+test('approval compatibility wrapper uses unified prompt', () => {
   const inline = stripAnsi(renderInlinePrompt({
     tool: 'shell',
     args: { command: 'npm test' },
     tier: TIERS.SHELL_MEDIUM,
     why: 'verify the change',
   }));
-  assert.ok(inline.includes('MEDIUM · SHELL-MEDIUM'));
-  assert.ok(inline.includes('r=note'));
+  assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
+  assert.ok(inline.includes('Decision'));
+  assert.ok(inline.includes('always allow'));
 
   const trusted = stripAnsi(renderTrustedApproval({
     tool: 'shell',
