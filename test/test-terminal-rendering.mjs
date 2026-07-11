@@ -8,6 +8,7 @@ import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.m
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
+import { formatCard, formatCardHead } from '../src/ui/tool-card.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
 
 let passed = 0;
@@ -86,6 +87,43 @@ test('renders shell commands with semantic syntax colors', () => {
   // Pipe — state.danger (red #ef4444).
   assert.ok(/\x1b\[31m|\x1b\[38;2;239;68;68m/.test(rendered),
     'expected danger/red for pipe operator');
+});
+
+test('long shell tool heads wrap without hiding command text', () => {
+  const command = 'cd "/Users/sree/Sites/Tarang Orca/appstak-platform" && pnpm run dev 2>&1 | head -80';
+  const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 58, cwd: '/tmp' }));
+  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('appstak-platform'));
+  assert.ok(rendered.includes('pnpm run dev'));
+  assert.ok(rendered.includes('2>&1 | head -80'));
+  assert.ok(!rendered.includes('…'));
+
+  const full = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command },
+    result: { success: true, output: 'ready' },
+    durationMs: 1000,
+    columns: 58,
+    cwd: '/tmp',
+  }));
+  assert.ok(full.includes('2>&1 | head -80'));
+  assert.ok(full.includes('ready'));
+
+  const observed = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command },
+    result: {
+      success: true,
+      output: 'Observation timeout after 15000ms\nready',
+      _observation_timeout: true,
+      _observation_timeout_ms: 15000,
+      exit_code: 124,
+    },
+    durationMs: 15000,
+    columns: 58,
+    cwd: '/tmp',
+  }));
+  assert.ok(observed.includes('observed 15.0s tail'));
 });
 
 test('renders Markdown pipe tables as aligned terminal tables', () => {

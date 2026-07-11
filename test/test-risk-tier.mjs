@@ -194,6 +194,19 @@ test('executor classifier does not mark mutating shell forms safe', () => {
   assert.equal(classifyCommand('find . -exec rm {} \\;').classification, 'blocked');
 });
 
+test('executor classifier allows approved process cleanup through HITL', () => {
+  for (const command of [
+    'kill 57529',
+    'kill -9 57529',
+    'kill $(lsof -ti:3101) 2>/dev/null; echo "Port 3101 freed"',
+    'lsof -ti:3101 | xargs kill -9 2>/dev/null; echo "done"',
+  ]) {
+    const result = classifyCommand(command);
+    assert.equal(result.classification, 'contained', command);
+    assert.equal(result.highRisk, true, command);
+  }
+});
+
 // ── Behavior / label ──────────────────────────────────────────────────
 
 test('behavior(READ) === auto', () => {

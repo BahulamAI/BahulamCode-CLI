@@ -144,6 +144,41 @@ function containsCommandSubstitution(command) {
     return false;
 }
 
+function isQuotedMessage(text) {
+    const value = String(text || '').trim();
+    return /^echo\s+(?:"[^"]*"|'[^']*'|[A-Za-z0-9_ .:-]+)$/.test(value);
+}
+
+function isNumericKillCommand(command) {
+    const trimmed = String(command || '').trim();
+    return /^kill\s+(?:-(?:\d+|[A-Z]+)\s+)?\d+(?:\s+\d+)*\s*(?:2>\s*\/dev\/null)?$/.test(trimmed);
+}
+
+function isPortLsofKillSubstitution(command) {
+    const trimmed = String(command || '').trim();
+    return /^kill\s+(?:-(?:\d+|[A-Z]+)\s+)?\$\(\s*lsof\s+-ti:?\d+\s*\)\s*(?:2>\s*\/dev\/null)?$/.test(trimmed);
+}
+
+function isPortLsofXargsKill(command) {
+    const trimmed = String(command || '').trim();
+    return /^lsof\s+-ti:?\d+\s*\|\s*xargs\s+kill(?:\s+-(?:\d+|[A-Z]+))?\s*(?:2>\s*\/dev\/null)?(?:\s*;\s*echo\s+(?:"[^"]*"|'[^']*'|[A-Za-z0-9_ .:-]+))?$/.test(trimmed);
+}
+
+function isApprovedProcessCleanupCommand(command) {
+    const trimmed = String(command || '').trim();
+    if (!trimmed) return false;
+    if (isPortLsofXargsKill(trimmed)) return true;
+    const segments = splitCommand(trimmed);
+    if (segments.length === 0) return false;
+    return segments.every(segment => {
+        const sub = segment.trim();
+        return isNumericKillCommand(sub) ||
+            isPortLsofKillSubstitution(sub) ||
+            isPortLsofXargsKill(sub) ||
+            isQuotedMessage(sub);
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Section 3: Read-Only Command Allowlist
 // ═══════════════════════════════════════════════════════════════════
@@ -454,6 +489,14 @@ export function classifyCommand(command) {
     }
 
     const trimmed = command.trim();
+
+    if (isApprovedProcessCleanupCommand(trimmed)) {
+        return {
+            classification: 'contained',
+            reason: 'Process cleanup by numeric PID or lsof port lookup; requires approval',
+            highRisk: true,
+        };
+    }
 
     // ── Step 1: Check for always-blocked patterns ──
     for (const pattern of BLOCKED_PATTERNS) {

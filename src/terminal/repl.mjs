@@ -111,6 +111,29 @@ function oneLineInstruction(text, max = 72) {
   return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
 }
 
+function fitAnsiLine(text, maxColumns) {
+  const max = Math.max(1, Number(maxColumns) || 80);
+  const value = String(text || '');
+  if (stripAnsi(value).length <= max) return value;
+
+  let visible = 0;
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '\x1b') {
+      const match = value.slice(i).match(/^\x1b\[[0-9;]*m/);
+      if (match) {
+        out += match[0];
+        i += match[0].length - 1;
+        continue;
+      }
+    }
+    if (visible >= max - 1) break;
+    out += value[i];
+    visible++;
+  }
+  return `${out}${c.dim('…')}`;
+}
+
 function normalizeResumableSession(s) {
   return {
     sessionId: s.sessionId,
@@ -763,7 +786,7 @@ function renderToolResult(data, eventType = 'tool_result') {
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
   // and skip the gutter entirely.
-  if (_pendingHead && _pendingHead.callId === callId && !hasLint) {
+  if (_pendingHead && _pendingHead.callId === callId && !hasLint && !_pendingHead.head.includes('\n')) {
     const cols = process.stderr.columns || 120;
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
@@ -2094,11 +2117,12 @@ async function handleCommand(input, ctx) {
 
         const renderMenu = () => {
           if (renderedLines > 0) {
-            process.stderr.write(`\x1b[${renderedLines}A\x1b[0J`);
+            process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
           }
           if (selected < offset) offset = selected;
           if (selected >= offset + pageSize) offset = selected - pageSize + 1;
 
+          const cols = Math.max(40, process.stderr.columns || 120);
           const lines = [];
           const end = Math.min(offset + pageSize, resumable.length);
           for (let i = offset; i < end; i++) {
@@ -2108,10 +2132,10 @@ async function handleCommand(input, ctx) {
             const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
             const marker = i === selected ? c.brand('›') : ' ';
             const num = `[${String(i + 1).padStart(numWidth, ' ')}]`;
-            lines.push(`  ${marker} ${c.dim(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}`);
+            lines.push(fitAnsiLine(`  ${marker} ${c.dim(num)} ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}`, cols - 1));
           }
           lines.push('');
-          lines.push(`  ${c.dim(`↑↓ move  ·  PgUp/PgDn scroll  ·  Enter resume  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`);
+          lines.push(fitAnsiLine(`  ${c.dim(`↑↓ move  ·  PgUp/PgDn scroll  ·  Enter resume  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`, cols - 1));
           process.stderr.write(lines.join('\n') + '\n');
           renderedLines = lines.length;
         };

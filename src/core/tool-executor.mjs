@@ -9,7 +9,7 @@
  */
 
 import { createToolRegistry } from '../tools/registry.mjs';
-import { filterOutput } from './output-filter.mjs';
+import { detectCommandType, filterOutput } from './output-filter.mjs';
 import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
 import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
@@ -49,6 +49,43 @@ export function createToolExecutor({
 
     function commandCwd(args = {}) {
         return resolvePath(args.cwd || null, args);
+    }
+
+    function longRunningObservationTimeoutMs() {
+        const configured = Number(process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS);
+        return Number.isFinite(configured) && configured > 0 ? configured : 15_000;
+    }
+
+    function isLikelyLongRunningCommand(command) {
+        const cmd = String(command || '').trim();
+        if (!cmd) return false;
+        if (/^(?:timeout|gtimeout)\s+\S+\s+/i.test(cmd)) return false;
+        if (/(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b/i.test(cmd)) return true;
+        if (/(?:^|[;&|]\s*)(?:vite|next|nuxt|astro|webpack-dev-server)\b/i.test(cmd)) return true;
+        if (/\b(?:uvicorn|gunicorn|flask\s+run|rails\s+server|bin\/rails\s+server|django-admin\s+runserver|manage\.py\s+runserver)\b/i.test(cmd)) return true;
+        if (/\b(?:python|python3)\s+-m\s+http\.server\b/i.test(cmd)) return true;
+        if (/\bnode\b[\s\S]*(?:setInterval|\.listen\s*\(|createServer\s*\()/i.test(cmd)) return true;
+        if (/\b(?:docker\s+compose|docker-compose)\s+up\b(?![\s\S]*\s-d\b)/i.test(cmd)) return true;
+        if (/\btail\s+-f\b/i.test(cmd)) return true;
+        if (/\b(?:--watch|watch)\b/i.test(cmd)) return true;
+        return false;
+    }
+
+    function limitTail(text, maxChars = 8000) {
+        const value = String(text || '');
+        if (value.length <= maxChars) return value;
+        return `... (tail truncated)\n${value.slice(value.length - maxChars)}`;
+    }
+
+    function formatObservationTimeoutOutput(rawOutput, timeoutMs) {
+        const tail = String(rawOutput || '')
+            .replace(/^Error:\s*Command timed out after \d+ms\s*/i, '')
+            .trim();
+        const body = tail || '(no output captured before timeout)';
+        return limitTail(
+            `Observation timeout after ${timeoutMs}ms for a likely long-running command. ` +
+            `The process was stopped after collecting the output tail.\n${body}`
+        );
     }
 
     function updateProjectIndex(filePath) {
@@ -217,20 +254,31 @@ export function createToolExecutor({
                 }
             }
 
+            const observationTimeout = args.timeout == null && isLikelyLongRunningCommand(args.command);
+            const effectiveTimeout = observationTimeout ? longRunningObservationTimeoutMs() : args.timeout;
             const result = await occRegistry.call('Bash', {
                 command: args.command,
-                timeout: args.timeout,
+                timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
                 cwd,
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
+            const timedOut = /^Error:\s*Command timed out after \d+ms/i.test(rawOutput);
             const exitMatch = rawOutput.match(/Exit code: (\d+)/);
-            const exitCode = exitMatch ? parseInt(exitMatch[1]) : 0;
+            const exitCode = timedOut ? 124 : (exitMatch ? parseInt(exitMatch[1]) : 0);
             // Semantic exit code: grep returns 1 for "no matches" (not an error)
-            const success = !isExitCodeError(args.command, exitCode);
+            const success = observationTimeout && timedOut ? true : (!timedOut && !isExitCodeError(args.command, exitCode));
 
             // Apply smart filtering based on command type
-            const filtered = filterOutput(rawOutput, args.command, success);
+            const filtered = observationTimeout && timedOut
+                ? {
+                    output: formatObservationTimeoutOutput(rawOutput, effectiveTimeout),
+                    commandType: detectCommandType(args.command),
+                    truncated: false,
+                    originalLines: rawOutput.split('\n').length,
+                    filteredLines: rawOutput.split('\n').length,
+                }
+                : filterOutput(rawOutput, args.command, success);
 
             return {
                 success,
@@ -240,6 +288,9 @@ export function createToolExecutor({
                 _classification: args._classification,
                 _commandType: filtered.commandType,
                 _filtered: filtered.truncated || filtered.originalLines !== filtered.filteredLines,
+                _timed_out: timedOut,
+                _observation_timeout: observationTimeout && timedOut,
+                _observation_timeout_ms: observationTimeout && timedOut ? effectiveTimeout : undefined,
             };
         },
 
