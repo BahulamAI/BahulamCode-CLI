@@ -2829,7 +2829,44 @@ export async function startTerminalRepl() {
 
   showPrompt();
 
+  // Guard against concurrent line handlers.
+  //
+  // rl.on('line', async ...) does NOT wait for the previous async handler to
+  // complete before firing again. So a stray '\n' (from readline processing
+  // '\r\n' as two events after an interactive picker resumes it, or from a
+  // paste) can spawn a second handleCommand run while the first is still
+  // awaiting inside /resume, /login, etc. Symptom: the picker or overlay
+  // appears to render twice.
+  //
+  // Rules:
+  //   - Only one command runs at a time.
+  //   - Empty lines that arrive while a command is in flight are dropped
+  //     (they are almost always stray '\n's from raw-mode key handling).
+  //   - Non-empty lines are queued and replayed after the current command
+  //     finishes, so the user can queue up work while a long-running command
+  //     is still executing.
+  let _lineInFlight = false;
+  const _queuedLines = [];
   rl.on('line', async (line) => {
+    if (_lineInFlight) {
+      if (line && line.trim()) _queuedLines.push(line);
+      return;
+    }
+    _lineInFlight = true;
+    try {
+      await _handleLine(line);
+    } finally {
+      _lineInFlight = false;
+      if (_queuedLines.length) {
+        const next = _queuedLines.shift();
+        // Fire the next queued line asynchronously so we don't hold this
+        // finally block open while the next command runs.
+        setImmediate(() => rl.emit('line', next));
+      }
+    }
+  });
+
+  async function _handleLine(line) {
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
 
@@ -3113,7 +3150,7 @@ export async function startTerminalRepl() {
     }
 
     showPrompt();
-  });
+  }
 
   rl.on('close', async () => {
     stopSpinner();
