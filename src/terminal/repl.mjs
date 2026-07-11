@@ -289,7 +289,7 @@ async function pickResumableSession(resumable, ctx) {
 
 /**
  * PRD-068 §5.14.4 — tri-choice overlay shown only when projected ctx > highWatermark.
- * Returns 'full' | 'recap+tail' | 'summary' | null (cancel).
+ * Returns 'full' | 'summary' | 'tail-10' | 'tail-20' | null (cancel).
  */
 async function chooseThresholdMode(ctx, decision) {
   if (!process.stdin.isTTY) return decision.defaultChoice;
@@ -298,11 +298,13 @@ async function chooseThresholdMode(ctx, decision) {
 
   const canFull = decision.mode !== 'no-full-allowed';
   const options = [
-    { key: 'f', value: 'full',        label: 'full transcript',                enabled: canFull },
-    { key: 'r', value: 'recap+tail',  label: 'recap + tail (last 8 msgs)',    enabled: true },
-    { key: 's', value: 'summary',     label: 'summary only',                   enabled: true },
+    { key: 'f', value: 'full',    label: 'full transcript', enabled: canFull },
+    { key: 's', value: 'summary', label: 'summary only',    enabled: true },
+    { key: '1', value: 'tail-10', label: 'last 10 turns',   enabled: true },
+    { key: '2', value: 'tail-20', label: 'last 20 turns',   enabled: true },
   ];
-  let selected = options.findIndex(o => o.enabled);
+  let selected = options.findIndex(o => o.value === decision.defaultChoice && o.enabled);
+  if (selected < 0) selected = options.findIndex(o => o.enabled);
 
   return await new Promise((resolve) => {
     const wasRaw = process.stdin.isRaw;
@@ -332,7 +334,7 @@ async function chooseThresholdMode(ctx, decision) {
         lines.push(fitAnsiLine(`  ${marker} ${keyTag} ${label.padEnd(30, ' ')} ${projCol}${suffix}`, cols - 1));
       }
       lines.push('');
-      lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/r/s shortcut  ·  Esc cancel')}`, cols - 1));
+      lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/s/1/2 shortcut  ·  Esc cancel')}`, cols - 1));
       process.stderr.write(lines.join('\n') + '\n');
       renderedLines = lines.length;
     };
@@ -344,7 +346,8 @@ async function chooseThresholdMode(ctx, decision) {
       resolve(value);
     };
     const onData = (data) => {
-      const key = data.toString('utf8').toLowerCase();
+      const key = data.toString('utf8');
+      const low = key.toLowerCase();
       if (key === '' || key === '') { cleanup(null); return; }
       if (key === '\r' || key === '\n') { cleanup(options[selected]?.value || null); return; }
       if (key === '[A') {
@@ -357,7 +360,7 @@ async function chooseThresholdMode(ctx, decision) {
         return;
       }
       for (let i = 0; i < options.length; i++) {
-        if (options[i].key === key && options[i].enabled) { cleanup(options[i].value); return; }
+        if (options[i].key === low && options[i].enabled) { cleanup(options[i].value); return; }
       }
     };
 
@@ -394,7 +397,7 @@ async function previewResumeSession(session, ctx) {
       const cols = Math.max(60, process.stderr.columns || 120);
       const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
       const contentLines = (history.summary || '').split('\n');
-      // For recap+tail / full, also append serialized tail so preview reflects
+      // For tail/full modes, also append serialized tail so preview reflects
       // what the agent will actually receive.
       if (mode !== 'summary') {
         contentLines.push('', c.dim('── conversation tail ──'));
@@ -413,7 +416,7 @@ async function previewResumeSession(session, ctx) {
         lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
       }
       lines.push('');
-      lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/r/s switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
+      lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/s/1/2 switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
       process.stderr.write(lines.join('\n') + '\n');
       renderedLines = lines.length;
     };
@@ -434,8 +437,9 @@ async function previewResumeSession(session, ctx) {
       if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
       if (key === '[6~') { scrollOffset += 10; render(); return; }
       if (low === 'f') { mode = 'full'; history = rich(); scrollOffset = 0; render(); return; }
-      if (low === 'r') { mode = 'recap+tail'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === '1') { mode = 'tail-10'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === '2') { mode = 'tail-20'; history = rich(); scrollOffset = 0; render(); return; }
     };
 
     process.stdin.setRawMode(true);
@@ -536,8 +540,12 @@ function renderResumePreview(resumed) {
   }
 
   if (resumed.replayEvents?.length) {
-    const replayEvents = filterResumeReplayEvents(resumed.replayEvents);
-    const userTurns = (resumed.history || []).filter(m => m.role === 'user');
+    const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
+    const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
+      .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
+    const userTurns = (resumed.history || [])
+      .filter(m => m.role === 'user')
+      .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
     const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
     process.stderr.write(`\n  ${c.bold('Replayed Live Session Events')} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
@@ -577,6 +585,22 @@ function renderResumePreview(resumed) {
       title: 'Replayed Session History',
     });
   }
+}
+
+function replayStartOrderForMode(history = [], mode = '') {
+  const match = String(mode || '').match(/^tail-(\d+)$/);
+  if (!match) return null;
+  const wanted = Math.max(1, Number(match[1]) || 1);
+  let seen = 0;
+  const userTurns = history.filter(m => m.role === 'user' && typeof m.content === 'string');
+  for (let i = userTurns.length - 1; i >= 0; i--) {
+    seen++;
+    if (seen >= wanted) {
+      const order = Number(userTurns[i].order);
+      return Number.isFinite(order) ? order : null;
+    }
+  }
+  return null;
 }
 
 function filterResumeReplayEvents(events = []) {
@@ -2477,12 +2501,14 @@ async function handleCommand(input, ctx) {
 
     case '/resume': {
       // PRD-068 §5.14: one-prompt picker, context-length driven auto-decision,
-      // direct-resume mode flags (--full, --recap, --summary).
+      // direct-resume mode flags (--full, --tail10, --tail20, --summary).
       const parts = input.split(/\s+/).filter(Boolean);
-      const forcedFlag = parts.find(p => /^(--full|--recap|--summary|-f|-r|-s)$/.test(p));
+      const forcedFlag = parts.find(p => /^(--full|--tail10|--tail20|--recap|--summary|-f|-1|-2|-r|-s)$/.test(p));
       const forcedMode = forcedFlag
         ? ({ '--full': 'full', '-f': 'full',
-             '--recap': 'recap+tail', '-r': 'recap+tail',
+             '--tail10': 'tail-10', '-1': 'tail-10',
+             '--tail20': 'tail-20', '-2': 'tail-20',
+             '--recap': 'tail-20', '-r': 'tail-20',
              '--summary': 'summary', '-s': 'summary' })[forcedFlag]
         : null;
       const targetId = parts.slice(1).find(p => !p.startsWith('-'));
@@ -2594,9 +2620,10 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      // 5. Show continuity context. Full mode uses the captured kepler_event
-      //    stream when available so the terminal replay matches the original
-      //    styled interaction; older sessions fall back to reconstructed text.
+      // 5. Show continuity context. Non-summary modes use the captured
+      //    kepler_event stream when available so the terminal replay matches
+      //    the original styled interaction; older sessions fall back to
+      //    reconstructed text.
       if (mode === 'summary' && resumed.summary) {
         // In summary mode the agent gets only the summary block. Show it so
         // the user knows what continuity context was included.
@@ -2606,16 +2633,16 @@ async function handleCommand(input, ctx) {
           process.stderr.write(`  ${c.dim(line)}\n`);
         }
         process.stderr.write('\n');
-      } else if (mode === 'full' && resumed.replayEvents?.length) {
+      } else if (resumed.replayEvents?.length) {
         renderResumePreview(resumed);
       } else if (resumed.history?.length) {
-        // full and recap+tail both feed real conversation to the agent — show
+        // Full/tail modes feed real conversation to the agent — show
         // the tail so the user has visual context. Cap at 30 entries to avoid
         // flooding the terminal on long sessions.
         renderHistoryEntries(resumed.history, {
           limit: 30,
           maxChars: 200,
-          title: mode === 'recap+tail' ? 'Recent conversation (last 30 entries)' : 'Conversation history (last 30 entries)',
+          title: mode?.startsWith('tail-') ? `Recent turns (${mode.replace('tail-', 'last ')})` : 'Conversation history (last 30 entries)',
         });
       }
       return;

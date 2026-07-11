@@ -49,7 +49,7 @@ export function modelContextWindow(model) {
  * @param {number} [args.systemOverhead]  — override system overhead (defaults to 4k)
  * @returns {{
  *   mode:          'full' | 'ask' | 'no-full-allowed',
- *   defaultChoice: 'full' | 'recap+tail' | 'summary',
+ *   defaultChoice: 'full' | 'tail-20' | 'summary',
  *   projected:     number,   // total projected tokens
  *   windowSize:    number,   // model window
  *   usageRatio:    number,   // projected / windowSize
@@ -59,7 +59,7 @@ export function modelContextWindow(model) {
  *
  * `mode = 'full'`             — resume immediately in full mode; do not prompt
  * `mode = 'ask'`              — show the tri-choice overlay
- * `mode = 'no-full-allowed'`  — above hardCap; user must pick recap+tail or summary
+ * `mode = 'no-full-allowed'`  — above hardCap; user must pick a tail mode or summary
  */
 export function decideResumeMode({
   transcriptTokens,
@@ -79,8 +79,8 @@ export function decideResumeMode({
   let defaultChoice;
   if (usageRatio > hardCap) {
     mode = 'no-full-allowed';
-    // Above hardCap — recap+tail is usually the least-lossy fit; user picks.
-    defaultChoice = 'recap+tail';
+    // Above hardCap — last 20 turns is usually the least-lossy fit; user picks.
+    defaultChoice = 'tail-20';
   } else if (usageRatio > highWatermark) {
     mode = 'ask';
     defaultChoice = 'full';
@@ -104,17 +104,16 @@ export function decideResumeMode({
  * Estimate the context tokens for a candidate mode. Used by the tri-choice
  * overlay to render "62k / 14k / 2k" per option before the user commits.
  *
- * @param {'full' | 'recap+tail' | 'summary'} choice
+ * @param {'full' | 'summary' | 'tail-10' | 'tail-20' | 'recap+tail'} choice
  * @param {number} fullTokens — projected transcript size in full mode
  * @param {object} [opts]
  * @returns {number} projected tokens for the chosen mode
  */
 export function projectedTokensForChoice(choice, fullTokens, opts = {}) {
   const {
-    recapTailTailTurns = 8,
-    // Rough per-turn estimate — 8 turns of dialogue is usually ~2-4k tokens.
-    // Recap block is ~1-2k. Being generous keeps the picker honest.
-    recapBaseTokens = 2000,
+    tailTurns = null,
+    // Rough per-turn estimate. Summary block is ~1-2k.
+    tailBaseTokens = 2000,
     perTailTurnTokens = 500,
     summaryBaseTokens = 2000,
   } = opts;
@@ -122,8 +121,12 @@ export function projectedTokensForChoice(choice, fullTokens, opts = {}) {
   switch (choice) {
     case 'full':
       return Math.max(0, Number(fullTokens) || 0);
+    case 'tail-10':
+      return tailBaseTokens + (10 * perTailTurnTokens);
+    case 'tail-20':
+      return tailBaseTokens + (20 * perTailTurnTokens);
     case 'recap+tail':
-      return recapBaseTokens + (recapTailTailTurns * perTailTurnTokens);
+      return tailBaseTokens + ((Number(tailTurns) || 8) * perTailTurnTokens);
     case 'summary':
       return summaryBaseTokens;
     default:

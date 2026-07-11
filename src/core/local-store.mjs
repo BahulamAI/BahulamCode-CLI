@@ -509,23 +509,17 @@ export function buildResumeHistory(detail, mode = 'compact') {
   ].filter(Boolean);
   const summary = summaryLines.join('\n');
 
-  // PRD-068 §5.14.4: three-way mode picker.
+  // PRD-068 §5.14.4: resume mode picker.
   //   'full'       — every turn sent verbatim (unchanged)
-  //   'recap+tail' — recap block as system prime + last N raw messages so the
-  //                  agent has real conversation to reference for the recent
-  //                  work. Best default when full won't fit.
+  //   'tail-N'     — recap block as system prime + last N user turns so the
+  //                  agent has real recent conversation to reference.
   //   'summary'    — recap block only. Cheapest continuity, biggest lossiness.
   let agentHistory;
   if (mode === 'full') {
     agentHistory = fullAgentHistory;
-  } else if (mode === 'recap+tail') {
-    const tailTurns = Number.isFinite(Number(detail.recapTailTurns))
-      ? Number(detail.recapTailTurns)
-      : 8;
-    // Keep the last `tailTurns` entries from the FULL history. This means
-    // real assistant messages + tool_use / tool_result markers, matching how
-    // the agent expects to see prior conversation.
-    const tail = fullAgentHistory.slice(-tailTurns);
+  } else if (mode === 'recap+tail' || /^tail-\d+$/.test(String(mode || ''))) {
+    const tailTurns = tailTurnsForMode(mode, detail);
+    const tail = tailHistoryByUserTurns(fullAgentHistory, tailTurns);
     agentHistory = [{ role: 'user', content: summary }, ...tail];
   } else {
     // 'summary' (was 'compact' — renamed per PRD-068 §5.14.4)
@@ -544,6 +538,36 @@ export function buildResumeHistory(detail, mode = 'compact') {
       toolResults,
     },
   };
+}
+
+function tailTurnsForMode(mode, detail) {
+  const match = String(mode || '').match(/^tail-(\d+)$/);
+  if (match) return Math.max(1, Number(match[1]) || 1);
+  return Number.isFinite(Number(detail?.recapTailTurns))
+    ? Math.max(1, Number(detail.recapTailTurns))
+    : 8;
+}
+
+function isUserPromptHistoryMessage(message) {
+  if (message?.role !== 'user') return false;
+  const content = String(message.content || '');
+  return !content.startsWith('[tool_result]') &&
+         !content.startsWith('Session continuity summary');
+}
+
+function tailHistoryByUserTurns(history, turns) {
+  const list = Array.isArray(history) ? history : [];
+  let seen = 0;
+  let start = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!isUserPromptHistoryMessage(list[i])) continue;
+    seen++;
+    if (seen >= turns) {
+      start = i;
+      break;
+    }
+  }
+  return list.slice(start);
 }
 
 export function getTranscriptProjectRoots(detail) {

@@ -164,6 +164,50 @@ await test('buildResumeHistory reconstructs display history and continuity paylo
   assert.ok(full.agentHistory.length > compact.agentHistory.length);
 });
 
+await test('buildResumeHistory tail modes keep the last N user turns', async () => {
+  const detail = {
+    entries: [
+      { role: 'user', content: 'turn 1: old request', timestamp: '2026-04-26T10:00:00.000Z', order: 0 },
+      { role: 'assistant', content: 'answer 1', timestamp: '2026-04-26T10:00:01.000Z', order: 1 },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-old', content: 'old tool result' }],
+        timestamp: '2026-04-26T10:00:02.000Z',
+        order: 2,
+      },
+      { role: 'user', content: 'turn 2: recent request', timestamp: '2026-04-26T10:00:03.000Z', order: 3 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'answer 2' },
+          { type: 'tool_use', id: 'tool-new', name: 'read_file', input: { path: 'README.md' } },
+        ],
+        timestamp: '2026-04-26T10:00:04.000Z',
+        order: 4,
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-new', content: 'recent tool result' }],
+        timestamp: '2026-04-26T10:00:05.000Z',
+        order: 5,
+      },
+      { role: 'user', content: 'turn 3: latest request', timestamp: '2026-04-26T10:00:06.000Z', order: 6 },
+      { role: 'assistant', content: 'answer 3', timestamp: '2026-04-26T10:00:07.000Z', order: 7 },
+    ],
+  };
+
+  const tail = localStore.buildResumeHistory(detail, 'tail-2');
+  const summary = tail.agentHistory[0]?.content || '';
+  const payload = tail.agentHistory.slice(1).map(m => m.content).join('\n');
+
+  assert.ok(summary.includes('Session continuity summary'));
+  assert.ok(payload.includes('turn 2: recent request'));
+  assert.ok(payload.includes('recent tool result'));
+  assert.ok(payload.includes('turn 3: latest request'));
+  assert.ok(!payload.includes('turn 1: old request'));
+  assert.ok(!payload.includes('old tool result'));
+});
+
 await test('report formatters include expected analytics sections', async () => {
   const sessions = await localStore.getRecentSessions(10);
   const stats = await localStore.getSessionStats(30);

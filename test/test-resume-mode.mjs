@@ -33,7 +33,7 @@ test('decideResumeMode: above hardCap disables full mode', () => {
     model: 'anthropic/claude-sonnet-4',   // 200k window ≈ 92%
   });
   assert.equal(d.mode, 'no-full-allowed');
-  assert.equal(d.defaultChoice, 'recap+tail');
+  assert.equal(d.defaultChoice, 'tail-20');
 });
 
 test('decideResumeMode: unknown model falls back to default context window', () => {
@@ -76,7 +76,8 @@ test('projectedTokensForChoice: mode-specific projections', () => {
   assert.equal(projectedTokensForChoice('full', 42000), 42000);
   // Both are constant estimates — same for any input
   assert.ok(projectedTokensForChoice('summary', 999999) < 10000);
-  assert.ok(projectedTokensForChoice('recap+tail', 999999) < projectedTokensForChoice('full', 999999));
+  assert.ok(projectedTokensForChoice('tail-10', 999999) < projectedTokensForChoice('tail-20', 999999));
+  assert.ok(projectedTokensForChoice('tail-20', 999999) < projectedTokensForChoice('full', 999999));
 });
 
 test('formatTokens: sub-1k, k-range, M-range', () => {
