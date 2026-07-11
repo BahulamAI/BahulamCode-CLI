@@ -45,7 +45,7 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
-import { buildResumeHistory, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
+import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
@@ -2853,7 +2853,7 @@ export async function startTerminalRepl() {
         messages: richHistory.sourceMessages,
       });
       if (backendSummary?.summary) {
-        richHistory.summary = backendSummary.summary;
+        richHistory.summary = combineResumeSummaries(richHistory.priorSummary, backendSummary.summary);
         const summaryIndex = Number.isInteger(richHistory.summaryMessageIndex)
           ? richHistory.summaryMessageIndex
           : 0;
@@ -2864,7 +2864,7 @@ export async function startTerminalRepl() {
             : 'Session continuity summary:\n';
           richHistory.agentHistory[summaryIndex] = {
             ...richHistory.agentHistory[summaryIndex],
-            content: `${prefix}${backendSummary.summary}`,
+            content: `${prefix}${richHistory.summary}`,
           };
         }
         summarySource = backendSummary.source || 'backend';
@@ -2923,6 +2923,26 @@ export async function startTerminalRepl() {
     try { await jsonlWriter.close(); } catch {}
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
     jsonlWriter.setSessionId(sessionId);
+    if (
+      historyMode !== 'full'
+      && richHistory.summary
+      && Number(richHistory.summaryCoveredMessageCount) > Number(richHistory.summaryCheckpointMessageCount || 0)
+    ) {
+      jsonlWriter.writeKeplerEvent({
+        type: 'resume_summary',
+        data: {
+          session_id: sessionId,
+          mode: historyMode,
+          mode_label: resumeModeLabel(historyMode),
+          summary: richHistory.summary,
+          summary_source: summarySource,
+          summary_warning: summaryWarning || null,
+          source_message_count: richHistory.summaryCoveredMessageCount,
+          previous_source_message_count: richHistory.summaryCheckpointMessageCount || 0,
+          full_message_count: richHistory.fullMessageCount || 0,
+        },
+      });
+    }
     jsonlWriter.writeKeplerEvent({
       type: 'resume_context',
       data: {
@@ -2934,6 +2954,8 @@ export async function startTerminalRepl() {
         summary_source: summarySource,
         summary_injected: historyMode !== 'full' && Boolean(richHistory.agentHistory?.[richHistory.summaryMessageIndex ?? 0]?.content),
         summary_warning: summaryWarning || null,
+        summary_source_message_count: richHistory.summaryCoveredMessageCount || 0,
+        previous_summary_source_message_count: richHistory.summaryCheckpointMessageCount || 0,
         project_path: savedProjectPath || safeCwd(),
       },
     });

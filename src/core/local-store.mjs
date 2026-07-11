@@ -510,6 +510,12 @@ export function buildResumeHistory(detail, mode = 'compact') {
   const summary = summaryLines.join('\n');
   const metadata = buildResumeMetadata({ detail, projectRoots, userPrompts, assistantTexts, toolCalls, toolResults, toolSummary });
   const originalRequest = userPrompts[0] || detail.meta?.firstPrompt || '';
+  const summaryCheckpoint = latestResumeSummaryCheckpoint(detail);
+  const priorSummary = String(summaryCheckpoint?.data?.summary || '').trim();
+  const summaryCheckpointMessageCount = clampMessageCount(
+    summaryCheckpoint?.data?.source_message_count,
+    fullAgentHistory.length
+  );
 
   // PRD-068 §5.14.4: resume mode picker.
   //   'full'       — every turn sent verbatim (unchanged)
@@ -519,29 +525,53 @@ export function buildResumeHistory(detail, mode = 'compact') {
   let agentHistory;
   let sourceMessages = fullAgentHistory;
   let summaryMessageIndex = -1;
+  let activeSummary = summary;
+  let summaryCoveredMessageCount = 0;
   if (mode === 'full') {
     agentHistory = fullAgentHistory;
+    summaryCoveredMessageCount = fullAgentHistory.length;
   } else if (mode === 'recap+tail' || /^tail-\d+$/.test(String(mode || ''))) {
     const tailTurns = tailTurnsForMode(mode, detail);
     const { tail, startIndex } = tailHistorySliceByRecentMessages(fullAgentHistory, tailTurns);
-    sourceMessages = fullAgentHistory.slice(0, startIndex);
-    const scopedSummary = summaryForMessages(sourceMessages, {
-      fallback: summary,
-      label: `Summary of earlier turns before the last ${tailTurns} conversation messages`,
-    });
+    const deltaStart = Math.min(summaryCheckpointMessageCount, startIndex);
+    sourceMessages = fullAgentHistory.slice(deltaStart, startIndex);
+    const deltaSummary = sourceMessages.length
+      ? summaryForMessages(sourceMessages, {
+          fallback: summary,
+          label: `Summary of earlier turns before the last ${tailTurns} conversation messages`,
+        })
+      : '';
+    activeSummary = combineResumeSummaries(priorSummary, deltaSummary)
+      || summaryForMessages(fullAgentHistory.slice(0, startIndex), {
+        fallback: summary,
+        label: `Summary of earlier turns before the last ${tailTurns} conversation messages`,
+      });
+    summaryCoveredMessageCount = Math.min(
+      fullAgentHistory.length,
+      Math.max(summaryCheckpointMessageCount, startIndex)
+    );
     agentHistory = [
       { role: 'user', content: metadata },
       { role: 'user', content: `Original user request from this resumed session:\n${originalRequest || '(unknown)'}` },
-      { role: 'user', content: scopedSummary },
+      { role: 'user', content: activeSummary },
       ...tail,
     ];
     summaryMessageIndex = 2;
   } else {
     // 'summary' (was 'compact' — renamed per PRD-068 §5.14.4)
+    sourceMessages = fullAgentHistory.slice(summaryCheckpointMessageCount);
+    const deltaSummary = priorSummary && sourceMessages.length
+      ? summaryForMessages(sourceMessages, {
+          fallback: summary,
+          label: 'New turns after the previous resume summary',
+        })
+      : '';
+    activeSummary = combineResumeSummaries(priorSummary, deltaSummary) || summary;
+    summaryCoveredMessageCount = fullAgentHistory.length;
     agentHistory = [
       { role: 'user', content: metadata },
       { role: 'user', content: `Original user request from this resumed session:\n${originalRequest || '(unknown)'}` },
-      { role: 'user', content: summary },
+      { role: 'user', content: activeSummary },
     ];
     summaryMessageIndex = 2;
   }
@@ -551,7 +581,11 @@ export function buildResumeHistory(detail, mode = 'compact') {
     agentHistory,
     sourceMessages,
     summaryMessageIndex,
-    summary,
+    summary: activeSummary,
+    priorSummary,
+    summaryCheckpointMessageCount,
+    summaryCoveredMessageCount,
+    fullMessageCount: fullAgentHistory.length,
     mode,
     stats: {
       userMessages: userPrompts.length,
@@ -560,6 +594,20 @@ export function buildResumeHistory(detail, mode = 'compact') {
       toolResults,
     },
   };
+}
+
+export function combineResumeSummaries(priorSummary, deltaSummary) {
+  const prior = String(priorSummary || '').trim();
+  const delta = String(deltaSummary || '').trim();
+  if (prior && delta) {
+    return [
+      prior,
+      '',
+      'New activity since previous summary:',
+      delta,
+    ].join('\n');
+  }
+  return prior || delta || '';
 }
 
 function buildResumeMetadata({ detail, projectRoots, userPrompts, assistantTexts, toolCalls, toolResults, toolSummary }) {
@@ -604,6 +652,26 @@ function tailHistorySliceByRecentMessages(history, turns) {
   const count = Math.max(1, Number(turns) || 1);
   const start = Math.max(0, list.length - count);
   return { tail: list.slice(start), startIndex: start };
+}
+
+function latestResumeSummaryCheckpoint(detail) {
+  const events = Array.isArray(detail?.replayEvents) ? detail.replayEvents : [];
+  let latest = null;
+  for (const item of events) {
+    const event = item?.event;
+    const data = event?.data || {};
+    if (event?.type !== 'resume_summary' || typeof data.summary !== 'string') continue;
+    if (!latest || Number(item.order ?? -1) >= Number(latest.order ?? -1)) {
+      latest = { ...item, data };
+    }
+  }
+  return latest;
+}
+
+function clampMessageCount(value, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(Math.floor(n), Math.max(0, Number(max) || 0)));
 }
 
 export function getTranscriptProjectRoots(detail) {

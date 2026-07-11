@@ -221,6 +221,73 @@ await test('buildResumeHistory tail modes summarize older messages and keep the 
   assert.ok(!summarySource.includes('recent tool result'));
 });
 
+await test('buildResumeHistory resumes summarization from the latest summary checkpoint', async () => {
+  const detail = {
+    sessionId: 'sess-checkpoint',
+    meta: { project: demoProject, firstPrompt: 'turn 1: old request' },
+    replayEvents: [
+      {
+        order: 10,
+        timestamp: '2026-04-26T10:00:02.500Z',
+        event: {
+          type: 'resume_summary',
+          data: {
+            summary: 'Previously summarized checkpoint: turn 1 and old tool result.',
+            source_message_count: 3,
+          },
+        },
+      },
+    ],
+    entries: [
+      { role: 'user', content: 'turn 1: old request', timestamp: '2026-04-26T10:00:00.000Z', order: 0 },
+      { role: 'assistant', content: 'answer 1', timestamp: '2026-04-26T10:00:01.000Z', order: 1 },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-old', content: 'old tool result' }],
+        timestamp: '2026-04-26T10:00:02.000Z',
+        order: 2,
+      },
+      { role: 'user', content: 'turn 2: middle request', timestamp: '2026-04-26T10:00:03.000Z', order: 3 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'answer 2' },
+          { type: 'tool_use', id: 'tool-new', name: 'read_file', input: { path: 'README.md' } },
+        ],
+        timestamp: '2026-04-26T10:00:04.000Z',
+        order: 4,
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-new', content: 'recent tool result' }],
+        timestamp: '2026-04-26T10:00:05.000Z',
+        order: 5,
+      },
+      { role: 'user', content: 'turn 3: latest request', timestamp: '2026-04-26T10:00:06.000Z', order: 6 },
+      { role: 'assistant', content: 'answer 3', timestamp: '2026-04-26T10:00:07.000Z', order: 7 },
+    ],
+  };
+
+  const tail = localStore.buildResumeHistory(detail, 'tail-4');
+  const summary = tail.agentHistory[tail.summaryMessageIndex]?.content || '';
+  const summarySource = tail.sourceMessages.map(m => m.content).join('\n');
+
+  assert.strictEqual(tail.summaryCheckpointMessageCount, 3);
+  assert.strictEqual(tail.summaryCoveredMessageCount, 4);
+  assert.ok(summary.includes('Previously summarized checkpoint'));
+  assert.ok(summary.includes('New activity since previous summary'));
+  assert.ok(summary.includes('turn 2: middle request'));
+  assert.ok(!summarySource.includes('turn 1: old request'));
+  assert.ok(!summarySource.includes('old tool result'));
+  assert.ok(summarySource.includes('turn 2: middle request'));
+
+  const compact = localStore.buildResumeHistory(detail, 'summary');
+  assert.strictEqual(compact.summaryCheckpointMessageCount, 3);
+  assert.strictEqual(compact.summaryCoveredMessageCount, 8);
+  assert.ok(compact.sourceMessages.map(m => m.content).join('\n').includes('answer 3'));
+  assert.ok(!compact.sourceMessages.map(m => m.content).join('\n').includes('turn 1: old request'));
+});
+
 await test('report formatters include expected analytics sections', async () => {
   const sessions = await localStore.getRecentSessions(10);
   const stats = await localStore.getSessionStats(30);
