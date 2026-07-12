@@ -64,6 +64,19 @@ function isWithin(root, candidate) {
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function uniqueValues(values) {
+    return [...new Set(values.filter(Boolean))];
+}
+
+function canonicalRoot(rootPath) {
+    const resolved = path.resolve(normalizePathInput(rootPath));
+    try {
+        return fs.realpathSync(resolved);
+    } catch {
+        return resolved;
+    }
+}
+
 function canonicalizeCandidate(candidate) {
     if (fs.existsSync(candidate)) return fs.realpathSync(candidate);
 
@@ -282,12 +295,33 @@ function _scanSkills(keplerDir) {
     } catch { return []; }
 }
 
+function defaultScratchRoots() {
+    return uniqueValues([
+        '/tmp',
+        '/private/tmp',
+        os.tmpdir(),
+        process.env.TMPDIR,
+        ...(process.env.KEPLER_SCRATCH_ROOTS || '')
+            .split(path.delimiter)
+            .map(s => s.trim())
+            .filter(Boolean),
+    ]).map(canonicalRoot);
+}
+
 export class ProjectRegistry {
     constructor() {
         this.projects = new Map();
+        this.scratchRoots = new Set(defaultScratchRoots());
         this._globalIdentity = null;
         this._globalPreferences = null;
         this._globalSkills = null;
+    }
+
+    addScratchRoot(rawPath) {
+        if (!rawPath) return null;
+        const root = canonicalRoot(rawPath);
+        this.scratchRoots.add(root);
+        return root;
     }
 
     /**
@@ -421,6 +455,23 @@ export class ProjectRegistry {
         return this.projects.get(projectIdValue) || null;
     }
 
+    projectScratchRoots() {
+        return this.resources().map(resource => path.join(resource.root, '.kepler', 'tmp'));
+    }
+
+    allowedScratchRoots() {
+        return uniqueValues([
+            ...this.scratchRoots,
+            ...this.projectScratchRoots(),
+        ]).map(canonicalRoot);
+    }
+
+    isAllowedScratchPath(filePath) {
+        const normalized = normalizePathInput(filePath);
+        const candidate = canonicalizeCandidate(path.resolve(normalized));
+        return this.allowedScratchRoots().some(root => isWithin(root, candidate));
+    }
+
     resolvePath(rawPath, projectIdValue, { allowMissing = false } = {}) {
         let root = null;
         if (projectIdValue) {
@@ -464,8 +515,12 @@ export class ProjectRegistry {
         const findContaining = (cand) => [...this.projects.values()].find(({ resource }) =>
             isWithin(resource.root, cand)
         );
+        const findScratchRoot = (cand) => this.allowedScratchRoots().find(scratchRoot =>
+            isWithin(scratchRoot, cand)
+        );
 
         let containingProject = findContaining(candidate);
+        let containingScratchRoot = containingProject ? null : findScratchRoot(candidate);
 
         // Two reasons to try the unescaped variant:
         //   (1) candidate is outside every project root (literal "Tarang\ Orca"
@@ -484,12 +539,19 @@ export class ProjectRegistry {
                     if (altProject && (allowMissing || fs.existsSync(altCandidate))) {
                         candidate = altCandidate;
                         containingProject = altProject;
+                        containingScratchRoot = null;
+                    } else {
+                        const altScratchRoot = findScratchRoot(altCandidate);
+                        if (altScratchRoot && (allowMissing || fs.existsSync(altCandidate))) {
+                            candidate = altCandidate;
+                            containingScratchRoot = altScratchRoot;
+                        }
                     }
                 } catch { /* fall through to the original error */ }
             }
         }
 
-        if (!containingProject) {
+        if (!containingProject && !containingScratchRoot) {
             throw new Error(`Path is outside registered project roots: ${rawPath}`);
         }
         if (!allowMissing && !fs.existsSync(candidate)) {

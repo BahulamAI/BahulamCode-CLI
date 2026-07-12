@@ -3,6 +3,7 @@
  */
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
+import { ProjectRegistry } from '../src/tools/project-overview.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -91,11 +92,73 @@ await test('read_file on missing file returns error', async () => {
     assert.strictEqual(result.success, false);
 });
 
+await test('read_file allows OS temp scratch files', async () => {
+    const scratchFile = path.join(os.tmpdir(), `kepler-scratch-${Date.now()}.txt`);
+    fs.writeFileSync(scratchFile, 'scratch output\n');
+    try {
+        const result = await executor.execute('read_file', { path: scratchFile });
+        assert.strictEqual(result.success, true);
+        assert.ok(result.content.includes('scratch output'));
+    } finally {
+        fs.rmSync(scratchFile, { force: true });
+    }
+});
+
+await test('read_file allows registered custom scratch roots', async () => {
+    const root = path.join(process.cwd(), '__kepler_custom_scratch__');
+    fs.mkdirSync(root, { recursive: true });
+    const scratchFile = path.join(root, 'agent-output.txt');
+    fs.writeFileSync(scratchFile, 'custom scratch output\n');
+    try {
+        const projectRegistry = new ProjectRegistry();
+        projectRegistry.addScratchRoot(root);
+        const scratchExecutor = createToolExecutor({ projectRegistry });
+        const result = await scratchExecutor.execute('read_file', { path: scratchFile });
+        assert.strictEqual(result.success, true);
+        assert.ok(result.content.includes('custom scratch output'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('read_file allows project .kepler/tmp scratch files', async () => {
+    const scratchDir = path.join(process.cwd(), '.kepler', 'tmp');
+    const scratchFile = path.join(scratchDir, `agent-output-${Date.now()}.txt`);
+    fs.mkdirSync(scratchDir, { recursive: true });
+    fs.writeFileSync(scratchFile, 'project scratch output\n');
+    try {
+        const result = await executor.execute('read_file', { path: scratchFile });
+        assert.strictEqual(result.success, true);
+        assert.ok(result.content.includes('project scratch output'));
+    } finally {
+        fs.rmSync(scratchFile, { force: true });
+    }
+});
+
 // Test 4: shell runs echo
 await test('shell runs echo', async () => {
     const result = await executor.execute('shell', { command: 'echo hello_tarang' });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes('hello_tarang'));
+});
+
+await test('shell observes likely long-running commands and returns tail', async () => {
+    const previous = process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
+    process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = '300';
+    try {
+        const result = await executor.execute('shell', {
+            command: 'node -e "console.log(\'ready_tail\'); setInterval(() => {}, 1000)"',
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result._observation_timeout, true);
+        assert.strictEqual(result._timed_out, true);
+        assert.strictEqual(result.exit_code, 124);
+        assert.ok(result.output.includes('Observation timeout after 300ms'));
+        assert.ok(result.output.includes('ready_tail'));
+    } finally {
+        if (previous == null) delete process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
+        else process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = previous;
+    }
 });
 
 // Test 5: list_files returns file array
@@ -160,13 +223,14 @@ await test('search_files passes regex alternation literally', async () => {
 });
 
 await test('multiple projects are routed explicitly and undeclared siblings stay blocked', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-registry-'));
+    const root = path.join(process.cwd(), '__kepler_project_registry_test__');
     const first = path.join(root, 'first');
     const second = path.join(root, 'second');
     const undeclared = path.join(root, 'undeclared');
-    fs.mkdirSync(first);
-    fs.mkdirSync(second);
-    fs.mkdirSync(undeclared);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(first, { recursive: true });
+    fs.mkdirSync(second, { recursive: true });
+    fs.mkdirSync(undeclared, { recursive: true });
     fs.writeFileSync(path.join(first, 'first.js'), 'export const firstValue = 1;\n');
     fs.writeFileSync(path.join(second, 'second.py'), 'def second_value():\n    return 2\n');
     fs.writeFileSync(path.join(undeclared, 'secret.txt'), 'not registered\n');

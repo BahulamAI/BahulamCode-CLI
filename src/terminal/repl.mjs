@@ -17,6 +17,7 @@
 
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -44,7 +45,10 @@ import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
-import { toolDisplayLabel } from './tool-display.mjs';
+import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
+import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
+import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
 import { term } from '../ui/term.mjs';
@@ -94,6 +98,667 @@ function safeCwd() {
   }
 }
 
+function messageCountLabel(count) {
+  return `${count} ${count === 1 ? 'message' : 'messages'}`;
+}
+
+function sessionListTimestamp(s) {
+  const value = s.updatedAt || s.startedAt;
+  return value ? new Date(value).toLocaleString() : '?';
+}
+
+function oneLineInstruction(text, max = 72) {
+  const compact = String(text || '(no instruction)').replace(/\s+/g, ' ').trim();
+  return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
+}
+
+function fitAnsiLine(text, maxColumns) {
+  const max = Math.max(1, Number(maxColumns) || 80);
+  const value = String(text || '');
+  if (stripAnsi(value).length <= max) return value;
+
+  let visible = 0;
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '\x1b') {
+      const match = value.slice(i).match(/^\x1b\[[0-9;]*m/);
+      if (match) {
+        out += match[0];
+        i += match[0].length - 1;
+        continue;
+      }
+    }
+    if (visible >= max - 1) break;
+    out += value[i];
+    visible++;
+  }
+  return `${out}${c.dim('…')}`;
+}
+
+function normalizeResumableSession(s) {
+  return {
+    sessionId: s.sessionId,
+    instruction: s.firstPrompt || s.instruction || '(no instruction)',
+    startedAt: s.startTime || s.startedAt || '',
+    updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
+    project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
+    projectPath: s.project || s.projectPath || '',
+    transcriptPath: s.filePath || s.transcriptPath || '',
+    messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
+    // PRD-068 §5.14.11 derived fields for the picker
+    endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
+    contextTokens: s.contextTokens || 0,       // projected transcript token count
+    resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
+    costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
+    partial: !!s.partial,                      // true if the transcript file was partially malformed
+    source: 'transcript',
+  };
+}
+
+async function listResumableSessions() {
+  // PRD-068 §5.14.6: JSONL is the single source of truth. The legacy
+  // per-project state-only entries never had a transcript, so they can't be
+  // replayed — silently dropping them removes a source of "picked a session
+  // and got a flat history" surprises.
+  const rich = (await getRecentSessions(Infinity)).map(normalizeResumableSession);
+  return rich.sort((a, b) => {
+    const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
+    const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
+    return bt - at;
+  });
+}
+
+// ── PRD-068 §5.14 helpers ────────────────────────────────────────────
+
+function endStatusMarker(status) {
+  switch (status) {
+    case 'completed':   return c.green('✓');
+    case 'interrupted': return c.yellow('⚠');
+    case 'errored':     return c.red('✗');
+    default:            return c.dim('·');
+  }
+}
+
+function formatSessionCost(usd) {
+  const n = Number(usd);
+  if (!Number.isFinite(n) || n <= 0) return c.dim('     ');
+  if (n < 0.01) return c.dim('<$0.01');
+  return c.dim(`$${n.toFixed(2)}`);
+}
+
+function formatResumeCheckpointStatus(session) {
+  const marker = session?.resumeSummary;
+  if (!marker || !Number(marker.sourceMessageCount)) return '';
+  const full = Number(marker.fullMessageCount) || 0;
+  const covered = Number(marker.sourceMessageCount) || 0;
+  const pct = full > 0 ? ` ${Math.min(100, Math.round((covered / full) * 100))}%` : '';
+  return c.dim(` · summarized${pct}`);
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const ago = Date.now() - t;
+  const m = Math.floor(ago / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
+}
+
+/**
+ * PRD-068 §5.14.2 — enriched one-prompt picker.
+ * Returns the picked session, `null` on cancel, or `{ action: 'preview', session }`
+ * when the user hits P.
+ */
+async function pickResumableSession(resumable, ctx) {
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  return await new Promise((resolve) => {
+    if (!process.stdin.isTTY) { resolve(null); return; }
+    const wasRaw = process.stdin.isRaw;
+    const pageSize = Math.min(10, resumable.length);
+    const numWidth = String(resumable.length).length;
+    let selected = 0;
+    let offset = 0;
+    let renderedLines = 0;
+
+    const renderMenu = () => {
+      if (renderedLines > 0) {
+        process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      }
+      if (selected < offset) offset = selected;
+      if (selected >= offset + pageSize) offset = selected - pageSize + 1;
+
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const lines = [];
+      lines.push(`  ${c.bold('Resume a session')}`);
+      lines.push('');
+      const end = Math.min(offset + pageSize, resumable.length);
+      for (let i = offset; i < end; i++) {
+        const s = resumable[i];
+        const marker = i === selected ? c.brand('▸') : ' ';
+        const num = c.dim(`[${String(i + 1).padStart(numWidth, ' ')}]`);
+        const project = (s.project || '(unknown)').padEnd(18, ' ').slice(0, 18);
+        const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
+        const status = endStatusMarker(s.endStatus);
+        const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
+        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`) + formatResumeCheckpointStatus(s);
+        const cost = formatSessionCost(s.costUsd);
+        const partial = s.partial ? c.yellow(' ⚠partial') : '';
+        const instr = oneLineInstruction(s.instruction, 48);
+        lines.push(fitAnsiLine(
+          `  ${marker} ${num} ${c.brand(project)} ${c.dim(ago)} ${status} ${c.dim(msgs)} ${ctx} ${cost}${partial}  ${c.dim(instr)}`,
+          cols - 1
+        ));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(
+        `  ${c.dim(`↑↓ move  ·  Enter resume  ·  P preview  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`,
+        cols - 1
+      ));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8');
+      if (key === '' || key === '') { cleanup(null); return; }
+      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', session: resumable[selected] }); return; }
+      if (key === 'p' || key === 'P') { cleanup({ action: 'preview', session: resumable[selected] }); return; }
+      if (key === '[A') { selected = Math.max(0, selected - 1); renderMenu(); return; }
+      if (key === '[B') { selected = Math.min(resumable.length - 1, selected + 1); renderMenu(); return; }
+      if (key === '[5~') { selected = Math.max(0, selected - pageSize); renderMenu(); return; }
+      if (key === '[6~') { selected = Math.min(resumable.length - 1, selected + pageSize); renderMenu(); return; }
+      if (key === '[H' || key === '[1~') { selected = 0; renderMenu(); return; }
+      if (key === '[F' || key === '[4~') { selected = resumable.length - 1; renderMenu(); return; }
+      if (/^[1-9]$/.test(key)) {
+        const index = Number(key) - 1;
+        if (index < resumable.length) cleanup({ action: 'resume', session: resumable[index] });
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    renderMenu();
+  });
+}
+
+/**
+ * PRD-068 §5.14.4 — tri-choice overlay shown only when projected ctx > highWatermark.
+ * Returns 'full' | 'summary' | 'tail-10' | 'tail-20' | null (cancel).
+ */
+async function chooseThresholdMode(ctx, decision) {
+  if (!process.stdin.isTTY) return decision.defaultChoice;
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  const canFull = decision.mode !== 'no-full-allowed';
+  const options = [
+    { key: 'f', value: 'full',    label: 'full transcript', enabled: canFull },
+    { key: 's', value: 'summary', label: 'summary only',    enabled: true },
+    { key: '1', value: 'tail-10', label: 'summary + last 10 turns', enabled: true },
+    { key: '2', value: 'tail-20', label: 'summary + last 20 turns', enabled: true },
+  ];
+  let selected = options.findIndex(o => o.value === decision.defaultChoice && o.enabled);
+  if (selected < 0) selected = options.findIndex(o => o.enabled);
+
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    let renderedLines = 0;
+
+    const render = () => {
+      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const pct = Math.round(decision.usageRatio * 100);
+      const projected = formatCtxTokens(decision.projected);
+      const win = formatCtxTokens(decision.windowSize);
+      const lines = [];
+      lines.push(`  This session would use  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      if (decision.resumeSummary?.sourceMessageCount) {
+        const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
+        const full = Number(decision.resumeSummary.fullMessageCount) || 0;
+        const suffix = full > 0 ? ` (${covered}/${full} resume messages)` : '';
+        lines.push(`  ${c.green('✓')} ${c.dim(`summary checkpoint available${suffix}; summary/tail modes reuse it`)}`);
+      }
+      lines.push(canFull
+        ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
+        : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
+      lines.push('');
+      for (let i = 0; i < options.length; i++) {
+        const o = options[i];
+        const disabled = !o.enabled;
+        const marker = i === selected && !disabled ? c.brand('▸') : ' ';
+        const keyTag = c.dim('[') + (disabled ? c.dim(o.key) : c.brand(o.key)) + c.dim(']');
+        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected));
+        const label = disabled ? c.dim(o.label) : (i === selected ? c.brand(o.label) : o.label);
+        const projCol = c.dim(`${proj.padStart(5, ' ')} ctx`);
+        const suffix = disabled ? c.dim('  (over hardCap)') : '';
+        lines.push(fitAnsiLine(`  ${marker} ${keyTag} ${label.padEnd(30, ' ')} ${projCol}${suffix}`, cols - 1));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/s/1/2 shortcut  ·  Esc cancel')}`, cols - 1));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8');
+      const low = key.toLowerCase();
+      if (key === '' || key === '') { cleanup(null); return; }
+      if (key === '\r' || key === '\n') { cleanup(options[selected]?.value || null); return; }
+      if (key === '[A') {
+        // step to previous enabled option
+        for (let i = selected - 1; i >= 0; i--) if (options[i].enabled) { selected = i; render(); return; }
+        return;
+      }
+      if (key === '[B') {
+        for (let i = selected + 1; i < options.length; i++) if (options[i].enabled) { selected = i; render(); return; }
+        return;
+      }
+      for (let i = 0; i < options.length; i++) {
+        if (options[i].key === low && options[i].enabled) { cleanup(options[i].value); return; }
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    render();
+  });
+}
+
+function resumeModeLabel(mode = 'full') {
+  if (mode === 'summary') return 'summary only';
+  const tailTurns = resumeTailTurnCount(mode);
+  if (tailTurns) return `summary + last ${tailTurns} turns`;
+  return mode || 'full';
+}
+
+/**
+ * PRD-068 §5.14.5 — preview overlay for a session/mode. Read-only, `q` to return.
+ * If user hits Enter, resolve to the currently-previewed mode so caller can activate.
+ */
+async function previewResumeSession(session, ctx) {
+  if (!process.stdin.isTTY) return null;
+  const detail = await getSessionDetail(session.sessionId, { filePath: session.transcriptPath });
+  if (!detail) return null;
+
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+
+  let mode = 'summary';
+  const rich = () => buildResumeHistory({ ...detail, recapTailTurns: 8 }, mode);
+  let history = rich();
+
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    let renderedLines = 0;
+    let scrollOffset = 0;
+
+    const render = () => {
+      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
+      const cols = Math.max(60, process.stderr.columns || 120);
+      const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
+      const contentLines = (history.summary || '').split('\n');
+      // For tail/full modes, also append serialized tail so preview reflects
+      // what the agent will actually receive.
+      if (mode !== 'summary') {
+        contentLines.push('', c.dim('── conversation tail ──'));
+        for (const msg of history.agentHistory.slice(1)) {
+          contentLines.push(`${msg.role === 'user' ? c.dim('You:') : c.brand('Kepler:')} ${String(msg.content).slice(0, 300)}`);
+        }
+      }
+      const totalLines = contentLines.length;
+      const maxOffset = Math.max(0, totalLines - rows);
+      if (scrollOffset > maxOffset) scrollOffset = maxOffset;
+
+      const lines = [];
+      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
+      lines.push(`  ${c.dim('─'.repeat(60))}`);
+      for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
+        lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
+      }
+      lines.push('');
+      lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/s/1/2 switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
+      process.stderr.write(lines.join('\n') + '\n');
+      renderedLines = lines.length;
+    };
+
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8');
+      const low = key.toLowerCase();
+      if (key === '' || key === '' || low === 'q') { cleanup({ action: 'back' }); return; }
+      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', mode }); return; }
+      if (key === '[A') { scrollOffset = Math.max(0, scrollOffset - 1); render(); return; }
+      if (key === '[B') { scrollOffset += 1; render(); return; }
+      if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
+      if (key === '[6~') { scrollOffset += 10; render(); return; }
+      if (low === 'f') { mode = 'full'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === '1') { mode = 'tail-10'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === '2') { mode = 'tail-20'; history = rich(); scrollOffset = 0; render(); return; }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+    render();
+  });
+}
+
+/**
+ * PRD-068 §5.14.7 — explicit cwd confirmation when the picked session lives
+ * elsewhere. Returns 'switch' | 'stay' | 'cancel'.
+ */
+async function confirmCwdSwitch(ctx, savedPath, currentPath) {
+  if (!process.stdin.isTTY) return 'switch';
+  process.stderr.write(`\n  ${c.dim('This session lives in another repo:')}\n`);
+  process.stderr.write(`  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}\n`);
+  process.stderr.write(`  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel  `);
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      process.stderr.write('\n');
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8').toLowerCase();
+      if (key === '' || key === '' || key === 'n') { cleanup('cancel'); return; }
+      if (key === '\r' || key === '\n') { cleanup('switch'); return; }
+      if (key === 's') { cleanup('stay'); return; }
+    };
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
+// Legacy prompt (kept as a fallback for callers that force compact/full explicitly).
+async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
+  if (!process.stdin.isTTY) return defaultMode;
+  process.stderr.write(`\n  ${c.dim('Load history for agent:')} ${c.brand('[c]')} ${c.dim('compact summary')}  ${c.brand('[f]')} ${c.dim('full transcript')}  ${c.dim('(Enter = compact, Esc = cancel):')} `);
+  const rl = ctx._rl || null;
+  if (rl) rl.pause();
+  return await new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw;
+    const cleanup = (value) => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw || false);
+      if (rl) rl.resume();
+      process.stderr.write('\n');
+      resolve(value);
+    };
+    const onData = (data) => {
+      const key = data.toString('utf8').toLowerCase();
+      if (key === '\u0003' || key === '\u001b') { cleanup(null); return; }
+      if (key === '\r' || key === '\n' || key === 'c') { cleanup('compact'); return; }
+      if (key === 'f') { cleanup('full'); }
+    };
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
+function historyRoleLabel(role) {
+  return role === 'user'
+    ? c.white('You')
+    : role === 'tool'
+      ? c.dim('Tool')
+      : c.brand('Kepler');
+}
+
+function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
+  const shown = limit === Infinity ? entries : entries.slice(-limit);
+  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+  for (const msg of shown) {
+    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
+    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function renderResumePreview(resumed) {
+  const tailTurns = resumeTailTurnCount(resumed.historyMode);
+  if (resumed.historyMode === 'compact' || resumed.historyMode === 'summary') {
+    if (!resumed.summary) return;
+    process.stderr.write(`\n  ${c.bold('Continuity Summary Sent To Agent')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.summary.split('\n')) {
+      process.stderr.write(`  ${c.dim(line)}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  if (tailTurns && resumed.summary) {
+    process.stderr.write(`\n  ${c.bold(`Summary + Last ${tailTurns} Turns`)}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.summary.split('\n')) {
+      process.stderr.write(`  ${c.dim(line)}\n`);
+    }
+    process.stderr.write('\n');
+  }
+
+  if (resumed.replayEvents?.length) {
+    const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
+    const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
+      .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
+    const userTurns = (resumed.history || [])
+      .filter(m => m.role === 'user')
+      .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
+    const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
+    const replayTitle = tailTurns ? `Last ${tailTurns} Turns Replay` : 'Replayed Live Session Events';
+    process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    const sessionSnapshot = JSON.parse(JSON.stringify(session));
+    const savedOrbit = _orbit;
+    const savedSessionMgr = _sessionMgr;
+    _orbit = null;
+    _sessionMgr = null;
+    try {
+      startContentStream();
+      for (const item of replayItems) {
+        if (item.kind === 'user') {
+          flushContent();
+          stopSpinner();
+          const content = String(item.message.content || '').replace(/\s+/g, ' ').trim();
+          process.stderr.write(`\n  ${historyRoleLabel('user')}: ${content}\n`);
+          continue;
+        }
+        renderEvent(item.event.event);
+      }
+      flushContent();
+      stopSpinner();
+    } finally {
+      _orbit = savedOrbit;
+      _sessionMgr = savedSessionMgr;
+      for (const key of Object.keys(session)) delete session[key];
+      Object.assign(session, sessionSnapshot);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  if (resumed.history?.length) {
+    renderHistoryEntries(resumed.history, {
+      limit: Infinity,
+      maxChars: 220,
+      title: tailTurns ? `Last ${tailTurns} Turns` : 'Replayed Session History',
+    });
+  }
+}
+
+async function summarizeResumeTranscript({
+  auth,
+  toolExecutor,
+  sessionId,
+  projectPath,
+  messages,
+}) {
+  const creds = auth?.loadCredentials?.() || {};
+  if (!creds.backendUrl || !creds.token || !Array.isArray(messages) || messages.length === 0) {
+    return {
+      ok: false,
+      source: 'local',
+      reason: !creds.backendUrl || !creds.token ? 'missing backend credentials' : 'empty transcript',
+    };
+  }
+  try {
+    const client = new TarangStreamClient({
+      baseUrl: creds.backendUrl,
+      token: creds.token,
+      toolExecutor,
+    });
+    const result = await client.summarizeSession(messages, {
+      sessionId,
+      projectPath,
+      maxTokens: 800,
+      timeoutMs: 15000,
+    });
+    return { ...result, ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      source: 'local',
+      reason: err?.message || 'backend summary request failed',
+    };
+  }
+}
+
+function resumeTailTurnCount(mode = '') {
+  const match = String(mode || '').match(/^tail-(\d+)$/);
+  if (!match) return null;
+  return Math.max(1, Number(match[1]) || 1);
+}
+
+function replayStartOrderForMode(history = [], mode = '') {
+  const match = String(mode || '').match(/^tail-(\d+)$/);
+  if (!match) return null;
+  const wanted = Math.max(1, Number(match[1]) || 1);
+  let seen = 0;
+  const userTurns = history.filter(m => m.role === 'user' && typeof m.content === 'string');
+  for (let i = userTurns.length - 1; i >= 0; i--) {
+    seen++;
+    if (seen >= wanted) {
+      const order = Number(userTurns[i].order);
+      return Number.isFinite(order) ? order : null;
+    }
+  }
+  return null;
+}
+
+function filterResumeReplayEvents(events = []) {
+  return events.filter(item => {
+    const type = item?.event?.type;
+    return !['status', 'session_info', 'complete', 'resumed', 'paused'].includes(type);
+  });
+}
+
+function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
+  const items = [];
+  let order = 0;
+  for (const message of userTurns) {
+    items.push({
+      kind: 'user',
+      message,
+      fileOrder: Number.isFinite(Number(message.order)) ? Number(message.order) : null,
+      order: order++,
+      time: Date.parse(message.timestamp || '') || 0,
+    });
+  }
+  for (const event of replayEvents) {
+    items.push({
+      kind: 'event',
+      event,
+      fileOrder: Number.isFinite(Number(event.order)) ? Number(event.order) : null,
+      order: order++,
+      time: Date.parse(event.timestamp || '') || 0,
+    });
+  }
+  return items.sort((a, b) => {
+    if (a.fileOrder !== null && b.fileOrder !== null && a.fileOrder !== b.fileOrder) {
+      return a.fileOrder - b.fileOrder;
+    }
+    if (a.fileOrder !== null && b.fileOrder === null) return -1;
+    if (a.fileOrder === null && b.fileOrder !== null) return 1;
+    const at = a.time || Number.MAX_SAFE_INTEGER;
+    const bt = b.time || Number.MAX_SAFE_INTEGER;
+    return at - bt || a.order - b.order;
+  });
+}
+
+function resumeProgressBar(percent, width = 12) {
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  const filled = Math.round((p / 100) * width);
+  return `${c.brand('█'.repeat(filled))}${c.gray('░'.repeat(width - filled))} ${String(p).padStart(3)}%`;
+}
+
+function startResumeProgress(mode = 'full') {
+  let percent = 8;
+  let label = `resuming as ${resumeModeLabel(mode)}`;
+  let active = true;
+  const started = Date.now();
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let frame = 0;
+
+  const render = () => {
+    if (!active) return;
+    const glyph = frames[frame % frames.length];
+    frame++;
+    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
+  };
+
+  render();
+  const timer = setInterval(render, 100);
+  return {
+    update(nextLabel, nextPercent) {
+      if (!active) return;
+      if (nextLabel) label = nextLabel;
+      if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
+      render();
+    },
+    stop() {
+      if (!active) return;
+      active = false;
+      clearInterval(timer);
+      inPlace('');
+    },
+  };
+}
+
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
@@ -107,7 +772,8 @@ const session = {
   toolCalls: 0,
   totalToolCalls: 0,   // across all turns
   turns: 0,
-  history: [],         // conversation messages
+  history: [],         // display transcript (can include reconstructed tool entries)
+  agentHistory: [],    // backend continuity payload (compact or full)
   inputHistory: [],    // previous prompts (for Up/Down)
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
@@ -116,6 +782,7 @@ const session = {
   phases: [],          // phase history: { name, time }
   inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
   filesChanged: [],    // files modified this session
+  filesRead: [],       // files read this turn
   lastTurnDuration: 0,
   toolCounts: {},      // per-tool histogram (mission report)
   subAgentCounts: {},  // per-sub-agent histogram (mission report)
@@ -148,6 +815,8 @@ const COMMANDS = {
   '/login':    'Sign in via browser',
   '/whoami':   'Show logged-in user',
   '/status':   'Session status & system info',
+  '/plan':     'Show plan/tasks',
+  '/tasks':    'Show or update project tasks',
   '/stats':    'Progress bars & metrics',
   '/clear':    'Clear conversation',
   '/git':      'Git status',
@@ -180,6 +849,240 @@ const COMMANDS = {
   '/logout':   'Sign out and clear credentials',
   '/exit':     'Exit CLI',
 };
+
+const HELP_GROUPS = [
+  {
+    key: 'plan',
+    title: 'Plan',
+    summary: 'plan and project tasks',
+    commands: [
+      ['/plan', 'Plan and task overview'],
+      ['/plan status', 'Plan owner and task files'],
+      ['/plan edit', 'Show editable task/plan paths'],
+      ['/tasks', 'List project tasks'],
+      ['/tasks add <text>', 'Add backlog task'],
+      ['/tasks active|blocked|done <text>', 'Append to a task list'],
+    ],
+  },
+  {
+    key: 'status',
+    title: 'Status',
+    summary: 'session, usage, budget',
+    commands: [
+      ['/status', 'Session snapshot'],
+      ['/status context', 'Loaded .kepler context'],
+      ['/status metrics', 'Progress bars and runtime metrics'],
+      ['/status cost', 'Credits and message window'],
+      ['/status budget <amount|clear>', 'Set or clear session budget'],
+    ],
+  },
+  {
+    key: 'history',
+    title: 'History',
+    summary: 'transcript, reports, undo',
+    commands: [
+      ['/history', 'Recent transcript'],
+      ['/history approvals', 'Approval log'],
+      ['/history last', 'Expand last tool output'],
+      ['/history expand [n|all]', 'Expand tool output'],
+      ['/history checkpoint', 'List checkpoints'],
+      ['/history undo', 'Restore latest checkpoint'],
+      ['/history report', 'Save mission report'],
+    ],
+  },
+  {
+    key: 'settings',
+    title: 'Settings',
+    summary: 'auth, policy, verbosity',
+    commands: [
+      ['/settings policy', 'Effective project policy'],
+      ['/settings login', 'Sign in'],
+      ['/settings logout', 'Sign out'],
+      ['/settings whoami', 'Current user'],
+      ['/settings quiet|verbose|surgical', 'Verbosity'],
+      ['/settings revoke', 'Revoke auto-approvals'],
+    ],
+  },
+  {
+    key: 'worktree',
+    title: 'Worktree',
+    summary: 'git and files',
+    commands: [
+      ['/git', 'Git status'],
+      ['/diff', 'Git diff'],
+      ['/map', 'Registered project tree'],
+      ['/preflight', 'Onboarding diagnostic'],
+      ['/safety', 'Safety guardrail status'],
+    ],
+  },
+  {
+    key: 'agents',
+    title: 'Agents',
+    summary: 'specialist modes',
+    commands: [
+      ['/agents', 'List built-in agents'],
+      ['/explore <instruction>', 'Explore code'],
+      ['/review <instruction>', 'Review code'],
+      ['/architect <instruction>', 'Design an approach'],
+    ],
+  },
+  {
+    key: 'session',
+    title: 'Session',
+    summary: 'resume and clear',
+    commands: [
+      ['/sessions', 'List resumable sessions'],
+      ['/resume [id]', 'Resume a session'],
+      ['/compact', 'Compact conversation context'],
+      ['/clear', 'Clear conversation'],
+      ['/exit', 'Exit CLI'],
+    ],
+  },
+];
+
+const HELP_GROUP_ALIASES = new Map(
+  HELP_GROUPS.flatMap(group => [[group.key, group], [group.title.toLowerCase(), group]])
+);
+
+const LEGACY_COMMAND_HINTS = {
+  '/stats': '/status metrics',
+  '/cost': '/status cost',
+  '/budget': '/status budget',
+  '/last': '/history last',
+  '/expand': '/history expand',
+  '/fold': '/history fold',
+  '/undo': '/history undo',
+  '/checkpoint': '/history checkpoint',
+  '/report': '/history report',
+  '/login': '/settings login',
+  '/logout': '/settings logout',
+  '/whoami': '/settings whoami',
+  '/quiet': '/settings quiet',
+  '/verbose': '/settings verbose',
+  '/surgical': '/settings surgical',
+  '/revoke': '/settings revoke',
+};
+
+const NAMESPACED_COMMANDS = {
+  '/status': {
+    metrics: '/stats',
+    stats: '/stats',
+    cost: '/cost',
+    credits: '/cost',
+    budget: '/budget',
+  },
+  '/history': {
+    last: '/last',
+    expand: '/expand',
+    fold: '/fold',
+    undo: '/undo',
+    checkpoint: '/checkpoint',
+    checkpoints: '/checkpoint',
+    report: '/report',
+  },
+  '/settings': {
+    login: '/login',
+    logout: '/logout',
+    whoami: '/whoami',
+    quiet: '/quiet',
+    verbose: '/verbose',
+    surgical: '/surgical',
+    revoke: '/revoke',
+  },
+};
+
+function normalizeCommandInput(input) {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const rawCmd = (parts[0] || '').toLowerCase();
+  const restParts = parts.slice(1);
+  const sub = (restParts[0] || '').toLowerCase();
+  const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
+  if (namespaced) {
+    return {
+      cmd: namespaced,
+      rest: restParts.slice(1).join(' '),
+      rawCmd,
+      aliasTarget: null,
+    };
+  }
+  return {
+    cmd: rawCmd,
+    rest: restParts.join(' '),
+    rawCmd,
+    aliasTarget: LEGACY_COMMAND_HINTS[rawCmd] || null,
+  };
+}
+
+function renderHelp(topic = '') {
+  const key = String(topic || '').trim().toLowerCase();
+  if (!key) {
+    process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    const top = [
+      ['/help', 'Grouped command help'],
+      ['/status', 'Session snapshot'],
+      ['/plan', 'Task list and plan'],
+      ['/tasks', 'Project task files'],
+      ['/history', 'Transcript, approvals, undo'],
+      ['/settings', 'Policy, auth, verbosity'],
+      ['/why', 'Explain last reasoning'],
+    ];
+    for (const [name, desc] of top) {
+      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
+    }
+    process.stderr.write(`\n  ${c.bold('Categories')}\n`);
+    for (const group of HELP_GROUPS) {
+      process.stderr.write(`  ${c.brand(('/help ' + group.key).padEnd(20))} ${c.dim(group.summary)}\n`);
+    }
+    process.stderr.write(`\n  ${c.dim('Use /help all for legacy command aliases.')}\n`);
+    renderKeyboardHelp();
+    return;
+  }
+
+  if (key === 'all' || key === 'commands') {
+    process.stderr.write(`\n  ${c.bold('All Commands')}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    for (const [name, desc] of Object.entries(COMMANDS)) {
+      const alias = LEGACY_COMMAND_HINTS[name] ? c.dim(`  alias for ${LEGACY_COMMAND_HINTS[name]}`) : '';
+      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}${alias}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  const group = HELP_GROUP_ALIASES.get(key);
+  if (!group) {
+    process.stderr.write(`  ${c.gray(`Unknown help category: ${key}. Use /help.`)}\n`);
+    return;
+  }
+
+  process.stderr.write(`\n  ${c.bold(group.title)} ${c.dim(group.summary)}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+  for (const [name, desc] of group.commands) {
+    process.stderr.write(`  ${c.brand(name.padEnd(30))} ${desc}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function renderKeyboardHelp() {
+  process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
+  process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
+  process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+}
+
+function commandCompletions(line) {
+  if (line.startsWith('/help ')) {
+    const topic = line.slice('/help '.length).toLowerCase();
+    const categories = ['all', ...HELP_GROUPS.map(g => g.key)];
+    const hits = categories.map(c => `/help ${c}`).filter(cmd => cmd.startsWith(`/help ${topic}`));
+    return hits.length ? hits : categories.map(c => `/help ${c}`);
+  }
+  const top = ['/help', '/status', '/plan', '/tasks', '/history', '/settings', '/why'];
+  const namespaced = HELP_GROUPS.flatMap(g => g.commands.map(([name]) => name.split(/\s+/)[0]));
+  const all = [...new Set([...top, ...namespaced, ...Object.keys(COMMANDS), '/quit'])].sort();
+  const hits = all.filter(cmd => cmd.startsWith(line));
+  return hits.length ? hits : all;
+}
 
 // ── Banner ──
 
@@ -365,6 +1268,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   const tool = data.tool || data._tool || '';
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+  recordReadActivity(tool, data.args || {});
 
   // Update the card buffer so /last and `d` can find it.
   if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
@@ -389,7 +1293,7 @@ function renderToolResult(data, eventType = 'tool_result') {
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
   // and skip the gutter entirely.
-  if (_pendingHead && _pendingHead.callId === callId && !hasLint) {
+  if (_pendingHead && _pendingHead.callId === callId && !hasLint && !_pendingHead.head.includes('\n')) {
     const cols = process.stderr.columns || 120;
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
@@ -459,6 +1363,31 @@ function shortPath(p) {
   // Show last 2 segments
   const parts = p.split('/');
   return parts.length > 2 ? parts.slice(-2).join('/') : p;
+}
+
+function rememberReadFile(filePath) {
+  const file = shortPath(String(filePath || '').trim());
+  if (file && !session.filesRead.includes(file)) session.filesRead.push(file);
+}
+
+function recordReadActivity(tool, args = {}) {
+  const normalized = String(tool || '').toLowerCase();
+  if (normalized === 'read_file' || normalized === 'read') {
+    rememberReadFile(args.file_path || args.path);
+    return;
+  }
+  if (normalized === 'read_files') {
+    const files = args.file_paths || args.paths || args.files || [];
+    for (const file of Array.isArray(files) ? files : []) {
+      rememberReadFile(typeof file === 'string' ? file : file?.file_path || file?.path);
+    }
+  }
+}
+
+function thinkingKind(text) {
+  return /\b(read|reading|inspect|scan|search|open|trace|look(?:ing)?\s+at)\b/i.test(text)
+    ? 'Reading'
+    : 'Thinking';
 }
 
 // ── Live Spinner ──
@@ -563,7 +1492,7 @@ function renderEvent(event) {
         if (text.length > 12 && text !== session._lastEmittedThinking) {
           flushPendingHead();
           stopSpinner();
-          process.stderr.write(`  ${c.italic(c.dim(text.slice(0, 200)))}\n`);
+          process.stderr.write(`  ${c.dim(thinkingKind(text) + ' · ')}${c.italic(c.dim(text.slice(0, 200)))}\n`);
           session._lastEmittedThinking = text;
         }
         startSpinner(text.slice(0, 80));
@@ -622,8 +1551,17 @@ function renderEvent(event) {
     }
 
     case 'approval_granted': {
-      // approval.mjs _prompt already rendered the result line for human approvals.
-      // Nothing extra needed here — avoid duplicate output.
+      // Human approvals are rendered by approval.mjs. Auto-read grants are
+      // otherwise invisible, so show one dim confirmation before the tool card.
+      const scope = data?.grant_scope || data?.scope || '';
+      if (scope === 'auto_read') {
+        const toolName = data?.tool || data?.tool_name || '';
+        const args = data?.args || data?.input || {};
+        const summary = toolDisplaySummary(toolName, args);
+        const label = toolDisplayLabel(toolName);
+        const subject = summary ? `${label} ${summary}` : label;
+        process.stderr.write(`  ${c.green('✓')} ${c.dim(`${subject} · auto-approved read`)}\n`);
+      }
       break;
     }
 
@@ -916,6 +1854,7 @@ function renderEvent(event) {
           task: session.lastTask,
           success: successOverall,
           filesChanged: session.filesChanged,
+          filesRead: session.filesRead,
           toolCounts: session.toolCounts,
           subAgents: { ...session.subAgentCounts, savedUsd: 0 },
           costUsd: null,
@@ -959,22 +1898,194 @@ function renderEvent(event) {
 
 // ── Slash Commands ──
 
+function taskListLabel(list) {
+  return {
+    active: 'Active',
+    backlog: 'Backlog',
+    blocked: 'Blocked',
+    done: 'Done',
+  }[list] || list;
+}
+
+function firstMeaningfulLines(content, limit = 6) {
+  return String(content || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .slice(0, limit);
+}
+
+function renderTaskBoard(board, { showDone = false } = {}) {
+  const order = showDone
+    ? ['active', 'blocked', 'backlog', 'done']
+    : ['active', 'blocked', 'backlog'];
+  let any = false;
+  for (const list of order) {
+    const tasks = board.lists[list]?.tasks || [];
+    if (!tasks.length) continue;
+    any = true;
+    process.stderr.write(`\n  ${c.bold(taskListLabel(list))} ${c.dim(board.lists[list].fileName)}\n`);
+    for (const task of tasks.slice(0, 12)) {
+      const marker = task.checked ? c.green('[x]') : c.dim('[ ]');
+      const section = task.section && task.section !== taskListLabel(list) ? c.dim(` · ${task.section}`) : '';
+      process.stderr.write(`  ${marker} ${task.text}${section}\n`);
+    }
+    if (tasks.length > 12) {
+      process.stderr.write(`  ${c.dim(`+${tasks.length - 12} more`)}\n`);
+    }
+  }
+  if (!any) {
+    process.stderr.write(`  ${c.dim('No project tasks yet. Add one with /tasks add <text>.')}\n`);
+  }
+}
+
+function renderPlanOverview({ ctx, mode = 'overview' } = {}) {
+  const cwd = safeCwd();
+  ensureTaskFiles({ cwd });
+  const board = loadTaskBoard({ cwd });
+  const counts = taskCounts(board);
+  const planLines = firstMeaningfulLines(board.plan.content, 8);
+  const goalLines = firstMeaningfulLines(board.goal.content, 3);
+  const effective = ctx.effectivePolicy || loadEffectivePolicy({ cwd });
+  const owner = effective.policy?.planning?.owner || 'auto';
+
+  process.stderr.write(`\n  ${c.bold('Plan')}\n`);
+  process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+  process.stderr.write(`  ${c.dim('Owner')}       ${c.brand(owner)}\n`);
+  process.stderr.write(`  ${c.dim('Tasks')}       ${counts.active} active, ${counts.blocked} blocked, ${counts.backlog} backlog, ${counts.done} done\n`);
+  if (mode === 'status') {
+    process.stderr.write(`  ${c.dim('Plan file')}   ${board.plan.exists ? board.plan.path : c.dim('(none)')}\n`);
+    process.stderr.write(`  ${c.dim('Tasks dir')}   ${board.dir}\n`);
+  }
+
+  if (goalLines.length) {
+    process.stderr.write(`\n  ${c.bold('Goal')}\n`);
+    for (const line of goalLines) process.stderr.write(`  ${line}\n`);
+  }
+  if (planLines.length) {
+    process.stderr.write(`\n  ${c.bold('Current Plan')}\n`);
+    for (const line of planLines) process.stderr.write(`  ${line}\n`);
+  }
+
+  renderTaskBoard(board, { showDone: mode === 'status' });
+  process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|blocked|done <text>')}\n\n`);
+}
+
+function refreshTaskContext(ctx) {
+  try {
+    const previous = ctx.latestProjectContext || null;
+    ctx.latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous });
+    ctx.latestEnvelope = null;
+  } catch { /* best effort */ }
+}
+
+function handleTasksCommand(rest, ctx) {
+  const raw = String(rest || '').trim();
+  ensureTaskFiles({ cwd: safeCwd() });
+  if (!raw || raw === 'list') {
+    const board = loadTaskBoard({ cwd: safeCwd() });
+    process.stderr.write(`\n  ${c.bold('Tasks')}\n`);
+    process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
+    renderTaskBoard(board, { showDone: true });
+    process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|backlog|blocked|done <text>')}\n\n`);
+    return;
+  }
+
+  if (raw === 'help') {
+    renderHelp('plan');
+    return;
+  }
+
+  const parts = raw.split(/\s+/);
+  let verb = (parts.shift() || '').toLowerCase();
+  let list = 'backlog';
+  if (verb === 'add' || verb === 'new') {
+    const maybeList = (parts[0] || '').toLowerCase();
+    if (maybeList in TASK_FILES || ['todo', 'pending', 'current', 'doing', 'complete', 'completed'].includes(maybeList)) {
+      list = parts.shift();
+    }
+  } else if (verb in TASK_FILES || ['todo', 'pending', 'current', 'doing', 'complete', 'completed'].includes(verb)) {
+    list = verb;
+  } else {
+    parts.unshift(verb);
+    verb = 'add';
+  }
+
+  try {
+    const result = appendTask({ cwd: safeCwd(), list, text: parts.join(' ') });
+    refreshTaskContext(ctx);
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`added to ${result.list}`)} ${result.text}\n`);
+  } catch (err) {
+    process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+  }
+}
+
 async function handleCommand(input, ctx) {
-  const parts = input.split(/\s+/);
-  const cmd = parts[0].toLowerCase();
-  const rest = parts.slice(1).join(' ');
+  const { cmd, rest, aliasTarget } = normalizeCommandInput(input);
+  if (aliasTarget) {
+    process.stderr.write(`  ${c.dim(`Legacy alias: use ${aliasTarget}`)}\n`);
+  }
 
   switch (cmd) {
-    case '/help':
-      process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-      for (const [name, desc] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
-      }
-      process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
-      process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
-      process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+    case '/help': {
+      renderHelp(rest);
       return;
+    }
+
+    case '/plan': {
+      const mode = rest.trim().toLowerCase();
+      if (mode === 'help') {
+        renderHelp('plan');
+        return;
+      }
+      if (mode === 'edit') {
+        ensureTaskFiles({ cwd: safeCwd() });
+        const board = loadTaskBoard({ cwd: safeCwd() });
+        process.stderr.write(`\n  ${c.bold('Editable Plan Files')}\n`);
+        process.stderr.write(`  ${c.dim('Plan')}      ${board.plan.path}\n`);
+        process.stderr.write(`  ${c.dim('Active')}    ${board.lists.active.path}\n`);
+        process.stderr.write(`  ${c.dim('Backlog')}   ${board.lists.backlog.path}\n`);
+        process.stderr.write(`  ${c.dim('Blocked')}   ${board.lists.blocked.path}\n`);
+        process.stderr.write(`  ${c.dim('Done')}      ${board.lists.done.path}\n\n`);
+        return;
+      }
+      renderPlanOverview({ ctx, mode: mode === 'status' ? 'status' : 'overview' });
+      return;
+    }
+
+    case '/tasks':
+      handleTasksCommand(rest, ctx);
+      return;
+
+    case '/history': {
+      if (rest.trim() === 'fold') {
+        process.stderr.write(`  ${c.gray('Output is folded by default — there is nothing to hide. Use /history last or d to expand.')}\n`);
+        return;
+      }
+      if (rest.trim() === 'help') {
+        renderHelp('history');
+        return;
+      }
+      if (rest.trim() === 'approvals') {
+        const entries = ctx.approval?.approvalLog?.readRecent?.(20) || [];
+        if (!entries.length) {
+          process.stderr.write(`  ${c.gray('No approval log entries yet.')}\n`);
+          return;
+        }
+        process.stderr.write(`\n  ${c.bold('Approval History')}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+        for (const e of entries) {
+          const when = e.ts ? String(e.ts).slice(0, 19).replace('T', ' ') : '';
+          const decision = e.decision?.includes('reject') || e.decision?.includes('deny') ? c.red(e.decision) : c.green(e.decision);
+          process.stderr.write(`  ${c.dim(when)}  ${decision}  ${c.brand(e.tool || '?')}  ${c.dim(e.scope || 'once')}  ${c.dim(e.args || '')}\n`);
+        }
+        process.stderr.write('\n');
+        return;
+      }
+      if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
+      renderHistoryEntries(session.history, { limit: 20, maxChars: 120 });
+      return;
+    }
 
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
@@ -1001,6 +2112,10 @@ async function handleCommand(input, ctx) {
     }
 
     case '/status': {
+      if (rest.trim() === 'help') {
+        renderHelp('status');
+        return;
+      }
       if (rest.trim() === 'context') {
         const current = ctx.latestProjectContext || loadProjectContext({ cwd: safeCwd() });
         const envelope = ctx.latestEnvelope || buildContextEnvelope({
@@ -1131,8 +2246,12 @@ async function handleCommand(input, ctx) {
 
     case '/settings': {
       const sub = rest.trim() || 'policy';
+      if (sub === 'help') {
+        renderHelp('settings');
+        return;
+      }
       if (sub !== 'policy') {
-        process.stderr.write(`  ${c.gray('Usage: /settings policy')}\n`);
+        process.stderr.write(`  ${c.gray('Usage: /settings policy  or  /help settings')}\n`);
         return;
       }
       const effective = loadEffectivePolicy({ cwd: safeCwd() });
@@ -1234,33 +2353,6 @@ async function handleCommand(input, ctx) {
       return;
     }
 
-    case '/history':
-      if (rest.trim() === 'approvals') {
-        const entries = ctx.approval?.approvalLog?.readRecent?.(20) || [];
-        if (!entries.length) {
-          process.stderr.write(`  ${c.gray('No approval log entries yet.')}\n`);
-          return;
-        }
-        process.stderr.write(`\n  ${c.bold('Approval History')}\n`);
-        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-        for (const e of entries) {
-          const when = e.ts ? String(e.ts).slice(0, 19).replace('T', ' ') : '';
-          const decision = e.decision?.includes('reject') || e.decision?.includes('deny') ? c.red(e.decision) : c.green(e.decision);
-          process.stderr.write(`  ${c.dim(when)}  ${decision}  ${c.brand(e.tool || '?')}  ${c.dim(e.scope || 'once')}  ${c.dim(e.args || '')}\n`);
-        }
-        process.stderr.write('\n');
-        return;
-      }
-      if (session.history.length === 0) { process.stderr.write(`  ${c.gray('No conversation yet.')}\n`); return; }
-      process.stderr.write(`\n  ${c.bold('Conversation')} (${session.history.length} messages)\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-      for (const msg of session.history.slice(-20)) {
-        const role = msg.role === 'user' ? c.white('You') : c.brand('Kepler');
-        process.stderr.write(`  ${role}: ${msg.content.slice(0, 80)}${msg.content.length > 80 ? '...' : ''}\n`);
-      }
-      process.stderr.write('\n');
-      return;
-
     case '/last':
       expandLast();
       return;
@@ -1318,7 +2410,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/report': {
-      if (Object.keys(session.toolCounts).length === 0 && session.filesChanged.length === 0) {
+      if (Object.keys(session.toolCounts).length === 0 && session.filesChanged.length === 0 && session.filesRead.length === 0) {
         process.stderr.write(`  ${c.gray('Nothing to report yet — run a task first.')}\n`);
         return;
       }
@@ -1326,6 +2418,7 @@ async function handleCommand(input, ctx) {
         task: session.lastTask,
         success: true,
         filesChanged: session.filesChanged,
+        filesRead: session.filesRead,
         toolCounts: session.toolCounts,
         subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
         costUsd: session.isByok ? null : session.totalCost,
@@ -1371,7 +2464,12 @@ async function handleCommand(input, ctx) {
 
     case '/budget': {
       const arg = rest.trim();
-      if (!arg || arg === 'clear' || arg === 'off') {
+      if (!arg) {
+        const current = session.budgetUsd ? `$${session.budgetUsd.toFixed(2)}` : 'not set';
+        process.stderr.write(`  ${c.dim('Budget cap:')} ${c.brand(current)} ${c.dim('· set with /status budget <amount> or clear with /status budget clear')}\n`);
+        return;
+      }
+      if (arg === 'clear' || arg === 'off') {
         session.budgetUsd = null;
         session.budgetExceeded = false;
         process.stderr.write(`  ${c.gray('Budget cap cleared.')}\n`);
@@ -1400,15 +2498,16 @@ async function handleCommand(input, ctx) {
     }
 
     case '/compact': {
-      const before = session.history.length;
+      const before = session.agentHistory.length || session.history.length;
       if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
-      session.history.splice(2, session.history.length - 6);
-      process.stderr.write(`  ${c.gray(`Compacted: ${before} → ${session.history.length} messages`)}\n`);
+      session.agentHistory.splice(2, session.agentHistory.length - 6);
+      process.stderr.write(`  ${c.gray(`Compacted agent context: ${before} → ${session.agentHistory.length} messages`)}\n`);
       return;
     }
 
     case '/clear':
       session.history.length = 0;
+      session.agentHistory.length = 0;
       session.toolCalls = 0;
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
@@ -1460,7 +2559,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/sessions': {
-      const resumable = ctx.sessionMgr.listResumable(10);
+      const resumable = await listResumableSessions();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -1468,89 +2567,168 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.bold('Resumable Sessions')}\n`);
       process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
       for (const s of resumable) {
-        const date = s.startedAt ? new Date(s.startedAt).toLocaleDateString() : '?';
-        const instr = s.instruction ? s.instruction.slice(0, 40) : '(no instruction)';
-        process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.dim(date)}  ${s.messageCount} msgs  ${c.dim(instr)}\n`);
+        const date = sessionListTimestamp(s);
+        const instr = oneLineInstruction(s.instruction, 72);
+        const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
+        process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
       process.stderr.write(`\n  ${c.dim('Resume with:')} kepler --resume <sessionId>\n`);
       return;
     }
 
     case '/resume': {
-      const parts = input.split(/\s+/);
-      const targetId = parts[1]; // /resume <sessionId>
+      // PRD-068 §5.14: one-prompt picker, context-length driven auto-decision,
+      // direct-resume mode flags (--full, --tail10, --tail20, --summary).
+      const parts = input.split(/\s+/).filter(Boolean);
+      const forcedFlag = parts.find(p => /^(--full|--tail10|--tail20|--recap|--summary|-f|-1|-2|-r|-s)$/.test(p));
+      const forcedMode = forcedFlag
+        ? ({ '--full': 'full', '-f': 'full',
+             '--tail10': 'tail-10', '-1': 'tail-10',
+             '--tail20': 'tail-20', '-2': 'tail-20',
+             '--recap': 'tail-20', '-r': 'tail-20',
+             '--summary': 'summary', '-s': 'summary' })[forcedFlag]
+        : null;
+      const targetId = parts.slice(1).find(p => !p.startsWith('-'));
 
-      if (targetId) {
-        // Direct resume by ID
-        const messages = ctx.sessionMgr.loadMessages(targetId);
-        if (messages.length === 0) {
-          process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + targetId)}\n`);
-          return;
-        }
-        session.history = messages;
-        session.id = targetId;
-        session.turns = Math.floor(messages.length / 2);
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}\n`);
-        return;
-      }
-
-      // No ID given — list sessions and let user pick by number
-      const resumable = ctx.sessionMgr.listResumable(10);
+      const resumable = await listResumableSessions();
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
       }
 
-      process.stderr.write(`\n  ${c.bold('Pick a session to resume:')}\n\n`);
-      for (let i = 0; i < resumable.length; i++) {
-        const s = resumable[i];
-        const date = s.startedAt ? new Date(s.startedAt).toLocaleString() : '?';
-        const instr = (s.instruction || '(no instruction)').slice(0, 45);
-        const proj = s.project ? c.brand(s.project) + ' ' : '';
-        const num = `[${i + 1}]`;
-        process.stderr.write(`  ${c.brand(num)} ${proj}${c.dim(date)}  ${s.messageCount} msgs\n`);
-        process.stderr.write(`      ${c.dim(instr)}\n`);
+      // 1. Resolve which session to resume.
+      let picked = null;
+      if (targetId) {
+        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId));
+        if (!picked) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim(`No session found matching id: ${targetId}`)}\n`);
+          return;
+        }
+      } else {
+        while (!picked) {
+          const pickResult = await pickResumableSession(resumable, ctx);
+          if (!pickResult) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
+          if (pickResult.action === 'resume') {
+            if (!pickResult.session) {
+              process.stderr.write(`\n  ${c.yellow('!')} ${c.dim('Empty session — pick another.')}\n`);
+              continue;
+            }
+            picked = pickResult.session;
+            break;
+          }
+          if (pickResult.action === 'preview') {
+            // Yield to the event loop so any queued keystrokes from the picker
+            // don't spill into the preview's stdin listener (PRD-068 §5.14 bugfix).
+            await new Promise(r => setImmediate(r));
+            const previewResult = await previewResumeSession(pickResult.session, ctx);
+            if (previewResult && previewResult.action === 'resume') {
+              picked = pickResult.session;
+              // Preview already committed to a mode — skip the threshold overlay.
+              picked._presetMode = previewResult.mode;
+              break;
+            }
+            if (previewResult === null) {
+              // getSessionDetail failed — file missing, unreadable, or huge.
+              // Tell the user why before looping back to the picker.
+              process.stderr.write(`  ${c.yellow('!')} ${c.dim('Could not load transcript for preview — pick another session or press Enter to resume without preview.')}\n`);
+            }
+            // Yield again so the loop-back render doesn't collide with the
+            // just-closed preview's stdin cleanup.
+            await new Promise(r => setImmediate(r));
+          }
+        }
       }
-      process.stderr.write(`\n  ${c.dim('Enter number (or Esc to cancel):')} `);
 
-      // Read single key for selection
-      const rl = ctx._rl || null;
-      if (rl) rl.pause();
-      const choice = await new Promise((resolve) => {
-        if (!process.stdin.isTTY) { resolve(null); return; }
-        const wasRaw = process.stdin.isRaw;
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.once('data', (data) => {
-          process.stdin.setRawMode(wasRaw || false);
-          if (rl) rl.resume();
-          const bytes = [...data];
-          if (bytes[0] === 0x1b || bytes[0] === 0x03) { resolve(null); return; }
-          const num = parseInt(data.toString(), 10);
-          resolve(isNaN(num) ? null : num);
+      // 2. Decide the mode. Force-flag > preview-preset > auto-decide > overlay.
+      let mode = forcedMode || picked._presetMode || null;
+      if (!mode) {
+        const currentModel = session?.model || session?.user?.default_reasoning_model || null;
+        const decision = decideResumeMode({
+          transcriptTokens: picked.contextTokens,
+          model: currentModel,
+          settings: ctx.effectivePolicy?.policy?.resume ? { resume: ctx.effectivePolicy.policy.resume } : {},
         });
-      });
+        decision.resumeSummary = picked.resumeSummary || null;
+        if (decision.mode === 'full') {
+          mode = 'full';
+        } else {
+          // Yield before attaching the overlay listener — same race guard as
+          // the preview branch above. Prevents a queued Enter from the picker
+          // slipping into the overlay's stdin, which otherwise looked like a
+          // duplicate picker render.
+          await new Promise(r => setImmediate(r));
+          const chosen = await chooseThresholdMode(ctx, decision);
+          if (!chosen) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
+          mode = chosen;
+        }
+      }
 
-      if (!choice || choice < 1 || choice > resumable.length) {
-        process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
+      // 3. Activate.
+      const source = targetId ? 'direct' : 'picker';
+      const progress = startResumeProgress(mode);
+      let resumed;
+      try {
+        resumed = await ctx.activateResumedSession(picked.sessionId, source, mode, picked, {
+          onProgress: progress.update,
+          onProgressStop: progress.stop,
+        });
+      } finally {
+        progress.stop();
+      }
+      if (!resumed.ok) {
+        if (resumed.reason === 'cwd-cancelled') {
+          process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`);
+        } else {
+          process.stderr.write(`\n  ${c.yellow('!')} ${c.dim(resumed.reason || 'No messages in that session.')}\n`);
+        }
         return;
       }
 
-      const picked = resumable[choice - 1];
-      const messages = ctx.sessionMgr.loadMessages(picked.sessionId);
-      if (messages.length === 0) {
-        process.stderr.write(`\n  ${c.yellow('!')} ${c.dim('No messages in that session.')}\n`);
-        return;
+      // 4. Report — succinct honest single line, then optional hydration warning.
+      const toolSummary = resumed.stats && resumed.stats.toolCalls
+        ? `${resumed.stats.toolCalls} tool calls`
+        : `${resumed.messages} msgs`;
+      const summaryLabel = mode !== 'full' && resumed.summarySource
+        ? ` · summary: ${resumed.summarySource}`
+        : '';
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
+      if (resumed.summaryWarning) {
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — using local summary (${resumed.summaryWarning})`)}\n`);
+      }
+      if (resumed.hydrationFailures?.length) {
+        for (const failure of resumed.hydrationFailures) {
+          process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`could not re-read project root: ${failure}`)}\n`);
+        }
+      }
+      if (resumed.stayedInCwd) {
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      session.history = messages;
-      session.id = picked.sessionId;
-      session.turns = Math.floor(messages.length / 2);
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim(`Resumed: ${messages.length} messages`)}`);
-      if (picked.instruction) {
-        process.stderr.write(` ${c.dim('—')} ${c.dim(picked.instruction.slice(0, 50))}`);
+      // 5. Show continuity context. Non-summary modes use the captured
+      //    kepler_event stream when available so the terminal replay matches
+      //    the original styled interaction; older sessions fall back to
+      //    reconstructed text.
+      if (mode === 'summary' && resumed.summary) {
+        // In summary mode the agent gets only the summary block. Show it so
+        // the user knows what continuity context was included.
+        process.stderr.write(`\n  ${c.bold('Continuity Summary')}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+        for (const line of resumed.summary.split('\n')) {
+          process.stderr.write(`  ${c.dim(line)}\n`);
+        }
+        process.stderr.write('\n');
+      } else if (resumed.replayEvents?.length) {
+        renderResumePreview(resumed);
+      } else if (resumed.history?.length) {
+        // Full/tail modes feed real conversation to the agent — show
+        // the tail so the user has visual context. Cap at 30 entries to avoid
+        // flooding the terminal on long sessions.
+        renderHistoryEntries(resumed.history, {
+          limit: 30,
+          maxChars: 200,
+          title: mode?.startsWith('tail-') ? `Recent turns (${mode.replace('tail-', 'last ')})` : 'Conversation history (last 30 entries)',
+        });
       }
-      process.stderr.write('\n');
       return;
     }
 
@@ -1624,26 +2802,239 @@ export async function startTerminalRepl() {
 
   // Projects are registered and indexed on demand through get_project_overview.
   // CheckpointManager records per-file snapshots before edits so /undo works.
-  const checkpoints = new CheckpointManager(safeCwd());
+  let checkpoints = new CheckpointManager(safeCwd());
   let effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
   let latestProjectContext = null;
   let latestEnvelope = null;
-  const hookRunner = new HookRunner({ cwd: safeCwd() });
-  const toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+  let hookRunner = new HookRunner({ cwd: safeCwd() });
+  let toolExecutor = createToolExecutor({ checkpoints, hookRunner });
   const skipPerms = cliArgs.freeswim;
-  const approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
   // Session manager — persists conversation messages to .kepler/conversations/
-  const sessionMgr = new SessionManager(safeCwd());
+  let sessionMgr = new SessionManager(safeCwd());
   _sessionMgr = sessionMgr; // expose to renderEvent
 
   // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
-  const jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+  let jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
+
+  /**
+   * Activate a previously-recorded session for continuation.
+   *
+   * Contract (PRD-068 §5.14 and follow-up clarification):
+   *   1. Keep the same sessionId. The resumed session IS the same session,
+   *      not a fork. Future turns are appended to the SAME .jsonl file that
+   *      was read here.
+   *   2. Do not re-write the loaded transcript back to disk. The file already
+   *      contains every historical entry; the load path is read-only. Any
+   *      duplication would double-count tokens on the next resume.
+   *   3. Fresh sessions (kepler started without /resume) get a fresh UUID
+   *      the first time jsonlWriter.writeUserTurn() runs — that path is
+   *      untouched by resume, so brand-new sessions never inherit an old id.
+   *   4. In-memory history (session.history / session.agentHistory) mirrors
+   *      what the agent will see next turn; it is NOT written back to the
+   *      transcript at activation time.
+   */
+  async function activateResumedSession(sessionId, source = 'resume', historyMode = 'full', resumeEntry = null, options = {}) {
+    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    const onProgressStop = typeof options.onProgressStop === 'function' ? options.onProgressStop : () => {};
+    // PRD-068 §5.14.6: JSONL is the only source. No legacy conversation fallback.
+    onProgress('reading saved transcript', 14);
+    const detail = await getSessionDetail(sessionId, { filePath: resumeEntry?.transcriptPath });
+    if (!detail) {
+      return { ok: false, reason: `No transcript found for session ${sessionId}` };
+    }
+    onProgress('building resume context', 28);
+    const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, historyMode);
+    const displayHistory = richHistory.displayHistory;
+    if (!displayHistory.length) {
+      return { ok: false, reason: `Session ${sessionId} has no readable messages` };
+    }
+
+    // PRD-068 §5.14.7: explicit cwd confirmation if saved path differs.
+    const savedProjectPath = detail?.meta?.project || '';
+    let summarySource = 'local';
+    let summaryWarning = '';
+    if (historyMode !== 'full' && richHistory.sourceMessages?.length) {
+      onProgress('summarizing transcript', 34);
+      const backendSummary = await summarizeResumeTranscript({
+        auth,
+        toolExecutor,
+        sessionId,
+        projectPath: savedProjectPath || safeCwd(),
+        messages: richHistory.sourceMessages,
+      });
+      if (backendSummary?.summary) {
+        richHistory.summary = combineResumeSummaries(richHistory.priorSummary, backendSummary.summary);
+        const summaryIndex = Number.isInteger(richHistory.summaryMessageIndex)
+          ? richHistory.summaryMessageIndex
+          : 0;
+        if (richHistory.agentHistory?.[summaryIndex]) {
+          const tailTurns = resumeTailTurnCount(historyMode);
+          const prefix = tailTurns
+            ? `Summary of earlier turns before the retained last ${tailTurns} conversation messages:\n`
+            : 'Session continuity summary:\n';
+          richHistory.agentHistory[summaryIndex] = {
+            ...richHistory.agentHistory[summaryIndex],
+            content: `${prefix}${richHistory.summary}`,
+          };
+        }
+        summarySource = backendSummary.source || 'backend';
+      } else {
+        summarySource = 'local fallback';
+        summaryWarning = backendSummary?.reason || 'backend summary unavailable';
+      }
+    } else if (historyMode !== 'full') {
+      summarySource = 'not needed';
+      summaryWarning = resumeTailTurnCount(historyMode)
+        ? 'retained tail covers the whole transcript'
+        : 'empty transcript';
+    }
+    const agentHistory = richHistory.agentHistory;
+    const originalCwd = safeCwd();
+    let switchedProject = false;
+    let projectMissing = false;
+    let stayedInCwd = false;
+    onProgress('checking project cwd', 40);
+    if (savedProjectPath && savedProjectPath !== originalCwd) {
+      if (fs.existsSync(savedProjectPath)) {
+        onProgressStop();
+        const choice = await confirmCwdSwitch(ctx, savedProjectPath, originalCwd);
+        if (choice === 'cancel') return { ok: false, reason: 'cwd-cancelled' };
+        if (choice === 'switch') {
+          try {
+            process.chdir(savedProjectPath);
+            _cachedCwd = process.cwd();
+            switchedProject = true;
+          } catch {
+            projectMissing = true;
+          }
+        } else if (choice === 'stay') {
+          stayedInCwd = true;
+        }
+      } else {
+        projectMissing = true;
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`saved project path unavailable: ${savedProjectPath} — using current cwd`)}\n`);
+      }
+    }
+
+    onProgress('rebuilding local session state', 55);
+    checkpoints = new CheckpointManager(safeCwd());
+    effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
+    hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    if (ctx._rl) approval.setReadline(ctx._rl);
+    sessionMgr = new SessionManager(safeCwd());
+    sessionMgr.activateSession(sessionId, {
+      instruction: detail?.meta?.firstPrompt || '',
+      started_at: detail?.meta?.startTime || new Date().toISOString(),
+    }, displayHistory.filter(m => m.role === 'user' || m.role === 'assistant'));
+    _sessionMgr = sessionMgr;
+
+    try { await jsonlWriter.close(); } catch {}
+    jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+    jsonlWriter.setSessionId(sessionId);
+    if (
+      historyMode !== 'full'
+      && richHistory.summary
+      && Number(richHistory.summaryCoveredMessageCount) > Number(richHistory.summaryCheckpointMessageCount || 0)
+    ) {
+      jsonlWriter.writeKeplerEvent({
+        type: 'resume_summary',
+        data: {
+          session_id: sessionId,
+          mode: historyMode,
+          mode_label: resumeModeLabel(historyMode),
+          summary: richHistory.summary,
+          summary_source: summarySource,
+          summary_warning: summaryWarning || null,
+          source_message_count: richHistory.summaryCoveredMessageCount,
+          previous_source_message_count: richHistory.summaryCheckpointMessageCount || 0,
+          full_message_count: richHistory.fullMessageCount || 0,
+        },
+      });
+    }
+    jsonlWriter.writeKeplerEvent({
+      type: 'resume_context',
+      data: {
+        session_id: sessionId,
+        source,
+        mode: historyMode,
+        mode_label: resumeModeLabel(historyMode),
+        messages: displayHistory.length,
+        summary_source: summarySource,
+        summary_injected: historyMode !== 'full' && Boolean(richHistory.agentHistory?.[richHistory.summaryMessageIndex ?? 0]?.content),
+        summary_warning: summaryWarning || null,
+        summary_source_message_count: richHistory.summaryCoveredMessageCount || 0,
+        previous_summary_source_message_count: richHistory.summaryCheckpointMessageCount || 0,
+        project_path: savedProjectPath || safeCwd(),
+      },
+    });
+
+    streamClient = null;
+    latestProjectContext = loadProjectContext({ cwd: safeCwd() });
+    latestEnvelope = null;
+
+    // PRD-068 §5.14.8: report hydration failures instead of swallowing them.
+    const hydrationFailures = [];
+    const resumeRoots = getTranscriptProjectRoots(detail);
+    const rootsToRegister = [...new Set([safeCwd(), ...resumeRoots].filter(Boolean))];
+    onProgress('hydrating project roots', 68);
+    for (let i = 0; i < rootsToRegister.length; i++) {
+      const root = rootsToRegister[i];
+      onProgress(`hydrating project root ${i + 1}/${rootsToRegister.length}`, 68 + Math.round((i / Math.max(1, rootsToRegister.length)) * 18));
+      try {
+        await toolExecutor.execute('get_project_overview', { path: root });
+      } catch {
+        hydrationFailures.push(root);
+      }
+    }
+
+    onProgress('preparing replay', 92);
+    session.history = displayHistory;
+    session.agentHistory = agentHistory;
+    session.id = sessionId;
+    session.turns = displayHistory.filter(m => m.role === 'user').length;
+    session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
+
+    Object.assign(ctx, {
+      toolExecutor,
+      approval,
+      jsonlWriter,
+      sessionMgr,
+      checkpoints,
+      effectivePolicy,
+      latestProjectContext,
+      latestEnvelope,
+    });
+
+    return {
+      ok: true,
+      messages: displayHistory.length,
+      projectPath: savedProjectPath || safeCwd(),
+      savedProjectPath,
+      switchedProject,
+      projectMissing,
+      stayedInCwd,
+      hydrationFailures,
+      instruction: detail?.meta?.firstPrompt || '',
+      historyMode,
+      summary: richHistory.summary || '',
+      summarySource,
+      summaryWarning,
+      history: displayHistory,
+      replayEvents: detail.replayEvents || [],
+      stats: richHistory.stats,
+      source,
+    };
+  }
+  ctx.activateResumedSession = activateResumedSession;
 
   // ── Print banner + preflight + init BEFORE mounting the status bar ──
   // The status bar shrinks the scroll region; if it mounts first, the
@@ -1674,18 +3065,18 @@ export async function startTerminalRepl() {
         : sessionMgr.getLastSession();
 
     if (lastSession) {
-      const messages = sessionMgr.loadMessages(lastSession.sessionId);
-      if (messages.length > 0) {
-        session.history = messages;
-        session.id = lastSession.sessionId;
-        session.turns = Math.floor(messages.length / 2);
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messages.length} messages`)}`);
-        if (lastSession.instruction) {
-          process.stderr.write(` ${c.dim('—')} ${c.dim(lastSession.instruction.slice(0, 50))}`);
-        }
+      const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
+      if (resumed.ok) {
+        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
+        process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+        process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
+        if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
+        if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
+        if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
         process.stderr.write('\n');
+        renderResumePreview(resumed);
       } else {
-        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No conversation found for session ' + lastSession.sessionId)}\n`);
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
     } else {
       process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
@@ -1731,8 +3122,7 @@ export async function startTerminalRepl() {
     prompt: userPrompt(),
     completer: (line) => {
       if (line.startsWith('/')) {
-        const hits = Object.keys(COMMANDS).filter(cmd => cmd.startsWith(line));
-        return [hits.length ? hits : Object.keys(COMMANDS), line];
+        return [commandCompletions(line), line];
       }
       return [[], line];
     },
@@ -1753,7 +3143,44 @@ export async function startTerminalRepl() {
 
   showPrompt();
 
+  // Guard against concurrent line handlers.
+  //
+  // rl.on('line', async ...) does NOT wait for the previous async handler to
+  // complete before firing again. So a stray '\n' (from readline processing
+  // '\r\n' as two events after an interactive picker resumes it, or from a
+  // paste) can spawn a second handleCommand run while the first is still
+  // awaiting inside /resume, /login, etc. Symptom: the picker or overlay
+  // appears to render twice.
+  //
+  // Rules:
+  //   - Only one command runs at a time.
+  //   - Empty lines that arrive while a command is in flight are dropped
+  //     (they are almost always stray '\n's from raw-mode key handling).
+  //   - Non-empty lines are queued and replayed after the current command
+  //     finishes, so the user can queue up work while a long-running command
+  //     is still executing.
+  let _lineInFlight = false;
+  const _queuedLines = [];
   rl.on('line', async (line) => {
+    if (_lineInFlight) {
+      if (line && line.trim()) _queuedLines.push(line);
+      return;
+    }
+    _lineInFlight = true;
+    try {
+      await _handleLine(line);
+    } finally {
+      _lineInFlight = false;
+      if (_queuedLines.length) {
+        const next = _queuedLines.shift();
+        // Fire the next queued line asynchronously so we don't hold this
+        // finally block open while the next command runs.
+        setImmediate(() => rl.emit('line', next));
+      }
+    }
+  });
+
+  async function _handleLine(line) {
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
 
@@ -1776,13 +3203,16 @@ export async function startTerminalRepl() {
     }
 
     // Regular prompt
-    session.history.push({ role: 'user', content: input });
+    const userMessage = { role: 'user', content: input };
+    session.history.push(userMessage);
+    session.agentHistory.push(userMessage);
     session.turns++;
     session.toolCalls = 0;
     session.lastTask = input;
     // Reset per-turn counts so the mission report reflects this turn only.
     session.toolCounts = {};
     session.subAgentCounts = {};
+    session.filesRead = [];
     session.savedUsd = 0;
     session._lastEmittedThinking = '';
     session.creditsLowWarned = false;
@@ -1796,11 +3226,14 @@ export async function startTerminalRepl() {
     if (session.turns === 1) {
       sessionMgr.start(input);
     }
-    sessionMgr.saveMessage('user', input);
-
-    // Local JSONL: write user turn + history
-    jsonlWriter.writeUserTurn(input);
-    jsonlWriter.writeHistory(input);
+    let userTurnWritten = false;
+    const writeCurrentUserTurn = () => {
+      if (userTurnWritten) return;
+      jsonlWriter.writeUserTurn(input);
+      jsonlWriter.writeHistory(input);
+      userTurnWritten = true;
+    };
+    if (session.id) writeCurrentUserTurn();
 
     const creds = auth.loadCredentials();
     if (!creds.token) {
@@ -1822,6 +3255,9 @@ export async function startTerminalRepl() {
       });
     }
     const client = streamClient;
+    if (session.id && !client.sessionId) {
+      client.sessionId = session.id;
+    }
 
     let assistantContent = '';
 
@@ -1926,14 +3362,23 @@ export async function startTerminalRepl() {
         input: { prompt: input },
         turnId: String(session.turns),
       });
+      const hookHints = (promptHook.results || [])
+        .map(r => r.parsed?.feedback)
+        .filter(Boolean)
+        .map(text => ({ source: 'hook', kind: 'feedback', text, ttl_turns: 1, priority: 'medium' }));
+      const rejectionHints = (approval.consumeRejectionHints?.() || [])
+        .map(h => ({
+          source: 'hitl',
+          kind: 'approval_rejection',
+          text: `${h.decision === 'replan' ? 'User requested a re-plan' : 'User rejected approval'} for ${h.tool}. ${h.note ? `Reason: ${h.note}` : h.reason}. Adjust the approach before retrying.`,
+          ttl_turns: 1,
+          priority: 'high',
+        }));
       latestEnvelope = buildContextEnvelope({
         cwd: safeCwd(),
         effectivePolicy,
         projectContext: latestProjectContext,
-        activeHints: (promptHook.results || [])
-          .map(r => r.parsed?.feedback)
-          .filter(Boolean)
-          .map(text => ({ source: 'hook', kind: 'feedback', text, ttl_turns: 1, priority: 'medium' })),
+        activeHints: [...hookHints, ...rejectionHints],
         projectResources: toolExecutor.getProjectResources(),
         agentContext: toolExecutor.getAgentContext(),
       });
@@ -1948,7 +3393,8 @@ export async function startTerminalRepl() {
         }
       }
 
-      for await (const event of client.execute(input, execContext, session.history)) {
+      for await (const event of client.execute(input, execContext, session.agentHistory)) {
+        jsonlWriter.writeKeplerEvent(event);
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,
@@ -1979,6 +3425,7 @@ export async function startTerminalRepl() {
         if (event.type === 'session_info' && event.data?.session_id) {
           jsonlWriter.setSessionId(event.data.session_id);
           hookRunner.sessionId = event.data.session_id;
+          writeCurrentUserTurn();
         }
 
         // Local JSONL: accumulate tool calls
@@ -2011,12 +3458,13 @@ export async function startTerminalRepl() {
     }
 
     if (assistantContent) {
-      session.history.push({ role: 'assistant', content: assistantContent });
-      sessionMgr.saveMessage('assistant', assistantContent);
+      const assistantMessage = { role: 'assistant', content: assistantContent };
+      session.history.push(assistantMessage);
+      session.agentHistory.push(assistantMessage);
     }
 
     showPrompt();
-  });
+  }
 
   rl.on('close', async () => {
     stopSpinner();

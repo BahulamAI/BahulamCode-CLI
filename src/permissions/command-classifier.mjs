@@ -144,6 +144,41 @@ function containsCommandSubstitution(command) {
     return false;
 }
 
+function isQuotedMessage(text) {
+    const value = String(text || '').trim();
+    return /^echo\s+(?:"[^"]*"|'[^']*'|[A-Za-z0-9_ .:-]+)$/.test(value);
+}
+
+function isNumericKillCommand(command) {
+    const trimmed = String(command || '').trim();
+    return /^kill\s+(?:-(?:\d+|[A-Z]+)\s+)?\d+(?:\s+\d+)*\s*(?:2>\s*\/dev\/null)?$/.test(trimmed);
+}
+
+function isPortLsofKillSubstitution(command) {
+    const trimmed = String(command || '').trim();
+    return /^kill\s+(?:-(?:\d+|[A-Z]+)\s+)?\$\(\s*lsof\s+-ti:?\d+\s*\)\s*(?:2>\s*\/dev\/null)?$/.test(trimmed);
+}
+
+function isPortLsofXargsKill(command) {
+    const trimmed = String(command || '').trim();
+    return /^lsof\s+-ti:?\d+\s*\|\s*xargs\s+kill(?:\s+-(?:\d+|[A-Z]+))?\s*(?:2>\s*\/dev\/null)?(?:\s*;\s*echo\s+(?:"[^"]*"|'[^']*'|[A-Za-z0-9_ .:-]+))?$/.test(trimmed);
+}
+
+function isApprovedProcessCleanupCommand(command) {
+    const trimmed = String(command || '').trim();
+    if (!trimmed) return false;
+    if (isPortLsofXargsKill(trimmed)) return true;
+    const segments = splitCommand(trimmed);
+    if (segments.length === 0) return false;
+    return segments.every(segment => {
+        const sub = segment.trim();
+        return isNumericKillCommand(sub) ||
+            isPortLsofKillSubstitution(sub) ||
+            isPortLsofXargsKill(sub) ||
+            isQuotedMessage(sub);
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Section 3: Read-Only Command Allowlist
 // ═══════════════════════════════════════════════════════════════════
@@ -206,6 +241,10 @@ const COMMAND_ALLOWLIST = {
     // ── find (read-only subset — NO -exec, -delete, -fprint) ──
     find: { flags: { '-name': 'string', '-iname': 'string', '-path': 'string', '-ipath': 'string', '-type': 'string', '-maxdepth': 'number', '-mindepth': 'number', '-newer': 'string', '-size': 'string', '-mtime': 'string', '-atime': 'string', '-ctime': 'string', '-perm': 'string', '-user': 'string', '-group': 'string', '-not': 'none', '!': 'none', '-or': 'none', '-o': 'none', '-and': 'none', '-a': 'none', '-print': 'none', '-print0': 'none', '-empty': 'none', '-readable': 'none', '-writable': 'none', '-executable': 'none', '-follow': 'none', '-L': 'none', '-P': 'none', '-H': 'none', '-xdev': 'none', '-mount': 'none', '-daystart': 'none', '-regextype': 'string', '-regex': 'string', '-iregex': 'string' },
         blocked: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fls', '-fprintf'] },
+
+    // ── sed (read-only subset — NO -i/--in-place) ──
+    sed: { flags: { '-n': 'none', '--quiet': 'none', '--silent': 'none', '-E': 'none', '-r': 'none', '--regexp-extended': 'none', '-e': 'string', '--expression': 'string', '-f': 'string', '--file': 'string', '-l': 'number', '--line-length': 'number', '-u': 'none', '--unbuffered': 'none' },
+        blocked: ['-i', '--in-place', '-z', '--null-data', '-s', '--separate'] },
 
     // ── ls ──
     ls: { flags: { '-l': 'none', '-a': 'none', '-A': 'none', '-h': 'none', '--human-readable': 'none', '-R': 'none', '--recursive': 'none', '-S': 'none', '-t': 'none', '-r': 'none', '--reverse': 'none', '-1': 'none', '-d': 'none', '--directory': 'none', '-F': 'none', '--classify': 'none', '-i': 'none', '--inode': 'none', '-s': 'none', '--size': 'none', '--color': 'string', '--sort': 'string', '--time': 'string', '--group-directories-first': 'none', '-p': 'none', '-G': 'none', '-n': 'none', '--numeric-uid-gid': 'none' } },
@@ -295,6 +334,7 @@ const BLOCKED_PATTERNS = [
     /curl.*\|\s*(ba)?sh/,                                     // pipe curl to shell
     /wget.*\|\s*(ba)?sh/,                                     // pipe wget to shell
     /eval\s*\$\(/,                                            // eval command substitution
+    /\bfind\s+\/(?:\s|$)/,                                    // find / scans the whole VM
     /find\s.*-exec/,                                           // find with -exec (code execution)
     /find\s.*-delete/,                                         // find with -delete
 ];
@@ -349,6 +389,7 @@ function validateFlags(tokens, startIdx, config) {
         if (blocked) {
             for (const b of blocked) {
                 if (token === b || token.startsWith(b + '=')) return false;
+                if (/^-[A-Za-z]$/.test(b) && token.startsWith(b) && token.length > b.length) return false;
             }
         }
 
@@ -449,6 +490,14 @@ export function classifyCommand(command) {
 
     const trimmed = command.trim();
 
+    if (isApprovedProcessCleanupCommand(trimmed)) {
+        return {
+            classification: 'contained',
+            reason: 'Process cleanup by numeric PID or lsof port lookup; requires approval',
+            highRisk: true,
+        };
+    }
+
     // ── Step 1: Check for always-blocked patterns ──
     for (const pattern of BLOCKED_PATTERNS) {
         if (pattern.test(trimmed)) {
@@ -459,6 +508,10 @@ export function classifyCommand(command) {
     // ── Step 2: Check for command substitution / injection ──
     if (containsCommandSubstitution(trimmed)) {
         return { classification: 'blocked', reason: 'Contains command substitution (backticks or $())' };
+    }
+
+    if (containsUnsafeOutputRedirection(trimmed)) {
+        return { classification: 'contained', reason: 'Writes shell output via redirection' };
     }
 
     // ── Step 3: Split compound commands and classify each ──
@@ -498,6 +551,31 @@ export function classifyCommand(command) {
         reason: worstLevel === 'safe' ? 'All subcommands are read-only' : 'Contains write/execute or high-risk operations',
         highRisk,
     };
+}
+
+function containsUnsafeOutputRedirection(command) {
+    let inSingle = false;
+    let inDouble = false;
+    let escaped = false;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\' && !inSingle) { escaped = true; continue; }
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+        if (inSingle || inDouble || ch !== '>') continue;
+
+        const prev = command[i - 1] || '';
+        const next = command[i + 1] || '';
+        if (next === '&') continue;
+        let cursor = next === '>' ? i + 2 : i + 1;
+        while (/\s/.test(command[cursor] || '')) cursor++;
+        const target = command.slice(cursor).match(/^[^\s;&|]+/)?.[0] || '';
+        if (target === '/dev/null') continue;
+        if (prev === '2' && target === '/dev/null') continue;
+        return true;
+    }
+    return false;
 }
 
 /**

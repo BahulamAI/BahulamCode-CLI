@@ -5,7 +5,7 @@
  * structured summary:
  *
  *   ───────────────────────────────────────────────────
- *   ✓ done Repo codekepler-npm · Author Ravi
+ *   ✓ done
  *   ───────────────────────────────────────────────────
  *   📂 Files       auth.py, tests/test_auth.py
  *   🛠️ Tools read(4)  edit(2)  shell(1)  test(1) · ⏱ Time 2m 18s
@@ -39,6 +39,7 @@ const WIDTH = 56;
  *   task         — string (the user's prompt for this session)
  *   success      — boolean (overall outcome)
  *   filesChanged — string[]
+ *   filesRead    — string[]
  *   toolCounts   — { [tool]: count } or array of {tool}
  *   subAgents    — array of { type, costUsd?, tokens? } or { explore:1, plan:1 }
  *   costUsd      — number
@@ -56,23 +57,23 @@ export function renderMissionReport(state) {
   const statusIcon = success ? paint.state.success('✓') : paint.state.danger('✗');
   const statusText = success ? paint.state.success('done') : paint.state.danger('held');
   const headerTask = state.task ? paint.text.dim(' · ') + paint.text.primary(truncate(state.task, 60)) : '';
-  const meta = resolveReportMeta(state);
 
   lines.push('');
   lines.push(rule);
-  lines.push(`${statusIcon} ${statusText} ${paint.text.dim('Repo')} ${paint.brand.data(meta.repo)} ${paint.text.dim('· Author')} ${paint.brand.data(meta.author)}${headerTask}`);
+  lines.push(`${statusIcon} ${statusText}${headerTask}`);
   lines.push(rule);
 
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     lines.push(row('📂', 'Files',      formatFiles(state.filesChanged)));
   }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    lines.push(row('📖', 'Read',       formatFiles(state.filesRead)));
+  }
 
   const toolSummary = formatToolCounts(state.toolCounts);
-  const cost = state.costUsd != null ? paint.brand.data(formatCost(state.costUsd)) : '';
   const time = state.durationS != null ? paint.brand.data(formatDuration(state.durationS)) : '';
   const metricSegments = [];
   if (toolSummary) metricSegments.push(`${icons.write} ${paint.text.dim('Tools')} ${toolSummary}`);
-  if (cost) metricSegments.push(`${paint.text.dim('💰 Cost')} ${cost}`);
   if (time) metricSegments.push(`${paint.text.dim('⏱ Time')} ${time}`);
   if (metricSegments.length) lines.push('  ' + metricSegments.join(paint.text.dim(' · ')));
 
@@ -129,6 +130,9 @@ export function toMarkdown(state) {
   out.push('**Author**: ' + meta.author);
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     out.push('**Files**: ' + state.filesChanged.join(', '));
+  }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    out.push('**Read**: ' + state.filesRead.join(', '));
   }
   const toolSummary = stripAnsi(formatToolCounts(state.toolCounts) || '');
   if (toolSummary) out.push('**Tools**: ' + toolSummary);

@@ -4,8 +4,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { scaffoldKeplerProject } from '../src/terminal/init.mjs';
 import { loadEffectivePolicy } from '../src/core/policy-resolver.mjs';
-import { loadProjectContext } from '../src/core/project-context-loader.mjs';
+import { contextToPromptBlock, loadProjectContext } from '../src/core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../src/core/context-envelope.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, parseTaskMarkdown, taskCounts } from '../src/core/tasks.mjs';
 import { HookRunner } from '../src/config/hook-runner.mjs';
 import { ApprovalManager } from '../src/core/approval.mjs';
 
@@ -81,6 +82,39 @@ await test('context envelope packages policy, files, skills, and timeouts', asyn
   assert.strictEqual(envelope.command_context.runtime_limits.command_timeout_seconds, 600);
   assert.ok(envelope.project_context.loaded_files.some(f => f.label === 'KEPLER.md'));
   assert.ok(envelope.available_skills.some(s => s.name === 'starter'));
+});
+
+await test('task board reads and appends project task markdown', async () => {
+  const cwd = tempProject();
+  ensureTaskFiles({ cwd });
+  appendTask({ cwd, list: 'active', text: 'Wire /plan status' });
+  appendTask({ cwd, list: 'blocked', text: 'Waiting on backend deploy' });
+  appendTask({ cwd, list: 'done', text: 'Ship HITL prompt polish' });
+
+  const board = loadTaskBoard({ cwd });
+  const counts = taskCounts(board);
+  assert.strictEqual(counts.active, 1);
+  assert.strictEqual(counts.blocked, 1);
+  assert.strictEqual(counts.done, 1);
+  assert.ok(board.lists.active.tasks[0].text.includes('/plan status'));
+});
+
+await test('task parser supports checkboxes and plain bullets', async () => {
+  const tasks = parseTaskMarkdown('# Active\n\n- [ ] First\n- [x] Done-ish\n- Plain bullet\n', 'active');
+  assert.strictEqual(tasks.length, 3);
+  assert.strictEqual(tasks[0].checked, false);
+  assert.strictEqual(tasks[1].checked, true);
+  assert.strictEqual(tasks[2].text, 'Plain bullet');
+});
+
+await test('project context injects task workflow guidance', async () => {
+  const cwd = tempProject();
+  scaffoldKeplerProject({ cwd });
+  appendTask({ cwd, list: 'active', text: 'Keep tasks current' });
+  const context = loadProjectContext({ cwd });
+  const prompt = contextToPromptBlock(context);
+  assert.ok(prompt.includes('Keep .kepler/tasks/active.md current'));
+  assert.ok(prompt.includes('Keep tasks current'));
 });
 
 await test('hook runner blocks tools and captures feedback', async () => {

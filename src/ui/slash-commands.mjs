@@ -29,6 +29,29 @@ export const COMMANDS = {
     '/whoami':   { description: 'Show logged-in user', handler: cmdWhoami },
 };
 
+const COMMAND_GROUPS = [
+    {
+        key: 'worktree',
+        title: 'Worktree',
+        commands: ['/git', '/status', '/commit', '/diff', '/index'],
+    },
+    {
+        key: 'session',
+        title: 'Session',
+        commands: ['/clear', '/sessions', '/exit', '/quit'],
+    },
+    {
+        key: 'usage',
+        title: 'Usage',
+        commands: ['/model', '/tokens', '/cost'],
+    },
+    {
+        key: 'settings',
+        title: 'Settings',
+        commands: ['/config', '/login', '/refresh', '/sync', '/whoami'],
+    },
+];
+
 function run(cmd) {
     try {
         return execSync(cmd, { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -37,17 +60,37 @@ function run(cmd) {
     }
 }
 
-function cmdHelp(ctx) {
+function cmdHelp(ctx, args = []) {
     const BOLD = '\x1b[1m', CYAN = '\x1b[36m', DIM = '\x1b[2m', GREEN = '\x1b[32m', BLUE = '\x1b[34m', RESET = '\x1b[0m';
+    const topic = String(args[0] || '').toLowerCase();
+    const group = COMMAND_GROUPS.find(g => g.key === topic || g.title.toLowerCase() === topic);
 
     process.stderr.write(`\n${BLUE}┌──────────────────────────────────────────────┐${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Kepler Help${RESET}                                   ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}├──────────────────────────────────────────────┤${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Commands:${RESET}                                   ${BLUE}│${RESET}\n`);
-    for (const [name, { description }] of Object.entries(COMMANDS)) {
-        const line = `  ${CYAN}${name.padEnd(12)}${RESET} ${description}`;
-        process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - name.length - description.length))}${BLUE}│${RESET}\n`);
+    if (topic === 'all') {
+        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}All commands:${RESET}                               ${BLUE}│${RESET}\n`);
+        for (const [name, { description }] of Object.entries(COMMANDS)) {
+            writeHelpCommandLine(BLUE, CYAN, RESET, name, description);
+        }
+    } else if (group) {
+        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}${group.title}:${RESET}${' '.repeat(Math.max(0, 40 - group.title.length))}${BLUE}│${RESET}\n`);
+        for (const name of group.commands) {
+            writeHelpCommandLine(BLUE, CYAN, RESET, name, COMMANDS[name]?.description || '');
+        }
+    } else {
+        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Top commands:${RESET}                               ${BLUE}│${RESET}\n`);
+        for (const name of ['/help', '/status', '/sessions', '/config', '/whoami', '/exit']) {
+            writeHelpCommandLine(BLUE, CYAN, RESET, name, COMMANDS[name]?.description || '');
+        }
+        process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
+        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Categories:${RESET}                                 ${BLUE}│${RESET}\n`);
+        for (const g of COMMAND_GROUPS) {
+            const line = `  ${CYAN}${('/help ' + g.key).padEnd(16)}${RESET} ${g.title}`;
+            process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - visibleLen(`/help ${g.key}`) - g.title.length))}${BLUE}│${RESET}\n`);
+        }
+        process.stderr.write(`${BLUE}│${RESET}  ${DIM}/help all for legacy command list${RESET}        ${BLUE}│${RESET}\n`);
     }
     process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Keyboard:${RESET}                                   ${BLUE}│${RESET}\n`);
@@ -59,6 +102,15 @@ function cmdHelp(ctx) {
     process.stderr.write(`${BLUE}│${RESET}  ${DIM}Ask questions: "explain how auth works"${RESET}     ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
     process.stderr.write(`${BLUE}└──────────────────────────────────────────────┘${RESET}\n\n`);
+}
+
+function writeHelpCommandLine(BLUE, CYAN, RESET, name, description) {
+    const line = `  ${CYAN}${name.padEnd(12)}${RESET} ${description}`;
+    process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - name.length - description.length))}${BLUE}│${RESET}\n`);
+}
+
+function visibleLen(s) {
+    return String(s || '').length;
 }
 
 function cmdGit() {

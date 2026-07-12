@@ -7,6 +7,10 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
+import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
+import { formatCard, formatCardHead } from '../src/ui/tool-card.mjs';
+import { EventFormatter } from '../src/ui/formatter.mjs';
+import { TIERS } from '../src/core/risk-tier.mjs';
 
 let passed = 0;
 
@@ -86,6 +90,75 @@ test('renders shell commands with semantic syntax colors', () => {
     'expected danger/red for pipe operator');
 });
 
+test('long shell tool heads wrap without hiding command text', () => {
+  const command = 'cd "/Users/sree/Sites/Tarang Orca/appstak-platform" && pnpm run dev 2>&1 | head -80';
+  const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 58, cwd: '/tmp' }));
+  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('appstak-platform'));
+  assert.ok(rendered.includes('pnpm run dev'));
+  assert.ok(rendered.includes('2>&1 | head -80'));
+  assert.ok(!rendered.includes('…'));
+
+  const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
+  const azRendered = stripAnsi(formatCardHead('shell', { command: azCommand }, { columns: 80, cwd: '/tmp' }));
+  assert.ok(azRendered.includes('Running'));
+  assert.ok(azRendered.includes('az network nsg create'));
+  assert.ok(azRendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
+  assert.ok(azRendered.includes('codekepler-microvm-prod-02'));
+  assert.ok(azRendered.includes('service=microvm'));
+  assert.ok(!azRendered.includes('…'));
+
+  const full = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command },
+    result: { success: true, output: 'ready' },
+    durationMs: 1000,
+    columns: 58,
+    cwd: '/tmp',
+  }));
+  assert.ok(full.includes('2>&1 | head -80'));
+  assert.ok(full.includes('ready'));
+
+  const observed = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command },
+    result: {
+      success: true,
+      output: 'Observation timeout after 15000ms\nready',
+      _observation_timeout: true,
+      _observation_timeout_ms: 15000,
+      exit_code: 124,
+    },
+    durationMs: 15000,
+    columns: 58,
+    cwd: '/tmp',
+  }));
+  assert.ok(observed.includes('observed 15.0s tail'));
+});
+
+test('legacy formatter wraps full shell commands without ellipsis', () => {
+  const command = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
+  const formatter = new EventFormatter();
+  const originalWrite = process.stderr.write;
+  let output = '';
+  process.stderr.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    formatter.render({ type: 'tool_call', data: { tool: 'shell', args: { command } } });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  const rendered = stripAnsi(output);
+  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('az network nsg create'));
+  assert.ok(rendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
+  assert.ok(rendered.includes('codekepler-microvm-prod-02'));
+  assert.ok(rendered.includes('service=microvm'));
+  assert.ok(!rendered.includes('…'));
+});
+
 test('renders Markdown pipe tables as aligned terminal tables', () => {
   const rendered = stripAnsi(renderMarkdown([
     '| Name | Status |',
@@ -128,14 +201,55 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   const rendered = stripAnsi(renderMissionReport({
     task: 'fix auth',
     success: true,
+    filesRead: ['src/core/approval.mjs', 'src/terminal/repl.mjs'],
     toolCounts: { shell: 5 },
+    costUsd: 0.0003,
     durationS: 19.9,
     repo: 'codekepler-npm',
     author: 'Ravi',
   }));
   assert.ok(!rendered.includes('MISSION ACCOMPLISHED'));
-  assert.ok(rendered.includes('Repo codekepler-npm · Author Ravi'));
+  assert.ok(!rendered.includes('Repo codekepler-npm'));
+  assert.ok(!rendered.includes('Author Ravi'));
+  assert.ok(!rendered.includes('Cost'));
+  assert.ok(!rendered.includes('$0.0003'));
+  assert.ok(rendered.includes('Read        approval.mjs, repl.mjs'));
   assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
+});
+
+test('approval prompt uses risk title, scoped menu, and wrapped why', () => {
+  const rendered = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command: 'rm -rf node_modules && npm install' },
+    tier: TIERS.SHELL_DANGEROUS,
+    why: 'Resetting dependencies after a Node upgrade, but this removes a directory and needs explicit confirmation.',
+    width: 82,
+  }));
+  assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('Decision'));
+  assert.ok(rendered.includes('stop'));
+  assert.ok(rendered.includes('rm -rf node_modules'));
+});
+
+test('approval compatibility wrapper uses unified prompt', () => {
+  const inline = stripAnsi(renderInlinePrompt({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'verify the change',
+  }));
+  assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
+  assert.ok(inline.includes('Decision'));
+  assert.ok(inline.includes('always allow'));
+
+  const trusted = stripAnsi(renderTrustedApproval({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    scope: 'SESSION',
+    ruleId: 'shell-test',
+  }));
+  assert.ok(trusted.includes('pre-approved (session'));
+  assert.ok(trusted.includes('rule shell-test'));
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

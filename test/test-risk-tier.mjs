@@ -16,6 +16,7 @@ import {
   requiresExplicitApproval,
   requiresCheckpoint,
 } from '../src/core/risk-tier.mjs';
+import { classifyCommand } from '../src/permissions/command-classifier.mjs';
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -29,6 +30,13 @@ console.log('\n\x1b[1mtest-risk-tier.mjs\x1b[0m\n');
 
 test('read_file → READ', () => {
   assert.equal(classify('read_file', { file_path: 'a.txt' }), TIERS.READ);
+});
+test('sensitive read paths require explicit approval', () => {
+  assert.equal(classify('read_file', { path: '.env' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_file', { path: 'certs/client.pem' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_file', { path: 'secrets/api-key.txt' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_files', { paths: ['src/a.js', 'secrets/token.txt'] }), TIERS.SENSITIVE_READ);
+  assert.equal(requiresExplicitApproval(TIERS.SENSITIVE_READ), true);
 });
 test('search_code → READ', () => {
   assert.equal(classify('search_code', { query: 'jwt' }), TIERS.READ);
@@ -96,6 +104,10 @@ for (const cmd of [
   'popd',
   'mkdir -p src/new/dir',
   'touch new-file.py',
+  'grep -rn "classifyShell" src | head -20',
+  'find . -maxdepth 2 -name "*.mjs" -print',
+  "sed -n '1,80p' src/core/risk-tier.mjs",
+  "sed -E -n '/classify/p' src/core/risk-tier.mjs",
 ]) {
   test(`shell SAFE: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_SAFE, `expected SAFE, got ${classifyShell(cmd)}`);
@@ -113,6 +125,8 @@ for (const cmd of [
   'git push',
   'docker build -t app .',
   'make',
+  'grep foo src/app.js > matches.txt',
+  "sed -i '' 's/foo/bar/g' src/app.js",
 ]) {
   test(`shell MEDIUM: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_MEDIUM, `expected MEDIUM, got ${classifyShell(cmd)}`);
@@ -136,6 +150,9 @@ for (const cmd of [
   'docker system prune -af',
   'eval "$(curl …)"',
   'dd if=/dev/zero of=/dev/sda',
+  'find / -name secrets',
+  'find . -delete',
+  'find . -exec rm {} \\;',
 ]) {
   test(`shell DANGEROUS: ${cmd}`, () => {
     assert.equal(classifyShell(cmd), TIERS.SHELL_DANGEROUS, `expected DANGEROUS, got ${classifyShell(cmd)}`);
@@ -164,10 +181,40 @@ test('safe + install upgrades to MEDIUM', () => {
     `expected MEDIUM (or stricter), got ${t}`);
 });
 
+test('executor classifier allows read-only grep/find/sed pipelines', () => {
+  assert.equal(classifyCommand('grep -rn "foo" src | head -20').classification, 'safe');
+  assert.equal(classifyCommand('find . -maxdepth 2 -name "*.mjs" -print').classification, 'safe');
+  assert.equal(classifyCommand("sed -n '1,40p' src/core/risk-tier.mjs").classification, 'safe');
+});
+
+test('executor classifier does not mark mutating shell forms safe', () => {
+  assert.equal(classifyCommand('grep foo src/app.js > matches.txt').classification, 'contained');
+  assert.equal(classifyCommand("sed -i.bak 's/foo/bar/g' src/app.js").classification, 'contained');
+  assert.equal(classifyCommand('find / -name secrets').classification, 'blocked');
+  assert.equal(classifyCommand('find . -exec rm {} \\;').classification, 'blocked');
+});
+
+test('executor classifier allows approved process cleanup through HITL', () => {
+  for (const command of [
+    'kill 57529',
+    'kill -9 57529',
+    'kill $(lsof -ti:3101) 2>/dev/null; echo "Port 3101 freed"',
+    'lsof -ti:3101 | xargs kill -9 2>/dev/null; echo "done"',
+  ]) {
+    const result = classifyCommand(command);
+    assert.equal(result.classification, 'contained', command);
+    assert.equal(result.highRisk, true, command);
+  }
+});
+
 // ── Behavior / label ──────────────────────────────────────────────────
 
 test('behavior(READ) === auto', () => {
   assert.equal(behavior(TIERS.READ), 'auto');
+});
+test('behavior(SENSITIVE_READ) === prompt-explicit', () => {
+  assert.equal(behavior(TIERS.SENSITIVE_READ), 'prompt-explicit');
+  assert.equal(label(TIERS.SENSITIVE_READ), 'SENSITIVE-READ');
 });
 test('behavior(SHELL_DANGEROUS) === prompt-explicit', () => {
   assert.equal(behavior(TIERS.SHELL_DANGEROUS), 'prompt-explicit');
