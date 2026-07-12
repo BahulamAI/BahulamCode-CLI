@@ -7,6 +7,13 @@
 import { ContextRetriever } from '../context/retriever.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
 import { PromptCache } from './cache.mjs';
+import {
+    ANTHROPIC_BETA_HEADER,
+    cacheableSystem,
+    cacheableTools,
+    withMessageBreakpoint,
+    needsExplicitCacheControl,
+} from './cache-control.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -360,18 +367,26 @@ export class LocalAgent {
     }
 
     async _callClaude(systemPrompt, messages, tools) {
+        // PRD-071 Phase 2 — cache_control breakpoints for Anthropic direct.
+        // Extended 1-hour TTL beta on the persistent prefix (system + tools).
+        // Message history breakpoint stays at default 5-min TTL.
+        const cachedSystem = cacheableSystem(systemPrompt);
+        const cachedTools = cacheableTools(tools);
+        const cachedMessages = withMessageBreakpoint(messages);
+
         const resp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'x-api-key': this.apiKey,
                 'anthropic-version': '2023-06-01',
+                'anthropic-beta': ANTHROPIC_BETA_HEADER,
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
                 model: this.model,
-                system: systemPrompt,
-                messages,
-                tools: tools.length > 0 ? tools : undefined,
+                system: cachedSystem,
+                messages: cachedMessages,
+                tools: cachedTools.length > 0 ? cachedTools : undefined,
                 max_tokens: 8192,
             }),
         });
@@ -390,17 +405,43 @@ export class LocalAgent {
             model = `anthropic/${model}`;
         }
 
-        const orMessages = [{ role: 'system', content: systemPrompt }, ...messages];
+        // PRD-071 Phase 2 — for anthropic/* models we need explicit cache_control
+        // breakpoints (OpenRouter relays them through to Anthropic). OpenAI +
+        // DeepSeek auto-cache, so the string system prompt path is fine there.
+        const isAnthropic = needsExplicitCacheControl(model);
+        const systemForOR = isAnthropic
+            ? { role: 'system', content: cacheableSystem(systemPrompt) }
+            : { role: 'system', content: systemPrompt };
+        const messagesForOR = isAnthropic ? withMessageBreakpoint(messages) : messages;
+        const orMessages = [systemForOR, ...messagesForOR];
+
+        // Same tool-schema shape as before, but tag the last tool for Anthropic
+        // (OpenRouter passes cache_control on function tools through).
+        const orTools = tools.length > 0
+            ? tools.map(t => ({
+                type: 'function',
+                function: { name: t.name, description: t.description, parameters: t.input_schema },
+            }))
+            : [];
+        const finalTools = isAnthropic ? cacheableTools(orTools) : orTools;
+
+        const headers = {
+            'Authorization': `Bearer ${this.openRouterKey}`,
+            'Content-Type': 'application/json',
+        };
+        // OpenRouter forwards `anthropic-beta` to Anthropic upstreams.
+        if (isAnthropic) headers['anthropic-beta'] = ANTHROPIC_BETA_HEADER;
+
         const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.openRouterKey}`,
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 model,
                 messages: orMessages,
-                tools: tools.length > 0 ? tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) : undefined,
+                tools: finalTools.length > 0 ? finalTools : undefined,
+                // Ask OpenRouter to include upstream cache accounting in the
+                // usage payload so PromptCache.updateStats() sees real numbers.
+                usage: { include: true },
             }),
         });
         if (!resp.ok) {
