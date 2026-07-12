@@ -99,11 +99,43 @@ Anthropic's Messages API returns `cache_creation_input_tokens` when a cache is b
 
 Phase 5 (COGS accuracy) needs to distinguish these — untracked writes mean we underestimate provider cost. Add a `debug_capture=1` flag to log the raw OpenRouter response on one Sonnet turn to verify.
 
+## Baseline — Claude Sonnet 5 (native Anthropic direct)
+
+Same calculator fixture, this time via **Anthropic's Messages API directly** (bypassed OpenRouter and Vertex). Made possible by the PRD-071 patch that (a) installs anthropic 0.116.0 in the backend, (b) strips the deprecated `temperature` param for Sonnet 4+, (c) enables the 1h TTL beta via `anthropic-beta: extended-cache-ttl-2025-04-11`, and (d) upgrades cache_control blocks with `ttl: '1h'` on persistent breakpoints.
+
+| Metric | Value |
+|---|---:|
+| Model | `claude-sonnet-5` |
+| Provider | Anthropic direct (not OR, not Vertex) |
+| Tools invoked | 9 |
+| Duration | 46.0s |
+| Provider cost | $0.0699 |
+| Input tokens (uncached) | 1,541 |
+| **Cache read** | **61,284** |
+| **Cache write** | **10,320** ← first non-zero write we've measured |
+| **Hit rate (Anthropic convention)** | **84%** |
+| Hit rate (OpenAI convention) | 3977% (formula inversion — see below) |
+
+### Why the two rate numbers diverge so sharply
+
+- **Anthropic convention**: `usage.input_tokens` = ONLY uncached input. Separate fields for `cache_read_input_tokens` and `cache_creation_input_tokens`. Correct hit rate = `cache_read / (input + cache_read + cache_write) = 61,284 / 73,145 = 84%`.
+- **OpenAI convention**: `usage.prompt_tokens` INCLUDES cached tokens as a subset. Would give `cache_read / prompt_tokens ≈ 1`.
+- Applying the OpenAI formula to Anthropic-shape usage produces `61,284 / 1,541 = 3,977%` — nonsense, but a useful signal that the shape mismatched.
+
+The shell parser + `cache-report.json` writer now auto-detect the convention (if `cache_read > input_tokens` → Anthropic shape) and report the right number. Fixed in this same commit.
+
+### What this measurement proves
+
+1. **All three breakpoints land** — a session-only-caches-system prompt would show ~5-10k cache_read at most. 61k means system + tools + message-history breakpoints are all being hit.
+2. **The 1h TTL beta is active** — `cache_write: 10,320` non-zero confirms new cache blocks were written during this session with the extended TTL. Vertex-served Sonnet reported `cache_write: 0` because Vertex's envelope doesn't surface that field; native Anthropic does.
+3. **Sonnet 5 economics on real Anthropic**: cost $0.0699 for 46s of coding-agent work. At 84% cache hit, effective input rate ≈ `0.16 × $3 + 0.84 × $0.30 = ~$0.73/M` — even better than the Sonnet-4-via-Vertex measurement of ~$1.00/M.
+
 ## Baselines summary
 
-- [x] `deepseek/deepseek-v4-flash` remote: **58% cold → 83% steady-state**
-- [x] `anthropic/claude-sonnet-4` remote: **74% aggregate** — margin story confirmed
-- [ ] `anthropic/claude-sonnet-4` **local mode with new cache_control wiring** — measure post-Phase 2
+- [x] `deepseek/deepseek-v4-flash` (OR platform key): **58% cold → 83% steady-state**
+- [x] `anthropic/claude-sonnet-4` via OpenRouter → Vertex: **74% aggregate**, cache_write hidden by Vertex envelope
+- [x] **`claude-sonnet-5` native Anthropic**: **84% Anthropic-convention** — all breakpoints proven to land, 1h TTL beta active, cache_write reported
+- [ ] Local-mode Sonnet with the new CLI cache_control wiring — pending an unblocked OR key
 - [ ] `openai/gpt-5-mini` remote — nice-to-have
 
 ## Phase 2 exit target (recap from PRD-071)

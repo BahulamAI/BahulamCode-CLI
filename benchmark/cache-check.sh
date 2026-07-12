@@ -216,7 +216,12 @@ for line in open('/tmp/cache-check/output.jsonl'):
             out = u.get('output_tokens', 0)
             cr = u.get('cache_read', 0)
             cw = u.get('cache_write', 0)
-            rate = round(100 * cr / max(inp, 1))
+            # PRD-071: two conventions in the wild.
+            #   OpenAI/DeepSeek: input_tokens INCLUDES cached → hit = cr/inp
+            #   Anthropic native: input_tokens EXCLUDES cache → hit = cr/(cr+cw+inp)
+            # Detect Anthropic shape by cr > inp (impossible if input includes cache).
+            denom = (cr + cw + inp) if cr > inp else inp
+            rate = round(100 * cr / max(denom, 1))
             cost = d.get('cost_usd', 0)
             dur = d.get('duration_s', 0)
 

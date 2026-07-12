@@ -255,16 +255,17 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         const cacheRead = usage.cache_read || 0;
         const cacheWrite = usage.cache_write || 0;
         const inputT = usage.input_tokens || 0;
-        // Two rate conventions:
-        //   OpenAI/DeepSeek: `input_tokens` includes cached tokens
+        // Two conventions in the wild:
+        //   OpenAI/DeepSeek: input_tokens INCLUDES cached tokens
         //                    → hit_rate = cache_read / input_tokens
-        //   Anthropic:       `input_tokens` excludes cache reads
-        //                    → hit_rate = cache_read / (input + cache_read)
-        // Report both so downstream tooling (cache-check.sh, dashboard)
-        // can pick the convention that matches the model. `cache_hit_rate_pct`
-        // uses the OpenAI convention to match the existing shell parser.
+        //   Anthropic:       input_tokens EXCLUDES cache reads AND writes
+        //                    → hit_rate = cache_read / (input + cache_read + cache_write)
+        // Report both. Also expose `cache_hit_rate_pct` as the "sane" number
+        // — auto-detects convention by whether cache_read > input_tokens.
         const rateOpenAI = inputT > 0 ? Math.round((cacheRead / inputT) * 100) : 0;
-        const rateAnthropic = (inputT + cacheRead) > 0 ? Math.round((cacheRead / (inputT + cacheRead)) * 100) : 0;
+        const anthropicDenom = inputT + cacheRead + cacheWrite;
+        const rateAnthropic = anthropicDenom > 0 ? Math.round((cacheRead / anthropicDenom) * 100) : 0;
+        const rateAuto = cacheRead > inputT ? rateAnthropic : rateOpenAI;
         const report = {
             schema: 'kepler.cache-report/1',
             model: model || 'default',
@@ -272,7 +273,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             output_tokens: usage.output_tokens || 0,
             cache_read_tokens: cacheRead,
             cache_write_tokens: cacheWrite,
-            cache_hit_rate_pct: rateOpenAI,
+            cache_hit_rate_pct: rateAuto,
             cache_hit_rate_openai_pct: rateOpenAI,
             cache_hit_rate_anthropic_pct: rateAnthropic,
             duration_s: Math.round(durationS * 10) / 10,
