@@ -24,23 +24,43 @@ Two hit-rate definitions are in the wild — they measure different things:
 
 `cache-report.json` records **both** so downstream tooling can pick the convention that matches the model. The `cache_hit_rate_pct` top-level field uses the OpenAI convention to stay backwards-compatible with `cache-check.sh`.
 
-## Baseline — DeepSeek-V4-Flash (small deterministic session)
+## Baseline — DeepSeek-V4-Flash
+
+Two runs on the same fixture, back-to-back. The delta between them is the story: DeepSeek's automatic prefix cache is warm on the second run because it hasn't been evicted (5-min TTL, second run within seconds).
+
+### Run 1 — cold-ish (58% aggregate)
 
 | Metric | Value |
 |---|---:|
 | Model | `deepseek/deepseek-v4-flash` |
 | Tools invoked | 25 |
-| Tool breakdown | 10× get_project_overview, 6× shell, 3× search_code, 2× read_file, 2× edit_file, 1× list_files, 1× git_diff |
 | Duration | 82.0s |
-| Provider cost (OpenRouter) | $0.0068 |
-| Input tokens (prompt_tokens) | 84,986 |
-| Output tokens | 1,718 |
-| **Cache read tokens** | **49,536** |
-| Cache write tokens | 0 (DeepSeek automatic caching does not report cache_creation) |
-| **Hit rate (OpenAI convention)** | **58%** |
-| Hit rate (Anthropic convention) | 37% |
+| Provider cost | $0.0068 |
+| Input tokens | 84,986 |
+| Cache read | 49,536 |
+| Cache write | 0 (DeepSeek automatic caching does not report cache_creation) |
+| **Hit rate (OpenAI)** | **58%** |
+| Hit rate (Anthropic) | 37% |
 
-Machine-readable file: `/tmp/cache-check/report.json` — schema `kepler.cache-report/1`.
+### Run 2 — steady-state (83% aggregate)
+
+Same fixture, re-run immediately after Run 1 (backend restart in between with new PRD-071 code paths):
+
+| Metric | Value |
+|---|---:|
+| Model | `deepseek/deepseek-v4-flash` |
+| Tools invoked | 19 |
+| Duration | 73.2s |
+| Provider cost | $0.0075 |
+| Input tokens | 94,059 |
+| Cache read | 77,824 |
+| Cache write | 0 |
+| **Hit rate (OpenAI)** | **83%** |
+| Hit rate (Anthropic) | 45% |
+
+**This is the steady-state baseline for DeepSeek in remote-mode CLI, and it's within striking distance of the RESULTS.md `90%+ steady-state` target.** For a repeat-fixture harness this is essentially the ceiling for DeepSeek — the last 7-17pt to 100% is the unavoidable per-turn suffix (tool result, current user message) that can't be cached ahead.
+
+Machine-readable: `/tmp/cache-check/report.json` — schema `kepler.cache-report/1`.
 
 ## Interpretation
 
