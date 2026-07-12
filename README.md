@@ -1,96 +1,68 @@
 # @axplusb/kepler
 
-AI coding agent that plans, builds, tests, and ships. 30.7% on SWE-bench Lite.
+Kepler is an AI coding agent for terminal-first software work. It can inspect a
+repo, plan changes, run tools, ask for human approval, resume prior sessions, and
+keep local project context in `.kepler/`.
+
+The npm package uses [KEPLER-README.md](./KEPLER-README.md) as the published
+README. Keep that file as the canonical npm-facing documentation.
 
 ## Install
 
 ```bash
-npm install -g @axplusb/kepler
+npm install -g @axplusb/kepler@latest
+```
+
+Run without global install:
+
+```bash
+npx @axplusb/kepler@latest
 ```
 
 ## Quick Start
 
 ```bash
-kepler login                        # Sign in via browser (GitHub/Google)
-kepler                              # Start interactive REPL
-kepler "fix the auth bug"           # Run a single instruction
+kepler login
+kepler
+kepler "fix the failing auth test"
 ```
 
-## Commands
+## Common Commands
 
-```
+```text
 kepler                    Start interactive REPL
 kepler "instruction"      Run a single instruction and exit
-kepler login              Sign in via browser
+kepler login              Sign in through the browser
 kepler dashboard          Open Kepler Pulse analytics dashboard
 kepler sessions           List recent local sessions
-kepler stats              Aggregate session stats (tokens, cost, tools)
-kepler history            Recent prompt history
-kepler version            Show version
+kepler stats              Aggregate local session stats
+kepler history            Show recent prompt history
+kepler version            Show installed version
 ```
 
-## REPL Commands
+## 2.2.0 Highlights
 
-```
-/help                   Show available commands
-/stats                  Session metrics (tokens, cost, tools)
-/cost                   Detailed cost breakdown by model
-/history                Conversation history
-/clear                  Clear conversation history
-/explore <query>        Spawn read-only codebase explorer
-/review <query>         Spawn code review agent
-/architect <query>      Spawn architecture planning agent
-/safety                 Show safety guardrail status
-/revoke                 Revoke auto-approvals
-/exit                   Exit the REPL
-```
+- Checkpointed `/resume` summaries with summary-only and summary-plus-tail modes.
+- One approval prompt model for shell, sensitive reads, destructive actions, and
+  backend/framework HITL.
+- Redacted local approval logs.
+- Wrapped full shell command display.
+- Long-running shell command tail capture.
 
-## Keyboard
+## Development
 
-```
-Esc                     Cancel current execution
-Space                   Pause / resume execution
-Ctrl+C                  Exit
+```bash
+npm test
+env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm pack --dry-run
 ```
 
-## Configuration
-
-Settings are managed via the web dashboard at [codekepler.ai/dashboard/settings](https://codekepler.ai/dashboard/settings) and synced to the CLI automatically.
-
-- **API Key**: Add your OpenRouter/Anthropic/OpenAI key in Settings
-- **Model**: Choose your preferred model (40+ supported)
-- **Gateway**: Select provider (OpenRouter, Anthropic, OpenAI, Bedrock, Google AI, etc.)
-- **Config directory**: `~/.kepler/`
-
-## Models
-
-Works with 13 providers and 40+ models:
-
-| Provider | Models |
-|----------|--------|
-| DeepSeek | V4 Flash, V4 Pro, R1 |
-| Anthropic | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 |
-| Google | Gemini 2.5 Pro, Flash |
-| OpenAI | GPT-4.1, O3, Codex |
-| Meta | Llama 4 Maverick, Scout |
-| Mistral | Devstral, Codestral |
-| xAI | Grok 3 |
-| Qwen | Qwen3 Coder |
-| + | AWS Bedrock, Azure OpenAI, Databricks, Moonshot, Custom |
-
-Platform default included free. Bring your own API key for unlimited.
-
-## SWE-bench
-
-| Model | Score | Cost |
-|-------|-------|------|
-| DeepSeek V4 Flash | 30.7% (92/300) | $0.03/fix |
-| DeepSeek V4 Pro | 50% (14/28 sample) | $0.48/fix |
+See [RELEASE.md](./RELEASE.md) for the merge, PR, and npm publish checklist.
 
 ## Links
 
-- Website: [codekepler.ai](https://codekepler.ai)
-- Company: [axplusb.tech](https://axplusb.tech)
+- Website: https://codekepler.ai
+- Company: https://axplusb.tech
+- Repository: https://github.com/raviakasapu/codekepler-npm
 
 ## License
 
