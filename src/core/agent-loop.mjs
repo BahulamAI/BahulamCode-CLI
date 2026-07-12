@@ -6,6 +6,7 @@ import { streamResponse, accumulateStream } from './streaming.mjs';
 import { ContextManager } from './context-manager.mjs';
 import { buildSystemPrompt } from './system-prompt.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
+import { PromptCache } from './cache.mjs';
 import fs from 'fs';
 import path from 'path';
 export function createAgentLoop({ model, tools, permissions, settings, hooks }) {
@@ -23,10 +24,11 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
         messages: [],
         systemPrompt: promptResult.full,
         turnCount: 0,
-        tokenUsage: { input: 0, output: 0 },
+        tokenUsage: { input: 0, output: 0, cache_read: 0, cache_creation: 0 },
         model,
         tools,
         _contextManager: contextManager,
+        _promptCache: new PromptCache(),
     };
     const stagnation = createStagnationTracker({
         enabled: settings.stagnationDetection === true,
@@ -99,10 +101,14 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
             return;
         }
 
-        // Track token usage
+        // Track token usage (PRD-071 §1.1: also record cache hits/writes so
+        // /extra-usage and /status stop reporting zeros)
         if (response.usage) {
             state.tokenUsage.input += response.usage.input_tokens || 0;
             state.tokenUsage.output += response.usage.output_tokens || 0;
+            state.tokenUsage.cache_read += response.usage.cache_read_input_tokens || 0;
+            state.tokenUsage.cache_creation += response.usage.cache_creation_input_tokens || 0;
+            state._promptCache.updateStats(response.usage);
         }
 
         // Build assistant message for history

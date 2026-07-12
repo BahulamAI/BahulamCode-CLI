@@ -6,6 +6,7 @@
 
 import { ContextRetriever } from '../context/retriever.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
+import { PromptCache } from './cache.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -209,12 +210,14 @@ export class LocalAgent {
         this.stagnationDetection = stagnationDetection;
         this.stagnationThreshold = stagnationThreshold;
         this._cancelled = false;
+        this.promptCache = new PromptCache();
     }
 
     async *execute(instruction, context = {}) {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
+        const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
 
         yield { type: 'status', data: { message: `Local mode: ${this.model}` } };
 
@@ -252,7 +255,15 @@ export class LocalAgent {
                 return;
             }
 
-            const { content, stopReason } = response;
+            const { content, stopReason, usage } = response;
+
+            if (usage) {
+                this.promptCache.updateStats(usage);
+                usageTotals.input_tokens += usage.input_tokens || 0;
+                usageTotals.output_tokens += usage.output_tokens || 0;
+                usageTotals.cache_read_tokens += usage.cache_read_input_tokens || 0;
+                usageTotals.cache_creation_tokens += usage.cache_creation_input_tokens || 0;
+            }
 
             // Process content blocks
             let hasToolUse = false;
@@ -303,13 +314,29 @@ export class LocalAgent {
 
             if (!hasToolUse || stopReason === 'end_turn') {
                 const duration = (Date.now() - startTime) / 1000;
-                yield { type: 'complete', data: { summary: 'Done (local)', changes: toolCount, duration_s: duration } };
+                yield {
+                    type: 'complete',
+                    data: {
+                        summary: 'Done (local)',
+                        changes: toolCount,
+                        duration_s: duration,
+                        usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+                    },
+                };
                 return;
             }
         }
 
         yield { type: 'error', data: { message: `Max turns (${this.maxTurns}) reached.` } };
-        yield { type: 'complete', data: { summary: 'Aborted (max turns)', changes: toolCount, duration_s: (Date.now() - startTime) / 1000 } };
+        yield {
+            type: 'complete',
+            data: {
+                summary: 'Aborted (max turns)',
+                changes: toolCount,
+                duration_s: (Date.now() - startTime) / 1000,
+                usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+            },
+        };
     }
 
     async _callLLM(systemPrompt, messages, tools) {
@@ -353,7 +380,7 @@ export class LocalAgent {
             throw new Error(`Claude API ${resp.status}: ${text.slice(0, 200)}`);
         }
         const data = await resp.json();
-        return { content: data.content || [], stopReason: data.stop_reason };
+        return { content: data.content || [], stopReason: data.stop_reason, usage: data.usage || null };
     }
 
     async _callOpenRouter(systemPrompt, messages, tools) {
@@ -389,7 +416,11 @@ export class LocalAgent {
                 content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: JSON.parse(tc.function.arguments || '{}') });
             }
         }
-        return { content, stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use' };
+        return {
+            content,
+            stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
+            usage: _normalizeOpenRouterUsage(data.usage),
+        };
     }
 
     _buildToolDefs() {
@@ -426,4 +457,39 @@ export class LocalAgent {
     }
 
     cancel() { this._cancelled = true; }
+}
+
+// Shape the accumulated per-turn totals into the same envelope the remote
+// SSE `complete` event uses, so repl.mjs:837 can consume both modes with the
+// same code path. `models[0].role = 'local'` distinguishes single-agent
+// local mode from remote's Coder/Explorer/Planner breakdown.
+function _buildLocalUsageEnvelope(model, totals) {
+    return {
+        total_input_tokens: totals.input_tokens,
+        total_output_tokens: totals.output_tokens,
+        models: [{
+            model,
+            role: 'local',
+            input_tokens: totals.input_tokens,
+            output_tokens: totals.output_tokens,
+            cache_read_tokens: totals.cache_read_tokens,
+            cache_creation_tokens: totals.cache_creation_tokens,
+        }],
+    };
+}
+
+// Normalize OpenRouter usage into Anthropic's field names so downstream
+// consumers (PromptCache, pricing.calculateCost) don't branch on shape.
+// OpenRouter returns OpenAI-style: prompt_tokens, completion_tokens,
+// prompt_tokens_details.cached_tokens. When the underlying model is
+// Anthropic, OpenRouter also relays cache_read_input_tokens verbatim.
+function _normalizeOpenRouterUsage(usage) {
+    if (!usage) return null;
+    const cachedFromOpenAI = usage.prompt_tokens_details?.cached_tokens || 0;
+    return {
+        input_tokens: usage.prompt_tokens || 0,
+        output_tokens: usage.completion_tokens || 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens || cachedFromOpenAI || 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+    };
 }

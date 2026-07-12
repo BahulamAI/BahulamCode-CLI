@@ -26,7 +26,7 @@ import { ApprovalManager } from './approval.mjs';
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null }) {
     const startTime = Date.now();
 
     const log = (msg) => {
@@ -218,6 +218,35 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         model: model || 'default',
         content_length: finalContent.length,
     });
+
+    // PRD-071 §1.5 — cache summary for benchmark harness. Machine-readable,
+    // one file per run. Fields match what benchmark/cache-check.sh already
+    // computes (input, cache_read, cache_write, rate) so the shell script
+    // becomes a thin reader instead of re-doing the arithmetic.
+    if (cacheReport && usage) {
+        const cacheRead = usage.cache_read || 0;
+        const cacheWrite = usage.cache_write || 0;
+        const denom = (usage.input_tokens || 0) + cacheRead;
+        const rate = denom > 0 ? Math.round((cacheRead / denom) * 100) : 0;
+        const report = {
+            schema: 'kepler.cache-report/1',
+            model: model || 'default',
+            input_tokens: usage.input_tokens || 0,
+            output_tokens: usage.output_tokens || 0,
+            cache_read_tokens: cacheRead,
+            cache_write_tokens: cacheWrite,
+            cache_hit_rate_pct: rate,
+            duration_s: Math.round(durationS * 10) / 10,
+            cost_usd: totalCost,
+        };
+        try {
+            const fs = await import('node:fs');
+            fs.writeFileSync(cacheReport, JSON.stringify(report, null, 2) + '\n');
+            log(`Cache report written: ${cacheReport}`);
+        } catch (err) {
+            log(`Cache report write failed: ${err.message}`);
+        }
+    }
 
     log(`Done: ${toolCount} tools, ${durationS.toFixed(1)}s, $${totalCost.toFixed(3)}`);
 

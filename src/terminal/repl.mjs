@@ -213,9 +213,22 @@ function printBanner(auth) {
  * Left side: last-turn summary (tools, time, cost)
  * Right side: session totals (ctx%, tokens)
  */
+function computeCacheTotals() {
+  let read = 0;
+  let write = 0;
+  for (const b of session.costBreakdown) {
+    read += b.cache_read_tokens || 0;
+    write += b.cache_creation_tokens || 0;
+  }
+  const denom = session.inputTokens + read;
+  const hitRate = denom > 0 ? Math.round((read / denom) * 100) : 0;
+  return { read, write, hitRate };
+}
+
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const elapsed = formatElapsed(session.startTime);
+  const cache = computeCacheTotals();
 
   // BYOK: user pays the provider directly, suppress credits entirely.
   // Otherwise prefer the server-authoritative session counter, falling back
@@ -225,6 +238,7 @@ function buildContextStrip() {
     : costToCredits(session.totalCost);
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
+    ...(cache.read > 0 ? [c.dim(`cache ${cache.hitRate}%`)] : []),
     ...(session.rateLimit && !session.isByok ? [c.dim(formatMessageChip(session.rateLimit))] : []),
     ...(session.isByok ? [] : [c.dim(formatCredits(usedCr))]),
     c.dim(elapsed),
@@ -1043,6 +1057,15 @@ async function handleCommand(input, ctx) {
         }
       }
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
+
+      // Cache — PRD-071 §1.2. Only surface when we have data; a fresh session
+      // shows nothing rather than a misleading "0%".
+      const cache = computeCacheTotals();
+      if (cache.read > 0 || cache.write > 0) {
+        const readLabel = formatTokens(cache.read);
+        const writeLabel = formatTokens(cache.write);
+        process.stderr.write(`  ${c.dim('Cache')}        ${cache.hitRate}% hit ${c.dim('·')} ${readLabel} read ${c.dim('·')} ${writeLabel} write\n`);
+      }
 
       // Permissions
       process.stderr.write(`\n  ${c.bold('Permissions')}\n`);

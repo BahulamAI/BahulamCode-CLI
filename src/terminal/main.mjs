@@ -155,6 +155,7 @@ async function main() {
       model: args.model,
       timeout: args.timeout || (args.maxTurns ? args.maxTurns * 60 : 600),
       verbose: args.verbose,
+      cacheReport: args.cacheReport,
     });
     return;
   }
