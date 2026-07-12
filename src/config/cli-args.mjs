@@ -109,6 +109,13 @@ export function parseArgs(args) {
                 result.cacheReport = args[++i];
                 break;
 
+            case '--local':
+                // Force LocalAgent path (bypass backend). Meant for benchmarks
+                // that need to exercise the CLI's own LLM code — cache_control
+                // wiring, prompt-cache stats, etc.
+                result.local = true;
+                break;
+
             case '--freeswim-open-waters':
             case '--freeswim':
             case '--yes':

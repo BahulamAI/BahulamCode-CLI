@@ -26,7 +26,7 @@ import { ApprovalManager } from './approval.mjs';
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false }) {
     const startTime = Date.now();
 
     const log = (msg) => {
@@ -51,13 +51,41 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });
 
-    // ── Stream client ──
-    const client = new TarangStreamClient({
-        baseUrl: creds.backendUrl,
-        token: creds.token,
-        toolExecutor,
-        approvalManager: approval,
-    });
+    // ── Client selection ──
+    // PRD-071 Phase 2 measurement — --local forces the CLI-side LocalAgent path,
+    // bypassing the backend so we can exercise the cache_control wiring we
+    // just added to _callClaude / _callOpenRouter. Model comes from the
+    // --model flag (which overrides settings dynamically for benchmarking).
+    let client;
+    if (local) {
+        const { LocalAgent } = await import('./local-agent.mjs');
+        const localModel = model || creds.models?.local || 'anthropic/claude-sonnet-4';
+        const orKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+        const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
+        if (!orKey && !anthKey) {
+            emit({ type: 'error', error: '--local requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY' });
+            process.exit(1);
+        }
+        client = {
+            execute: (instr, ctx) => new LocalAgent({
+                apiKey: anthKey,
+                openRouterKey: orKey,
+                model: localModel,
+                toolExecutor,
+                verbose,
+                cwd: process.cwd(),
+                maxTurns: 50,
+            }).execute(instr, ctx),
+        };
+        log(`Local mode: ${localModel}`);
+    } else {
+        client = new TarangStreamClient({
+            baseUrl: creds.backendUrl,
+            token: creds.token,
+            toolExecutor,
+            approvalManager: approval,
+        });
+    }
 
     // ── Timeout ──
     const timeoutMs = timeout * 1000;
