@@ -191,11 +191,13 @@ fi
 
 export TARANG_ENV=local
 cd "$TEST_DIR"
+mkdir -p /tmp/cache-check
 TIMEOUT_CMD=$(command -v timeout || command -v gtimeout || echo "")
 ${TIMEOUT_CMD:+$TIMEOUT_CMD 300} node "${REPO_ROOT}/src/terminal/main.mjs" \
     --headless --verbose \
-    --instruction "$INSTRUCTION" \
+    --print "$INSTRUCTION" \
     --model "$MODEL" \
+    --cache-report /tmp/cache-check/report.json \
     2>&1 | tee /tmp/cache-check/output.jsonl | tail -5
 
 # ── Step 4: Parse and report ──
