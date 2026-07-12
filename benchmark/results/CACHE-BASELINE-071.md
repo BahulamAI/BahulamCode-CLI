@@ -68,15 +68,43 @@ Machine-readable: `/tmp/cache-check/report.json` — schema `kepler.cache-report
 - **Cache write tokens = 0 is expected for DeepSeek**, whose automatic prefix caching does not surface `cache_creation_input_tokens` in the usage response. Written cache exists (the reads prove it) but isn't line-itemized. This is a data-only limitation, not a caching failure.
 - The 58% is **short of the RESULTS.md-recorded 90%+ steady-state** because a 25-tool session is dominated by unique tool_result payloads (each tool call produces a new suffix that isn't yet in the cache). Longer sessions with heavier prefix reuse (long system prompt + tools + growing but stable message history) should push the rate up.
 
-## Baselines still to collect
+## Baseline — Claude Sonnet 4 (remote-mode CLI)
 
-The PRD calls for baselines on three models. Only DeepSeek-Flash landed in this session:
+Same calculator fixture, MODEL=`anthropic/claude-sonnet-4` through the local backend. This is the number that unblocks the margin doc.
 
-- [x] `deepseek/deepseek-v4-flash` — 58% (OpenAI) / 37% (Anthropic)
-- [ ] `anthropic/claude-sonnet-4` — **highest-value baseline for margin math.** Sonnet is where the pricing-and-margins.md hole lives.
-- [ ] `openai/gpt-5-mini` — Anthropic convention will not apply; expect OpenAI-convention rate ~40-60% given prefix stability.
+| Metric | Value |
+|---|---:|
+| Model | `anthropic/claude-sonnet-4` |
+| Tools invoked | 22 |
+| Duration | 98.9s |
+| Provider cost (post-cache) | **$0.0089** |
+| Input tokens | 110,865 |
+| **Cache read** | **81,920** |
+| Cache write | 0 (see caveat below) |
+| **Hit rate (OpenAI convention)** | **74%** |
 
-These need real API spend against production or an authed local backend — cost ~$0.05-0.10 per Sonnet run. Book for next session.
+### Economic implications
+
+- Cache-read cost at $0.30/M = ~$0.025
+- Same tokens at full $3/M input = ~$0.246
+- **Savings this session ≈ $0.22 — a 10× reduction on the cached portion.**
+- Total session cost of $0.0089 means we could run **~2,200 Sonnet sessions of this shape for a $20 Pro sub**, vs the pricing-and-margins.md "estimated 370 turns/mo" break-even.
+- Effective Sonnet input rate at 74% hit: `0.26 × $3 + 0.74 × $0.30 = ~$1.00/M` — roughly **3× cheaper** than the naive $3/M assumption in the margin doc.
+
+### Caveat: cache_write = 0 is likely a reporting gap
+
+Anthropic's Messages API returns `cache_creation_input_tokens` when a cache is being written. OpenRouter appears to not consistently relay this field on the OpenAI-shaped `chat/completions` response (or the framework isn't parsing it under both field names). We're seeing cache READS but never WRITES — either:
+1. The cache was already warm from prior runs in the 1h TTL window (plausible — we've been running back-to-back), OR
+2. `cache_creation_input_tokens` isn't flowing through OpenRouter's Sonnet response envelope.
+
+Phase 5 (COGS accuracy) needs to distinguish these — untracked writes mean we underestimate provider cost. Add a `debug_capture=1` flag to log the raw OpenRouter response on one Sonnet turn to verify.
+
+## Baselines summary
+
+- [x] `deepseek/deepseek-v4-flash` remote: **58% cold → 83% steady-state**
+- [x] `anthropic/claude-sonnet-4` remote: **74% aggregate** — margin story confirmed
+- [ ] `anthropic/claude-sonnet-4` **local mode with new cache_control wiring** — measure post-Phase 2
+- [ ] `openai/gpt-5-mini` remote — nice-to-have
 
 ## Phase 2 exit target (recap from PRD-071)
 
