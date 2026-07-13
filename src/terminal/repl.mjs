@@ -197,6 +197,18 @@ function formatResumeCheckpointStatus(session) {
   return c.dim(` · summarized${pct}`);
 }
 
+function formatResumeContextStatus(session) {
+  const full = formatCtxTokens(session?.contextTokens || 0);
+  const marker = session?.resumeSummary;
+  if (!marker || !Number(marker.sourceMessageCount)) {
+    return c.dim(`${full.padStart(5, ' ')} ctx`);
+  }
+  const resumable = formatCtxTokens(projectedTokensForChoice('checkpoint-full', session.contextTokens || 0, {
+    resumeSummary: marker,
+  }));
+  return c.dim(`${resumable.padStart(5, ' ')} resumable · ${full} full`) + formatResumeCheckpointStatus(session);
+}
+
 function formatRelativeTime(iso) {
   if (!iso) return '';
   const t = Date.parse(iso);
@@ -251,7 +263,7 @@ async function pickResumableSession(resumable, ctx) {
         const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
         const status = endStatusMarker(s.endStatus);
         const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
-        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`) + formatResumeCheckpointStatus(s);
+        const ctx = formatResumeContextStatus(s);
         const cost = formatSessionCost(s.costUsd);
         const partial = s.partial ? c.yellow(' ⚠partial') : '';
         const instr = oneLineInstruction(s.instruction, 48);
@@ -309,8 +321,14 @@ async function chooseThresholdMode(ctx, decision) {
   if (rl) rl.pause();
 
   const canFull = decision.mode !== 'no-full-allowed';
+  const hasCheckpoint = Boolean(decision.resumeSummary?.sourceMessageCount);
+  const firstOption = canFull
+    ? { key: 'f', value: 'full', label: 'full transcript', enabled: true }
+    : hasCheckpoint
+      ? { key: 'f', value: 'checkpoint-full', label: 'checkpointed transcript', enabled: true }
+      : { key: 'f', value: 'full', label: 'full transcript', enabled: false };
   const options = [
-    { key: 'f', value: 'full',    label: 'full transcript', enabled: canFull },
+    firstOption,
     { key: 's', value: 'summary', label: 'summary only',    enabled: true },
     { key: '1', value: 'tail-10', label: 'summary + last 10 turns', enabled: true },
     { key: '2', value: 'tail-20', label: 'summary + last 20 turns', enabled: true },
@@ -329,7 +347,8 @@ async function chooseThresholdMode(ctx, decision) {
       const projected = formatCtxTokens(decision.projected);
       const win = formatCtxTokens(decision.windowSize);
       const lines = [];
-      lines.push(`  This session would use  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      const rawLabel = hasCheckpoint ? 'Raw full transcript would use' : 'This session would use';
+      lines.push(`  ${rawLabel}  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
       if (decision.resumeSummary?.sourceMessageCount) {
         const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
         const full = Number(decision.resumeSummary.fullMessageCount) || 0;
@@ -338,14 +357,18 @@ async function chooseThresholdMode(ctx, decision) {
       }
       lines.push(canFull
         ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
-        : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
+        : hasCheckpoint
+          ? `  ${c.yellow('⚠')} ${c.dim('raw full is over hardCap — checkpoint/tail modes are available:')}`
+          : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
       lines.push('');
       for (let i = 0; i < options.length; i++) {
         const o = options[i];
         const disabled = !o.enabled;
         const marker = i === selected && !disabled ? c.brand('▸') : ' ';
         const keyTag = c.dim('[') + (disabled ? c.dim(o.key) : c.brand(o.key)) + c.dim(']');
-        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected));
+        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected, {
+          resumeSummary: decision.resumeSummary,
+        }));
         const label = disabled ? c.dim(o.label) : (i === selected ? c.brand(o.label) : o.label);
         const projCol = c.dim(`${proj.padStart(5, ' ')} ctx`);
         const suffix = disabled ? c.dim('  (over hardCap)') : '';
@@ -390,6 +413,7 @@ async function chooseThresholdMode(ctx, decision) {
 }
 
 function resumeModeLabel(mode = 'full') {
+  if (mode === 'checkpoint-full') return 'checkpointed transcript';
   if (mode === 'summary') return 'summary only';
   const tailTurns = resumeTailTurnCount(mode);
   if (tailTurns) return `summary + last ${tailTurns} turns`;
@@ -435,7 +459,7 @@ async function previewResumeSession(session, ctx) {
       if (scrollOffset > maxOffset) scrollOffset = maxOffset;
 
       const lines = [];
-      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
+      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens, { resumeSummary: session.resumeSummary })) + ' ctx')}`);
       lines.push(`  ${c.dim('─'.repeat(60))}`);
       for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
         lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
@@ -461,7 +485,7 @@ async function previewResumeSession(session, ctx) {
       if (key === '[B') { scrollOffset += 1; render(); return; }
       if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
       if (key === '[6~') { scrollOffset += 10; render(); return; }
-      if (low === 'f') { mode = 'full'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === 'f') { mode = session.resumeSummary?.sourceMessageCount ? 'checkpoint-full' : 'full'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === '1') { mode = 'tail-10'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === '2') { mode = 'tail-20'; history = rich(); scrollOffset = 0; render(); return; }

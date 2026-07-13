@@ -531,10 +531,10 @@ export function buildResumeHistory(detail, mode = 'compact') {
   );
 
   // PRD-068 §5.14.4: resume mode picker.
-  //   'full'       — every turn sent verbatim (unchanged)
-  //   'tail-N'     — recap block as system prime + last N conversation messages so the
-  //                  agent has real recent conversation to reference.
-  //   'summary'    — recap block only. Cheapest continuity, biggest lossiness.
+  //   'full'            — every turn sent verbatim (unchanged)
+  //   'checkpoint-full' — latest summary checkpoint + every message after it
+  //   'tail-N'          — recap block + last N conversation messages
+  //   'summary'         — recap block only. Cheapest continuity, biggest lossiness.
   let agentHistory;
   let sourceMessages = fullAgentHistory;
   let summaryMessageIndex = -1;
@@ -543,6 +543,22 @@ export function buildResumeHistory(detail, mode = 'compact') {
   if (mode === 'full') {
     agentHistory = fullAgentHistory;
     summaryCoveredMessageCount = fullAgentHistory.length;
+  } else if (mode === 'checkpoint-full') {
+    sourceMessages = [];
+    const tail = fullAgentHistory.slice(summaryCheckpointMessageCount);
+    activeSummary = priorSummary
+      || summaryForMessages(fullAgentHistory.slice(0, summaryCheckpointMessageCount), {
+        fallback: summary,
+        label: 'Summary checkpoint',
+      });
+    summaryCoveredMessageCount = summaryCheckpointMessageCount;
+    agentHistory = [
+      { role: 'user', content: metadata },
+      { role: 'user', content: `Original user request from this resumed session:\n${originalRequest || '(unknown)'}` },
+      { role: 'user', content: activeSummary || summary },
+      ...tail,
+    ];
+    summaryMessageIndex = 2;
   } else if (mode === 'recap+tail' || /^tail-\d+$/.test(String(mode || ''))) {
     const tailTurns = tailTurnsForMode(mode, detail);
     const { tail, startIndex } = tailHistorySliceByRecentMessages(fullAgentHistory, tailTurns);

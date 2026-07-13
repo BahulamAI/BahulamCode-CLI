@@ -78,6 +78,9 @@ test('projectedTokensForChoice: mode-specific projections', () => {
   assert.ok(projectedTokensForChoice('summary', 999999) < 10000);
   assert.ok(projectedTokensForChoice('tail-10', 999999) < projectedTokensForChoice('tail-20', 999999));
   assert.ok(projectedTokensForChoice('tail-20', 999999) < projectedTokensForChoice('full', 999999));
+  assert.equal(projectedTokensForChoice('checkpoint-full', 999999, {
+    resumeSummary: { sourceMessageCount: 90, fullMessageCount: 100 },
+  }), 7000);
 });
 
 test('formatTokens: sub-1k, k-range, M-range', () => {
