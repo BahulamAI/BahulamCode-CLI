@@ -1363,10 +1363,12 @@ function updateStatusBar() {
 // buffered head as a regular two-line shape first so the interleaving
 // content lands below it.
 let _pendingHead = null; // { callId, head, indent }
+let _lastRenderedBlock = null; // 'tool' | 'content' | null
 
 function flushPendingHead() {
   if (!_pendingHead) return;
   process.stderr.write(`${_pendingHead.head}\n`);
+  _lastRenderedBlock = 'tool';
   _pendingHead = null;
 }
 
@@ -1452,6 +1454,7 @@ function renderToolResult(data, eventType = 'tool_result') {
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
+      _lastRenderedBlock = 'tool';
       _pendingHead = null;
       return;
     }
@@ -1465,6 +1468,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
+  _lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
   if (hasLint) {
@@ -1587,6 +1591,7 @@ function startContentStream() {
   _streamedPartialText = '';
   _renderedToolResults.clear();
   _renderedContentThisTurn = false;
+  _lastRenderedBlock = null;
   stopSpinner();
 }
 
@@ -1611,12 +1616,14 @@ function flushContent() {
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
   flushPendingHead();
+  if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
   const rendered = renderMarkdown(_streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
   }
   _streamBuffer = '';
   _renderedContentThisTurn = true;
+  _lastRenderedBlock = 'content';
 }
 
 // ── Event Renderer ──
@@ -1668,11 +1675,13 @@ function renderEvent(event) {
         }
       }
       if (text) {
+        if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
         _renderedContentThisTurn = true;
+        _lastRenderedBlock = 'content';
       }
       break;
     }

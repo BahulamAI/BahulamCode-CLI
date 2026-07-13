@@ -143,6 +143,8 @@ test('tool activity rows do not insert blank lines between consecutive tools', (
   assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
   assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
   assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
+  assert.ok(replSource.includes("if (_lastRenderedBlock === 'tool') process.stderr.write('\\n');"));
+  assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
