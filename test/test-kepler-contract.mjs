@@ -6,7 +6,7 @@ import { scaffoldKeplerProject } from '../src/terminal/init.mjs';
 import { loadEffectivePolicy } from '../src/core/policy-resolver.mjs';
 import { contextToPromptBlock, loadProjectContext } from '../src/core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../src/core/context-envelope.mjs';
-import { appendTask, ensureTaskFiles, loadTaskBoard, parseTaskMarkdown, taskCounts } from '../src/core/tasks.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, parseTaskMarkdown, removeTask, taskCounts, updateTask } from '../src/core/tasks.mjs';
 import { HookRunner } from '../src/config/hook-runner.mjs';
 import { ApprovalManager } from '../src/core/approval.mjs';
 
@@ -97,6 +97,29 @@ await test('task board reads and appends project task markdown', async () => {
   assert.strictEqual(counts.blocked, 1);
   assert.strictEqual(counts.done, 1);
   assert.ok(board.lists.active.tasks[0].text.includes('/plan status'));
+});
+
+await test('task board edits, moves, and removes project task markdown', async () => {
+  const cwd = tempProject();
+  ensureTaskFiles({ cwd });
+  appendTask({ cwd, list: 'active', text: 'Draft task UX' });
+  appendTask({ cwd, list: 'active', text: 'Ship task UX' });
+
+  const edited = updateTask({ cwd, list: 'active', index: 1, text: 'Draft task move UX' });
+  assert.strictEqual(edited.text, 'Draft task move UX');
+
+  const moved = moveTask({ cwd, from: 'active', index: 1, to: 'done' });
+  assert.strictEqual(moved.text, 'Draft task move UX');
+  assert.strictEqual(moved.to, 'done');
+
+  const removed = removeTask({ cwd, list: 'active', index: 1 });
+  assert.strictEqual(removed.task.text, 'Ship task UX');
+
+  const board = loadTaskBoard({ cwd });
+  const counts = taskCounts(board);
+  assert.strictEqual(counts.active, 0);
+  assert.strictEqual(counts.done, 1);
+  assert.strictEqual(board.lists.done.tasks[0].checked, true);
 });
 
 await test('task parser supports checkboxes and plain bullets', async () => {

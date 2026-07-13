@@ -3436,6 +3436,7 @@ export async function startTerminalRepl() {
       if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
       hookRunner.reload();
       latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous: latestProjectContext });
+      const projectResources = toolExecutor.getProjectResources();
       const promptHook = await hookRunner.run('UserPromptSubmit', {
         input: { prompt: input },
         turnId: String(session.turns),
@@ -3457,7 +3458,7 @@ export async function startTerminalRepl() {
         effectivePolicy,
         projectContext: latestProjectContext,
         activeHints: [...hookHints, ...rejectionHints],
-        projectResources: toolExecutor.getProjectResources(),
+        projectResources,
         agentContext: toolExecutor.getAgentContext(),
       });
       ctx.effectivePolicy = effectivePolicy;
@@ -3471,7 +3472,7 @@ export async function startTerminalRepl() {
       execContext.work_scope = buildWorkScope({
         instruction: input,
         cwd: safeCwd(),
-        projectResources: toolExecutor.getProjectResources(),
+        projectResources,
       });
       for (const file of latestProjectContext.changed || []) {
         if (effectivePolicy.policy.context?.showReloadNotice) {
