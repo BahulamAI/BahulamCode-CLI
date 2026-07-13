@@ -152,6 +152,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function printInputSeparator()'));
   assert.ok(replSource.includes("c.brand('input')"));
   assert.ok(replSource.includes('printInputSeparator();'));
+  assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
+  assert.ok(replSource.includes('function renderSlashHint(line = \'\')'));
+  assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '1'"));
   assert.ok(replSource.includes('Math.min(3, n)'));

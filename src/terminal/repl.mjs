@@ -1225,6 +1225,19 @@ function commandCompletions(line) {
   return hits.length ? hits : all;
 }
 
+function slashCommandSuggestions(line, limit = 5) {
+  const text = String(line || '').trimStart();
+  if (!text.startsWith('/')) return [];
+  const partial = text.split(/\s+/)[0] || '/';
+  return commandCompletions(partial)
+    .filter(cmd => cmd.startsWith('/'))
+    .slice(0, limit)
+    .map(cmd => ({
+      command: cmd,
+      description: COMMANDS[cmd] || (cmd === '/quit' ? 'Exit CLI' : ''),
+    }));
+}
+
 // ── Banner ──
 
 function printBanner(auth) {
@@ -3371,6 +3384,8 @@ export async function startTerminalRepl() {
   // Give approval manager access to readline for pause/resume
   approval.setReadline(rl);
   ctx._rl = rl; // expose to /resume command for readline pause
+  let inputActive = false;
+  let slashHintVisible = false;
 
   function promptBottomPaddingLines() {
     if (!process.stderr.isTTY || term().plain) return 0;
@@ -3378,6 +3393,41 @@ export async function startTerminalRepl() {
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return Math.min(3, n);
+  }
+
+  function renderSlashHint(line = '') {
+    if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
+    const suggestions = slashCommandSuggestions(line);
+    const cols = process.stdout.columns || 80;
+    const maxVisible = Math.max(20, cols - 4);
+    const parts = [];
+    let visible = 0;
+    for (const { command, description } of suggestions) {
+      const raw = `${command}${description ? ` ${description}` : ''}`;
+      const sep = parts.length ? '  ·  ' : '';
+      if (visible + sep.length + raw.length > maxVisible) break;
+      if (sep) parts.push(c.dim(sep));
+      parts.push(`${c.brand(command)}${description ? c.dim(` ${description}`) : ''}`);
+      visible += sep.length + raw.length;
+    }
+    if (parts.length && parts.length < suggestions.length) parts.push(c.dim('  …'));
+    const display = parts.join('');
+
+    process.stderr.write('\x1b[s');      // save cursor inside readline input
+    process.stderr.write('\x1b[1E');     // move to reserved row below input
+    process.stderr.write('\x1b[2K\r');   // clear hint row
+    if (display) process.stderr.write(`  ${display}`);
+    process.stderr.write('\x1b[u');      // restore cursor to readline input
+    slashHintVisible = Boolean(display);
+  }
+
+  function clearSlashHint() {
+    if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
+      slashHintVisible = false;
+      return;
+    }
+    process.stderr.write('\x1b[s\x1b[1E\x1b[2K\r\x1b[u');
+    slashHintVisible = false;
   }
 
   function reservePromptBottomPadding() {
@@ -3389,6 +3439,7 @@ export async function startTerminalRepl() {
   function promptInputLine() {
     rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
     reservePromptBottomPadding();
+    inputActive = true;
     rl.prompt();
   }
 
@@ -3401,6 +3452,21 @@ export async function startTerminalRepl() {
   }
 
   showPrompt();
+
+  if (process.stdin.isTTY) {
+    readline.emitKeypressEvents(process.stdin, rl);
+    process.stdin.on('keypress', () => {
+      if (!inputActive) return;
+      setImmediate(() => {
+        if (!inputActive) return;
+        if (String(rl.line || '').trimStart().startsWith('/')) {
+          renderSlashHint(rl.line);
+        } else {
+          clearSlashHint();
+        }
+      });
+    });
+  }
 
   // Guard against concurrent line handlers.
   //
@@ -3440,6 +3506,8 @@ export async function startTerminalRepl() {
   });
 
   async function _handleLine(line) {
+    inputActive = false;
+    clearSlashHint();
     const input = line.trim();
     if (!input) { promptInputLine(); return; }
 
