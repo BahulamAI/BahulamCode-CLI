@@ -153,11 +153,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("c.brand('input')"));
   assert.ok(replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
-  assert.ok(replSource.includes('function renderSlashHint(line = \'\')'));
+  assert.ok(replSource.includes("function renderSlashHint(line = '', { preserveSelection = false } = {})"));
   assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
+  assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows))'));
+  assert.ok(replSource.includes('function acceptSlashHint()'));
+  assert.ok(replSource.includes('function moveSlashHintSelection(delta)'));
+  assert.ok(replSource.includes("item.command.padEnd(13)"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
-  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '1'"));
-  assert.ok(replSource.includes('Math.min(3, n)'));
+  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
+  assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
   assert.ok(replSource.includes('if (!input) { promptInputLine(); return; }'));
 });

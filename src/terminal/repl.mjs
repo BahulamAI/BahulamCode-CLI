@@ -3386,48 +3386,96 @@ export async function startTerminalRepl() {
   ctx._rl = rl; // expose to /resume command for readline pause
   let inputActive = false;
   let slashHintVisible = false;
+  let slashHintRowsVisible = 0;
+  let slashHintItems = [];
+  let slashHintSelected = 0;
+  let slashHintLine = '';
 
   function promptBottomPaddingLines() {
     if (!process.stderr.isTTY || term().plain) return 0;
-    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '1';
+    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
-    return Math.min(3, n);
+    return Math.min(8, n);
   }
 
-  function renderSlashHint(line = '') {
-    if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
-    const suggestions = slashCommandSuggestions(line);
-    const cols = process.stdout.columns || 80;
-    const maxVisible = Math.max(20, cols - 4);
-    const parts = [];
-    let visible = 0;
-    for (const { command, description } of suggestions) {
-      const raw = `${command}${description ? ` ${description}` : ''}`;
-      const sep = parts.length ? '  ·  ' : '';
-      if (visible + sep.length + raw.length > maxVisible) break;
-      if (sep) parts.push(c.dim(sep));
-      parts.push(`${c.brand(command)}${description ? c.dim(` ${description}`) : ''}`);
-      visible += sep.length + raw.length;
-    }
-    if (parts.length && parts.length < suggestions.length) parts.push(c.dim('  …'));
-    const display = parts.join('');
+  function truncateHintText(text, max) {
+    const s = String(text || '');
+    if (s.length <= max) return s;
+    if (max <= 1) return '';
+    return s.slice(0, max - 1) + '…';
+  }
 
-    process.stderr.write('\x1b[s');      // save cursor inside readline input
-    process.stderr.write('\x1b[1E');     // move to reserved row below input
-    process.stderr.write('\x1b[2K\r');   // clear hint row
-    if (display) process.stderr.write(`  ${display}`);
-    process.stderr.write('\x1b[u');      // restore cursor to readline input
-    slashHintVisible = Boolean(display);
+  function renderSlashHint(line = '', { preserveSelection = false } = {}) {
+    if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
+    const rows = promptBottomPaddingLines();
+    const suggestions = slashCommandSuggestions(line, Math.min(5, rows));
+    const cols = process.stdout.columns || 80;
+    if (!preserveSelection || line !== slashHintLine) slashHintSelected = 0;
+    slashHintItems = suggestions;
+    slashHintLine = line;
+    if (slashHintSelected >= slashHintItems.length) slashHintSelected = Math.max(0, slashHintItems.length - 1);
+
+    process.stderr.write('\x1b[s\x1b[1E'); // save cursor, move to first reserved row
+    for (let i = 0; i < rows; i++) {
+      process.stderr.write('\x1b[2K\r');
+      const item = suggestions[i];
+      if (item) {
+        const marker = i === slashHintSelected ? c.brand('›') : c.dim(' ');
+        const command = item.command.padEnd(13);
+        const maxDesc = Math.max(0, cols - 21);
+        const desc = truncateHintText(item.description, maxDesc);
+        process.stderr.write(`  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`);
+      }
+      if (i < rows - 1) process.stderr.write('\x1b[1E');
+    }
+    process.stderr.write('\x1b[u'); // restore cursor to readline input
+    slashHintVisible = suggestions.length > 0;
+    slashHintRowsVisible = rows;
   }
 
   function clearSlashHint() {
     if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
       slashHintVisible = false;
+      slashHintRowsVisible = 0;
       return;
     }
-    process.stderr.write('\x1b[s\x1b[1E\x1b[2K\r\x1b[u');
+    const rows = slashHintRowsVisible || promptBottomPaddingLines() || 1;
+    process.stderr.write('\x1b[s\x1b[1E');
+    for (let i = 0; i < rows; i++) {
+      process.stderr.write('\x1b[2K\r');
+      if (i < rows - 1) process.stderr.write('\x1b[1E');
+    }
+    process.stderr.write('\x1b[u');
     slashHintVisible = false;
+    slashHintRowsVisible = 0;
+    slashHintItems = [];
+    slashHintSelected = 0;
+    slashHintLine = '';
+  }
+
+  function replaceReadlineLine(value) {
+    rl.write(null, { ctrl: true, name: 'a' });
+    rl.write(null, { ctrl: true, name: 'k' });
+    if (value) rl.write(value);
+  }
+
+  function acceptSlashHint() {
+    const item = slashHintItems[slashHintSelected];
+    if (!item) return false;
+    replaceReadlineLine(item.command);
+    slashHintLine = item.command;
+    renderSlashHint(item.command, { preserveSelection: true });
+    return true;
+  }
+
+  function moveSlashHintSelection(delta) {
+    if (!slashHintItems.length) return false;
+    const count = slashHintItems.length;
+    slashHintSelected = (slashHintSelected + delta + count) % count;
+    replaceReadlineLine(slashHintLine);
+    renderSlashHint(slashHintLine, { preserveSelection: true });
+    return true;
   }
 
   function reservePromptBottomPadding() {
@@ -3455,10 +3503,13 @@ export async function startTerminalRepl() {
 
   if (process.stdin.isTTY) {
     readline.emitKeypressEvents(process.stdin, rl);
-    process.stdin.on('keypress', () => {
+    process.stdin.on('keypress', (_str, key = {}) => {
       if (!inputActive) return;
       setImmediate(() => {
         if (!inputActive) return;
+        if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
+        if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
+        if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
         if (String(rl.line || '').trimStart().startsWith('/')) {
           renderSlashHint(rl.line);
         } else {
