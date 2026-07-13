@@ -49,6 +49,7 @@ import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
+import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
@@ -656,6 +657,120 @@ async function summarizeResumeTranscript({
       source: 'local',
       reason: err?.message || 'backend summary request failed',
     };
+  }
+}
+
+async function compactCurrentSession(ctx, rest = '') {
+  const tailCount = parseCompactTailCount(rest, 8);
+  const preparedLive = prepareCompactHistory({
+    agentHistory: session.agentHistory,
+    tailCount,
+  });
+  if (!preparedLive.ok) {
+    process.stderr.write(`  ${c.gray(`Nothing to compact — ${preparedLive.reason}.`)}\n`);
+    return;
+  }
+
+  const progress = startResumeProgress('compact');
+  progress.update('preparing compact summary', 18);
+  let sourceMessages = preparedLive.sourceMessages;
+  let priorSummary = preparedLive.previousSummary || '';
+  let previousSourceMessageCount = 0;
+  let fullMessageCount = preparedLive.beforeCount;
+  let projectPath = safeCwd();
+  let sourceFrom = 'live';
+  let summaryWarning = '';
+
+  try {
+    if (session.id && ctx.jsonlWriter?.flush) {
+      progress.update('reading transcript checkpoint', 28);
+      await ctx.jsonlWriter.flush();
+      const detail = await getSessionDetail(session.id, { filePath: ctx.jsonlWriter.transcriptPath });
+      if (detail) {
+        const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, `tail-${tailCount}`);
+        if (richHistory.sourceMessages?.length) {
+          sourceMessages = richHistory.sourceMessages;
+          priorSummary = richHistory.priorSummary || '';
+          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
+          fullMessageCount = richHistory.fullMessageCount || sourceMessages.length;
+          projectPath = detail.meta?.project || safeCwd();
+          sourceFrom = 'transcript';
+        } else if (richHistory.priorSummary) {
+          priorSummary = richHistory.priorSummary;
+          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
+          fullMessageCount = richHistory.fullMessageCount || preparedLive.beforeCount;
+        }
+      }
+    }
+
+    if (!sourceMessages.length) {
+      progress.stop();
+      process.stderr.write(`  ${c.gray('Nothing new to compact.')}\n`);
+      return;
+    }
+
+    progress.update('summarizing compacted history', 46);
+    const backendSummary = await summarizeResumeTranscript({
+      auth: ctx.auth,
+      toolExecutor: ctx.toolExecutor,
+      sessionId: session.id,
+      projectPath,
+      messages: sourceMessages,
+    });
+    let summarySource = backendSummary?.summary ? (backendSummary.source || 'backend') : 'local fallback';
+    let deltaSummary = backendSummary?.summary || '';
+    if (!deltaSummary) {
+      summaryWarning = backendSummary?.reason || 'backend summary unavailable';
+      deltaSummary = localCompactSummary(sourceMessages);
+    }
+    const summary = combineResumeSummaries(priorSummary, deltaSummary);
+
+    progress.update('rewriting live context', 74);
+    const applied = applyCompactSummary({
+      prepared: { ...preparedLive, sourceMessages },
+      summary,
+      sessionId: session.id,
+      cwd: projectPath,
+      originalRequest: session.history.find(m => m.role === 'user')?.content || session.lastTask || '',
+      previousSourceMessageCount,
+    });
+    session.agentHistory = applied.agentHistory;
+    session.compactSummary = summary;
+    session.compactSourceMessageCount = applied.sourceMessageCount;
+
+    if (ctx.jsonlWriter) {
+      progress.update('writing summary checkpoint', 88);
+      ctx.jsonlWriter.writeKeplerEvent({
+        type: 'resume_summary',
+        data: {
+          session_id: session.id || null,
+          mode: 'compact',
+          mode_label: '/compact',
+          summary,
+          summary_source: summarySource,
+          summary_warning: summaryWarning || null,
+          source: sourceFrom,
+          source_message_count: applied.sourceMessageCount,
+          previous_source_message_count: previousSourceMessageCount,
+          full_message_count: fullMessageCount,
+          retained_tail_messages: applied.retainedCount,
+          live_before_messages: applied.beforeCount,
+          live_after_messages: applied.afterCount,
+        },
+      });
+      await ctx.jsonlWriter.flush?.();
+    }
+
+    progress.stop();
+    process.stderr.write(
+      `  ${c.green('✓')} ${c.dim(`Compacted context: ${applied.beforeCount} → ${applied.afterCount} live messages · retained ${applied.retainedCount} · summary ${summarySource}`)}\n`
+    );
+    if (summaryWarning) {
+      process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — used local summary (${summaryWarning})`)}\n`);
+    }
+  } catch (err) {
+    progress.stop();
+    process.stderr.write(`  ${c.red(`Compact failed: ${err?.message || String(err)}`)}\n`);
   }
 }
 
@@ -2576,10 +2691,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/compact': {
-      const before = session.agentHistory.length || session.history.length;
-      if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
-      session.agentHistory.splice(2, session.agentHistory.length - 6);
-      process.stderr.write(`  ${c.gray(`Compacted agent context: ${before} → ${session.agentHistory.length} messages`)}\n`);
+      await compactCurrentSession(ctx, rest);
       return;
     }
 
