@@ -6,6 +6,14 @@
 
 import { ContextRetriever } from '../context/retriever.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
+import { PromptCache } from './cache.mjs';
+import {
+    ANTHROPIC_BETA_HEADER,
+    cacheableSystem,
+    cacheableTools,
+    withMessageBreakpoint,
+    needsExplicitCacheControl,
+} from './cache-control.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -209,12 +217,14 @@ export class LocalAgent {
         this.stagnationDetection = stagnationDetection;
         this.stagnationThreshold = stagnationThreshold;
         this._cancelled = false;
+        this.promptCache = new PromptCache();
     }
 
     async *execute(instruction, context = {}) {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
+        const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
 
         yield { type: 'status', data: { message: `Local mode: ${this.model}` } };
 
@@ -252,7 +262,15 @@ export class LocalAgent {
                 return;
             }
 
-            const { content, stopReason } = response;
+            const { content, stopReason, usage } = response;
+
+            if (usage) {
+                this.promptCache.updateStats(usage);
+                usageTotals.input_tokens += usage.input_tokens || 0;
+                usageTotals.output_tokens += usage.output_tokens || 0;
+                usageTotals.cache_read_tokens += usage.cache_read_input_tokens || 0;
+                usageTotals.cache_creation_tokens += usage.cache_creation_input_tokens || 0;
+            }
 
             // Process content blocks
             let hasToolUse = false;
@@ -303,13 +321,29 @@ export class LocalAgent {
 
             if (!hasToolUse || stopReason === 'end_turn') {
                 const duration = (Date.now() - startTime) / 1000;
-                yield { type: 'complete', data: { summary: 'Done (local)', changes: toolCount, duration_s: duration } };
+                yield {
+                    type: 'complete',
+                    data: {
+                        summary: 'Done (local)',
+                        changes: toolCount,
+                        duration_s: duration,
+                        usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+                    },
+                };
                 return;
             }
         }
 
         yield { type: 'error', data: { message: `Max turns (${this.maxTurns}) reached.` } };
-        yield { type: 'complete', data: { summary: 'Aborted (max turns)', changes: toolCount, duration_s: (Date.now() - startTime) / 1000 } };
+        yield {
+            type: 'complete',
+            data: {
+                summary: 'Aborted (max turns)',
+                changes: toolCount,
+                duration_s: (Date.now() - startTime) / 1000,
+                usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+            },
+        };
     }
 
     async _callLLM(systemPrompt, messages, tools) {
@@ -333,18 +367,26 @@ export class LocalAgent {
     }
 
     async _callClaude(systemPrompt, messages, tools) {
+        // PRD-071 Phase 2 — cache_control breakpoints for Anthropic direct.
+        // Extended 1-hour TTL beta on the persistent prefix (system + tools).
+        // Message history breakpoint stays at default 5-min TTL.
+        const cachedSystem = cacheableSystem(systemPrompt);
+        const cachedTools = cacheableTools(tools);
+        const cachedMessages = withMessageBreakpoint(messages);
+
         const resp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'x-api-key': this.apiKey,
                 'anthropic-version': '2023-06-01',
+                'anthropic-beta': ANTHROPIC_BETA_HEADER,
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
                 model: this.model,
-                system: systemPrompt,
-                messages,
-                tools: tools.length > 0 ? tools : undefined,
+                system: cachedSystem,
+                messages: cachedMessages,
+                tools: cachedTools.length > 0 ? cachedTools : undefined,
                 max_tokens: 8192,
             }),
         });
@@ -353,7 +395,7 @@ export class LocalAgent {
             throw new Error(`Claude API ${resp.status}: ${text.slice(0, 200)}`);
         }
         const data = await resp.json();
-        return { content: data.content || [], stopReason: data.stop_reason };
+        return { content: data.content || [], stopReason: data.stop_reason, usage: data.usage || null };
     }
 
     async _callOpenRouter(systemPrompt, messages, tools) {
@@ -363,17 +405,43 @@ export class LocalAgent {
             model = `anthropic/${model}`;
         }
 
-        const orMessages = [{ role: 'system', content: systemPrompt }, ...messages];
+        // PRD-071 Phase 2 — for anthropic/* models we need explicit cache_control
+        // breakpoints (OpenRouter relays them through to Anthropic). OpenAI +
+        // DeepSeek auto-cache, so the string system prompt path is fine there.
+        const isAnthropic = needsExplicitCacheControl(model);
+        const systemForOR = isAnthropic
+            ? { role: 'system', content: cacheableSystem(systemPrompt) }
+            : { role: 'system', content: systemPrompt };
+        const messagesForOR = isAnthropic ? withMessageBreakpoint(messages) : messages;
+        const orMessages = [systemForOR, ...messagesForOR];
+
+        // Same tool-schema shape as before, but tag the last tool for Anthropic
+        // (OpenRouter passes cache_control on function tools through).
+        const orTools = tools.length > 0
+            ? tools.map(t => ({
+                type: 'function',
+                function: { name: t.name, description: t.description, parameters: t.input_schema },
+            }))
+            : [];
+        const finalTools = isAnthropic ? cacheableTools(orTools) : orTools;
+
+        const headers = {
+            'Authorization': `Bearer ${this.openRouterKey}`,
+            'Content-Type': 'application/json',
+        };
+        // OpenRouter forwards `anthropic-beta` to Anthropic upstreams.
+        if (isAnthropic) headers['anthropic-beta'] = ANTHROPIC_BETA_HEADER;
+
         const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.openRouterKey}`,
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 model,
                 messages: orMessages,
-                tools: tools.length > 0 ? tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) : undefined,
+                tools: finalTools.length > 0 ? finalTools : undefined,
+                // Ask OpenRouter to include upstream cache accounting in the
+                // usage payload so PromptCache.updateStats() sees real numbers.
+                usage: { include: true },
             }),
         });
         if (!resp.ok) {
@@ -389,7 +457,11 @@ export class LocalAgent {
                 content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: JSON.parse(tc.function.arguments || '{}') });
             }
         }
-        return { content, stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use' };
+        return {
+            content,
+            stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
+            usage: _normalizeOpenRouterUsage(data.usage),
+        };
     }
 
     _buildToolDefs() {
@@ -426,4 +498,39 @@ export class LocalAgent {
     }
 
     cancel() { this._cancelled = true; }
+}
+
+// Shape the accumulated per-turn totals into the same envelope the remote
+// SSE `complete` event uses, so repl.mjs:837 can consume both modes with the
+// same code path. `models[0].role = 'local'` distinguishes single-agent
+// local mode from remote's Coder/Explorer/Planner breakdown.
+function _buildLocalUsageEnvelope(model, totals) {
+    return {
+        total_input_tokens: totals.input_tokens,
+        total_output_tokens: totals.output_tokens,
+        models: [{
+            model,
+            role: 'local',
+            input_tokens: totals.input_tokens,
+            output_tokens: totals.output_tokens,
+            cache_read_tokens: totals.cache_read_tokens,
+            cache_creation_tokens: totals.cache_creation_tokens,
+        }],
+    };
+}
+
+// Normalize OpenRouter usage into Anthropic's field names so downstream
+// consumers (PromptCache, pricing.calculateCost) don't branch on shape.
+// OpenRouter returns OpenAI-style: prompt_tokens, completion_tokens,
+// prompt_tokens_details.cached_tokens. When the underlying model is
+// Anthropic, OpenRouter also relays cache_read_input_tokens verbatim.
+function _normalizeOpenRouterUsage(usage) {
+    if (!usage) return null;
+    const cachedFromOpenAI = usage.prompt_tokens_details?.cached_tokens || 0;
+    return {
+        input_tokens: usage.prompt_tokens || 0,
+        output_tokens: usage.completion_tokens || 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens || cachedFromOpenAI || 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+    };
 }

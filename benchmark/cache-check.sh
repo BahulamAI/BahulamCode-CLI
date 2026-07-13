@@ -191,11 +191,13 @@ fi
 
 export TARANG_ENV=local
 cd "$TEST_DIR"
+mkdir -p /tmp/cache-check
 TIMEOUT_CMD=$(command -v timeout || command -v gtimeout || echo "")
 ${TIMEOUT_CMD:+$TIMEOUT_CMD 300} node "${REPO_ROOT}/src/terminal/main.mjs" \
     --headless --verbose \
-    --instruction "$INSTRUCTION" \
+    --print "$INSTRUCTION" \
     --model "$MODEL" \
+    --cache-report /tmp/cache-check/report.json \
     2>&1 | tee /tmp/cache-check/output.jsonl | tail -5
 
 # ── Step 4: Parse and report ──
@@ -214,7 +216,12 @@ for line in open('/tmp/cache-check/output.jsonl'):
             out = u.get('output_tokens', 0)
             cr = u.get('cache_read', 0)
             cw = u.get('cache_write', 0)
-            rate = round(100 * cr / max(inp, 1))
+            # PRD-071: two conventions in the wild.
+            #   OpenAI/DeepSeek: input_tokens INCLUDES cached → hit = cr/inp
+            #   Anthropic native: input_tokens EXCLUDES cache → hit = cr/(cr+cw+inp)
+            # Detect Anthropic shape by cr > inp (impossible if input includes cache).
+            denom = (cr + cw + inp) if cr > inp else inp
+            rate = round(100 * cr / max(denom, 1))
             cost = d.get('cost_usd', 0)
             dur = d.get('duration_s', 0)
 

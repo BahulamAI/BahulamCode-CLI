@@ -23,6 +23,7 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { buildWorkScope } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
@@ -47,7 +48,7 @@ import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
-import { appendTask, ensureTaskFiles, loadTaskBoard, taskCounts, TASK_FILES } from '../core/tasks.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
@@ -1121,12 +1122,26 @@ function printBanner(auth) {
  * Left side: last-turn summary (tools, time, cost)
  * Right side: session totals (ctx%, tokens)
  */
+function computeCacheTotals() {
+  let read = 0;
+  let write = 0;
+  for (const b of session.costBreakdown) {
+    read += b.cache_read_tokens || 0;
+    write += b.cache_creation_tokens || 0;
+  }
+  const denom = session.inputTokens + read;
+  const hitRate = denom > 0 ? Math.round((read / denom) * 100) : 0;
+  return { read, write, hitRate };
+}
+
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const elapsed = formatElapsed(session.startTime);
+  const cache = computeCacheTotals();
 
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
+    ...(cache.read > 0 ? [c.dim(`cache ${cache.hitRate}%`)] : []),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -1968,7 +1983,7 @@ function renderPlanOverview({ ctx, mode = 'overview' } = {}) {
   }
 
   renderTaskBoard(board, { showDone: mode === 'status' });
-  process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|blocked|done <text>')}\n\n`);
+  process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks move active 1 done · /tasks edit active 1 <text>')}\n\n`);
 }
 
 function refreshTaskContext(ctx) {
@@ -1987,7 +2002,7 @@ function handleTasksCommand(rest, ctx) {
     process.stderr.write(`\n  ${c.bold('Tasks')}\n`);
     process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
     renderTaskBoard(board, { showDone: true });
-    process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks active|backlog|blocked|done <text>')}\n\n`);
+    process.stderr.write(`\n  ${c.dim('Update: /tasks add <text> · /tasks move active 1 done · /tasks edit active 1 <text>')}\n\n`);
     return;
   }
 
@@ -1998,6 +2013,60 @@ function handleTasksCommand(rest, ctx) {
 
   const parts = raw.split(/\s+/);
   let verb = (parts.shift() || '').toLowerCase();
+
+  if (verb === 'move') {
+    try {
+      const [from, index, to, ...textParts] = parts;
+      const result = moveTask({ cwd: safeCwd(), from, index, to, text: textParts.join(' ') || undefined });
+      refreshTaskContext(ctx);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`moved ${result.from} #${result.index} → ${result.to}`)} ${result.text}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+      process.stderr.write(`  ${c.gray('Usage: /tasks move <active|backlog|blocked|done> <number> <active|backlog|blocked|done> [new text]')}\n`);
+    }
+    return;
+  }
+
+  if (verb === 'edit' || verb === 'rename') {
+    try {
+      const [list, index, ...textParts] = parts;
+      const result = updateTask({ cwd: safeCwd(), list, index, text: textParts.join(' ') });
+      refreshTaskContext(ctx);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`updated ${result.list} #${result.index}`)} ${result.text}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+      process.stderr.write(`  ${c.gray('Usage: /tasks edit <active|backlog|blocked|done> <number> <new text>')}\n`);
+    }
+    return;
+  }
+
+  if (verb === 'remove' || verb === 'rm' || verb === 'delete') {
+    try {
+      const [list, index] = parts;
+      const result = removeTask({ cwd: safeCwd(), list, index });
+      refreshTaskContext(ctx);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`removed ${result.list} #${result.index}`)} ${result.task.text}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+      process.stderr.write(`  ${c.gray('Usage: /tasks remove <active|backlog|blocked|done> <number>')}\n`);
+    }
+    return;
+  }
+
+  if (verb === 'finish' || verb === 'complete' || verb === 'block' || verb === 'unblock') {
+    try {
+      const [from, index, ...textParts] = parts;
+      const to = verb === 'block' ? 'blocked' : verb === 'unblock' ? 'active' : 'done';
+      const result = moveTask({ cwd: safeCwd(), from, index, to, text: textParts.join(' ') || undefined });
+      refreshTaskContext(ctx);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`moved ${result.from} #${result.index} → ${result.to}`)} ${result.text}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+      process.stderr.write(`  ${c.gray(`Usage: /tasks ${verb} <active|backlog|blocked|done> <number> [new text]`)}\n`);
+    }
+    return;
+  }
+
   let list = 'backlog';
   if (verb === 'add' || verb === 'new') {
     const maybeList = (parts[0] || '').toLowerCase();
@@ -2191,6 +2260,15 @@ async function handleCommand(input, ctx) {
         }
       }
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
+
+      // Cache — PRD-071 §1.2. Only surface when we have data; a fresh session
+      // shows nothing rather than a misleading "0%".
+      const cache = computeCacheTotals();
+      if (cache.read > 0 || cache.write > 0) {
+        const readLabel = formatTokens(cache.read);
+        const writeLabel = formatTokens(cache.write);
+        process.stderr.write(`  ${c.dim('Cache')}        ${cache.hitRate}% hit ${c.dim('·')} ${readLabel} read ${c.dim('·')} ${writeLabel} write\n`);
+      }
 
       // Permissions
       process.stderr.write(`\n  ${c.bold('Permissions')}\n`);
@@ -3387,6 +3465,14 @@ export async function startTerminalRepl() {
       ctx.latestEnvelope = latestEnvelope;
       Object.assign(execContext, latestEnvelope);
       if (skipPerms) execContext.freeswim = true;
+      // PRD-071: seed work_scope from CLI so the backend has a byte-stable
+      // scope block from turn 1. Uses projectResources already gathered by
+      // the envelope above.
+      execContext.work_scope = buildWorkScope({
+        instruction: input,
+        cwd: safeCwd(),
+        projectResources: toolExecutor.getProjectResources(),
+      });
       for (const file of latestProjectContext.changed || []) {
         if (effectivePolicy.policy.context?.showReloadNotice) {
           process.stderr.write(`  ${c.dim(`[Context] ${file.label} updated — re-read`)}\n`);
