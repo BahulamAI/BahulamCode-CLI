@@ -177,6 +177,69 @@ print(f'{ok}/{len(r)} patched ({len(r)} done)')
 tail -f ~/benchmark-full.log
 ```
 
+## Cache Verification (PRD-071)
+
+Before starting a long benchmark run, verify prompt caching is landing. Wasting Sonnet or Opus tokens without cache reads makes a 300-instance run 3-5× more expensive.
+
+### Quick cache check
+
+```bash
+cd ~/tarang-npm
+MODEL=<model_id> bash benchmark/cache-check.sh
+# defaults to deepseek/deepseek-v4-flash — override with MODEL=anthropic/claude-sonnet-5, z-ai/glm-5.2, etc.
+```
+
+Runs a scripted calculator-fixture session and reports:
+
+- `Input / Cache read / Cache write` tokens
+- `CACHE HIT %` — auto-detects OpenAI vs Anthropic usage convention
+- Cost in USD
+
+Also writes `/tmp/cache-check/report.json` (schema `kepler.cache-report/1`) with both hit-rate conventions surfaced separately.
+
+### Reference numbers (2026-07-12, calculator fixture, single session)
+
+| Model | Path | Hit rate | Cost | Notes |
+|---|---|---:|---:|---|
+| `deepseek/deepseek-v4-flash` | OpenRouter → Fireworks/etc | 58% cold → **83% steady** | ~$0.007 | Auto-cache, no explicit writes |
+| `z-ai/glm-5.2` | OpenRouter → Zhipu | 74–83% | ~$0.007–$0.013 | Auto-cache, no explicit writes |
+| `anthropic/claude-sonnet-4` | OpenRouter → **Vertex** | 74% (aggregate) | ~$0.009 | `cache_write:0` — Vertex envelope hides writes |
+| `claude-sonnet-5` | **Anthropic direct** | **84–88%** | ~$0.059–$0.070 | Full write reporting, 1h TTL beta live |
+
+### Real-world workload — razorpay-testing project (`Explain → write tests → run`)
+
+Same prompt against ~1075 LOC codebase (4 Python files, no existing tests):
+
+| Model | Path | Hit rate | Cost | Tools | Duration | Outcome |
+|---|---|---:|---:|---:|---:|---|
+| `z-ai/glm-5.2` | OR → Zhipu | **43%** | $0.318 | 109 | 538s | ❌ Over-explored (95 read_file), no test file written |
+| `anthropic/claude-sonnet-5` | OR → Vertex | **55%** | $0.018 | 17 | 101s | ❌ Misread cwd, gave up early |
+
+**Insight** — real projects hit rate is materially lower than the calculator fixture (43-55% vs 74-88%). Reason: real work has more unique tool_result content per turn (reading different files each time), and only the growing system prompt + tools + prior history stay stable. The cached-vs-fresh ratio drops.
+
+**Cost picture on real work at 43-55% cache hit:**
+- GLM 5.2: $0.318 for a 9-min session, ~$0.0029/tool — cheap even at 43% cache
+- Sonnet 5 via OR-Vertex: $0.018 for a 100s session, ~$0.0011/tool — but cache_write hidden
+- Extrapolating to a full 300-instance SWE-bench run: GLM ~$95, Sonnet ~$5.40 on OR-Vertex path (understated because Vertex hides writes)
+
+**Neither model completed the task** — GLM stagnated in read loops, Sonnet misread the cwd. Cache measurement is valid regardless. For quality benchmarking, prefer harnesses that don't rely on the agent finishing gracefully.
+
+**Consequence for benchmark budgeting:** at these hit rates, Sonnet 5 direct comes in around $18 for a 300-instance run (vs the naive uncached estimate of ~$50-70). GLM 5.2 and DeepSeek stay near $2-4 per 300-run. Verify hit rate BEFORE launching a full run — a cache regression can double the bill.
+
+### Wiring caveats
+
+- **`temperature`** is now stripped from requests to Sonnet 4/4.5/4.6/5 and Opus 4 (Anthropic API 400s otherwise). Patched in `app/patches/claude_gateway.py`.
+- **1h TTL cache** requires the backend to send `anthropic-beta: extended-cache-ttl-2025-04-11`. Same patch handles this.
+- **Vertex-served Claude via OpenRouter** hides `cache_creation_input_tokens`. If cache_write always reports 0 on Claude, you're routed through Vertex — pending fix in P5.4 (`provider: {order:["anthropic"]}` in OR request body).
+- **Column `sessions.cache_creation_tokens`** — added by migration `00071_cache_write_tokens.sql`. Must be applied to any Supabase project the backend talks to (kepler-dev and appstak-dev already have it; run `supabase db push` for others).
+
+### If cache-check reports 0%
+
+- Backend must be running with the PRD-071 patch — check for `[patches] ClaudeGateway temperature+TTL patch installed` in the startup log.
+- `~/.tarang-benchmark.env` should NOT set `KEPLER_MEMORY_ENABLED=true` for repeatable cache measurement — memory injection makes the prefix non-deterministic.
+- Re-run with `KEPLER_ENV=local` (already the default in the file above).
+- Watch the framework's `[CACHE]` log line via `docker logs codekepler-backend-1 -f | grep CACHE` — shows per-turn sys=cached/tools=cached/msgs=N and read/write counters at the wire.
+
 ## Docker Evaluation (Official Score)
 
 ### 1. Build predictions file
@@ -325,12 +388,17 @@ done
 
 ## Results History
 
-| Run | Model | Score | Cost | Date |
-|-----|-------|-------|------|------|
-| Full 300 | deepseek-v4-flash | 115/300 = 38.3% | ~$10 | June 2026 |
-| Regression 35 | deepseek-v4-flash | 10/35 new | union 125/300 = 41.7% | June 2026 |
-| Smoke 3 | deepseek-v4-flash | 3/3 resolved | $0.026/inst | June 2026 |
-| V4 Pro 28 | deepseek-v4-pro | 14/28 = 50.0% | $0.48/inst | June 2026 |
+| Run | Model | Score | Cost | Cache hit | Date |
+|-----|-------|-------|------|-----------|------|
+| Full 300 | deepseek-v4-flash | 115/300 = 38.3% | ~$10 | n/m | June 2026 |
+| Regression 35 | deepseek-v4-flash | 10/35 new | union 125/300 = 41.7% | n/m | June 2026 |
+| Smoke 3 | deepseek-v4-flash | 3/3 resolved | $0.026/inst | n/m | June 2026 |
+| V4 Pro 28 | deepseek-v4-pro | 14/28 = 50.0% | $0.48/inst | n/m | June 2026 |
+| Cache-check calc | deepseek-v4-flash | 3/3 resolved | $0.007/inst | 83% steady | 2026-07-12 |
+| Cache-check calc | z-ai/glm-5.2 | 3/3 resolved | $0.007-$0.013/inst | 74-83% | 2026-07-12 |
+| Cache-check calc | claude-sonnet-5 (direct) | 3/3 resolved | $0.06-$0.07/inst | 84-88% | 2026-07-12 |
+
+*"n/m" = not measured. Pre-PRD-071 runs didn't capture cache metrics; starting 2026-07-12, `--cache-report` is wired through and all new runs get hit-rate + write-tokens recorded.*
 
 ## Troubleshooting
 
