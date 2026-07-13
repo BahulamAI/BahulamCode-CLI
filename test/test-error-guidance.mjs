@@ -1,5 +1,9 @@
 import assert from 'node:assert';
-import { formatAgentErrorGuidance, isBedrockMissingCredentials } from '../src/core/error-guidance.mjs';
+import {
+  formatAgentErrorGuidance,
+  isBedrockMissingCredentials,
+  normalizeGatewayProvider,
+} from '../src/core/error-guidance.mjs';
 
 let passed = 0;
 
@@ -35,12 +39,62 @@ test('gateway errors produce generic provider settings guidance', () => {
     message: 'Provider rejected request.',
     code: 'gateway_invalid_request',
     phase: 'gateway',
-    provider: 'openrouter',
   });
 
   assert.strictEqual(guidance.title, 'Provider rejected request.');
   assert.ok(guidance.lines.some((line) => line.includes('provider gateway failed')));
+});
+
+test('provider guidance map gives tailored OpenRouter next steps', () => {
+  const guidance = formatAgentErrorGuidance({
+    message: 'Provider rejected request.',
+    code: 'gateway_invalid_request',
+    phase: 'gateway',
+    provider: 'openrouter',
+  });
+
+  assert.ok(guidance.lines.some((line) => line.includes('OpenRouter gateway failed')));
+  assert.ok(guidance.lines.some((line) => line.includes('OpenRouter API key')));
+  assert.ok(guidance.lines.some((line) => line.includes('provider routing')));
   assert.ok(guidance.meta.includes('provider=openrouter'));
+});
+
+test('provider guidance map covers common BYOK gateways', () => {
+  const cases = [
+    ['anthropic', 'Anthropic API key'],
+    ['openai', 'OpenAI API key'],
+    ['googleai', 'Google AI API key'],
+    ['azureopenai', 'Azure OpenAI API key'],
+    ['databricks', 'Databricks host'],
+    ['custom', 'base URL'],
+    ['deepseek', 'DeepSeek API key'],
+    ['dashscope', 'DashScope API key'],
+    ['zhipu', 'Zhipu API key'],
+    ['moonshot', 'Moonshot API key'],
+    ['xai', 'xAI API key'],
+    ['mistral', 'Mistral API key'],
+  ];
+
+  for (const [provider, expected] of cases) {
+    const guidance = formatAgentErrorGuidance({
+      message: 'Provider rejected request.',
+      code: 'gateway_authentication_error',
+      phase: 'gateway',
+      provider,
+    });
+    assert.ok(
+      guidance.lines.some((line) => line.includes(expected)),
+      `${provider} guidance should mention ${expected}`,
+    );
+    assert.ok(guidance.meta.includes(`provider=${provider}`));
+  }
+});
+
+test('normalizes gateway provider aliases from explicit fields and messages', () => {
+  assert.strictEqual(normalizeGatewayProvider({ gateway: 'AzureOpenAIGateway' }), 'azureopenai');
+  assert.strictEqual(normalizeGatewayProvider({ provider: 'openrouterv2' }), 'openrouter');
+  assert.strictEqual(normalizeGatewayProvider({ message: 'MoonshotGateway rejected model kimi-k2' }), 'moonshot');
+  assert.strictEqual(normalizeGatewayProvider({ message: 'GLM quota exceeded' }), 'zhipu');
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);
