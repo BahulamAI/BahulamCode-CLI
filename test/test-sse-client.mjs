@@ -205,8 +205,38 @@ await test('429 yields friendly rate limit error', async () => {
     server.close();
     assert.strictEqual(events[0].type, 'error');
     assert.strictEqual(events[0].data.code, 'message_limit_reached');
-    assert.ok(events[0].data.message.includes('Message limit reached'));
+    assert.ok(events[0].data.message.includes('Message window exhausted'));
     assert.ok(events[0].data.message.includes('1h 1m'));
+});
+
+await test('429 credit exhaustion preserves billing guidance', async () => {
+    const server = http.createServer((req, res) => {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            detail: {
+                code: 'credit_balance_exhausted',
+                message: 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.',
+                action: 'buy_credits_or_byok',
+                pricing_url: 'codekepler.ai/pricing',
+            },
+        }));
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+    assert.strictEqual(events[0].type, 'error');
+    assert.strictEqual(events[0].data.code, 'credit_balance_exhausted');
+    assert.ok(events[0].data.message.includes('Credit balance exhausted'));
+    assert.strictEqual(events[0].data.action, 'buy_credits_or_byok');
+    assert.strictEqual(events[0].data.pricing_url, 'codekepler.ai/pricing');
 });
 
 // Test 5: Plan event with milestones

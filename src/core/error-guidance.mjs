@@ -221,6 +221,7 @@ export function formatAgentErrorGuidance(data = {}) {
   const providerMeta = provider || compact(data.provider || data.gateway || data.gateway_type);
   const taskId = compact(data.task_id);
   const retryAfter = data.retry_after != null ? compact(data.retry_after) : '';
+  const retryLabel = retryAfter ? formatRetryAfterLabel(retryAfter) : '';
   const retryable = data.retryable === true;
 
   if (isBedrockMissingCredentials(data)) {
@@ -237,7 +238,16 @@ export function formatAgentErrorGuidance(data = {}) {
 
   const lines = [];
   const providerGuidance = PROVIDER_GUIDANCE[provider];
-  if (phase === 'gateway' || code.includes('gateway')) {
+  if (code === 'credit_balance_exhausted') {
+    lines.push('Add credits or upgrade your plan to continue using platform-hosted models.');
+    lines.push('If you have your own provider key, switch to BYOK in Settings to keep working without Kepler credit charges.');
+    if (data.pricing_url) lines.push(`Open ${data.pricing_url} to top up or compare plans.`);
+  } else if (code === 'message_limit_reached') {
+    const retry = retryLabel ? ` Wait ${retryLabel} for the rolling window to recover.` : ' Wait for the rolling message window to reset.';
+    lines.push(`You reached the message limit for this plan.${retry}`);
+    lines.push('Upgrade your plan for a larger 5-hour message window, or switch to BYOK if available.');
+    if (data.pricing_url) lines.push(`Open ${data.pricing_url} to upgrade.`);
+  } else if (phase === 'gateway' || code.includes('gateway')) {
     const label = providerGuidance?.label || 'provider';
     lines.push(`The ${label} gateway failed before the agent could respond.`);
     if (providerGuidance) {
@@ -264,6 +274,17 @@ export function formatAgentErrorGuidance(data = {}) {
     lines,
     meta: buildMeta({ code, phase, provider: providerMeta, taskId, retryAfter, retryable }),
   };
+}
+
+function formatRetryAfterLabel(value) {
+  const secs = Math.max(0, Math.ceil(Number(value) || 0));
+  if (!secs) return '';
+  const hours = Math.floor(secs / 3600);
+  const minutes = Math.ceil((secs % 3600) / 60);
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${secs}s`;
 }
 
 function normalizeProviderToken(value) {

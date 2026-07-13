@@ -83,11 +83,26 @@ export function lowWindowStatus(rateLimit) {
 }
 
 export function rateLimitErrorMessage(payload, fallback = 'Message limit reached.') {
-    const detail = payload?.detail && typeof payload.detail === 'object' ? payload.detail : payload;
+    const detail = quotaErrorDetail(payload);
     const retryAfter = detail?.retry_after ?? detail?.rate_limit?.retry_after ?? detail?.rate_limit?.retry_after_seconds;
+    if (detail?.code === 'credit_balance_exhausted') {
+        return detail.message || 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.';
+    }
+    if (detail?.code === 'message_limit_reached') {
+        if (detail.message) return detail.message;
+        if (retryAfter != null) return `Message window exhausted — try again in ${formatRetryAfter(retryAfter)}, or upgrade your plan.`;
+        return 'Message window exhausted — wait for the window to reset or upgrade your plan.';
+    }
     if (detail?.message) return detail.message;
-    if (retryAfter != null) return `Message limit reached — try again in ${formatRetryAfter(retryAfter)}.`;
+    if (retryAfter != null) return `Message window exhausted — try again in ${formatRetryAfter(retryAfter)}, or upgrade your plan.`;
     return fallback;
+}
+
+export function quotaErrorDetail(payload) {
+    if (!payload || typeof payload !== 'object') return {};
+    if (typeof payload.detail === 'string') return { message: payload.detail };
+    if (payload.detail && typeof payload.detail === 'object') return payload.detail;
+    return payload;
 }
 
 function numberOrNull(value) {
