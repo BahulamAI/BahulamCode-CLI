@@ -7,12 +7,10 @@
 
 import { SessionManager } from '../core/session.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
-import { PromptCache } from '../core/cache.mjs';
 import { readEnv, listEnvVars } from '../config/env.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
 const checkpoints = new CheckpointManager();
-const promptCache = new PromptCache();
 let sessionManager = null;
 
 function getSession() {
@@ -399,11 +397,14 @@ export const COMMANDS = {
     '/extra-usage': {
         description: 'Show detailed usage stats',
         handler(args, state) {
-            const cacheStats = promptCache.getStats();
             const telemetryStats = telemetry.getStats();
+            const cacheRead = state.tokenUsage.cache_read || 0;
+            const cacheWrite = state.tokenUsage.cache_creation || 0;
+            const denom = state.tokenUsage.input + cacheRead;
+            const rate = denom > 0 ? Math.round((cacheRead / denom) * 100) : 0;
             return [
                 `Tokens: in=${state.tokenUsage.input}, out=${state.tokenUsage.output}`,
-                `Cache: hits=${cacheStats.cacheHits}, misses=${cacheStats.cacheMisses}, rate=${cacheStats.hitRate}`,
+                `Cache: read=${cacheRead}, write=${cacheWrite}, hit-rate=${rate}%`,
                 `Telemetry: ${telemetryStats.totalEvents} events`,
             ].join('\n');
         },

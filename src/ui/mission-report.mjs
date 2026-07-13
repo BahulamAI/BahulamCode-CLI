@@ -5,18 +5,17 @@
  * structured summary:
  *
  *   ───────────────────────────────────────────────────
- *   ✅ MISSION ACCOMPLISHED · Fix JWT expiration bug
+ *   ✓ done
  *   ───────────────────────────────────────────────────
  *   📂 Files       auth.py, tests/test_auth.py
- *   🛠️ Tools       read(4)  edit(2)  shell(1)  test(1)
+ *   🛠️ Tools read(4)  edit(2)  shell(1)  test(1) · ⏱ Time 2m 18s
  *   🛰️ Sub-agents  explore(1)  plan(1) · saved ≈ $0.08
- *   💰 Cost        $0.14    ⏱  Time  2m 18s
  *   ✅ Health      24/24 tests pass
  *   ───────────────────────────────────────────────────
  *
  *   Next:  /commit   /pr   /undo   /report
  *
- * Failure variant (PRD §11.1) uses ❌ MISSION HELD and lists blockers.
+ * Failure variant uses "held" and lists blockers.
  *
  * `renderMissionReport(state)` returns the ANSI block; `toMarkdown(state)`
  * returns the plain-markdown version saved by `/report`.
@@ -24,6 +23,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { paint, width as visibleWidth } from './palette.mjs';
 import { icons } from './icons.mjs';
 import { toolFamily } from './icons.mjs';
@@ -39,6 +39,7 @@ const WIDTH = 56;
  *   task         — string (the user's prompt for this session)
  *   success      — boolean (overall outcome)
  *   filesChanged — string[]
+ *   filesRead    — string[]
  *   toolCounts   — { [tool]: count } or array of {tool}
  *   subAgents    — array of { type, costUsd?, tokens? } or { explore:1, plan:1 }
  *   costUsd      — number
@@ -46,44 +47,39 @@ const WIDTH = 56;
  *   testsPass    — { passed: number, total: number } | null
  *   blockers     — string[] (for failure variant)
  *   nextActions  — string[] (slash-command hints)
+ *   cwd          — string (used to derive git repo + author metadata)
  */
 export function renderMissionReport(state) {
   const success = state.success !== false;
   const lines = [];
   const rule  = paint.text.dim('─'.repeat(WIDTH));
 
-  const titleIcon = success ? paint.state.success('✅') : paint.state.danger('❌');
-  const titleText = success ? 'MISSION ACCOMPLISHED' : 'MISSION HELD';
-  const titleAccent = success ? paint.state.success : paint.state.danger;
+  const statusIcon = success ? paint.state.success('✓') : paint.state.danger('✗');
+  const statusText = success ? paint.state.success('done') : paint.state.danger('held');
   const headerTask = state.task ? paint.text.dim(' · ') + paint.text.primary(truncate(state.task, 60)) : '';
 
   lines.push('');
   lines.push(rule);
-  lines.push(`${titleIcon} ${paint.bold(titleAccent(titleText))}${headerTask}`);
+  lines.push(`${statusIcon} ${statusText}${headerTask}`);
   lines.push(rule);
 
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     lines.push(row('📂', 'Files',      formatFiles(state.filesChanged)));
   }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    lines.push(row('📖', 'Read',       formatFiles(state.filesRead)));
+  }
 
   const toolSummary = formatToolCounts(state.toolCounts);
-  if (toolSummary) {
-    lines.push(row(icons.write, 'Tools', toolSummary));
-  }
+  const time = state.durationS != null ? paint.brand.data(formatDuration(state.durationS)) : '';
+  const metricSegments = [];
+  if (toolSummary) metricSegments.push(`${icons.write} ${paint.text.dim('Tools')} ${toolSummary}`);
+  if (time) metricSegments.push(`${paint.text.dim('⏱ Time')} ${time}`);
+  if (metricSegments.length) lines.push('  ' + metricSegments.join(paint.text.dim(' · ')));
 
   if (state.subAgents) {
     const subSummary = formatSubAgents(state.subAgents);
     if (subSummary) lines.push(row(icons.subAgent, 'Sub-agents', subSummary));
-  }
-
-  // Cost + time on one row.
-  const cost = state.costUsd != null ? paint.brand.data(formatCost(state.costUsd)) : '';
-  const time = state.durationS != null ? paint.brand.data(formatDuration(state.durationS)) : '';
-  if (cost || time) {
-    const segments = [];
-    if (cost) segments.push(`${paint.text.dim('💰 Cost')}        ${cost}`);
-    if (time) segments.push(`${paint.text.dim('⏱  Time')}  ${time}`);
-    lines.push('  ' + segments.join('    '));
   }
 
   // Test health.
@@ -126,11 +122,17 @@ export function renderMissionReport(state) {
  */
 export function toMarkdown(state) {
   const success = state.success !== false;
+  const meta = resolveReportMeta(state);
   const out = [];
-  out.push(`# ${success ? '✅ Mission Accomplished' : '❌ Mission Held'}${state.task ? ' — ' + state.task : ''}`);
+  out.push(`# ${success ? 'Done' : 'Held'}${state.task ? ' — ' + state.task : ''}`);
   out.push('');
+  out.push('**Repo**: ' + meta.repo);
+  out.push('**Author**: ' + meta.author);
   if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
     out.push('**Files**: ' + state.filesChanged.join(', '));
+  }
+  if (Array.isArray(state.filesRead) && state.filesRead.length) {
+    out.push('**Read**: ' + state.filesRead.join(', '));
   }
   const toolSummary = stripAnsi(formatToolCounts(state.toolCounts) || '');
   if (toolSummary) out.push('**Tools**: ' + toolSummary);
@@ -176,6 +178,37 @@ function row(icon, label, value, alreadyIcon = false) {
   const i = alreadyIcon ? icon : icon;
   const labelText = paint.text.dim(label.padEnd(11));
   return `  ${i} ${labelText} ${value}`;
+}
+
+function resolveReportMeta(state = {}) {
+  const cwd = state.cwd || process.cwd();
+  return {
+    repo: state.repo || gitValue(cwd, ['remote', 'get-url', 'origin']) ||
+      gitValue(cwd, ['rev-parse', '--show-toplevel'], value => path.basename(value)) ||
+      path.basename(cwd),
+    author: state.author || gitAuthor(cwd) || 'unknown',
+  };
+}
+
+function gitAuthor(cwd) {
+  const name = gitValue(cwd, ['config', '--get', 'user.name']);
+  const email = gitValue(cwd, ['config', '--get', 'user.email']);
+  if (name && email) return `${name} <${email}>`;
+  return name || email || '';
+}
+
+function gitValue(cwd, args, transform = value => value) {
+  try {
+    const value = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return value ? transform(value) : '';
+  } catch {
+    return '';
+  }
 }
 
 function formatFiles(files) {

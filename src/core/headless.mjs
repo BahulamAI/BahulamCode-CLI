@@ -13,6 +13,7 @@
 
 import { TarangStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
+import { buildWorkScope } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
@@ -26,7 +27,7 @@ import { ApprovalManager } from './approval.mjs';
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false }) {
     const startTime = Date.now();
 
     const log = (msg) => {
@@ -51,13 +52,41 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });
 
-    // ── Stream client ──
-    const client = new TarangStreamClient({
-        baseUrl: creds.backendUrl,
-        token: creds.token,
-        toolExecutor,
-        approvalManager: approval,
-    });
+    // ── Client selection ──
+    // PRD-071 Phase 2 measurement — --local forces the CLI-side LocalAgent path,
+    // bypassing the backend so we can exercise the cache_control wiring we
+    // just added to _callClaude / _callOpenRouter. Model comes from the
+    // --model flag (which overrides settings dynamically for benchmarking).
+    let client;
+    if (local) {
+        const { LocalAgent } = await import('./local-agent.mjs');
+        const localModel = model || creds.models?.local || 'anthropic/claude-sonnet-4';
+        const orKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+        const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
+        if (!orKey && !anthKey) {
+            emit({ type: 'error', error: '--local requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY' });
+            process.exit(1);
+        }
+        client = {
+            execute: (instr, ctx) => new LocalAgent({
+                apiKey: anthKey,
+                openRouterKey: orKey,
+                model: localModel,
+                toolExecutor,
+                verbose,
+                cwd: process.cwd(),
+                maxTurns: 50,
+            }).execute(instr, ctx),
+        };
+        log(`Local mode: ${localModel}`);
+    } else {
+        client = new TarangStreamClient({
+            baseUrl: creds.backendUrl,
+            token: creds.token,
+            toolExecutor,
+            approvalManager: approval,
+        });
+    }
 
     // ── Timeout ──
     const timeoutMs = timeout * 1000;
@@ -70,10 +99,16 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
+    const projectResources = toolExecutor.getProjectResources();
     const execContext = {
         cwd: process.cwd(),
         freeswim: true,
-        project_resources: toolExecutor.getProjectResources(),
+        project_resources: projectResources,
+        work_scope: buildWorkScope({
+            instruction,
+            cwd: process.cwd(),
+            projectResources,
+        }),
         agent_context: toolExecutor.getAgentContext(),
     };
     if (model) execContext.model_override = model;
@@ -218,6 +253,47 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         model: model || 'default',
         content_length: finalContent.length,
     });
+
+    // PRD-071 §1.5 — cache summary for benchmark harness. Machine-readable,
+    // one file per run. Fields match what benchmark/cache-check.sh already
+    // computes (input, cache_read, cache_write, rate) so the shell script
+    // becomes a thin reader instead of re-doing the arithmetic.
+    if (cacheReport && usage) {
+        const cacheRead = usage.cache_read || 0;
+        const cacheWrite = usage.cache_write || 0;
+        const inputT = usage.input_tokens || 0;
+        // Two conventions in the wild:
+        //   OpenAI/DeepSeek: input_tokens INCLUDES cached tokens
+        //                    → hit_rate = cache_read / input_tokens
+        //   Anthropic:       input_tokens EXCLUDES cache reads AND writes
+        //                    → hit_rate = cache_read / (input + cache_read + cache_write)
+        // Report both. Also expose `cache_hit_rate_pct` as the "sane" number
+        // — auto-detects convention by whether cache_read > input_tokens.
+        const rateOpenAI = inputT > 0 ? Math.round((cacheRead / inputT) * 100) : 0;
+        const anthropicDenom = inputT + cacheRead + cacheWrite;
+        const rateAnthropic = anthropicDenom > 0 ? Math.round((cacheRead / anthropicDenom) * 100) : 0;
+        const rateAuto = cacheRead > inputT ? rateAnthropic : rateOpenAI;
+        const report = {
+            schema: 'kepler.cache-report/1',
+            model: model || 'default',
+            input_tokens: inputT,
+            output_tokens: usage.output_tokens || 0,
+            cache_read_tokens: cacheRead,
+            cache_write_tokens: cacheWrite,
+            cache_hit_rate_pct: rateAuto,
+            cache_hit_rate_openai_pct: rateOpenAI,
+            cache_hit_rate_anthropic_pct: rateAnthropic,
+            duration_s: Math.round(durationS * 10) / 10,
+            cost_usd: totalCost,
+        };
+        try {
+            const fs = await import('node:fs');
+            fs.writeFileSync(cacheReport, JSON.stringify(report, null, 2) + '\n');
+            log(`Cache report written: ${cacheReport}`);
+        } catch (err) {
+            log(`Cache report write failed: ${err.message}`);
+        }
+    }
 
     log(`Done: ${toolCount} tools, ${durationS.toFixed(1)}s, $${totalCost.toFixed(3)}`);
 

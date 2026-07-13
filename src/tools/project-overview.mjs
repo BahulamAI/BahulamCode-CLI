@@ -64,6 +64,19 @@ function isWithin(root, candidate) {
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function uniqueValues(values) {
+    return [...new Set(values.filter(Boolean))];
+}
+
+function canonicalRoot(rootPath) {
+    const resolved = path.resolve(normalizePathInput(rootPath));
+    try {
+        return fs.realpathSync(resolved);
+    } catch {
+        return resolved;
+    }
+}
+
 function canonicalizeCandidate(candidate) {
     if (fs.existsSync(candidate)) return fs.realpathSync(candidate);
 
@@ -233,6 +246,9 @@ function formatResource(resource) {
     if (resource.project_context) {
         lines.push('', '--- Project Context ---', resource.project_context);
     }
+    if (resource.style) {
+        lines.push('', '--- Project Style ---', resource.style);
+    }
     if (resource.goal) {
         lines.push('', '--- Current Goal ---', resource.goal);
     }
@@ -261,25 +277,51 @@ function _scanSkills(keplerDir) {
     const skillsDir = path.join(keplerDir, 'skills');
     if (!fs.existsSync(skillsDir)) return [];
     try {
-        return fs.readdirSync(skillsDir)
-            .filter(f => f.endsWith('.md'))
-            .map(f => {
-                const content = fs.readFileSync(path.join(skillsDir, f), 'utf-8');
+        return fs.readdirSync(skillsDir, { withFileTypes: true })
+            .map(entry => {
+                const file = entry.isDirectory()
+                    ? path.join(skillsDir, entry.name, 'SKILL.md')
+                    : path.join(skillsDir, entry.name);
+                if (!fs.existsSync(file) || !file.endsWith('.md')) return null;
+                const content = fs.readFileSync(file, 'utf-8');
                 const descMatch = content.match(/^#\s+.*\n+(.+)/);
                 return {
-                    name: f.replace('.md', ''),
-                    description: descMatch ? descMatch[1].slice(0, 100) : f.replace('.md', ''),
+                    name: entry.isDirectory() ? entry.name : entry.name.replace('.md', ''),
+                    description: content.match(/^description:\s*(.+)$/mi)?.[1]?.trim()
+                        || (descMatch ? descMatch[1].slice(0, 100) : entry.name.replace('.md', '')),
                 };
-            });
+            })
+            .filter(Boolean);
     } catch { return []; }
+}
+
+function defaultScratchRoots() {
+    return uniqueValues([
+        '/tmp',
+        '/private/tmp',
+        os.tmpdir(),
+        process.env.TMPDIR,
+        ...(process.env.KEPLER_SCRATCH_ROOTS || '')
+            .split(path.delimiter)
+            .map(s => s.trim())
+            .filter(Boolean),
+    ]).map(canonicalRoot);
 }
 
 export class ProjectRegistry {
     constructor() {
         this.projects = new Map();
+        this.scratchRoots = new Set(defaultScratchRoots());
         this._globalIdentity = null;
         this._globalPreferences = null;
         this._globalSkills = null;
+    }
+
+    addScratchRoot(rawPath) {
+        if (!rawPath) return null;
+        const root = canonicalRoot(rawPath);
+        this.scratchRoots.add(root);
+        return root;
     }
 
     /**
@@ -382,10 +424,13 @@ export class ProjectRegistry {
             fs.writeFileSync(resourcePath, JSON.stringify(resource));
         }
 
-        // Read project-level context files (.kepler/project.md, goal.md, skills/)
+        // Read project-level context files (.kepler/KEPLER.md, project.md, goal.md, plan.md, style.md, skills/)
         const keplerDir = path.join(root, '.kepler');
         resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(keplerDir, 'project.md', 8000);
+        resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
+            _readIfExists(root, 'KEPLER.md', 10000) ||
+            _readIfExists(keplerDir, 'project.md', 8000);
+        resource.style = _readIfExists(keplerDir, 'style.md', 4000);
         resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
         resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
         resource.skills_index = _scanSkills(keplerDir);
@@ -408,6 +453,23 @@ export class ProjectRegistry {
 
     get(projectIdValue) {
         return this.projects.get(projectIdValue) || null;
+    }
+
+    projectScratchRoots() {
+        return this.resources().map(resource => path.join(resource.root, '.kepler', 'tmp'));
+    }
+
+    allowedScratchRoots() {
+        return uniqueValues([
+            ...this.scratchRoots,
+            ...this.projectScratchRoots(),
+        ]).map(canonicalRoot);
+    }
+
+    isAllowedScratchPath(filePath) {
+        const normalized = normalizePathInput(filePath);
+        const candidate = canonicalizeCandidate(path.resolve(normalized));
+        return this.allowedScratchRoots().some(root => isWithin(root, candidate));
     }
 
     resolvePath(rawPath, projectIdValue, { allowMissing = false } = {}) {
@@ -453,8 +515,12 @@ export class ProjectRegistry {
         const findContaining = (cand) => [...this.projects.values()].find(({ resource }) =>
             isWithin(resource.root, cand)
         );
+        const findScratchRoot = (cand) => this.allowedScratchRoots().find(scratchRoot =>
+            isWithin(scratchRoot, cand)
+        );
 
         let containingProject = findContaining(candidate);
+        let containingScratchRoot = containingProject ? null : findScratchRoot(candidate);
 
         // Two reasons to try the unescaped variant:
         //   (1) candidate is outside every project root (literal "Tarang\ Orca"
@@ -473,12 +539,19 @@ export class ProjectRegistry {
                     if (altProject && (allowMissing || fs.existsSync(altCandidate))) {
                         candidate = altCandidate;
                         containingProject = altProject;
+                        containingScratchRoot = null;
+                    } else {
+                        const altScratchRoot = findScratchRoot(altCandidate);
+                        if (altScratchRoot && (allowMissing || fs.existsSync(altCandidate))) {
+                            candidate = altCandidate;
+                            containingScratchRoot = altScratchRoot;
+                        }
                     }
                 } catch { /* fall through to the original error */ }
             }
         }
 
-        if (!containingProject) {
+        if (!containingProject && !containingScratchRoot) {
             throw new Error(`Path is outside registered project roots: ${rawPath}`);
         }
         if (!allowMissing && !fs.existsSync(candidate)) {

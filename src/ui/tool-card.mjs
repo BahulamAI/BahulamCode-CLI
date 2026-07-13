@@ -76,6 +76,14 @@ export function summarizeResult(tool, data) {
   if (data._blocked) {
     return { text: firstOutputLine(data) || 'blocked', tone: 'danger' };
   }
+  if (data._observation_timeout) {
+    const ms = data._observation_timeout_ms;
+    const duration = typeof ms === 'number' ? formatDuration(ms) : '';
+    return { text: duration ? `observed ${duration} tail` : 'observed output tail', tone: 'warn' };
+  }
+  if (data._timed_out) {
+    return { text: 'timed out', tone: 'danger' };
+  }
   if (data.success === false) {
     const msg = String(data.error || firstOutputLine(data) || 'failed').slice(0, 140);
     return { text: msg, tone: 'danger' };
@@ -224,6 +232,16 @@ export function formatCardHead(tool, args, opts = {}) {
 
   const leadVisible = visibleWidth(`${indent}${label}`);
   const budget = Math.max(20, cols - leadVisible - 4);
+
+  if (tool === 'shell' && visibleWidth(argsText) > budget) {
+    const wrapWidth = Math.max(32, cols - visibleWidth(indent) - 4);
+    const command = toolDisplaySummary(tool, args || {}, { cwd });
+    const commandLines = wrapCommand(command, wrapWidth)
+      .map(line => `${indent}${paint.text.dim('  ')}${formatShellCommand(line, paintShellAdapter)}`);
+    const head = `${indent}${paintLabel(tool, label)}`;
+    return `${head}\n${commandLines.join('\n')}`;
+  }
+
   const argsTruncated = truncateMiddle(argsText, budget);
 
   const head = `${indent}${paintLabel(tool, label)}`;
@@ -255,7 +273,7 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
   const tail  = showDuration ? paint.text.dim(` · ${duration}`) : '';
 
   const candidate = `${head}  ${arrow} ${body}${tail}`;
-  if (visibleWidth(candidate) <= cols) return candidate;
+  if (!head.includes('\n') && visibleWidth(candidate) <= cols) return candidate;
 
   // Doesn't fit on one line → push outcome to a separate gutter line.
   const gutterIndent = (indent || '  ') + paint.text.dim('⎿  ');
@@ -272,6 +290,38 @@ function truncateMiddle(text, max) {
   const head = plain.slice(0, Math.floor(keep / 2));
   const tail = plain.slice(plain.length - Math.ceil(keep / 2));
   return paint.text.muted(`${head}…${tail}`);
+}
+
+function wrapCommand(command, width) {
+  const text = String(command || '');
+  if (!text) return ['(empty command)'];
+  const lines = [];
+  let line = '';
+  for (const token of text.match(/\S+\s*/g) || [text]) {
+    const next = line + token;
+    if (line && visibleWidth(next.trimEnd()) > width) {
+      lines.push(line.trimEnd());
+      line = token;
+      continue;
+    }
+    if (!line && visibleWidth(token.trimEnd()) > width) {
+      lines.push(...chunkLongToken(token.trimEnd(), width));
+      line = '';
+      continue;
+    }
+    line = next;
+  }
+  if (line.trimEnd()) lines.push(line.trimEnd());
+  return lines.length ? lines : ['(empty command)'];
+}
+
+function chunkLongToken(token, width) {
+  const chunks = [];
+  const size = Math.max(8, width);
+  for (let i = 0; i < token.length; i += size) {
+    chunks.push(token.slice(i, i + size));
+  }
+  return chunks;
 }
 
 function formatDuration(ms) {

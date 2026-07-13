@@ -56,6 +56,31 @@ await test('flushAssistantTurn tolerates undefined tool output', async () => {
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
+await test('writeKeplerEvent buffers until real session id is set', async () => {
+  const cwd = path.join(tempRoot, 'event-project');
+  const outputDir = path.join(tempRoot, 'event-output');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const writer = new JsonlWriter(cwd, 'test');
+  writer.projectDir = outputDir;
+  writer.writeKeplerEvent({ type: 'status', data: { message: 'Starting' } });
+  writer.setSessionId('event-session-1');
+  writer.writeKeplerEvent({ type: 'tool_call', data: { tool: 'read_file', args: { path: 'a'.repeat(12000) } } });
+  await writer.close();
+
+  const transcriptPath = path.join(writer.projectDir, 'event-session-1.jsonl');
+  const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.strictEqual(lines.length, 2);
+  assert.strictEqual(lines[0].type, 'kepler_event');
+  assert.strictEqual(lines[0].sessionId, 'event-session-1');
+  assert.strictEqual(lines[0].event.type, 'status');
+  assert.strictEqual(lines[1].event.type, 'tool_call');
+  assert.ok(lines[1].event.data.args.path.includes('[...truncated...]'));
+
+  fs.rmSync(writer.projectDir, { recursive: true, force: true });
+});
+
 fs.rmSync(tempRoot, { recursive: true, force: true });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

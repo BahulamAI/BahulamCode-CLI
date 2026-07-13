@@ -83,6 +83,18 @@ test('flags git push --force as high risk', () => {
   assert.strictEqual(result.highRisk, true);
 });
 
+test('flags process cleanup commands as high risk', () => {
+  for (const command of [
+    'kill 57529',
+    'kill -9 57529',
+    'lsof -ti:3101 | xargs kill -9 2>/dev/null; echo "done"',
+  ]) {
+    const result = validateShellCommand(command);
+    assert.strictEqual(result.safe, true, command);
+    assert.strictEqual(result.highRisk, true, command);
+  }
+});
+
 test('allows normal commands', () => {
   assert.strictEqual(validateShellCommand('ls -la').safe, true);
   assert.strictEqual(validateShellCommand('npm test').safe, true);

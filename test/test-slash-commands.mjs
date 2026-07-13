@@ -37,9 +37,18 @@ test('/help lists commands', () => {
     handleSlashCommand('/help', {});
     restore();
     assert.ok(captured.includes('/help'));
-    assert.ok(captured.includes('/git'));
+    assert.ok(captured.includes('/help worktree'));
     assert.ok(captured.includes('/exit'));
     assert.ok(captured.includes('ESC'));
+});
+
+test('/help category lists focused commands', () => {
+    capture();
+    handleSlashCommand('/help worktree', {});
+    restore();
+    assert.ok(captured.includes('Worktree'));
+    assert.ok(captured.includes('/git'));
+    assert.ok(captured.includes('/diff'));
 });
 
 test('/git shows git status', () => {

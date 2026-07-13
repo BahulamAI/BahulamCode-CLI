@@ -67,6 +67,9 @@ const HIGH_RISK_COMMANDS = [
   /\brm\s/,                    // ALL rm commands require explicit approval
   /\bunlink\s/,                // unlink
   /\brmdir\s/,                 // rmdir
+  /\bkill\s/,                  // process termination requires explicit approval
+  /\bpkill\s/,                 // process termination by pattern requires explicit approval
+  /\bxargs\s+kill\b/,          // process termination via piped pid list
   /git\s+push\s+--force/,
   /git\s+reset\s+--hard/,
   /git\s+clean\s+-[fd]/,

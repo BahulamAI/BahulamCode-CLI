@@ -20,9 +20,12 @@ import {
 } from './risk-tier.mjs';
 import {
   renderApprovalPrompt,
-  renderInlinePrompt,
+  renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
+import { ApprovalLog } from './approval-log.mjs';
+import { TrustStore } from './trust.mjs';
+import { loadEffectivePolicy } from './policy-resolver.mjs';
 
 // ── Tool Classification ──
 //
@@ -36,6 +39,8 @@ const WRITE_TOOLS = new Set([
 
 function defaultWhy(tier, tool, args) {
     switch (tier) {
+        case TIERS.SENSITIVE_READ:
+            return `Reads a sensitive path (${toolDisplaySummary(tool, args) || 'secret-like file'}). Confirm before exposing its contents to the agent.`;
         case TIERS.SHELL_DANGEROUS:
             return `Shell command matches a high-risk pattern (rm -rf, sudo, force push, etc.). Confirm before running.`;
         case TIERS.DESTRUCTIVE:
@@ -66,12 +71,17 @@ const write = (s) => process.stderr.write(s);
 // ── Approval Manager ──
 
 export class ApprovalManager {
-    constructor({ autoApprove = false, planMode = false } = {}) {
+    constructor({ autoApprove = false, planMode = false, cwd = process.cwd(), policy = null, trustStore = null, approvalLog = null } = {}) {
         this.autoApprove = autoApprove;
         this.planMode = planMode;
+        this.cwd = cwd;
+        this.policy = policy || loadEffectivePolicy({ cwd }).policy;
+        this.trustStore = trustStore || new TrustStore({ cwd, policy: this.policy });
+        this.approvalLog = approvalLog || new ApprovalLog({ cwd });
         this.approveAll = false;
         this.approvedToolTypes = new Set();
         this.history = [];
+        this.rejectionHints = [];
         this._rl = null;
     }
 
@@ -86,7 +96,8 @@ export class ApprovalManager {
         const wasActive = this.approveAll || this.approvedToolTypes.size > 0;
         this.approveAll = false;
         this.approvedToolTypes.clear();
-        return wasActive;
+        const trustActive = this.trustStore?.revoke?.() || false;
+        return wasActive || trustActive;
     }
 
     getModeLabel() {
@@ -122,14 +133,32 @@ export class ApprovalManager {
             return { approved: true, tier, requireCheckpoint: true };
         }
 
+        const trust = this.trustStore?.find?.(toolName, args, tier);
+        if (trust?.decision === 'deny') {
+            this.history.push({ tool: toolName, decision: 'trusted-deny', tier, time: Date.now(), rule_id: trust.rule?.id });
+            this.approvalLog.append({ tool: toolName, args, tier, decision: 'deny_trusted', scope: trust.rule?.scope, rule_id: trust.rule?.id });
+            return { approved: false, tier, reason: `Denied by trust rule ${trust.rule?.id || ''}`.trim() };
+        }
+        if (trust?.decision === 'allow') {
+            this.history.push({ tool: toolName, decision: 'auto_trusted', tier, time: Date.now(), rule_id: trust.rule?.id });
+            this.approvalLog.append({ tool: toolName, args, tier, decision: 'auto_trusted', scope: trust.rule?.scope, rule_id: trust.rule?.id });
+            write(renderTrustedApproval({ tool: toolName, args, scope: trust.rule?.scope, ruleId: trust.rule?.id }));
+            return { approved: true, tier, scope: trust.rule?.scope, rule_id: trust.rule?.id };
+        }
+        if (trust?.decision === 'reask' && trust.reason) {
+            context.reason = context.reason || context.why || `Re-asking: ${trust.reason}`;
+        }
+
         // Honor approve-all / type-allow shortcuts for non-explicit tiers only.
         if (!requiresExplicitApproval(tier)) {
             if (this.approveAll) {
                 this.history.push({ tool: toolName, decision: 'auto-all', tier, time: Date.now() });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'auto-all', scope: 'session' });
                 return { approved: true, tier };
             }
             if (this.approvedToolTypes.has(toolName)) {
                 this.history.push({ tool: toolName, decision: 'type-auto', tier, time: Date.now() });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-auto', scope: 'session' });
                 return { approved: true, tier };
             }
         }
@@ -139,10 +168,9 @@ export class ApprovalManager {
 
     async _prompt(toolName, args, context = {}) {
         const tier = context.tier || classifyTier(toolName, args);
-        const explicit = requiresExplicitApproval(tier);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
         const summary = toolDisplaySummary(toolName, args);
-        const options = approvalOptions(tier);
+        const options = this._optionsFor(tier);
 
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
@@ -151,12 +179,10 @@ export class ApprovalManager {
         // live. For non-TTYs / pipes we just print once and read a line.
         const isInteractive = process.stdin.isTTY;
         if (!isInteractive) {
-            write(explicit
-                ? renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n'
-                : renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
+            write(renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n');
         }
 
-        const drawExplicit = () => {
+        const drawPrompt = () => {
             // Move up over the previous render before re-printing.
             if (printedHeight > 0) {
                 write(`\x1b[${printedHeight}F`); // cursor to start of N lines above
@@ -167,8 +193,7 @@ export class ApprovalManager {
             printedHeight = block.split('\n').length;
         };
 
-        if (isInteractive && explicit) drawExplicit();
-        if (isInteractive && !explicit) write(renderInlinePrompt({ tool: toolName, args, tier, why }) + '\n');
+        if (isInteractive) drawPrompt();
 
         // ── Input loop ─────────────────────────────────────────────────
         const choose = async () => {
@@ -176,15 +201,15 @@ export class ApprovalManager {
                 const k = await this._readKey();
 
                 if (k === 'up' || k === 'left') {
-                    if (!explicit || !isInteractive) continue;
+                    if (!isInteractive) continue;
                     selected = (selected - 1 + options.length) % options.length;
-                    drawExplicit();
+                    drawPrompt();
                     continue;
                 }
                 if (k === 'down' || k === 'right' || k === 'tab') {
-                    if (!explicit || !isInteractive) continue;
+                    if (!isInteractive) continue;
                     selected = (selected + 1) % options.length;
-                    drawExplicit();
+                    drawPrompt();
                     continue;
                 }
                 if (k === 'return') {
@@ -198,7 +223,7 @@ export class ApprovalManager {
                     const idx = options.findIndex(o => o.key === lower);
                     if (idx >= 0) {
                         selected = idx;
-                        if (isInteractive && explicit) drawExplicit();
+                        if (isInteractive) drawPrompt();
                         return options[idx].value;
                     }
                 }
@@ -212,25 +237,51 @@ export class ApprovalManager {
             case 'approve':
                 write(`  ${GREEN}✓${RST}  ${DIM}${toolName}${RST} ${DIM}${summary.slice(0, 60)}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once' });
                 return { approved: true, tier };
 
+            case 'allow-session': {
+                if (!this.policy.hitl?.allowSessionTrust) return this._prompt(toolName, args, context);
+                const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'SESSION' });
+                write(`  ${GREEN}✓${RST}  ${DIM}trusted for this session: ${rule.pattern}${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'session-trust', tier, time: Date.now(), rule_id: rule.id });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'SESSION', rule_id: rule.id });
+                return { approved: true, tier, scope: 'SESSION', rule_id: rule.id };
+            }
+
+            case 'allow-project': {
+                if (!this.policy.hitl?.allowProjectTrust) return this._prompt(toolName, args, context);
+                const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'PROJECT' });
+                write(`  ${GREEN}✓${RST}  ${DIM}trusted for this project: ${rule.pattern}${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'project-trust', tier, time: Date.now(), rule_id: rule.id });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'PROJECT', rule_id: rule.id });
+                return { approved: true, tier, scope: 'PROJECT', rule_id: rule.id };
+            }
+
             case 'reject':
-                write(`  ${RED}✗${RST}  ${DIM}denied${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now() });
-                return { approved: false, tier, reason: 'User denied' };
+            {
+                const reason = 'User stopped the command';
+                write(`  ${RED}✗${RST}  ${DIM}stopped${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason });
+                this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note: '' });
+                return { approved: false, tier, reason };
+            }
 
             case 'allow-all':
-                if (explicit) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve-all', scope: 'session' });
                 return { approved: true, tier };
 
             case 'allow-type':
-                if (explicit) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 write(`  ${GREEN}✓${RST}  ${DIM}always allow ${toolName}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session' });
                 return { approved: true, tier };
 
             case 'why':
@@ -240,9 +291,15 @@ export class ApprovalManager {
 
             case 'edit':
             case 'replan':
-                write(`  ${YELLOW}↩${RST}  ${DIM}reject with hint — rework the plan${RST}\n\n`);
-                this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now() });
-                return { approved: false, tier, reason: 'User asked to re-plan' };
+            {
+                const note = await this._readLinePrompt(`  ${DIM}How would you like to proceed? ${RST}`);
+                const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
+                write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
+                this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason });
+                this._rememberRejection({ tool: toolName, args, tier, decision: 'replan', reason, note });
+                return { approved: false, tier, reason };
+            }
 
             default:
                 return this._prompt(toolName, args, context);
@@ -287,6 +344,70 @@ export class ApprovalManager {
         });
     }
 
+    _readLinePrompt(label) {
+        return new Promise((resolve) => {
+            if (!process.stdin.isTTY) {
+                resolve('');
+                return;
+            }
+
+            if (this._execPause) this._execPause();
+            if (this._rl) this._rl.pause();
+
+            const wasRaw = process.stdin.isRaw;
+            if (typeof process.stdin.setRawMode === 'function') {
+                process.stdin.setRawMode(false);
+            }
+            process.stdin.resume();
+            write(label);
+
+            let buffer = '';
+            const cleanup = () => {
+                process.stdin.off('data', onData);
+                if (typeof process.stdin.setRawMode === 'function') {
+                    process.stdin.setRawMode(wasRaw || false);
+                }
+                if (this._rl) this._rl.resume();
+                if (this._execResume) this._execResume();
+            };
+            const finish = () => {
+                cleanup();
+                resolve(buffer.trim());
+            };
+            const onData = (data) => {
+                const str = data.toString();
+                if (data[0] === 0x03) process.exit(0);
+                if (data[0] === 0x1b) {
+                    buffer = '';
+                    write('\n');
+                    finish();
+                    return;
+                }
+                if (str.includes('\n') || str.includes('\r')) {
+                    buffer += str.replace(/[\r\n].*$/s, '');
+                    finish();
+                    return;
+                }
+                buffer += str;
+            };
+
+            process.stdin.on('data', onData);
+        });
+    }
+
+    _optionsFor(tier) {
+        const options = approvalOptions(tier);
+        if (requiresExplicitApproval(tier)) {
+            if (this.policy.hitl?.allowSessionTrust) {
+                options.splice(1, 0, { key: 's', label: 'session', value: 'allow-session', hint: 'trust this pattern until expiry' });
+            }
+            if (this.policy.hitl?.allowProjectTrust) {
+                options.splice(1, 0, { key: 'a', label: 'project', value: 'allow-project', hint: 'trust this pattern in this repo' });
+            }
+        }
+        return options;
+    }
+
     getSummary() {
         const approved = this.history.filter(h => h.decision !== 'no').length;
         const denied = this.history.filter(h => h.decision === 'no').length;
@@ -296,6 +417,25 @@ export class ApprovalManager {
             denied,
             autoApproveAll: this.approveAll,
             autoApprovedTypes: [...this.approvedToolTypes],
+            trust: this.trustStore?.summary?.() || { sessionRules: 0, projectRules: 0 },
         };
     }
+
+    _rememberRejection(entry) {
+        this.rejectionHints.push({ ...entry, time: Date.now() });
+        if (this.rejectionHints.length > 10) {
+            this.rejectionHints.splice(0, this.rejectionHints.length - 10);
+        }
+    }
+
+    consumeRejectionHints() {
+        const hints = [...this.rejectionHints];
+        this.rejectionHints = [];
+        return hints;
+    }
+}
+
+function truncateNote(note) {
+    const text = String(note || '').trim();
+    return text.length <= 120 ? text : text.slice(0, 119) + '…';
 }

@@ -17,6 +17,7 @@ function stripAnsi(str) {
 }
 
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
+const TIMEOUT_TAIL_BYTES = 64 * 1024;
 
 export const BashTool = {
     name: 'Bash',
@@ -47,6 +48,8 @@ export const BashTool = {
         return new Promise((resolve) => {
             let stdout = '';
             let stderr = '';
+            let stdoutTail = '';
+            let stderrTail = '';
             let killed = false;
             let exitCode = null;
 
@@ -54,27 +57,28 @@ export const BashTool = {
                 cwd: input.cwd,
                 env: { ...process.env },
                 stdio: ['pipe', 'pipe', 'pipe'],
+                detached: process.platform !== 'win32',
                 timeout: 0, // we handle timeout ourselves
             });
 
             proc.stdout.on('data', (chunk) => {
-                if (stdout.length < MAX_OUTPUT_BYTES) {
-                    stdout += chunk.toString();
-                }
+                const text = chunk.toString();
+                stdout = appendHead(stdout, text, MAX_OUTPUT_BYTES);
+                stdoutTail = appendTail(stdoutTail, text, TIMEOUT_TAIL_BYTES);
             });
 
             proc.stderr.on('data', (chunk) => {
-                if (stderr.length < MAX_OUTPUT_BYTES) {
-                    stderr += chunk.toString();
-                }
+                const text = chunk.toString();
+                stderr = appendHead(stderr, text, MAX_OUTPUT_BYTES);
+                stderrTail = appendTail(stderrTail, text, TIMEOUT_TAIL_BYTES);
             });
 
             // Timeout: SIGTERM first, then SIGKILL after 5s
             const timer = setTimeout(() => {
                 killed = true;
-                proc.kill('SIGTERM');
+                killProcess(proc, 'SIGTERM');
                 setTimeout(() => {
-                    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+                    killProcess(proc, 'SIGKILL');
                 }, 5000);
             }, timeout);
 
@@ -95,7 +99,8 @@ export const BashTool = {
                 stderr = stripAnsi(stderr);
 
                 if (killed) {
-                    resolve(`Error: Command timed out after ${timeout}ms\n${stdout}\n${stderr}`.trim());
+                    const tail = formatTimeoutTail(stdoutTail, stderrTail);
+                    resolve(`Error: Command timed out after ${timeout}ms\n${tail}`.trim());
                     return;
                 }
 
@@ -117,6 +122,49 @@ export const BashTool = {
         });
     },
 };
+
+function appendHead(current, chunk, maxBytes) {
+    if (current.length >= maxBytes) return current;
+    const next = current + chunk;
+    return next.length > maxBytes ? next.slice(0, maxBytes) : next;
+}
+
+function appendTail(current, chunk, maxBytes) {
+    const next = current + chunk;
+    return next.length > maxBytes ? next.slice(next.length - maxBytes) : next;
+}
+
+function formatTimeoutTail(stdoutTail, stderrTail) {
+    const out = stripAnsi(stdoutTail || '').trim();
+    const err = stripAnsi(stderrTail || '').trim();
+    const lines = [];
+    if (out) {
+        lines.push('[stdout tail]');
+        lines.push(tailLines(out, 80));
+    }
+    if (err) {
+        if (lines.length) lines.push('');
+        lines.push('[stderr tail]');
+        lines.push(tailLines(err, 80));
+    }
+    return lines.length ? lines.join('\n') : '(no output captured before timeout)';
+}
+
+function tailLines(text, maxLines) {
+    const lines = String(text || '').split('\n');
+    return lines.slice(-maxLines).join('\n');
+}
+
+function killProcess(proc, signal) {
+    if (!proc?.pid) return;
+    try {
+        if (process.platform !== 'win32') {
+            process.kill(-proc.pid, signal);
+            return;
+        }
+    } catch { /* fall through to direct process kill */ }
+    try { proc.kill(signal); } catch { /* already exited */ }
+}
 
 // Background jobs store
 const backgroundJobs = new Map();

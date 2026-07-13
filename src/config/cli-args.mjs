@@ -103,6 +103,19 @@ export function parseArgs(args) {
                 result.freeswim = true; // headless implies skip permissions
                 break;
 
+            case '--cache-report':
+                // PRD-071 §1.5 — write a machine-readable cache summary to
+                // <path> at end of run. Consumed by benchmark/cache-check.sh.
+                result.cacheReport = args[++i];
+                break;
+
+            case '--local':
+                // Force LocalAgent path (bypass backend). Meant for benchmarks
+                // that need to exercise the CLI's own LLM code — cache_control
+                // wiring, prompt-cache stats, etc.
+                result.local = true;
+                break;
+
             case '--freeswim-open-waters':
             case '--freeswim':
             case '--yes':
@@ -161,6 +174,7 @@ Options:
   --resume, -r [sessionId]   Resume last session (or specific session)
   --continue                 Alias for --resume
   --headless                 Non-interactive mode: auto-approve, JSONL output
+  --cache-report <file>      Write prompt-cache summary JSON to <file> (headless only)
   --freeswim-open-waters     Skip all approval prompts (no boundaries)
   --freeswim                 Alias for --freeswim-open-waters
   --yes                      Alias for --freeswim-open-waters

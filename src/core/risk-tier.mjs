@@ -18,6 +18,7 @@
 
 export const TIERS = Object.freeze({
   READ:            'read',
+  SENSITIVE_READ:  'sensitive-read',
   LOCAL_EDIT:      'local-edit',
   SHELL_SAFE:      'shell-safe',
   SHELL_MEDIUM:    'shell-medium',
@@ -35,6 +36,7 @@ export const TIERS = Object.freeze({
  */
 export const BEHAVIOR = Object.freeze({
   [TIERS.READ]:            'auto',
+  [TIERS.SENSITIVE_READ]:  'prompt-explicit',
   [TIERS.LOCAL_EDIT]:      'auto-with-undo',
   [TIERS.SHELL_SAFE]:      'auto',
   [TIERS.SHELL_MEDIUM]:    'prompt-safe',
@@ -58,6 +60,15 @@ const READ_TOOLS = new Set([
   'validate_file', 'validate_structure',
 ]);
 
+const READ_PATH_KEYS = [
+  'path', 'file_path', 'file', 'target',
+  'pattern', 'glob',
+];
+
+const READ_PATH_ARRAY_KEYS = [
+  'paths', 'file_paths', 'files', 'targets', 'patterns', 'globs',
+];
+
 const LOCAL_EDIT_TOOLS = new Set([
   'edit_file', 'write_file', 'write_project',
 ]);
@@ -77,7 +88,7 @@ const SHELL_SAFE_RE = [
   // `cd` / `pushd` / `popd` only change the process working directory; if
   // chained with something dangerous, the multi-segment classifier still
   // catches the danger (`cd /x && rm -rf .` → SHELL_DANGEROUS).
-  /^\s*(cd|pushd|popd|ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
+  /^\s*(cd|pushd|popd|ls|cat|head|tail|less|more|wc|file|stat|tree|find|grep|rg|ag|fd|sed|echo|printf|pwd|whoami|date|which|type|env|printenv|uname|hostname|id|df|du|uptime|free|top|ps|lsof)\b/i,
   // mkdir -p / touch are creation primitives but harmless in scope.
   /^\s*mkdir\s+-p\b/i,
   /^\s*touch\s/i,
@@ -111,6 +122,8 @@ const SHELL_DANGEROUS_RE = [
   /\bcurl\b.*\|\s*(sh|bash|zsh)/i,
   /\bwget\b.*\|\s*(sh|bash|zsh)/i,
   /\beval\s+["'$(]/i,
+  /\bfind\s+\/(?:\s|$)/i,
+  /\bfind\b.*\s-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fprintf)\b/i,
   /\bkubectl\s+delete/i,
   /\bdocker\s+(rm|rmi|system\s+prune|volume\s+rm|network\s+rm)/i,
   /\bdrop\s+(table|database|schema)/i,
@@ -132,6 +145,8 @@ const SHELL_MEDIUM_RE = [
   /^\s*make(\s|$)/i,
   /^\s*git\s+(commit|push|pull|merge|rebase|fetch|checkout(?!\s+\.)|cherry-pick|revert|tag|stash(?!\s+drop))/i,
   /^\s*docker\s+(build|run|exec|compose|pull|push|tag)/i,
+  /^\s*sed\b.*\s-i\S*(?:\s|$)/i,
+  /^\s*sed\b.*\s--in-place(?:=|\s|$)/i,
 ];
 
 export function classifyShell(command) {
@@ -140,6 +155,8 @@ export function classifyShell(command) {
 
   // Dangerous wins over safe — never let a safe-looking prefix mask `&& rm -rf`.
   if (SHELL_DANGEROUS_RE.some(re => re.test(cmd))) return TIERS.SHELL_DANGEROUS;
+
+  if (hasUnsafeOutputRedirection(cmd)) return TIERS.SHELL_MEDIUM;
 
   // For a chained command, classify each segment and take the riskiest —
   // never let a safe-looking prefix mask `&& npm install` or worse.
@@ -161,6 +178,31 @@ export function classifyShell(command) {
   return TIERS.SHELL_MEDIUM;
 }
 
+function hasUnsafeOutputRedirection(cmd) {
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && !inSingle) { escaped = true; continue; }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble || ch !== '>') continue;
+
+    const prev = cmd[i - 1] || '';
+    const next = cmd[i + 1] || '';
+    if (next === '&') continue;
+    let cursor = next === '>' ? i + 2 : i + 1;
+    while (/\s/.test(cmd[cursor] || '')) cursor++;
+    const target = cmd.slice(cursor).match(/^[^\s;&|]+/)?.[0] || '';
+    if (target === '/dev/null') continue;
+    if (prev === '2' && target === '/dev/null') continue;
+    return true;
+  }
+  return false;
+}
+
 function splitShellSegments(cmd) {
   // Split on top-level &&, ||, ;, | — naive but enough for the classifier.
   return cmd.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean);
@@ -168,6 +210,7 @@ function splitShellSegments(cmd) {
 
 const TIER_ORDER = [
   TIERS.READ,
+  TIERS.SENSITIVE_READ,
   TIERS.SHELL_SAFE,
   TIERS.LOCAL_EDIT,
   TIERS.NETWORK,
@@ -191,7 +234,9 @@ function riskier(a, b) {
 export function classify(tool, args = {}) {
   if (!tool) return TIERS.SHELL_MEDIUM;
 
-  if (READ_TOOLS.has(tool))        return TIERS.READ;
+  if (READ_TOOLS.has(tool)) {
+    return isSensitiveRead(args) ? TIERS.SENSITIVE_READ : TIERS.READ;
+  }
   if (LOCAL_EDIT_TOOLS.has(tool))  return TIERS.LOCAL_EDIT;
   if (DESTRUCTIVE_TOOLS.has(tool)) return TIERS.DESTRUCTIVE;
   if (NETWORK_TOOLS.has(tool))     return TIERS.NETWORK;
@@ -220,6 +265,7 @@ export function classify(tool, args = {}) {
 export function label(tier) {
   switch (tier) {
     case TIERS.READ:            return 'READ';
+    case TIERS.SENSITIVE_READ:  return 'SENSITIVE-READ';
     case TIERS.LOCAL_EDIT:      return 'LOCAL-EDIT';
     case TIERS.SHELL_SAFE:      return 'SHELL-SAFE';
     case TIERS.SHELL_MEDIUM:    return 'SHELL-MEDIUM';
@@ -242,4 +288,44 @@ export function requiresExplicitApproval(tier) {
  */
 export function requiresCheckpoint(tier) {
   return behavior(tier) === 'auto-with-undo';
+}
+
+export function isSensitiveRead(args = {}) {
+  return extractReadPaths(args).some(isSensitiveReadPath);
+}
+
+export function isSensitiveReadPath(filePath = '') {
+  const normalized = String(filePath || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '')
+    .trim();
+  if (!normalized) return false;
+
+  const parts = normalized.split('/').filter(Boolean);
+  const base = parts[parts.length - 1] || normalized;
+  if (base === '.env') return true;
+  if (/\.pem$/i.test(base)) return true;
+  return parts.includes('secrets');
+}
+
+function extractReadPaths(args = {}) {
+  const paths = [];
+  for (const key of READ_PATH_KEYS) {
+    if (typeof args[key] === 'string') paths.push(args[key]);
+  }
+  for (const key of READ_PATH_ARRAY_KEYS) {
+    const value = args[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (typeof item === 'string') {
+        paths.push(item);
+      } else if (item && typeof item === 'object') {
+        for (const nestedKey of READ_PATH_KEYS) {
+          if (typeof item[nestedKey] === 'string') paths.push(item[nestedKey]);
+        }
+      }
+    }
+  }
+  return paths;
 }
