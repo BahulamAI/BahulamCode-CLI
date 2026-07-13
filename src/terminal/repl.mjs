@@ -3346,6 +3346,15 @@ export async function startTerminalRepl() {
     return rlSafe(`${c.brand(who)} ${c.dim('›')} `);
   }
 
+  function printInputSeparator() {
+    if (term().plain) return;
+    const w = process.stdout.columns || 80;
+    const label = ` ${c.brand('input')} `;
+    const labelPlain = stripAnsi(label);
+    const lineLen = Math.max(0, w - labelPlain.length - 4);
+    process.stderr.write(`${c.dim('╭─')}${label}${c.dim('─'.repeat(lineLen))}\n`);
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stderr,
@@ -3363,12 +3372,32 @@ export async function startTerminalRepl() {
   approval.setReadline(rl);
   ctx._rl = rl; // expose to /resume command for readline pause
 
+  function promptBottomPaddingLines() {
+    if (!process.stderr.isTTY || term().plain) return 0;
+    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '1';
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(3, n);
+  }
+
+  function reservePromptBottomPadding() {
+    const lines = promptBottomPaddingLines();
+    if (!lines) return;
+    process.stderr.write(`${'\n'.repeat(lines)}\x1b[${lines}A\r`);
+  }
+
+  function promptInputLine() {
+    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
+    reservePromptBottomPadding();
+    rl.prompt();
+  }
+
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
-    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
-    rl.prompt();
+    printInputSeparator();
+    promptInputLine();
   }
 
   showPrompt();
@@ -3412,7 +3441,7 @@ export async function startTerminalRepl() {
 
   async function _handleLine(line) {
     const input = line.trim();
-    if (!input) { rl.prompt(); return; }
+    if (!input) { promptInputLine(); return; }
 
     // Save to input history
     session.inputHistory.push(input);

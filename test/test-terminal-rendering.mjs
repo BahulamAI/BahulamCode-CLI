@@ -147,6 +147,18 @@ test('tool activity rows do not insert blank lines between consecutive tools', (
   assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
 });
 
+test('REPL prompt keeps a small bottom cushion', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('function printInputSeparator()'));
+  assert.ok(replSource.includes("c.brand('input')"));
+  assert.ok(replSource.includes('printInputSeparator();'));
+  assert.ok(replSource.includes('function reservePromptBottomPadding()'));
+  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '1'"));
+  assert.ok(replSource.includes('Math.min(3, n)'));
+  assert.ok(replSource.includes('reservePromptBottomPadding();'));
+  assert.ok(replSource.includes('if (!input) { promptInputLine(); return; }'));
+});
+
 test('legacy formatter wraps full shell commands without ellipsis', () => {
   const command = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
   const formatter = new EventFormatter();
