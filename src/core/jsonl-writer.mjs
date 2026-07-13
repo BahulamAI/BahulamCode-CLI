@@ -317,6 +317,15 @@ export class JsonlWriter {
     }
   }
 
+  async flush() {
+    await this._flush();
+    if (this._flushPromise) await this._flushPromise;
+  }
+
+  get transcriptPath() {
+    return this._transcriptPath;
+  }
+
   // ── Internal ──
 
   _resetTurn() {

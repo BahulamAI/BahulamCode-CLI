@@ -10,6 +10,7 @@
 
 import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { formatMessageWindow } from '../core/rate-limit-display.mjs';
+import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -309,16 +310,13 @@ export class EventFormatter {
     }
 
     _error(data) {
-        const msg = data?.message || 'Unknown error';
-        process.stderr.write(`\n  ${RED}✗ ${msg}${RESET}\n`);
-
-        // Helpful suggestions for common errors
-        if (msg.includes('Authentication') || msg.includes('token')) {
-            process.stderr.write(`  ${DIM}Run /login to re-authenticate${RESET}\n`);
-        } else if (msg.includes('API key') || msg.includes('OpenRouter')) {
-            process.stderr.write(`  ${DIM}Run /config to set up your provider${RESET}\n`);
-        } else if (msg.includes('Backend') || msg.includes('Network')) {
-            process.stderr.write(`  ${DIM}Check if the backend is running at ${this.sessionInfo?.backend || 'localhost:8150'}${RESET}\n`);
+        const guidance = formatAgentErrorGuidance(data || {});
+        process.stderr.write(`\n  ${RED}✗ ${guidance.title}${RESET}\n`);
+        for (const line of guidance.lines) {
+            process.stderr.write(`  ${DIM}${line}${RESET}\n`);
+        }
+        if (guidance.meta.length) {
+            process.stderr.write(`  ${DIM}${guidance.meta.join(' · ')}${RESET}\n`);
         }
     }
 
