@@ -104,7 +104,7 @@ export function decideResumeMode({
  * Estimate the context tokens for a candidate mode. Used by the tri-choice
  * overlay to render "62k / 14k / 2k" per option before the user commits.
  *
- * @param {'full' | 'summary' | 'tail-10' | 'tail-20' | 'recap+tail'} choice
+ * @param {'full' | 'checkpoint-full' | 'summary' | 'tail-10' | 'tail-20' | 'recap+tail'} choice
  * @param {number} fullTokens — projected transcript size in full mode
  * @param {object} [opts]
  * @returns {number} projected tokens for the chosen mode
@@ -116,11 +116,21 @@ export function projectedTokensForChoice(choice, fullTokens, opts = {}) {
     tailBaseTokens = 2000,
     perTailTurnTokens = 500,
     summaryBaseTokens = 2000,
+    resumeSummary = null,
   } = opts;
 
   switch (choice) {
     case 'full':
       return Math.max(0, Number(fullTokens) || 0);
+    case 'checkpoint-full': {
+      const full = Math.max(0, Number(fullTokens) || 0);
+      const fullMessages = Math.max(0, Number(resumeSummary?.fullMessageCount) || 0);
+      const covered = Math.max(0, Number(resumeSummary?.sourceMessageCount) || 0);
+      if (!fullMessages || covered <= 0) return full;
+      const remainingMessages = Math.max(0, fullMessages - covered);
+      if (remainingMessages === 0) return summaryBaseTokens;
+      return summaryBaseTokens + (perTailTurnTokens * remainingMessages);
+    }
     case 'tail-10':
       return tailBaseTokens + (10 * perTailTurnTokens);
     case 'tail-20':

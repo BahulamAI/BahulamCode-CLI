@@ -7,6 +7,7 @@ import { loadEffectivePolicy } from '../src/core/policy-resolver.mjs';
 import { contextToPromptBlock, loadProjectContext } from '../src/core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../src/core/context-envelope.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, parseTaskMarkdown, removeTask, taskCounts, updateTask } from '../src/core/tasks.mjs';
+import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../src/core/compact-history.mjs';
 import { HookRunner } from '../src/config/hook-runner.mjs';
 import { ApprovalManager } from '../src/core/approval.mjs';
 
@@ -138,6 +139,39 @@ await test('project context injects task workflow guidance', async () => {
   const prompt = contextToPromptBlock(context);
   assert.ok(prompt.includes('Keep .kepler/tasks/active.md current'));
   assert.ok(prompt.includes('Keep tasks current'));
+});
+
+await test('/compact helper summarizes prefix and preserves recent tail', async () => {
+  const history = [
+    { role: 'user', content: 'first task' },
+    { role: 'assistant', content: 'first response' },
+    { role: 'user', content: 'second task' },
+    { role: 'assistant', content: 'second response' },
+    { role: 'user', content: 'third task' },
+    { role: 'assistant', content: 'third response' },
+  ];
+  const prepared = prepareCompactHistory({ agentHistory: history, tailCount: 2 });
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.sourceMessages.length, 4);
+  assert.strictEqual(prepared.tail.length, 2);
+
+  const localSummary = localCompactSummary(prepared.sourceMessages);
+  assert.ok(localSummary.includes('first task'));
+
+  const applied = applyCompactSummary({
+    prepared,
+    summary: 'Summary anchor',
+    sessionId: 'session-1',
+    cwd: '/tmp/project',
+    previousSourceMessageCount: 3,
+    now: new Date('2026-07-13T00:00:00.000Z'),
+  });
+  assert.strictEqual(applied.agentHistory.length, 5);
+  assert.strictEqual(applied.sourceMessageCount, 7);
+  assert.ok(applied.agentHistory[2].content.includes('Session continuity summary after /compact'));
+  assert.deepStrictEqual(applied.agentHistory.slice(-2), prepared.tail);
+  assert.strictEqual(parseCompactTailCount('--tail=12'), 12);
+  assert.strictEqual(parseCompactTailCount('20'), 20);
 });
 
 await test('hook runner blocks tools and captures feedback', async () => {

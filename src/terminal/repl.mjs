@@ -49,6 +49,7 @@ import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
+import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
@@ -196,6 +197,18 @@ function formatResumeCheckpointStatus(session) {
   return c.dim(` · summarized${pct}`);
 }
 
+function formatResumeContextStatus(session) {
+  const full = formatCtxTokens(session?.contextTokens || 0);
+  const marker = session?.resumeSummary;
+  if (!marker || !Number(marker.sourceMessageCount)) {
+    return c.dim(`${full.padStart(5, ' ')} ctx`);
+  }
+  const resumable = formatCtxTokens(projectedTokensForChoice('checkpoint-full', session.contextTokens || 0, {
+    resumeSummary: marker,
+  }));
+  return c.dim(`${resumable.padStart(5, ' ')} resumable · ${full} full`) + formatResumeCheckpointStatus(session);
+}
+
 function formatRelativeTime(iso) {
   if (!iso) return '';
   const t = Date.parse(iso);
@@ -250,7 +263,7 @@ async function pickResumableSession(resumable, ctx) {
         const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
         const status = endStatusMarker(s.endStatus);
         const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
-        const ctx = c.dim(`${formatCtxTokens(s.contextTokens).padStart(5, ' ')} ctx`) + formatResumeCheckpointStatus(s);
+        const ctx = formatResumeContextStatus(s);
         const cost = formatSessionCost(s.costUsd);
         const partial = s.partial ? c.yellow(' ⚠partial') : '';
         const instr = oneLineInstruction(s.instruction, 48);
@@ -308,8 +321,14 @@ async function chooseThresholdMode(ctx, decision) {
   if (rl) rl.pause();
 
   const canFull = decision.mode !== 'no-full-allowed';
+  const hasCheckpoint = Boolean(decision.resumeSummary?.sourceMessageCount);
+  const firstOption = canFull
+    ? { key: 'f', value: 'full', label: 'full transcript', enabled: true }
+    : hasCheckpoint
+      ? { key: 'f', value: 'checkpoint-full', label: 'checkpointed transcript', enabled: true }
+      : { key: 'f', value: 'full', label: 'full transcript', enabled: false };
   const options = [
-    { key: 'f', value: 'full',    label: 'full transcript', enabled: canFull },
+    firstOption,
     { key: 's', value: 'summary', label: 'summary only',    enabled: true },
     { key: '1', value: 'tail-10', label: 'summary + last 10 turns', enabled: true },
     { key: '2', value: 'tail-20', label: 'summary + last 20 turns', enabled: true },
@@ -328,7 +347,8 @@ async function chooseThresholdMode(ctx, decision) {
       const projected = formatCtxTokens(decision.projected);
       const win = formatCtxTokens(decision.windowSize);
       const lines = [];
-      lines.push(`  This session would use  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      const rawLabel = hasCheckpoint ? 'Raw full transcript would use' : 'This session would use';
+      lines.push(`  ${rawLabel}  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
       if (decision.resumeSummary?.sourceMessageCount) {
         const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
         const full = Number(decision.resumeSummary.fullMessageCount) || 0;
@@ -337,14 +357,18 @@ async function chooseThresholdMode(ctx, decision) {
       }
       lines.push(canFull
         ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
-        : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
+        : hasCheckpoint
+          ? `  ${c.yellow('⚠')} ${c.dim('raw full is over hardCap — checkpoint/tail modes are available:')}`
+          : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
       lines.push('');
       for (let i = 0; i < options.length; i++) {
         const o = options[i];
         const disabled = !o.enabled;
         const marker = i === selected && !disabled ? c.brand('▸') : ' ';
         const keyTag = c.dim('[') + (disabled ? c.dim(o.key) : c.brand(o.key)) + c.dim(']');
-        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected));
+        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected, {
+          resumeSummary: decision.resumeSummary,
+        }));
         const label = disabled ? c.dim(o.label) : (i === selected ? c.brand(o.label) : o.label);
         const projCol = c.dim(`${proj.padStart(5, ' ')} ctx`);
         const suffix = disabled ? c.dim('  (over hardCap)') : '';
@@ -389,6 +413,7 @@ async function chooseThresholdMode(ctx, decision) {
 }
 
 function resumeModeLabel(mode = 'full') {
+  if (mode === 'checkpoint-full') return 'checkpointed transcript';
   if (mode === 'summary') return 'summary only';
   const tailTurns = resumeTailTurnCount(mode);
   if (tailTurns) return `summary + last ${tailTurns} turns`;
@@ -434,7 +459,7 @@ async function previewResumeSession(session, ctx) {
       if (scrollOffset > maxOffset) scrollOffset = maxOffset;
 
       const lines = [];
-      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens)) + ' ctx')}`);
+      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens, { resumeSummary: session.resumeSummary })) + ' ctx')}`);
       lines.push(`  ${c.dim('─'.repeat(60))}`);
       for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
         lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
@@ -460,7 +485,7 @@ async function previewResumeSession(session, ctx) {
       if (key === '[B') { scrollOffset += 1; render(); return; }
       if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
       if (key === '[6~') { scrollOffset += 10; render(); return; }
-      if (low === 'f') { mode = 'full'; history = rich(); scrollOffset = 0; render(); return; }
+      if (low === 'f') { mode = session.resumeSummary?.sourceMessageCount ? 'checkpoint-full' : 'full'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === '1') { mode = 'tail-10'; history = rich(); scrollOffset = 0; render(); return; }
       if (low === '2') { mode = 'tail-20'; history = rich(); scrollOffset = 0; render(); return; }
@@ -656,6 +681,120 @@ async function summarizeResumeTranscript({
       source: 'local',
       reason: err?.message || 'backend summary request failed',
     };
+  }
+}
+
+async function compactCurrentSession(ctx, rest = '') {
+  const tailCount = parseCompactTailCount(rest, 8);
+  const preparedLive = prepareCompactHistory({
+    agentHistory: session.agentHistory,
+    tailCount,
+  });
+  if (!preparedLive.ok) {
+    process.stderr.write(`  ${c.gray(`Nothing to compact — ${preparedLive.reason}.`)}\n`);
+    return;
+  }
+
+  const progress = startResumeProgress('compact');
+  progress.update('preparing compact summary', 18);
+  let sourceMessages = preparedLive.sourceMessages;
+  let priorSummary = preparedLive.previousSummary || '';
+  let previousSourceMessageCount = 0;
+  let fullMessageCount = preparedLive.beforeCount;
+  let projectPath = safeCwd();
+  let sourceFrom = 'live';
+  let summaryWarning = '';
+
+  try {
+    if (session.id && ctx.jsonlWriter?.flush) {
+      progress.update('reading transcript checkpoint', 28);
+      await ctx.jsonlWriter.flush();
+      const detail = await getSessionDetail(session.id, { filePath: ctx.jsonlWriter.transcriptPath });
+      if (detail) {
+        const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, `tail-${tailCount}`);
+        if (richHistory.sourceMessages?.length) {
+          sourceMessages = richHistory.sourceMessages;
+          priorSummary = richHistory.priorSummary || '';
+          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
+          fullMessageCount = richHistory.fullMessageCount || sourceMessages.length;
+          projectPath = detail.meta?.project || safeCwd();
+          sourceFrom = 'transcript';
+        } else if (richHistory.priorSummary) {
+          priorSummary = richHistory.priorSummary;
+          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
+          fullMessageCount = richHistory.fullMessageCount || preparedLive.beforeCount;
+        }
+      }
+    }
+
+    if (!sourceMessages.length) {
+      progress.stop();
+      process.stderr.write(`  ${c.gray('Nothing new to compact.')}\n`);
+      return;
+    }
+
+    progress.update('summarizing compacted history', 46);
+    const backendSummary = await summarizeResumeTranscript({
+      auth: ctx.auth,
+      toolExecutor: ctx.toolExecutor,
+      sessionId: session.id,
+      projectPath,
+      messages: sourceMessages,
+    });
+    let summarySource = backendSummary?.summary ? (backendSummary.source || 'backend') : 'local fallback';
+    let deltaSummary = backendSummary?.summary || '';
+    if (!deltaSummary) {
+      summaryWarning = backendSummary?.reason || 'backend summary unavailable';
+      deltaSummary = localCompactSummary(sourceMessages);
+    }
+    const summary = combineResumeSummaries(priorSummary, deltaSummary);
+
+    progress.update('rewriting live context', 74);
+    const applied = applyCompactSummary({
+      prepared: { ...preparedLive, sourceMessages },
+      summary,
+      sessionId: session.id,
+      cwd: projectPath,
+      originalRequest: session.history.find(m => m.role === 'user')?.content || session.lastTask || '',
+      previousSourceMessageCount,
+    });
+    session.agentHistory = applied.agentHistory;
+    session.compactSummary = summary;
+    session.compactSourceMessageCount = applied.sourceMessageCount;
+
+    if (ctx.jsonlWriter) {
+      progress.update('writing summary checkpoint', 88);
+      ctx.jsonlWriter.writeKeplerEvent({
+        type: 'resume_summary',
+        data: {
+          session_id: session.id || null,
+          mode: 'compact',
+          mode_label: '/compact',
+          summary,
+          summary_source: summarySource,
+          summary_warning: summaryWarning || null,
+          source: sourceFrom,
+          source_message_count: applied.sourceMessageCount,
+          previous_source_message_count: previousSourceMessageCount,
+          full_message_count: fullMessageCount,
+          retained_tail_messages: applied.retainedCount,
+          live_before_messages: applied.beforeCount,
+          live_after_messages: applied.afterCount,
+        },
+      });
+      await ctx.jsonlWriter.flush?.();
+    }
+
+    progress.stop();
+    process.stderr.write(
+      `  ${c.green('✓')} ${c.dim(`Compacted context: ${applied.beforeCount} → ${applied.afterCount} live messages · retained ${applied.retainedCount} · summary ${summarySource}`)}\n`
+    );
+    if (summaryWarning) {
+      process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — used local summary (${summaryWarning})`)}\n`);
+    }
+  } catch (err) {
+    progress.stop();
+    process.stderr.write(`  ${c.red(`Compact failed: ${err?.message || String(err)}`)}\n`);
   }
 }
 
@@ -1224,10 +1363,12 @@ function updateStatusBar() {
 // buffered head as a regular two-line shape first so the interleaving
 // content lands below it.
 let _pendingHead = null; // { callId, head, indent }
+let _lastRenderedBlock = null; // 'tool' | 'content' | null
 
 function flushPendingHead() {
   if (!_pendingHead) return;
-  process.stderr.write(`\n${_pendingHead.head}\n`);
+  process.stderr.write(`${_pendingHead.head}\n`);
+  _lastRenderedBlock = 'tool';
   _pendingHead = null;
 }
 
@@ -1312,7 +1453,8 @@ function renderToolResult(data, eventType = 'tool_result') {
     const cols = process.stderr.columns || 120;
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
-      process.stderr.write(`\n${combined}\n`);
+      process.stderr.write(`${combined}\n`);
+      _lastRenderedBlock = 'tool';
       _pendingHead = null;
       return;
     }
@@ -1326,6 +1468,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
+  _lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
   if (hasLint) {
@@ -1448,6 +1591,7 @@ function startContentStream() {
   _streamedPartialText = '';
   _renderedToolResults.clear();
   _renderedContentThisTurn = false;
+  _lastRenderedBlock = null;
   stopSpinner();
 }
 
@@ -1472,12 +1616,14 @@ function flushContent() {
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
   flushPendingHead();
+  if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
   const rendered = renderMarkdown(_streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
   }
   _streamBuffer = '';
   _renderedContentThisTurn = true;
+  _lastRenderedBlock = 'content';
 }
 
 // ── Event Renderer ──
@@ -1529,11 +1675,13 @@ function renderEvent(event) {
         }
       }
       if (text) {
+        if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
         _renderedContentThisTurn = true;
+        _lastRenderedBlock = 'content';
       }
       break;
     }
@@ -2576,10 +2724,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/compact': {
-      const before = session.agentHistory.length || session.history.length;
-      if (before <= 4) { process.stderr.write(`  ${c.gray('Nothing to compact.')}\n`); return; }
-      session.agentHistory.splice(2, session.agentHistory.length - 6);
-      process.stderr.write(`  ${c.gray(`Compacted agent context: ${before} → ${session.agentHistory.length} messages`)}\n`);
+      await compactCurrentSession(ctx, rest);
       return;
     }
 

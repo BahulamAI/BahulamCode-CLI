@@ -306,6 +306,16 @@ await test('buildResumeHistory resumes summarization from the latest summary che
   assert.strictEqual(compact.summaryCoveredMessageCount, 8);
   assert.ok(compact.sourceMessages.map(m => m.content).join('\n').includes('answer 3'));
   assert.ok(!compact.sourceMessages.map(m => m.content).join('\n').includes('turn 1: old request'));
+
+  const checkpointFull = localStore.buildResumeHistory(detail, 'checkpoint-full');
+  const checkpointPayload = checkpointFull.agentHistory.map(m => m.content).join('\n');
+  assert.strictEqual(checkpointFull.sourceMessages.length, 0);
+  assert.strictEqual(checkpointFull.summaryCheckpointMessageCount, 3);
+  assert.strictEqual(checkpointFull.summaryCoveredMessageCount, 3);
+  assert.ok(checkpointPayload.includes('Previously summarized checkpoint'));
+  assert.ok(checkpointPayload.includes('turn 2: middle request'));
+  assert.ok(checkpointPayload.includes('answer 3'));
+  assert.ok(!checkpointPayload.includes('answer 1'));
 });
 
 await test('report formatters include expected analytics sections', async () => {
