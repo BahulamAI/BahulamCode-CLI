@@ -11,7 +11,7 @@
 
 import { sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
-import { rateLimitErrorMessage } from './rate-limit-display.mjs';
+import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 
 export const EVENT_TYPES = Object.freeze({
     // Phase 1 — handled
@@ -134,7 +134,7 @@ export class TarangStreamClient {
             } catch {
                 payload = { detail: { message: text } };
             }
-            const detail = payload?.detail && typeof payload.detail === 'object' ? payload.detail : payload;
+            const detail = quotaErrorDetail(payload);
             yield {
                 type: EVENT_TYPES.ERROR,
                 data: {
@@ -142,6 +142,8 @@ export class TarangStreamClient {
                     code: detail?.code || 'rate_limited',
                     retry_after: detail?.retry_after ?? detail?.rate_limit?.retry_after,
                     rate_limit: detail?.rate_limit || null,
+                    action: detail?.action || null,
+                    pricing_url: detail?.pricing_url || null,
                     fatal: true,
                 },
             };

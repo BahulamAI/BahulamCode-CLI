@@ -124,7 +124,21 @@ test('rateLimitErrorMessage formats retry_after fallback', () => {
         detail: {
             retry_after: 3660,
         },
-    }), 'Message limit reached — try again in 1h 1m.');
+    }), 'Message window exhausted — try again in 1h 1m, or upgrade your plan.');
+});
+
+test('rateLimitErrorMessage preserves string credit exhaustion detail', () => {
+    assert.strictEqual(rateLimitErrorMessage({
+        detail: 'Credit balance exhausted. Purchase credits or add your own API key (BYOK) at codekepler.ai/pricing',
+    }), 'Credit balance exhausted. Purchase credits or add your own API key (BYOK) at codekepler.ai/pricing');
+});
+
+test('rateLimitErrorMessage gives credit exhaustion action message from code', () => {
+    assert.strictEqual(rateLimitErrorMessage({
+        detail: {
+            code: 'credit_balance_exhausted',
+        },
+    }), 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.');
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

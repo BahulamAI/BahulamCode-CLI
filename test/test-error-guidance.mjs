@@ -97,4 +97,29 @@ test('normalizes gateway provider aliases from explicit fields and messages', ()
   assert.strictEqual(normalizeGatewayProvider({ message: 'GLM quota exceeded' }), 'zhipu');
 });
 
+test('credit exhaustion guidance gives billing and BYOK actions', () => {
+  const guidance = formatAgentErrorGuidance({
+    message: 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.',
+    code: 'credit_balance_exhausted',
+    pricing_url: 'codekepler.ai/pricing',
+  });
+
+  assert.ok(guidance.lines.some((line) => line.includes('Add credits or upgrade')));
+  assert.ok(guidance.lines.some((line) => line.includes('BYOK')));
+  assert.ok(guidance.lines.some((line) => line.includes('codekepler.ai/pricing')));
+});
+
+test('message window guidance explains wait or upgrade decision', () => {
+  const guidance = formatAgentErrorGuidance({
+    message: 'Message window exhausted — try again in 1h 1m, or upgrade your plan.',
+    code: 'message_limit_reached',
+    retry_after: 3660,
+    pricing_url: 'codekepler.ai/pricing',
+  });
+
+  assert.ok(guidance.lines.some((line) => line.includes('message limit')));
+  assert.ok(guidance.lines.some((line) => line.includes('Wait 1h 1m')));
+  assert.ok(guidance.lines.some((line) => line.includes('larger 5-hour message window')));
+});
+
 console.log(`\n  ${passed} passed, 0 failed\n`);
