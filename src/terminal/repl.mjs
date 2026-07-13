@@ -40,6 +40,7 @@ import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
+import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -1908,9 +1909,15 @@ function renderEvent(event) {
     case 'error':
       stopSpinner();
       flushContent();
-      process.stderr.write(`\n  ${c.red('✗')} ${data?.message || 'Unknown error'}\n`);
-      if ((data?.message || '').includes('Authentication')) {
-        process.stderr.write(`  ${c.dim('Run /login to re-authenticate')}\n`);
+      {
+        const guidance = formatAgentErrorGuidance(data || {});
+        process.stderr.write(`\n  ${c.red('✗')} ${guidance.title}\n`);
+        for (const line of guidance.lines) {
+          process.stderr.write(`  ${c.dim(line)}\n`);
+        }
+        if (guidance.meta.length) {
+          process.stderr.write(`  ${c.dim(guidance.meta.join(' · '))}\n`);
+        }
       }
       break;
 
