@@ -130,13 +130,48 @@ The shell parser + `cache-report.json` writer now auto-detect the convention (if
 2. **The 1h TTL beta is active** — `cache_write: 10,320` non-zero confirms new cache blocks were written during this session with the extended TTL. Vertex-served Sonnet reported `cache_write: 0` because Vertex's envelope doesn't surface that field; native Anthropic does.
 3. **Sonnet 5 economics on real Anthropic**: cost $0.0699 for 46s of coding-agent work. At 84% cache hit, effective input rate ≈ `0.16 × $3 + 0.84 × $0.30 = ~$0.73/M` — even better than the Sonnet-4-via-Vertex measurement of ~$1.00/M.
 
+## Final measurement — GLM 5.2 real-world with all fixes (2026-07-12)
+
+Same razorpay-testing task ("read scenarios.py + webhook_smoke_test.py, write test_scenarios.py, run pytest"), GLM 5.2 via OpenRouter → Alibaba pinned via P5.4, framework configured with `compression.enabled: false`.
+
+| Metric | Value |
+|---|---:|
+| Model | `z-ai/glm-5.2` |
+| Provider | OpenRouter → Alibaba (P5.4 pinned) |
+| Turns | 12 |
+| Duration | 121.9s |
+| Provider cost | **$0.0175** |
+| Input tokens | 123,033 |
+| Output tokens | 3,018 |
+| Cache read | **111,488** |
+| Cache write | 0 (GLM auto-cache does not surface writes) |
+| **Aggregate hit rate** | **91%** |
+| Task | ✅ Completed — 12 tests generated, all pass |
+| Compressions fired | **0** |
+| Input drops | **0** — pure append-only |
+
+Per-turn trace showed monotonic growth (4,280 → 14,169 input tokens) with cache_read tracking within 200 tokens of input by turn 16, holding at 98-100% hit for the last 5 turns.
+
 ## Baselines summary
 
 - [x] `deepseek/deepseek-v4-flash` (OR platform key): **58% cold → 83% steady-state**
 - [x] `anthropic/claude-sonnet-4` via OpenRouter → Vertex: **74% aggregate**, cache_write hidden by Vertex envelope
 - [x] **`claude-sonnet-5` native Anthropic**: **84% Anthropic-convention** — all breakpoints proven to land, 1h TTL beta active, cache_write reported
+- [x] **`z-ai/glm-5.2` real razorpay task with full PRD-071 stack**: **91% aggregate** — pinned operating-context marker + P5.4 provider pin + compression disabled = pure append-only cache-friendly behaviour
 - [ ] Local-mode Sonnet with the new CLI cache_control wiring — pending an unblocked OR key
 - [ ] `openai/gpt-5-mini` remote — nice-to-have
+
+## Iteration ladder (what each fix contributed)
+
+| Config | Aggregate | Task | Cost | Compressions |
+|---|---:|---|---:|---:|
+| Baseline (all bugs) | 43% | ❌ stagnated | $0.363 | many |
+| + `ensure_operating_context_message` (append-on-change) | 47% | ❌ | $0.037 | some |
+| + P5.4 provider pin + pinned marker + Claude patches | 59% | ✅ | $0.172 | 2 |
+| + Nested `context.compression.enabled` key found | 69% | ✅ | $0.046 | 2 |
+| + `compression.enabled: false` applied end-to-end | **91%** | ✅ | **$0.0175** | **0** |
+
+Each row measured against the same real-world razorpay-testing prompt.
 
 ## Phase 2 exit target (recap from PRD-071)
 

@@ -22,6 +22,7 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { buildWorkScope } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
@@ -1859,7 +1860,13 @@ export async function startTerminalRepl() {
 
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;
-      execContext.project_resources = toolExecutor.getProjectResources();
+      const projectResources = toolExecutor.getProjectResources();
+      execContext.project_resources = projectResources;
+      execContext.work_scope = buildWorkScope({
+        instruction: input,
+        cwd: safeCwd(),
+        projectResources,
+      });
       execContext.agent_context = toolExecutor.getAgentContext();
 
       for await (const event of client.execute(input, execContext, session.history)) {

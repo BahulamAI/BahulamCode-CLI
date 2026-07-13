@@ -13,6 +13,7 @@
 
 import { TarangStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
+import { buildWorkScope } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
@@ -98,10 +99,16 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
+    const projectResources = toolExecutor.getProjectResources();
     const execContext = {
         cwd: process.cwd(),
         freeswim: true,
-        project_resources: toolExecutor.getProjectResources(),
+        project_resources: projectResources,
+        work_scope: buildWorkScope({
+            instruction,
+            cwd: process.cwd(),
+            projectResources,
+        }),
         agent_context: toolExecutor.getAgentContext(),
     };
     if (model) execContext.model_override = model;

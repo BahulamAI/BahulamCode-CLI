@@ -206,16 +206,30 @@ Also writes `/tmp/cache-check/report.json` (schema `kepler.cache-report/1`) with
 | `anthropic/claude-sonnet-4` | OpenRouter → **Vertex** | 74% (aggregate) | ~$0.009 | `cache_write:0` — Vertex envelope hides writes |
 | `claude-sonnet-5` | **Anthropic direct** | **84–88%** | ~$0.059–$0.070 | Full write reporting, 1h TTL beta live |
 
-### Real-world workload — razorpay-testing project (`Explain → write tests → run`)
+### Real-world workload — razorpay-testing project (`Read + write tests + run`)
 
-Same prompt against ~1075 LOC codebase (4 Python files, no existing tests):
+Same prompt against ~1075 LOC codebase (4 Python files, no existing tests). Iteration ladder across the full PRD-071 stack:
 
 | Model | Path | Hit rate | Cost | Tools | Duration | Outcome |
 |---|---|---:|---:|---:|---:|---|
-| `z-ai/glm-5.2` | OR → Zhipu | **43%** | $0.318 | 109 | 538s | ❌ Over-explored (95 read_file), no test file written |
-| `anthropic/claude-sonnet-5` | OR → Vertex | **55%** | $0.018 | 17 | 101s | ❌ Misread cwd, gave up early |
+| `z-ai/glm-5.2` (baseline, all bugs) | OR → Zhipu | **43%** | $0.318 | 109 | 538s | ❌ Over-explored |
+| `anthropic/claude-sonnet-5` (baseline) | OR → Vertex | **55%** | $0.018 | 17 | 101s | ❌ Misread cwd |
+| `z-ai/glm-5.2` + PRD-071 partial | OR → Alibaba pinned | **59%** | $0.172 | 27 | 436s | ✅ Completed 15 tests |
+| **`z-ai/glm-5.2` + PRD-071 full** | **OR → Alibaba, compression off** | **91%** | **$0.0175** | 12 | 122s | ✅ **12 tests** |
 
-**Insight** — real projects hit rate is materially lower than the calculator fixture (43-55% vs 74-88%). Reason: real work has more unique tool_result content per turn (reading different files each time), and only the growing system prompt + tools + prior history stay stable. The cached-vs-fresh ratio drops.
+**The 91% run is the target state.** Details:
+- Pure append-only history (input grows monotonically 4.2k → 14.2k)
+- Zero compression events
+- Steady-state 98-100% cache hit for turns 16-24
+- Provider pinned to Alibaba upstream (no cross-provider variance)
+- Operating-context message marked with cache_control at a fixed position (byte-stable)
+
+**What "compression off" means in workspace.yaml**:
+```yaml
+context:
+  compression:
+    enabled: false   # PRD-071: prevents msg[0] rewrite that broke prompt cache
+``` The cached-vs-fresh ratio drops.
 
 **Cost picture on real work at 43-55% cache hit:**
 - GLM 5.2: $0.318 for a 9-min session, ~$0.0029/tool — cheap even at 43% cache
