@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import * as fs from 'node:fs';
 // Force ansi16 capability before importing palette-aware modules so the
 // test runs the same way under `npm test` (no TTY) as on a terminal.
 import { _setForTesting as _setTermForTesting } from '../src/ui/term.mjs';
@@ -134,6 +135,14 @@ test('long shell tool heads wrap without hiding command text', () => {
     cwd: '/tmp',
   }));
   assert.ok(observed.includes('observed 15.0s tail'));
+});
+
+test('tool activity rows do not insert blank lines between consecutive tools', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
+  assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
+  assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
+  assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {

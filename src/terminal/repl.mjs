@@ -1342,7 +1342,7 @@ let _pendingHead = null; // { callId, head, indent }
 
 function flushPendingHead() {
   if (!_pendingHead) return;
-  process.stderr.write(`\n${_pendingHead.head}\n`);
+  process.stderr.write(`${_pendingHead.head}\n`);
   _pendingHead = null;
 }
 
@@ -1427,7 +1427,7 @@ function renderToolResult(data, eventType = 'tool_result') {
     const cols = process.stderr.columns || 120;
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
-      process.stderr.write(`\n${combined}\n`);
+      process.stderr.write(`${combined}\n`);
       _pendingHead = null;
       return;
     }
