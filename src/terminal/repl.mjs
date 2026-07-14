@@ -3406,6 +3406,15 @@ export async function startTerminalRepl() {
     return s.slice(0, max - 1) + '…';
   }
 
+  function promptColumns() {
+    return stripAnsi(userPrompt().replace(/[\x01\x02]/g, '')).length;
+  }
+
+  function restoreReadlineCursor() {
+    const col = Math.max(0, promptColumns() + Number(rl.cursor || 0));
+    readline.cursorTo(process.stderr, col);
+  }
+
   function renderSlashHint(line = '', { preserveSelection = false } = {}) {
     if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
     const rows = promptBottomPaddingLines();
@@ -3416,9 +3425,10 @@ export async function startTerminalRepl() {
     slashHintLine = line;
     if (slashHintSelected >= slashHintItems.length) slashHintSelected = Math.max(0, slashHintItems.length - 1);
 
-    process.stderr.write('\x1b[s\x1b[1E'); // save cursor, move to first reserved row
+    readline.moveCursor(process.stderr, 0, 1);
     for (let i = 0; i < rows; i++) {
-      process.stderr.write('\x1b[2K\r');
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
       const item = suggestions[i];
       if (item) {
         const marker = i === slashHintSelected ? c.brand('›') : c.dim(' ');
@@ -3427,9 +3437,10 @@ export async function startTerminalRepl() {
         const desc = truncateHintText(item.description, maxDesc);
         process.stderr.write(`  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`);
       }
-      if (i < rows - 1) process.stderr.write('\x1b[1E');
+      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
     }
-    process.stderr.write('\x1b[u'); // restore cursor to readline input
+    readline.moveCursor(process.stderr, 0, -rows);
+    restoreReadlineCursor();
     slashHintVisible = suggestions.length > 0;
     slashHintRowsVisible = rows;
   }
@@ -3441,12 +3452,14 @@ export async function startTerminalRepl() {
       return;
     }
     const rows = slashHintRowsVisible || promptBottomPaddingLines() || 1;
-    process.stderr.write('\x1b[s\x1b[1E');
+    readline.moveCursor(process.stderr, 0, 1);
     for (let i = 0; i < rows; i++) {
-      process.stderr.write('\x1b[2K\r');
-      if (i < rows - 1) process.stderr.write('\x1b[1E');
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
+      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
     }
-    process.stderr.write('\x1b[u');
+    readline.moveCursor(process.stderr, 0, -rows);
+    restoreReadlineCursor();
     slashHintVisible = false;
     slashHintRowsVisible = 0;
     slashHintItems = [];
@@ -3455,9 +3468,16 @@ export async function startTerminalRepl() {
   }
 
   function replaceReadlineLine(value) {
-    rl.write(null, { ctrl: true, name: 'a' });
-    rl.write(null, { ctrl: true, name: 'k' });
-    if (value) rl.write(value);
+    const next = String(value || '');
+    rl.line = next;
+    rl.cursor = next.length;
+    if (typeof rl._refreshLine === 'function') {
+      rl._refreshLine();
+    } else {
+      readline.cursorTo(process.stderr, promptColumns());
+      readline.clearLine(process.stderr, 1);
+      process.stderr.write(next);
+    }
   }
 
   function acceptSlashHint() {
@@ -3476,6 +3496,15 @@ export async function startTerminalRepl() {
     replaceReadlineLine(slashHintLine);
     renderSlashHint(slashHintLine, { preserveSelection: true });
     return true;
+  }
+
+  function selectedSlashCommandFor(line) {
+    const input = String(line || '').trim();
+    if (!input.startsWith('/')) return null;
+    if (COMMANDS[input] || input.startsWith('/help ')) return input;
+    const item = slashHintItems[slashHintSelected];
+    if (!item) return input;
+    return item.command;
   }
 
   function reservePromptBottomPadding() {
@@ -3557,9 +3586,11 @@ export async function startTerminalRepl() {
   });
 
   async function _handleLine(line) {
+    let input = line.trim();
+    const selectedSlashCommand = selectedSlashCommandFor(input);
     inputActive = false;
     clearSlashHint();
-    const input = line.trim();
+    if (selectedSlashCommand) input = selectedSlashCommand;
     if (!input) { promptInputLine(); return; }
 
     // Save to input history

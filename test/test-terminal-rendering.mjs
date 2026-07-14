@@ -158,6 +158,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows))'));
   assert.ok(replSource.includes('function acceptSlashHint()'));
   assert.ok(replSource.includes('function moveSlashHintSelection(delta)'));
+  assert.ok(replSource.includes('function selectedSlashCommandFor(line)'));
+  assert.ok(replSource.includes("typeof rl._refreshLine === 'function'"));
+  assert.ok(replSource.includes('readline.cursorTo(process.stderr, col)'));
+  assert.ok(replSource.includes('readline.moveCursor(process.stderr, 0, 1)'));
   assert.ok(replSource.includes("item.command.padEnd(13)"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
