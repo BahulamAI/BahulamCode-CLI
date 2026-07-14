@@ -81,6 +81,56 @@ await test('writeKeplerEvent buffers until real session id is set', async () => 
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
+await test('tool result blocks preserve Kepler file diff metadata', async () => {
+  const cwd = path.join(tempRoot, 'diff-project');
+  const outputDir = path.join(tempRoot, 'diff-output');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const writer = new JsonlWriter(cwd, 'test');
+  writer.projectDir = outputDir;
+  writer.setSessionId('diff-session-1');
+  writer.writeUserTurn('edit file');
+  writer.accumulateToolCall('call-diff', 'edit_file', { path: 'src/a.js' });
+  writer.recordToolResult('call-diff', 'File updated: src/a.js', false, {
+    tool: 'edit_file',
+    lines_added: 1,
+    lines_removed: 1,
+    file_diff: {
+      type: 'file_diff',
+      path: '/repo/src/a.js',
+      relative_path: 'src/a.js',
+      lines_added: 1,
+      lines_removed: 1,
+      hunks: [
+        {
+          old_start: 1,
+          old_count: 1,
+          new_start: 1,
+          new_count: 1,
+          lines: [
+            { type: 'remove', text: 'old' },
+            { type: 'add', text: 'new' },
+          ],
+        },
+      ],
+      unified: '--- a/src/a.js\n+++ b/src/a.js\n@@ -1,1 +1,1 @@\n-old\n+new',
+    },
+  });
+  writer.flushAssistantTurn();
+  await writer.close();
+
+  const transcriptPath = path.join(writer.projectDir, 'diff-session-1.jsonl');
+  const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+  const toolBlock = lines[2].message.content[0];
+  assert.strictEqual(toolBlock.type, 'tool_result');
+  assert.strictEqual(toolBlock.kepler.tool, 'edit_file');
+  assert.strictEqual(toolBlock.kepler.file_diffs[0].relative_path, 'src/a.js');
+  assert.ok(toolBlock.kepler.file_diffs[0].unified.includes('+new'));
+
+  fs.rmSync(writer.projectDir, { recursive: true, force: true });
+});
+
 fs.rmSync(tempRoot, { recursive: true, force: true });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

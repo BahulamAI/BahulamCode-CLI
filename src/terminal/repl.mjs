@@ -3862,7 +3862,7 @@ export async function startTerminalRepl() {
         // Local JSONL: record tool results
         if (event.type === 'tool_done' || event.type === 'tool_result') {
           const d = event.data || {};
-          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false);
+          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false, d);
         }
 
         // Local JSONL: flush assistant turn on complete

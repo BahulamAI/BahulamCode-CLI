@@ -131,6 +131,114 @@ await test('tool_call triggers execution, callback, and tool_result', async () =
     assert.ok(callbackReceived, 'callback should have been sent');
 });
 
+await test('tool_result with file_diff yields structured file_diff event', async () => {
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-diff' });
+            res.write(`event: tool_call\ndata: ${JSON.stringify({ call_id: 'tc-diff', tool: 'write_file', args: { path: 'src/a.js' } })}\n\n`);
+            res.write(`event: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+            res.end();
+        } else if (req.url === '/api/callback') {
+            res.writeHead(200);
+            res.end('{}');
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: {
+            async execute(name) {
+                return {
+                    success: true,
+                    output: 'File written: src/a.js',
+                    _tool: name,
+                    lines_added: 1,
+                    lines_removed: 1,
+                    file_diff: {
+                        type: 'file_diff',
+                        path: '/repo/src/a.js',
+                        relative_path: 'src/a.js',
+                        lines_added: 1,
+                        lines_removed: 1,
+                        hunks: [
+                            {
+                                old_start: 1,
+                                old_count: 1,
+                                new_start: 1,
+                                new_count: 1,
+                                lines: [
+                                    { type: 'remove', text: 'old' },
+                                    { type: 'add', text: 'new' },
+                                ],
+                            },
+                        ],
+                        unified: '--- a/src/a.js\n+++ b/src/a.js\n@@ -1,1 +1,1 @@\n-old\n+new',
+                    },
+                };
+            },
+        },
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) {
+        events.push(evt);
+    }
+    server.close();
+
+    const resultEvent = events.find(e => e.type === EVENT_TYPES.TOOL_RESULT);
+    assert.ok(resultEvent);
+    assert.strictEqual(resultEvent.data.file_diff.relative_path, 'src/a.js');
+    const diffEvent = events.find(e => e.type === EVENT_TYPES.FILE_DIFF);
+    assert.ok(diffEvent, 'file_diff event should be yielded after tool_result');
+    assert.strictEqual(diffEvent.data.call_id, 'tc-diff');
+    assert.strictEqual(diffEvent.data.tool, 'write_file');
+    assert.strictEqual(diffEvent.data.relative_path, 'src/a.js');
+    assert.strictEqual(diffEvent.data.lines_added, 1);
+    assert.ok(diffEvent.data.unified.includes('+new'));
+});
+
+await test('server-side tool_done with file_diff also yields file_diff event', async () => {
+    const { server, port } = await createMockServer([
+        {
+            event: 'tool_done',
+            data: {
+                call_id: 'server-diff',
+                tool: 'write_file',
+                success: true,
+                server_side: true,
+                file_diff: {
+                    path: '/repo/src/server.js',
+                    relative_path: 'src/server.js',
+                    lines_added: 2,
+                    lines_removed: 0,
+                    hunks: [],
+                    unified: '--- a/src/server.js\n+++ b/src/server.js\n+server',
+                },
+            },
+        },
+        { event: 'complete', data: { summary: 'Done' } },
+    ]);
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    const diffEvent = events.find(e => e.type === EVENT_TYPES.FILE_DIFF);
+    assert.ok(diffEvent);
+    assert.strictEqual(diffEvent.data.call_id, 'server-diff');
+    assert.strictEqual(diffEvent.data.relative_path, 'src/server.js');
+    assert.strictEqual(diffEvent.data.lines_added, 2);
+});
+
 // Test 3: Error event yielded with message
 await test('error event yielded', async () => {
     const { server, port } = await createMockServer([

@@ -36,6 +36,7 @@ export const EVENT_TYPES = Object.freeze({
     CONTENT: 'content',
     CONTENT_PARTIAL: 'content_partial',
     TOOL_RESULT: 'tool_result',
+    FILE_DIFF: 'file_diff',
     SUB_AGENT_START: 'sub_agent_start',
     SUB_AGENT_TOOL: 'sub_agent_tool',
     SUB_AGENT_COMPLETE: 'sub_agent_complete',
@@ -192,12 +193,25 @@ export class TarangStreamClient {
                 yield { type: event, data }; // Show tool call to user first
                 if (data?.server_side) continue;
                 const toolEvent = await this._handleToolRequest(data);
-                if (toolEvent) yield toolEvent;
+                if (toolEvent) {
+                    yield toolEvent;
+                    for (const diffEvent of fileDiffEventsForToolResult(toolEvent)) {
+                        yield diffEvent;
+                    }
+                }
                 continue;
             }
 
-            // All other events yielded to caller
-            yield { type: event, data };
+            // All other events yielded to caller. If a server-side tool result
+            // already contains diff metadata, expose the same first-class
+            // file_diff event shape local tools emit.
+            const passthrough = { type: event, data };
+            yield passthrough;
+            if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
+                for (const diffEvent of fileDiffEventsForToolResult(passthrough)) {
+                    yield diffEvent;
+                }
+            }
         }
     }
 
@@ -453,4 +467,30 @@ export class TarangStreamClient {
         }
         return await response.json();
     }
+}
+
+function fileDiffEventsForToolResult(toolEvent) {
+    const data = toolEvent?.data || {};
+    const diffs = Array.isArray(data.file_diffs)
+        ? data.file_diffs
+        : data.file_diff ? [data.file_diff] : [];
+    if (!diffs.length) return [];
+
+    return diffs.map((diff, index) => ({
+        type: EVENT_TYPES.FILE_DIFF,
+        data: {
+            call_id: data.call_id || data._callId || null,
+            tool: data.tool || data._tool || '',
+            index,
+            count: diffs.length,
+            path: diff.path || '',
+            relative_path: diff.relative_path || '',
+            lines_added: diff.lines_added || 0,
+            lines_removed: diff.lines_removed || 0,
+            truncated: !!diff.truncated,
+            truncated_line_count: diff.truncated_line_count || 0,
+            hunks: diff.hunks || [],
+            unified: diff.unified || '',
+        },
+    }));
 }

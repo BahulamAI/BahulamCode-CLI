@@ -8,6 +8,7 @@ export function buildFileDiff({
   after = '',
   cwd = process.cwd(),
   context = 3,
+  maxDiffLines = 400,
 } = {}) {
   const oldText = before == null ? '' : String(before);
   const newText = after == null ? '' : String(after);
@@ -16,7 +17,8 @@ export function buildFileDiff({
   const ops = diffOps(oldLines, newLines);
   const added = ops.filter(op => op.type === 'add').length;
   const removed = ops.filter(op => op.type === 'remove').length;
-  const hunks = buildHunks(ops, context);
+  const originalHunks = buildHunks(ops, context);
+  const { hunks, truncated, truncatedLineCount } = limitHunks(originalHunks, maxDiffLines);
   const relativePath = shortPath(filePath, cwd);
 
   return {
@@ -25,6 +27,8 @@ export function buildFileDiff({
     relative_path: relativePath,
     lines_added: added,
     lines_removed: removed,
+    truncated,
+    truncated_line_count: truncatedLineCount,
     hunks,
     unified: renderUnifiedDiff(relativePath || filePath, hunks),
   };
@@ -158,6 +162,45 @@ function buildHunks(ops, context) {
     const newCount = lines.filter(l => l.type !== 'remove').length;
     return { old_start: oldStart, old_count: oldCount, new_start: newStart, new_count: newCount, lines };
   });
+}
+
+function limitHunks(hunks, maxLines) {
+  if (!Number.isFinite(maxLines) || maxLines <= 0) {
+    return { hunks, truncated: false, truncatedLineCount: 0 };
+  }
+
+  const out = [];
+  let remaining = maxLines;
+  let truncatedLineCount = 0;
+  let truncated = false;
+
+  for (const hunk of hunks) {
+    const lines = hunk.lines || [];
+    if (remaining <= 0) {
+      truncated = true;
+      truncatedLineCount += lines.length;
+      continue;
+    }
+    if (lines.length <= remaining) {
+      out.push(hunk);
+      remaining -= lines.length;
+      continue;
+    }
+
+    truncated = true;
+    const kept = lines.slice(0, remaining);
+    truncatedLineCount += lines.length - kept.length;
+    out.push({
+      ...hunk,
+      lines: [
+        ...kept,
+        { type: 'context', text: `... diff truncated (${truncatedLineCount} more line${truncatedLineCount === 1 ? '' : 's'})` },
+      ],
+    });
+    remaining = 0;
+  }
+
+  return { hunks: out, truncated, truncatedLineCount };
 }
 
 function renderUnifiedDiff(filePath, hunks) {
