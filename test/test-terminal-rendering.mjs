@@ -9,7 +9,9 @@ import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.m
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
-import { formatCard, formatCardHead } from '../src/ui/tool-card.mjs';
+import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
+import { detailFor } from '../src/ui/tool-details.mjs';
+import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
 
@@ -229,6 +231,33 @@ test('renders diff additions and removals with semantic colors', () => {
   const rendered = renderDiff('@@ -1 +1 @@\n-old\n+new');
   assert.ok(rendered.includes('\x1b[31m-old'));
   assert.ok(rendered.includes('\x1b[32m+new'));
+});
+
+test('renders compact file diff previews for writes', () => {
+  const fileDiff = buildFileDiff({
+    filePath: '/repo/src/example.js',
+    cwd: '/repo',
+    before: 'const a = 1;\nconst b = 2;\n',
+    after: 'const a = 1;\nconst b = 3;\nconst c = 4;\n',
+  });
+  const rendered = stripAnsi(formatCompactFileDiff({
+    file_diff: fileDiff,
+    lines_added: fileDiff.lines_added,
+    lines_removed: fileDiff.lines_removed,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(rendered.includes('@@ -1,2 +1,3 @@'));
+  assert.ok(rendered.includes('- const b = 2;'));
+  assert.ok(rendered.includes('+ const b = 3;'));
+  assert.ok(rendered.includes('+ const c = 4;'));
+  assert.ok(rendered.indexOf('- const b = 2;') < rendered.indexOf('+ const b = 3;'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'write_file',
+    args: { file_path: '/repo/src/example.js', content: 'large content omitted' },
+    result: { file_diff: fileDiff, diff: fileDiff.unified },
+  }));
+  assert.ok(detail.includes('--- a/src/example.js'));
+  assert.ok(!detail.includes('large content omitted'));
 });
 
 test('mission report omits old title and keeps tools/time on one line', () => {

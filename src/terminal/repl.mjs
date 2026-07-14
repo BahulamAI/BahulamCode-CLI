@@ -57,6 +57,7 @@ import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
 import { term } from '../ui/term.mjs';
 import {
   formatCardHead,
+  formatCompactFileDiff,
   summarizeResult,
   recordCard,
   lastCard,
@@ -1458,6 +1459,10 @@ function renderToolResult(data, eventType = 'tool_result') {
   const tail = duration ? paint.text.dim(` · ${duration}`) : '';
   const outcome = `${arrow} ${painter(text || 'done')}${tail}`;
   const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
+  const diffPreview = formatCompactFileDiff(data, {
+    indent: gutter,
+    columns: process.stderr.columns || 120,
+  });
 
   // ── Single-line combined emit ──
   // If the head for this call is still buffered (no interleaving content
@@ -1468,6 +1473,7 @@ function renderToolResult(data, eventType = 'tool_result') {
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
+      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
       _lastRenderedBlock = 'tool';
       _pendingHead = null;
       return;
@@ -1482,6 +1488,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
+  if (diffPreview) process.stderr.write(`${diffPreview}\n`);
   _lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.

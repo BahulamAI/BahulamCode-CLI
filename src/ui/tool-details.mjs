@@ -87,12 +87,41 @@ function renderHeader(card) {
 function oneLineArgs(tool, args) {
   if (!args) return '';
   try {
-    const compact = JSON.stringify(args);
+    const compact = JSON.stringify(safeDetailArgs(tool, args));
     if (compact.length <= 140) return paint.text.muted(compact);
     return paint.text.muted(compact.slice(0, 137) + '…');
   } catch {
     return paint.text.muted(String(args));
   }
+}
+
+function safeDetailArgs(tool, args) {
+  if (tool === 'write_file') {
+    const { content, ...rest } = args || {};
+    return {
+      ...rest,
+      content: typeof content === 'string' ? `[${content.split('\n').length} lines omitted]` : content,
+    };
+  }
+  if (tool === 'write_project') {
+    return {
+      ...args,
+      files: (args.files || []).map(file => ({
+        path: file.path || file.file_path,
+        content: typeof file.content === 'string' ? `[${file.content.split('\n').length} lines omitted]` : file.content,
+      })),
+    };
+  }
+  if (tool === 'edit_file') {
+    const next = { ...args };
+    for (const key of ['search', 'replace', 'old_string', 'new_string']) {
+      if (typeof next[key] === 'string' && next[key].length > 80) {
+        next[key] = `[${next[key].split('\n').length} lines omitted]`;
+      }
+    }
+    return next;
+  }
+  return args;
 }
 
 // ── Read ────────────────────────────────────────────────────────────────
@@ -162,7 +191,7 @@ function detailListFiles(card) {
 // ── Write / edit ────────────────────────────────────────────────────────
 
 function detailEditFile(card) {
-  const diff = card.result?.diff || card.result?.patch || card.result?.output;
+  const diff = card.result?.file_diff?.unified || card.result?.diff || card.result?.patch || card.result?.output;
   if (diff) return renderDiff(String(diff));
 
   const before = card.args?.search;
@@ -177,12 +206,18 @@ function detailEditFile(card) {
 }
 
 function detailWriteFile(card) {
+  const diff = card.result?.file_diff?.unified || card.result?.diff;
+  if (diff) return renderDiff(String(diff));
   const content = card.args?.content;
   if (!content) return paint.text.dim('    (no content)');
   return numbered(String(content), 1);
 }
 
 function detailWriteProject(card) {
+  const diffs = card.result?.file_diffs || [];
+  if (diffs.length) {
+    return renderDiff(diffs.map(diff => diff.unified).filter(Boolean).join('\n'));
+  }
   const files = card.args?.files || [];
   if (!files.length) return paint.text.dim('    (no files)');
   return files.slice(0, 30).map(f => {

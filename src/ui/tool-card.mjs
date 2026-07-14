@@ -162,6 +162,67 @@ export function summarizeResult(tool, data) {
   }
 }
 
+export function formatCompactFileDiff(result, {
+  indent = '  ',
+  maxLines = 14,
+  maxFiles = 2,
+  columns = term().columns || 120,
+} = {}) {
+  const diffs = fileDiffs(result).filter(diff => diff?.hunks?.length);
+  if (!diffs.length) return '';
+
+  const out = [];
+  let shown = 0;
+  let truncated = false;
+  const lineBudget = Math.max(40, columns - visibleWidth(indent) - 4);
+
+  for (const diff of diffs.slice(0, maxFiles)) {
+    if (diffs.length > 1) {
+      if (shown >= maxLines) { truncated = true; break; }
+      out.push(`${indent}${paint.brand.primary(diff.relative_path || diff.path || 'file')} ${paint.text.dim(diffDelta(diff))}`);
+      shown++;
+    }
+
+    for (const hunk of diff.hunks || []) {
+      if (shown >= maxLines) { truncated = true; break; }
+      out.push(`${indent}${paint.text.dim(`@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`)}`);
+      shown++;
+
+      for (const line of hunk.lines || []) {
+        if (shown >= maxLines) { truncated = true; break; }
+        out.push(`${indent}${paintDiffLine(line, lineBudget)}`);
+        shown++;
+      }
+      if (truncated) break;
+    }
+    if (truncated) break;
+  }
+
+  if (diffs.length > maxFiles) truncated = true;
+  if (truncated) out.push(`${indent}${paint.text.dim('… diff preview truncated; use /last to expand')}`);
+  return out.join('\n');
+}
+
+function fileDiffs(result) {
+  if (!result) return [];
+  if (Array.isArray(result.file_diffs)) return result.file_diffs;
+  if (result.file_diff) return [result.file_diff];
+  return [];
+}
+
+function paintDiffLine(line, maxWidth) {
+  const text = truncatePlain(String(line?.text ?? ''), Math.max(20, maxWidth - 2));
+  if (line?.type === 'add') return paint.state.success(`+ ${text}`);
+  if (line?.type === 'remove') return paint.state.danger(`- ${text}`);
+  return paint.text.dim(`  ${text}`);
+}
+
+function truncatePlain(text, max) {
+  if (text.length <= max) return text;
+  if (max <= 1) return '';
+  return text.slice(0, max - 1) + '…';
+}
+
 function firstOutputLine(data) {
   const o = data?.output_preview || data?.output || data?.message || '';
   return String(o).split('\n').map(l => l.trim()).find(Boolean) || '';
