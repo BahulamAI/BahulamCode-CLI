@@ -253,6 +253,39 @@ await test('pause gates local tool execution until resume', async () => {
     assert.ok(executedAt >= resumedAt, `tool executed before resume: executed=${executedAt} resumed=${resumedAt}`);
 });
 
+await test('client cancel ends stream without redundant cancelled status', async () => {
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-cancel' });
+            res.write(`event: status\ndata: ${JSON.stringify({ message: 'Starting...' })}\n\n`);
+            setTimeout(() => {
+                res.write(`event: status\ndata: ${JSON.stringify({ message: 'Still running...' })}\n\n`);
+                res.end();
+            }, 120);
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) {
+        events.push(evt);
+        client.cancel();
+    }
+    server.close();
+
+    assert.ok(events.some(e => e.type === EVENT_TYPES.STATUS && e.data.message === 'Starting...'));
+    assert.ok(!events.some(e => e.data?.message === 'Cancelled by user.'));
+});
+
 await test('server-side tool_done with file_diff also yields file_diff event', async () => {
     const { server, port } = await createMockServer([
         {

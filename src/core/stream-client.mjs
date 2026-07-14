@@ -117,7 +117,6 @@ export class TarangStreamClient {
             });
         } catch (err) {
             if (err.name === 'AbortError') {
-                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
             }
             yield { type: EVENT_TYPES.ERROR, data: { message: `Network error: ${err.message}. Check your connection or use --local mode.`, fatal: true } };
@@ -163,12 +162,10 @@ export class TarangStreamClient {
         // Parse SSE stream
         for await (const { event, data } of this._parseSSE(response)) {
             if (this._cancelled) {
-                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
             }
             await this._waitIfPaused();
             if (this._cancelled) {
-                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
             }
 
@@ -199,7 +196,6 @@ export class TarangStreamClient {
                 yield { type: event, data }; // Show tool call to user first
                 await this._waitIfPaused();
                 if (this._cancelled) {
-                    yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                     return;
                 }
                 if (data?.server_side) continue;
@@ -207,7 +203,6 @@ export class TarangStreamClient {
                 if (toolEvent) {
                     await this._waitIfPaused();
                     if (this._cancelled) {
-                        yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                         return;
                     }
                     yield toolEvent;

@@ -9,20 +9,18 @@
 
 const BACKEND_URLS = {
     local:       'http://127.0.0.1:8150',
-    development: 'https://codekepler-backend-dev.kindisland-9034322d.eastus.azurecontainerapps.io',
+    treetop:     'https://codekepler-backend-dev.kindisland-9034322d.eastus.azurecontainerapps.io',
     production:  'https://codekepler-backend-prod.gentlerock-9816c6b8.centralus.azurecontainerapps.io',
 };
 
 // Aliases
-BACKEND_URLS.dev = BACKEND_URLS.development;
 BACKEND_URLS.prod = BACKEND_URLS.production;
 
 const WEB_URLS = {
     local:       'http://localhost:3100',
-    development: 'https://codekepler.ai',
+    treetop:     'https://treetop.codekepler.ai',
     production:  'https://codekepler.ai',
 };
-WEB_URLS.dev = WEB_URLS.development;
 WEB_URLS.prod = WEB_URLS.production;
 
 /**
