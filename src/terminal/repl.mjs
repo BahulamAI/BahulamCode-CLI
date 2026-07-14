@@ -3682,6 +3682,8 @@ export async function startTerminalRepl() {
     let keypressCleanup = null;
     let execListenerActive = false;
     let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
+    let lastPrintableInputAt = 0;
+    let textInputWarningShown = false;
 
     if (process.stdin.isTTY) {
       rl.pause();
@@ -3693,6 +3695,7 @@ export async function startTerminalRepl() {
       const onData = (data) => {
         if (!execListenerActive) return; // paused for approval menu
         const bytes = [...data];
+        const now = Date.now();
 
         // Esc key (single byte 0x1b, not part of arrow sequence)
         if (bytes.length === 1 && bytes[0] === 0x1b) {
@@ -3707,6 +3710,13 @@ export async function startTerminalRepl() {
 
         // Space — toggle pause/resume
         if (bytes.length === 1 && bytes[0] === 0x20) {
+          if (now - lastPrintableInputAt < 750) {
+            if (!textInputWarningShown) {
+              process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
+              textInputWarningShown = true;
+            }
+            return;
+          }
           if (executionPaused) {
             executionPaused = false;
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
@@ -3718,6 +3728,18 @@ export async function startTerminalRepl() {
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
+          }
+          return;
+        }
+
+        // Ignore ordinary typing during execution. Without this guard, spaces
+        // inside a typed sentence become pause/resume toggles because stdin is
+        // in raw mode while the agent is running.
+        if (bytes.length === 1 && bytes[0] >= 0x20 && bytes[0] <= 0x7e && bytes[0] !== 0x64 && bytes[0] !== 0x44) {
+          lastPrintableInputAt = now;
+          if (!textInputWarningShown) {
+            process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
+            textInputWarningShown = true;
           }
           return;
         }

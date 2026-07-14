@@ -202,6 +202,57 @@ await test('tool_result with file_diff yields structured file_diff event', async
     assert.ok(diffEvent.data.unified.includes('+new'));
 });
 
+await test('pause gates local tool execution until resume', async () => {
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-pause' });
+            res.write(`event: tool_call\ndata: ${JSON.stringify({ call_id: 'tc-pause', tool: 'read_file', args: { path: 'x.txt' } })}\n\n`);
+            setTimeout(() => {
+                res.write(`event: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+                res.end();
+            }, 120);
+        } else if (req.url === '/api/callback' || req.url?.startsWith('/api/pause/') || req.url?.startsWith('/api/resume/')) {
+            res.writeHead(200);
+            res.end('{}');
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    let executedAt = 0;
+    let resumedAt = 0;
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: {
+            async execute(name) {
+                executedAt = Date.now();
+                return { success: true, output: `mock result for ${name}`, _tool: name };
+            },
+        },
+    });
+
+    const events = [];
+    for await (const evt of client.execute('test')) {
+        events.push(evt);
+        if (evt.type === EVENT_TYPES.TOOL_CALL) {
+            await client.pause();
+            setTimeout(() => {
+                resumedAt = Date.now();
+                client.resume();
+            }, 60);
+        }
+    }
+    server.close();
+
+    assert.ok(events.some(e => e.type === EVENT_TYPES.TOOL_RESULT));
+    assert.ok(resumedAt > 0, 'resume should have been called');
+    assert.ok(executedAt >= resumedAt, `tool executed before resume: executed=${executedAt} resumed=${resumedAt}`);
+});
+
 await test('server-side tool_done with file_diff also yields file_diff event', async () => {
     const { server, port } = await createMockServer([
         {

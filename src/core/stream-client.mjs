@@ -70,6 +70,7 @@ export class TarangStreamClient {
         this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
         this._cancelled = false;
         this._paused = false;
+        this._pauseWaiters = new Set();
     }
 
     _headers(extra = {}) {
@@ -165,6 +166,11 @@ export class TarangStreamClient {
                 yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
             }
+            await this._waitIfPaused();
+            if (this._cancelled) {
+                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
+                return;
+            }
 
             // Capture session_id from backend (first turn creates it, subsequent turns reuse)
             if (event === EVENT_TYPES.SESSION_INFO && data?.session_id) {
@@ -191,9 +197,19 @@ export class TarangStreamClient {
             // This path remains for backwards compatibility with older backends.
             if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
                 yield { type: event, data }; // Show tool call to user first
+                await this._waitIfPaused();
+                if (this._cancelled) {
+                    yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
+                    return;
+                }
                 if (data?.server_side) continue;
                 const toolEvent = await this._handleToolRequest(data);
                 if (toolEvent) {
+                    await this._waitIfPaused();
+                    if (this._cancelled) {
+                        yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
+                        return;
+                    }
                     yield toolEvent;
                     for (const diffEvent of fileDiffEventsForToolResult(toolEvent)) {
                         yield diffEvent;
@@ -399,6 +415,8 @@ export class TarangStreamClient {
     /** Cancel the current stream. */
     async cancel() {
         this._cancelled = true;
+        this._paused = false;
+        this._releasePauseWaiters();
         // Best-effort backend POST — the stream may already be torn down.
         if (this.currentTaskId) {
             try {
@@ -417,25 +435,46 @@ export class TarangStreamClient {
 
     /** Pause the current stream. */
     async pause() {
+        this._paused = true;
         if (this.currentTaskId) {
-            await fetch(`${this.baseUrl}/api/pause/${this.currentTaskId}`, {
-                method: 'POST',
-                headers: this._headers(),
-            });
+            try {
+                await fetch(`${this.baseUrl}/api/pause/${this.currentTaskId}`, {
+                    method: 'POST',
+                    headers: this._headers(),
+                });
+            } catch { /* best effort */ }
         }
     }
 
     /** Resume a paused stream. */
     async resume(instruction = null) {
+        this._paused = false;
+        this._releasePauseWaiters();
         if (this.currentTaskId) {
             const body = instruction ? JSON.stringify({ instruction }) : undefined;
-            await fetch(`${this.baseUrl}/api/resume/${this.currentTaskId}`, {
-                method: 'POST',
-                headers: this._headers({
-                    'Content-Type': 'application/json',
-                }),
-                body,
-            });
+            try {
+                await fetch(`${this.baseUrl}/api/resume/${this.currentTaskId}`, {
+                    method: 'POST',
+                    headers: this._headers({
+                        'Content-Type': 'application/json',
+                    }),
+                    body,
+                });
+            } catch { /* best effort */ }
+        }
+    }
+
+    async _waitIfPaused() {
+        while (this._paused && !this._cancelled) {
+            await new Promise(resolve => this._pauseWaiters.add(resolve));
+        }
+    }
+
+    _releasePauseWaiters() {
+        const waiters = [...this._pauseWaiters];
+        this._pauseWaiters.clear();
+        for (const resolve of waiters) {
+            try { resolve(); } catch { /* ignore */ }
         }
     }
 
