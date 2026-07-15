@@ -146,6 +146,19 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 emit({ type: 'tool_result', tool: data?.tool || '', success, duration_ms: Math.round(duration * 1000) });
             }
 
+            if (type === 'file_diff') {
+                emit({
+                    type: 'file_diff',
+                    tool: data?.tool || '',
+                    path: data?.path || '',
+                    relative_path: data?.relative_path || '',
+                    lines_added: data?.lines_added || 0,
+                    lines_removed: data?.lines_removed || 0,
+                    truncated: !!data?.truncated,
+                    hunks: data?.hunks || [],
+                });
+            }
+
             if (type === 'sub_agent_start') {
                 log(`SubAgent: ${data?.type} (${data?.model})`);
             }

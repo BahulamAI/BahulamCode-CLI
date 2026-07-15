@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
@@ -57,6 +58,7 @@ import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
 import { term } from '../ui/term.mjs';
 import {
   formatCardHead,
+  formatCompactFileDiff,
   summarizeResult,
   recordCard,
   lastCard,
@@ -1225,6 +1227,19 @@ function commandCompletions(line) {
   return hits.length ? hits : all;
 }
 
+function slashCommandSuggestions(line, limit = 5) {
+  const text = String(line || '').trimStart();
+  if (!text.startsWith('/')) return [];
+  const partial = text.split(/\s+/)[0] || '/';
+  return commandCompletions(partial)
+    .filter(cmd => cmd.startsWith('/'))
+    .slice(0, limit)
+    .map(cmd => ({
+      command: cmd,
+      description: COMMANDS[cmd] || (cmd === '/quit' ? 'Exit CLI' : ''),
+    }));
+}
+
 // ── Banner ──
 
 function printBanner(auth) {
@@ -1445,6 +1460,10 @@ function renderToolResult(data, eventType = 'tool_result') {
   const tail = duration ? paint.text.dim(` · ${duration}`) : '';
   const outcome = `${arrow} ${painter(text || 'done')}${tail}`;
   const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
+  const diffPreview = formatCompactFileDiff(data, {
+    indent: gutter,
+    columns: process.stderr.columns || 120,
+  });
 
   // ── Single-line combined emit ──
   // If the head for this call is still buffered (no interleaving content
@@ -1455,6 +1474,7 @@ function renderToolResult(data, eventType = 'tool_result') {
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
+      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
       _lastRenderedBlock = 'tool';
       _pendingHead = null;
       return;
@@ -1469,6 +1489,7 @@ function renderToolResult(data, eventType = 'tool_result') {
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
+  if (diffPreview) process.stderr.write(`${diffPreview}\n`);
   _lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
@@ -2002,7 +2023,7 @@ function renderEvent(event) {
             process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
-            process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            process.stderr.write(`\n  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
             session.creditsLowWarned = true;
           }
         }
@@ -3346,6 +3367,15 @@ export async function startTerminalRepl() {
     return rlSafe(`${c.brand(who)} ${c.dim('›')} `);
   }
 
+  function printInputSeparator() {
+    if (term().plain) return;
+    const w = process.stdout.columns || 80;
+    const label = ` ${c.brand('input')} `;
+    const labelPlain = stripAnsi(label);
+    const lineLen = Math.max(0, w - labelPlain.length - 4);
+    process.stderr.write(`${c.dim('╭─')}${label}${c.dim('─'.repeat(lineLen))}\n`);
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stderr,
@@ -3362,16 +3392,169 @@ export async function startTerminalRepl() {
   // Give approval manager access to readline for pause/resume
   approval.setReadline(rl);
   ctx._rl = rl; // expose to /resume command for readline pause
+  let inputActive = false;
+  let slashHintVisible = false;
+  let slashHintRowsVisible = 0;
+  let slashHintItems = [];
+  let slashHintSelected = 0;
+  let slashHintLine = '';
+
+  function promptBottomPaddingLines() {
+    if (!process.stderr.isTTY || term().plain) return 0;
+    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(8, n);
+  }
+
+  function truncateHintText(text, max) {
+    const s = String(text || '');
+    if (s.length <= max) return s;
+    if (max <= 1) return '';
+    return s.slice(0, max - 1) + '…';
+  }
+
+  function promptColumns() {
+    return stripAnsi(userPrompt().replace(/[\x01\x02]/g, '')).length;
+  }
+
+  function restoreReadlineCursor() {
+    const col = Math.max(0, promptColumns() + Number(rl.cursor || 0));
+    readline.cursorTo(process.stderr, col);
+  }
+
+  function renderSlashHint(line = '', { preserveSelection = false } = {}) {
+    if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
+    const rows = promptBottomPaddingLines();
+    const suggestions = slashCommandSuggestions(line, Math.min(5, rows));
+    const cols = process.stdout.columns || 80;
+    if (!preserveSelection || line !== slashHintLine) slashHintSelected = 0;
+    slashHintItems = suggestions;
+    slashHintLine = line;
+    if (slashHintSelected >= slashHintItems.length) slashHintSelected = Math.max(0, slashHintItems.length - 1);
+
+    readline.moveCursor(process.stderr, 0, 1);
+    for (let i = 0; i < rows; i++) {
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
+      const item = suggestions[i];
+      if (item) {
+        const marker = i === slashHintSelected ? c.brand('›') : c.dim(' ');
+        const command = item.command.padEnd(13);
+        const maxDesc = Math.max(0, cols - 21);
+        const desc = truncateHintText(item.description, maxDesc);
+        process.stderr.write(`  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`);
+      }
+      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+    }
+    readline.moveCursor(process.stderr, 0, -rows);
+    restoreReadlineCursor();
+    slashHintVisible = suggestions.length > 0;
+    slashHintRowsVisible = rows;
+  }
+
+  function clearSlashHint() {
+    if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
+      slashHintVisible = false;
+      slashHintRowsVisible = 0;
+      return;
+    }
+    const rows = slashHintRowsVisible || promptBottomPaddingLines() || 1;
+    readline.moveCursor(process.stderr, 0, 1);
+    for (let i = 0; i < rows; i++) {
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
+      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+    }
+    readline.moveCursor(process.stderr, 0, -rows);
+    restoreReadlineCursor();
+    slashHintVisible = false;
+    slashHintRowsVisible = 0;
+    slashHintItems = [];
+    slashHintSelected = 0;
+    slashHintLine = '';
+  }
+
+  function replaceReadlineLine(value) {
+    const next = String(value || '');
+    rl.line = next;
+    rl.cursor = next.length;
+    if (typeof rl._refreshLine === 'function') {
+      rl._refreshLine();
+    } else {
+      readline.cursorTo(process.stderr, promptColumns());
+      readline.clearLine(process.stderr, 1);
+      process.stderr.write(next);
+    }
+  }
+
+  function acceptSlashHint() {
+    const item = slashHintItems[slashHintSelected];
+    if (!item) return false;
+    replaceReadlineLine(item.command);
+    slashHintLine = item.command;
+    renderSlashHint(item.command, { preserveSelection: true });
+    return true;
+  }
+
+  function moveSlashHintSelection(delta) {
+    if (!slashHintItems.length) return false;
+    const count = slashHintItems.length;
+    slashHintSelected = (slashHintSelected + delta + count) % count;
+    replaceReadlineLine(slashHintLine);
+    renderSlashHint(slashHintLine, { preserveSelection: true });
+    return true;
+  }
+
+  function selectedSlashCommandFor(line) {
+    const input = String(line || '').trim();
+    if (!input.startsWith('/')) return null;
+    if (COMMANDS[input] || input.startsWith('/help ')) return input;
+    const item = slashHintItems[slashHintSelected];
+    if (!item) return input;
+    return item.command;
+  }
+
+  function reservePromptBottomPadding() {
+    const lines = promptBottomPaddingLines();
+    if (!lines) return;
+    process.stderr.write(`${'\n'.repeat(lines)}\x1b[${lines}A\r`);
+  }
+
+  function promptInputLine() {
+    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
+    reservePromptBottomPadding();
+    inputActive = true;
+    rl.prompt();
+  }
 
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
-    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
-    rl.prompt();
+    printInputSeparator();
+    promptInputLine();
   }
 
   showPrompt();
+
+  if (process.stdin.isTTY) {
+    readline.emitKeypressEvents(process.stdin, rl);
+    process.stdin.on('keypress', (_str, key = {}) => {
+      if (!inputActive) return;
+      setImmediate(() => {
+        if (!inputActive) return;
+        if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
+        if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
+        if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
+        if (String(rl.line || '').trimStart().startsWith('/')) {
+          renderSlashHint(rl.line);
+        } else {
+          clearSlashHint();
+        }
+      });
+    });
+  }
 
   // Guard against concurrent line handlers.
   //
@@ -3411,8 +3594,12 @@ export async function startTerminalRepl() {
   });
 
   async function _handleLine(line) {
-    const input = line.trim();
-    if (!input) { rl.prompt(); return; }
+    let input = line.trim();
+    const selectedSlashCommand = selectedSlashCommandFor(input);
+    inputActive = false;
+    clearSlashHint();
+    if (selectedSlashCommand) input = selectedSlashCommand;
+    if (!input) { promptInputLine(); return; }
 
     // Save to input history
     session.inputHistory.push(input);
@@ -3490,12 +3677,15 @@ export async function startTerminalRepl() {
     }
 
     let assistantContent = '';
+    const agentTurnHistory = new AgentHistoryTurnBuilder();
 
     // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
     let executionPaused = false;
     let keypressCleanup = null;
     let execListenerActive = false;
     let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
+    let lastPrintableInputAt = 0;
+    let textInputWarningShown = false;
 
     if (process.stdin.isTTY) {
       rl.pause();
@@ -3507,6 +3697,7 @@ export async function startTerminalRepl() {
       const onData = (data) => {
         if (!execListenerActive) return; // paused for approval menu
         const bytes = [...data];
+        const now = Date.now();
 
         // Esc key (single byte 0x1b, not part of arrow sequence)
         if (bytes.length === 1 && bytes[0] === 0x1b) {
@@ -3521,6 +3712,13 @@ export async function startTerminalRepl() {
 
         // Space — toggle pause/resume
         if (bytes.length === 1 && bytes[0] === 0x20) {
+          if (now - lastPrintableInputAt < 750) {
+            if (!textInputWarningShown) {
+              process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
+              textInputWarningShown = true;
+            }
+            return;
+          }
           if (executionPaused) {
             executionPaused = false;
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
@@ -3532,6 +3730,18 @@ export async function startTerminalRepl() {
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
+          }
+          return;
+        }
+
+        // Ignore ordinary typing during execution. Without this guard, spaces
+        // inside a typed sentence become pause/resume toggles because stdin is
+        // in raw mode while the agent is running.
+        if (bytes.length === 1 && bytes[0] >= 0x20 && bytes[0] <= 0x7e && bytes[0] !== 0x64 && bytes[0] !== 0x44) {
+          lastPrintableInputAt = now;
+          if (!textInputWarningShown) {
+            process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
+            textInputWarningShown = true;
           }
           return;
         }
@@ -3646,6 +3856,7 @@ export async function startTerminalRepl() {
         if (event.type === 'content_partial') {
           const text = event.data?.text || '';
           assistantContent += text;
+          agentTurnHistory.addAssistantText(text);
           jsonlWriter.accumulateContent(text);
         } else if (event.type === 'content') {
           const text = event.data?.text || '';
@@ -3657,7 +3868,10 @@ export async function startTerminalRepl() {
               ? assistantContent + text
               : text;
           }
-          if (newText) jsonlWriter.accumulateContent(newText);
+          if (newText) {
+            agentTurnHistory.addAssistantText(newText);
+            jsonlWriter.accumulateContent(newText);
+          }
         }
 
         // Local JSONL: capture session ID from backend
@@ -3670,13 +3884,15 @@ export async function startTerminalRepl() {
         // Local JSONL: accumulate tool calls
         if (event.type === 'tool_call' || event.type === 'tool_request') {
           const d = event.data || {};
+          agentTurnHistory.addToolUse(d);
           jsonlWriter.accumulateToolCall(d.call_id || d.request_id, d.tool, d.args);
         }
 
         // Local JSONL: record tool results
         if (event.type === 'tool_done' || event.type === 'tool_result') {
           const d = event.data || {};
-          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false);
+          agentTurnHistory.addToolResult(d);
+          jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false, d);
         }
 
         // Local JSONL: flush assistant turn on complete
@@ -3699,7 +3915,12 @@ export async function startTerminalRepl() {
     if (assistantContent) {
       const assistantMessage = { role: 'assistant', content: assistantContent };
       session.history.push(assistantMessage);
-      session.agentHistory.push(assistantMessage);
+    }
+    const structuredTurn = agentTurnHistory.finish();
+    if (structuredTurn.length) {
+      session.agentHistory.push(...structuredTurn);
+    } else if (assistantContent) {
+      session.agentHistory.push({ role: 'assistant', content: assistantContent });
     }
 
     showPrompt();

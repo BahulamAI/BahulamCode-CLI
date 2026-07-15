@@ -36,6 +36,7 @@ export const EVENT_TYPES = Object.freeze({
     CONTENT: 'content',
     CONTENT_PARTIAL: 'content_partial',
     TOOL_RESULT: 'tool_result',
+    FILE_DIFF: 'file_diff',
     SUB_AGENT_START: 'sub_agent_start',
     SUB_AGENT_TOOL: 'sub_agent_tool',
     SUB_AGENT_COMPLETE: 'sub_agent_complete',
@@ -69,6 +70,7 @@ export class TarangStreamClient {
         this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
         this._cancelled = false;
         this._paused = false;
+        this._pauseWaiters = new Set();
     }
 
     _headers(extra = {}) {
@@ -115,7 +117,6 @@ export class TarangStreamClient {
             });
         } catch (err) {
             if (err.name === 'AbortError') {
-                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
                 return;
             }
             yield { type: EVENT_TYPES.ERROR, data: { message: `Network error: ${err.message}. Check your connection or use --local mode.`, fatal: true } };
@@ -161,7 +162,10 @@ export class TarangStreamClient {
         // Parse SSE stream
         for await (const { event, data } of this._parseSSE(response)) {
             if (this._cancelled) {
-                yield { type: EVENT_TYPES.STATUS, data: { message: 'Cancelled by user.' } };
+                return;
+            }
+            await this._waitIfPaused();
+            if (this._cancelled) {
                 return;
             }
 
@@ -190,14 +194,35 @@ export class TarangStreamClient {
             // This path remains for backwards compatibility with older backends.
             if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
                 yield { type: event, data }; // Show tool call to user first
+                await this._waitIfPaused();
+                if (this._cancelled) {
+                    return;
+                }
                 if (data?.server_side) continue;
                 const toolEvent = await this._handleToolRequest(data);
-                if (toolEvent) yield toolEvent;
+                if (toolEvent) {
+                    await this._waitIfPaused();
+                    if (this._cancelled) {
+                        return;
+                    }
+                    yield toolEvent;
+                    for (const diffEvent of fileDiffEventsForToolResult(toolEvent)) {
+                        yield diffEvent;
+                    }
+                }
                 continue;
             }
 
-            // All other events yielded to caller
-            yield { type: event, data };
+            // All other events yielded to caller. If a server-side tool result
+            // already contains diff metadata, expose the same first-class
+            // file_diff event shape local tools emit.
+            const passthrough = { type: event, data };
+            yield passthrough;
+            if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
+                for (const diffEvent of fileDiffEventsForToolResult(passthrough)) {
+                    yield diffEvent;
+                }
+            }
         }
     }
 
@@ -385,6 +410,8 @@ export class TarangStreamClient {
     /** Cancel the current stream. */
     async cancel() {
         this._cancelled = true;
+        this._paused = false;
+        this._releasePauseWaiters();
         // Best-effort backend POST — the stream may already be torn down.
         if (this.currentTaskId) {
             try {
@@ -403,25 +430,46 @@ export class TarangStreamClient {
 
     /** Pause the current stream. */
     async pause() {
+        this._paused = true;
         if (this.currentTaskId) {
-            await fetch(`${this.baseUrl}/api/pause/${this.currentTaskId}`, {
-                method: 'POST',
-                headers: this._headers(),
-            });
+            try {
+                await fetch(`${this.baseUrl}/api/pause/${this.currentTaskId}`, {
+                    method: 'POST',
+                    headers: this._headers(),
+                });
+            } catch { /* best effort */ }
         }
     }
 
     /** Resume a paused stream. */
     async resume(instruction = null) {
+        this._paused = false;
+        this._releasePauseWaiters();
         if (this.currentTaskId) {
             const body = instruction ? JSON.stringify({ instruction }) : undefined;
-            await fetch(`${this.baseUrl}/api/resume/${this.currentTaskId}`, {
-                method: 'POST',
-                headers: this._headers({
-                    'Content-Type': 'application/json',
-                }),
-                body,
-            });
+            try {
+                await fetch(`${this.baseUrl}/api/resume/${this.currentTaskId}`, {
+                    method: 'POST',
+                    headers: this._headers({
+                        'Content-Type': 'application/json',
+                    }),
+                    body,
+                });
+            } catch { /* best effort */ }
+        }
+    }
+
+    async _waitIfPaused() {
+        while (this._paused && !this._cancelled) {
+            await new Promise(resolve => this._pauseWaiters.add(resolve));
+        }
+    }
+
+    _releasePauseWaiters() {
+        const waiters = [...this._pauseWaiters];
+        this._pauseWaiters.clear();
+        for (const resolve of waiters) {
+            try { resolve(); } catch { /* ignore */ }
         }
     }
 
@@ -453,4 +501,30 @@ export class TarangStreamClient {
         }
         return await response.json();
     }
+}
+
+function fileDiffEventsForToolResult(toolEvent) {
+    const data = toolEvent?.data || {};
+    const diffs = Array.isArray(data.file_diffs)
+        ? data.file_diffs
+        : data.file_diff ? [data.file_diff] : [];
+    if (!diffs.length) return [];
+
+    return diffs.map((diff, index) => ({
+        type: EVENT_TYPES.FILE_DIFF,
+        data: {
+            call_id: data.call_id || data._callId || null,
+            tool: data.tool || data._tool || '',
+            index,
+            count: diffs.length,
+            path: diff.path || '',
+            relative_path: diff.relative_path || '',
+            lines_added: diff.lines_added || 0,
+            lines_removed: diff.lines_removed || 0,
+            truncated: !!diff.truncated,
+            truncated_line_count: diff.truncated_line_count || 0,
+            hunks: diff.hunks || [],
+            unified: diff.unified || '',
+        },
+    }));
 }

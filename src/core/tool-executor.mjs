@@ -16,6 +16,7 @@ import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
+import { buildFileDiff } from './file-diff.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -92,6 +93,31 @@ export function createToolExecutor({
         try {
             projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
         } catch { /* best effort */ }
+    }
+
+    function readTextIfExists(filePath) {
+        try {
+            if (!fs.existsSync(filePath)) return '';
+            return fs.readFileSync(filePath, 'utf-8');
+        } catch {
+            return '';
+        }
+    }
+
+    function attachFileDiff(result, filePath, before, after) {
+        try {
+            const diff = buildFileDiff({
+                filePath,
+                before,
+                after,
+                cwd: projectRootFor(filePath),
+            });
+            result.file_diff = diff;
+            result.diff = diff.unified;
+            result.lines_added = diff.lines_added;
+            result.lines_removed = diff.lines_removed;
+        } catch { /* best effort */ }
+        return result;
     }
 
     /**
@@ -360,6 +386,7 @@ export function createToolExecutor({
                 return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
             }
             const filePath = resolvePath(rawPath, args, { allowMissing: true });
+            const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.content, projectRootFor(filePath));
             if (!writeCheck.safe) {
                 return { success: false, output: `🛡️ BLOCKED: ${writeCheck.reason}`, _tool: 'write_file', _blocked: true };
@@ -379,6 +406,8 @@ export function createToolExecutor({
                 content: args.content,
             });
             const wrapped = wrapResult(result, 'write_file');
+            const after = readTextIfExists(filePath);
+            attachFileDiff(wrapped, filePath, before, after);
             updateProjectIndex(filePath);
 
             // Auto-lint the written file
@@ -404,6 +433,7 @@ export function createToolExecutor({
 
             const results = [];
             const errors = [];
+            const diffs = [];
 
             for (const file of files) {
                 const rawPath = file.path || file.file_path;
@@ -424,6 +454,7 @@ export function createToolExecutor({
                     // Ensure parent directory exists
                     const dir = path.dirname(filePath);
                     fs.mkdirSync(dir, { recursive: true });
+                    const before = readTextIfExists(filePath);
 
                     // Read first if exists (OCC Write requirement)
                     try {
@@ -433,6 +464,13 @@ export function createToolExecutor({
                     } catch { /* file may not exist yet */ }
 
                     await occRegistry.call('Write', { file_path: filePath, content });
+                    const after = readTextIfExists(filePath);
+                    diffs.push(buildFileDiff({
+                        filePath,
+                        before,
+                        after,
+                        cwd: projectRootFor(filePath),
+                    }));
                     updateProjectIndex(filePath);
                     results.push(rawPath);
                 } catch (err) {
@@ -450,17 +488,29 @@ export function createToolExecutor({
                     output: `${output}\n\nErrors:\n${errors.map(e => `  ✗ ${e}`).join('\n')}`,
                     files_written: results,
                     files_failed: errors,
+                    file_diffs: diffs,
+                    lines_added: diffs.reduce((sum, diff) => sum + (diff.lines_added || 0), 0),
+                    lines_removed: diffs.reduce((sum, diff) => sum + (diff.lines_removed || 0), 0),
                     _tool: 'write_project',
                 };
             }
 
-            return { success: true, output, files_written: results, _tool: 'write_project' };
+            return {
+                success: true,
+                output,
+                files_written: results,
+                file_diffs: diffs,
+                lines_added: diffs.reduce((sum, diff) => sum + (diff.lines_added || 0), 0),
+                lines_removed: diffs.reduce((sum, diff) => sum + (diff.lines_removed || 0), 0),
+                _tool: 'write_project',
+            };
         },
 
         // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
             const filePath = resolvePath(rawPath, args);
+            const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.replace, projectRootFor(filePath));
             if (!writeCheck.safe) {
                 return { success: false, output: `BLOCKED: ${writeCheck.reason}`, _tool: 'edit_file', _blocked: true };
@@ -512,6 +562,8 @@ print('OK: replaced')
             }
 
             const wrapped = wrapResult(result, 'edit_file');
+            const after = readTextIfExists(filePath);
+            attachFileDiff(wrapped, filePath, before, after);
             updateProjectIndex(filePath);
             _hasEdited = true;
 

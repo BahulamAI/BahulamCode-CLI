@@ -9,7 +9,9 @@ import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.m
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
-import { formatCard, formatCardHead } from '../src/ui/tool-card.mjs';
+import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
+import { detailFor } from '../src/ui/tool-details.mjs';
+import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
 
@@ -147,6 +149,29 @@ test('tool activity rows do not insert blank lines between consecutive tools', (
   assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
 });
 
+test('REPL prompt keeps a small bottom cushion', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('function printInputSeparator()'));
+  assert.ok(replSource.includes("c.brand('input')"));
+  assert.ok(replSource.includes('printInputSeparator();'));
+  assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
+  assert.ok(replSource.includes("function renderSlashHint(line = '', { preserveSelection = false } = {})"));
+  assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
+  assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows))'));
+  assert.ok(replSource.includes('function acceptSlashHint()'));
+  assert.ok(replSource.includes('function moveSlashHintSelection(delta)'));
+  assert.ok(replSource.includes('function selectedSlashCommandFor(line)'));
+  assert.ok(replSource.includes("typeof rl._refreshLine === 'function'"));
+  assert.ok(replSource.includes('readline.cursorTo(process.stderr, col)'));
+  assert.ok(replSource.includes('readline.moveCursor(process.stderr, 0, 1)'));
+  assert.ok(replSource.includes("item.command.padEnd(13)"));
+  assert.ok(replSource.includes('function reservePromptBottomPadding()'));
+  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
+  assert.ok(replSource.includes('Math.min(8, n)'));
+  assert.ok(replSource.includes('reservePromptBottomPadding();'));
+  assert.ok(replSource.includes('if (!input) { promptInputLine(); return; }'));
+});
+
 test('legacy formatter wraps full shell commands without ellipsis', () => {
   const command = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
   const formatter = new EventFormatter();
@@ -206,6 +231,33 @@ test('renders diff additions and removals with semantic colors', () => {
   const rendered = renderDiff('@@ -1 +1 @@\n-old\n+new');
   assert.ok(rendered.includes('\x1b[31m-old'));
   assert.ok(rendered.includes('\x1b[32m+new'));
+});
+
+test('renders compact file diff previews for writes', () => {
+  const fileDiff = buildFileDiff({
+    filePath: '/repo/src/example.js',
+    cwd: '/repo',
+    before: 'const a = 1;\nconst b = 2;\n',
+    after: 'const a = 1;\nconst b = 3;\nconst c = 4;\n',
+  });
+  const rendered = stripAnsi(formatCompactFileDiff({
+    file_diff: fileDiff,
+    lines_added: fileDiff.lines_added,
+    lines_removed: fileDiff.lines_removed,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(rendered.includes('@@ -1,2 +1,3 @@'));
+  assert.ok(rendered.includes('- const b = 2;'));
+  assert.ok(rendered.includes('+ const b = 3;'));
+  assert.ok(rendered.includes('+ const c = 4;'));
+  assert.ok(rendered.indexOf('- const b = 2;') < rendered.indexOf('+ const b = 3;'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'write_file',
+    args: { file_path: '/repo/src/example.js', content: 'large content omitted' },
+    result: { file_diff: fileDiff, diff: fileDiff.unified },
+  }));
+  assert.ok(detail.includes('--- a/src/example.js'));
+  assert.ok(!detail.includes('large content omitted'));
 });
 
 test('mission report omits old title and keeps tools/time on one line', () => {

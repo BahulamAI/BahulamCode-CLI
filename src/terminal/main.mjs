@@ -143,7 +143,7 @@ async function main() {
     Ctrl+C                  Exit
 
   \x1b[1mEnvironment:\x1b[0m
-    TARANG_ENV              Set backend (local, development, production)
+    TARANG_ENV              Set backend (local, treetop, production)
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
     KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)

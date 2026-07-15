@@ -182,6 +182,9 @@ await test('write_file + delete_file round-trip', async () => {
     const testPath = '__test_write_delete__.txt';
     const writeResult = await executor.execute('write_file', { path: testPath, content: 'test content' });
     assert.strictEqual(writeResult.success, true);
+    assert.strictEqual(writeResult.lines_added, 1);
+    assert.strictEqual(writeResult.lines_removed, 0);
+    assert.ok(writeResult.file_diff?.unified.includes('+test content'));
     assert.ok(fs.existsSync(testPath));
 
     const deleteResult = await executor.execute('delete_file', { path: testPath });

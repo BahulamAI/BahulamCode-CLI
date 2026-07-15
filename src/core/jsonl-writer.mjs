@@ -198,12 +198,15 @@ export class JsonlWriter {
   /**
    * Record a tool result (call on tool_done/tool_result events).
    */
-  recordToolResult(callId, output, isError) {
-    this._turnToolResults.push({
+  recordToolResult(callId, output, isError, metadata = null) {
+    const entry = {
       tool_use_id: callId,
       content: normalizeToolResultContent(output),
       is_error: !!isError,
-    });
+    };
+    const kepler = compactToolResultMetadata(metadata);
+    if (kepler) entry.kepler = kepler;
+    this._turnToolResults.push(entry);
   }
 
   /**
@@ -271,12 +274,16 @@ export class JsonlWriter {
         version: this.version,
         message: {
           role: 'user',
-          content: this._turnToolResults.map(r => ({
-            type: 'tool_result',
-            tool_use_id: r.tool_use_id,
-            content: r.content.slice(0, 5000), // truncate large outputs
-            is_error: r.is_error,
-          })),
+          content: this._turnToolResults.map(r => {
+            const block = {
+              type: 'tool_result',
+              tool_use_id: r.tool_use_id,
+              content: r.content.slice(0, 5000), // truncate large outputs
+              is_error: r.is_error,
+            };
+            if (r.kepler) block.kepler = r.kepler;
+            return block;
+          }),
         },
       };
       this._appendEntry(toolResultEntry);
@@ -407,4 +414,36 @@ export class JsonlWriter {
       return undefined;
     }
   }
+}
+
+function compactToolResultMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const diffs = Array.isArray(metadata.file_diffs)
+    ? metadata.file_diffs
+    : metadata.file_diff ? [metadata.file_diff] : [];
+  const out = {
+    tool: metadata.tool || metadata._tool || '',
+    lines_added: metadata.lines_added,
+    lines_removed: metadata.lines_removed,
+  };
+  if (diffs.length) {
+    out.file_diffs = diffs.map(diff => ({
+      type: 'file_diff',
+      path: diff.path || '',
+      relative_path: diff.relative_path || '',
+      lines_added: diff.lines_added || 0,
+      lines_removed: diff.lines_removed || 0,
+      truncated: !!diff.truncated,
+      truncated_line_count: diff.truncated_line_count || 0,
+      hunks: diff.hunks || [],
+      unified: diff.unified || '',
+    }));
+  }
+
+  for (const key of Object.keys(out)) {
+    if (out[key] == null || out[key] === '' || (Array.isArray(out[key]) && out[key].length === 0)) {
+      delete out[key];
+    }
+  }
+  return Object.keys(out).length ? sanitizeEventValue(out) : null;
 }
