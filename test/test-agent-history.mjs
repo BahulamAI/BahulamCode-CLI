@@ -60,6 +60,39 @@ await test('ignores orphan tool_result blocks that would break provider history'
     assert.deepStrictEqual(turn.finish(), []);
 });
 
+await test('ignores internal sub-agent tool events for parent continuity', async () => {
+    const turn = new AgentHistoryTurnBuilder();
+    turn.addToolUse({
+        call_id: 'sub-call-1',
+        tool: 'read_file',
+        args: { file_path: 'large.txt' },
+        sub_agent: 'explore',
+        internal: true,
+    });
+    turn.addToolResult({
+        call_id: 'sub-call-1',
+        success: true,
+        output: 'large internal output',
+        sub_agent: 'explore',
+        internal: true,
+    });
+    turn.addToolUse({
+        call_id: 'parent-call-1',
+        tool: 'explore',
+        args: { query: 'find auth flow' },
+    });
+    turn.addToolResult({
+        call_id: 'parent-call-1',
+        success: true,
+        output: 'summary only',
+    });
+
+    const messages = turn.finish();
+    assert.strictEqual(messages.length, 2);
+    assert.strictEqual(messages[0].content[0].name, 'explore');
+    assert.strictEqual(messages[1].content[0].content, 'summary only');
+});
+
 await test('truncates only oversized tool results', async () => {
     const turn = new AgentHistoryTurnBuilder({ maxToolResultChars: 5 });
     turn.addToolUse({ call_id: 'call-1', tool: 'run', args: {} });
@@ -71,4 +104,3 @@ await test('truncates only oversized tool results', async () => {
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
-

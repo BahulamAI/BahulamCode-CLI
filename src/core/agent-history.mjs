@@ -48,6 +48,7 @@ export class AgentHistoryTurnBuilder {
     }
 
     addToolUse(data = {}) {
+        if (data.internal || data.sub_agent) return false;
         const id = data.call_id || data.request_id || data.id;
         const name = data.tool || data.name;
         if (!id || !name) return false;
@@ -62,6 +63,7 @@ export class AgentHistoryTurnBuilder {
     }
 
     addToolResult(data = {}) {
+        if (data.internal || data.sub_agent) return false;
         const id = data.call_id || data._callId || data.request_id || data.id || data.tool_use_id;
         if (!id || !this.toolUseIds.has(id)) return false;
         if (this.toolResultIds.has(id)) return false;
