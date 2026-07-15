@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
@@ -2022,7 +2023,7 @@ function renderEvent(event) {
             process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
-            process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            process.stderr.write(`\n  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
             session.creditsLowWarned = true;
           }
         }
@@ -3676,6 +3677,7 @@ export async function startTerminalRepl() {
     }
 
     let assistantContent = '';
+    const agentTurnHistory = new AgentHistoryTurnBuilder();
 
     // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
     let executionPaused = false;
@@ -3854,6 +3856,7 @@ export async function startTerminalRepl() {
         if (event.type === 'content_partial') {
           const text = event.data?.text || '';
           assistantContent += text;
+          agentTurnHistory.addAssistantText(text);
           jsonlWriter.accumulateContent(text);
         } else if (event.type === 'content') {
           const text = event.data?.text || '';
@@ -3865,7 +3868,10 @@ export async function startTerminalRepl() {
               ? assistantContent + text
               : text;
           }
-          if (newText) jsonlWriter.accumulateContent(newText);
+          if (newText) {
+            agentTurnHistory.addAssistantText(newText);
+            jsonlWriter.accumulateContent(newText);
+          }
         }
 
         // Local JSONL: capture session ID from backend
@@ -3878,12 +3884,14 @@ export async function startTerminalRepl() {
         // Local JSONL: accumulate tool calls
         if (event.type === 'tool_call' || event.type === 'tool_request') {
           const d = event.data || {};
+          agentTurnHistory.addToolUse(d);
           jsonlWriter.accumulateToolCall(d.call_id || d.request_id, d.tool, d.args);
         }
 
         // Local JSONL: record tool results
         if (event.type === 'tool_done' || event.type === 'tool_result') {
           const d = event.data || {};
+          agentTurnHistory.addToolResult(d);
           jsonlWriter.recordToolResult(d.call_id || d._callId, d.output, d.success === false, d);
         }
 
@@ -3907,7 +3915,12 @@ export async function startTerminalRepl() {
     if (assistantContent) {
       const assistantMessage = { role: 'assistant', content: assistantContent };
       session.history.push(assistantMessage);
-      session.agentHistory.push(assistantMessage);
+    }
+    const structuredTurn = agentTurnHistory.finish();
+    if (structuredTurn.length) {
+      session.agentHistory.push(...structuredTurn);
+    } else if (assistantContent) {
+      session.agentHistory.push({ role: 'assistant', content: assistantContent });
     }
 
     showPrompt();
