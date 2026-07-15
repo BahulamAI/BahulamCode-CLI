@@ -169,6 +169,20 @@ await test('list_files returns files', async () => {
     assert.ok(result.files.length > 0);
 });
 
+await test('list_files can return a bounded directory tree', async () => {
+    const result = await executor.execute('list_files', {
+        path: '.',
+        format: 'tree',
+        max_depth: 1,
+    });
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result._format, 'tree');
+    assert.ok(result.output.includes('codekepler-npm/'));
+    assert.ok(result.output.includes('package.json'));
+    assert.ok(Array.isArray(result.directories));
+    assert.ok(Array.isArray(result.files));
+});
+
 // Test 6: get_file_info returns stat data
 await test('get_file_info returns stat', async () => {
     const result = await executor.execute('get_file_info', { path: 'package.json' });
@@ -223,6 +237,14 @@ await test('search_files passes regex alternation literally', async () => {
     assert.strictEqual(result.success, true);
     assert.ok(!result.output.includes('command not found'));
     assert.ok(!result.output.includes('usage: route'));
+});
+
+await test('analyze_code rejects directories with actionable guidance', async () => {
+    const result = await executor.execute('analyze_code', { path: process.cwd() });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.output.includes('expects a file'));
+    assert.ok(result.output.includes('Use list_files/search_code'));
+    assert.ok(!result.output.includes('EISDIR'));
 });
 
 await test('multiple projects are routed explicitly and undeclared siblings stay blocked', async () => {

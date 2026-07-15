@@ -229,6 +229,57 @@ export function createToolExecutor({
         return '';
     }
 
+    function buildDirectoryTree(rootPath, { maxDepth = 2, maxEntries = 200 } = {}) {
+        const ignored = new Set(['.git', 'node_modules', '.next', '.turbo', 'dist', 'build', 'coverage']);
+        const rootName = path.basename(rootPath) || rootPath;
+        const lines = [`${rootName}/`];
+        const files = [];
+        const directories = [rootPath];
+        let entriesSeen = 0;
+        let truncated = false;
+
+        function walk(dir, depth, prefix) {
+            if (depth >= maxDepth || truncated) return;
+            let entries;
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true })
+                    .filter(entry => !ignored.has(entry.name))
+                    .sort((a, b) => {
+                        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+                        return a.name.localeCompare(b.name);
+                    });
+            } catch (err) {
+                lines.push(`${prefix}[error: ${err.message}]`);
+                return;
+            }
+
+            for (let i = 0; i < entries.length; i++) {
+                if (entriesSeen >= maxEntries) {
+                    truncated = true;
+                    lines.push(`${prefix}... [truncated after ${maxEntries} entries]`);
+                    return;
+                }
+                const entry = entries[i];
+                const fullPath = path.join(dir, entry.name);
+                const isLast = i === entries.length - 1;
+                const connector = isLast ? '`-- ' : '|-- ';
+                entriesSeen++;
+
+                if (entry.isDirectory()) {
+                    directories.push(fullPath);
+                    lines.push(`${prefix}${connector}${entry.name}/`);
+                    walk(fullPath, depth + 1, `${prefix}${isLast ? '    ' : '|   '}`);
+                } else {
+                    files.push(fullPath);
+                    lines.push(`${prefix}${connector}${entry.name}`);
+                }
+            }
+        }
+
+        walk(rootPath, 0, '');
+        return { output: lines.join('\n'), files, directories, truncated };
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
@@ -583,9 +634,27 @@ print('OK: replaced')
 
         // 5. list_files → Glob
         list_files: async (args) => {
+            const searchPath = resolvePath(args.path || null, args);
+            if (args.format === 'tree' || args.tree === true) {
+                const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
+                const maxDepth = Number.isFinite(requestedDepth)
+                    ? Math.max(1, Math.min(6, Math.trunc(requestedDepth)))
+                    : 2;
+                const tree = buildDirectoryTree(searchPath, { maxDepth });
+                return {
+                    success: true,
+                    output: tree.output,
+                    tree: tree.output,
+                    files: tree.files,
+                    directories: tree.directories,
+                    truncated: tree.truncated,
+                    _tool: 'list_files',
+                    _format: 'tree',
+                };
+            }
             const result = await occRegistry.call('Glob', {
                 pattern: args.pattern || '**/*',
-                path: resolvePath(args.path || null, args),
+                path: searchPath,
             });
             const output = typeof result === 'string' ? result : String(result);
             const files = output.split('\n').filter(Boolean);
@@ -912,6 +981,20 @@ print('OK: replaced')
         // 10x more token-efficient than read_file
         analyze_code: async (args) => {
             const filePath = resolvePath(args.file_path || args.path, args);
+            let stat;
+            try {
+                stat = fs.statSync(filePath);
+            } catch (err) {
+                return { success: false, output: `Error: ${err.message}`, structure: {}, _tool: 'analyze_code' };
+            }
+            if (stat.isDirectory()) {
+                return {
+                    success: false,
+                    output: `Error: analyze_code expects a file, but got directory: ${filePath}. Use list_files/search_code first, then pass a specific source file.`,
+                    structure: {},
+                    _tool: 'analyze_code',
+                };
+            }
             const result = analyzeCode(filePath, {
                 startLine: args.start_line,
                 endLine: args.end_line,
