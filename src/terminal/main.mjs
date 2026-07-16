@@ -148,7 +148,7 @@ async function main() {
     OPENROUTER_API_KEY      OpenRouter API key
     KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)
 
-  \x1b[2mDocs: https://codekepler.ai/docs\x1b[0m
+  \x1b[2mDocs: https://docs.codekepler.ai\x1b[0m
 `);
     return;
   }
