@@ -24,7 +24,7 @@ import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
-import { buildWorkScope } from '../core/work-scope.mjs';
+import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
@@ -3798,7 +3798,12 @@ export async function startTerminalRepl() {
       if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
       hookRunner.reload();
       latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous: latestProjectContext });
-      const projectResources = toolExecutor.getProjectResources();
+      let projectResources = toolExecutor.getProjectResources();
+      const promptRoots = promptProjectRoots(input);
+      if (promptRoots.length > 0) {
+        await toolExecutor.registerProjectRoots(promptRoots);
+        projectResources = toolExecutor.getProjectResources();
+      }
       const promptHook = await hookRunner.run('UserPromptSubmit', {
         input: { prompt: input },
         turnId: String(session.turns),

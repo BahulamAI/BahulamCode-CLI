@@ -26,8 +26,8 @@ console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
 const unregisteredExecutor = createToolExecutor();
-await test('file tools reject paths before project registration', async () => {
-    const result = await unregisteredExecutor.execute('read_file', {
+await test('directory tools reject paths before project registration', async () => {
+    const result = await unregisteredExecutor.execute('list_files', {
         path: path.join(process.cwd(), 'package.json'),
     });
     assert.strictEqual(result.success, false);
@@ -64,10 +64,123 @@ await test('project overview is session-stable and exposes project_id', async ()
     const repeated = await executor.execute('get_project_overview', { path: process.cwd() });
     assert.strictEqual(repeated.success, true);
     assert.strictEqual(repeated.already_registered, true);
+    assert.strictEqual(repeated.refreshed, false);
     assert.strictEqual(repeated.project_resource.project_id, projectId);
     assert.ok(repeated.project_resource.environment);
     assert.strictEqual(repeated.project_resource.environment.node, process.version);
     assert.ok(repeated.project_resource.environment.platform);
+});
+
+await test('project overview re-registration refreshes live project context', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-context-'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"ctx"}\n');
+    fs.mkdirSync(path.join(root, '.kepler'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'initial context\n');
+
+    try {
+        const ctxExecutor = createToolExecutor();
+        const first = await ctxExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(first.success, true);
+        assert.match(first.project_resource.project_context, /initial context/);
+
+        fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'updated context\n');
+        const second = await ctxExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(second.success, true);
+        assert.strictEqual(second.already_registered, true);
+        assert.strictEqual(second.refreshed, false);
+        assert.match(second.project_resource.project_context, /updated context/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('registerProjectRoots makes prompt roots available to file tools', async () => {
+    const root = path.join(process.cwd(), '__kepler_prompt_roots_test__');
+    const docs = path.join(root, 'docs');
+    const cli = path.join(root, 'codekepler-npm');
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(docs, { recursive: true });
+    fs.mkdirSync(cli, { recursive: true });
+    fs.writeFileSync(path.join(docs, 'index.mdx'), '# Docs\n');
+    fs.writeFileSync(path.join(cli, 'package.json'), '{"name":"cli"}\n');
+
+    try {
+        const multi = createToolExecutor();
+        const docsOnly = await multi.registerProjectRoots([docs]);
+        assert.deepStrictEqual(docsOnly.map(r => r.success), [true]);
+
+        const blocked = await multi.execute('list_files', { path: cli, pattern: 'package.json' });
+        assert.strictEqual(blocked.success, false);
+        assert.ok(blocked.output.includes('outside registered project roots'));
+
+        const registered = await multi.registerProjectRoots([cli]);
+        assert.deepStrictEqual(registered.map(r => r.success), [true]);
+
+        const readable = await multi.execute('read_file', { path: path.join(cli, 'package.json') });
+        assert.strictEqual(readable.success, true);
+        assert.ok(readable.content.includes('"cli"'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('read_file registers exact outside file under its own project', async () => {
+    const root = path.join(process.cwd(), '__kepler_outside_file_read_test__');
+    const workspace = path.join(root, 'appstak-platform');
+    const docs = path.join(workspace, 'apps', 'kepler-docs');
+    const workspaceFile = path.join(workspace, 'pnpm-workspace.yaml');
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(docs, { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'package.json'), '{"name":"workspace"}\n');
+    fs.writeFileSync(workspaceFile, 'packages:\n  - apps/*\n');
+    fs.writeFileSync(path.join(docs, 'package.json'), '{"name":"docs"}\n');
+
+    try {
+        const outside = createToolExecutor();
+        const registered = await outside.registerProjectRoots([docs]);
+        assert.deepStrictEqual(registered.map(r => r.success), [true]);
+
+        const blockedList = await outside.execute('list_files', {
+            path: workspace,
+            pattern: 'pnpm-workspace.yaml',
+        });
+        assert.strictEqual(blockedList.success, false);
+        assert.ok(blockedList.output.includes('outside registered project roots'));
+
+        const read = await outside.execute('read_file', { path: workspaceFile });
+        assert.strictEqual(read.success, true);
+        assert.ok(read.content.includes('apps/*'));
+
+        const workspaceResource = outside.getProjectResources()
+            .find(resource => resource.root === workspace);
+        assert.ok(workspaceResource);
+        assert.deepStrictEqual(workspaceResource.files_read, [workspaceFile]);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('project overview re-registration refreshes index when project drifts', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-drift-'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"drift"}\n');
+
+    try {
+        const driftExecutor = createToolExecutor();
+        const first = await driftExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(first.success, true);
+        const firstVersion = first.project_resource.index_version;
+
+        await new Promise(resolve => setTimeout(resolve, 5));
+        fs.writeFileSync(path.join(root, 'new-file.js'), 'export const drifted = true;\n');
+
+        const second = await driftExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(second.success, true);
+        assert.strictEqual(second.already_registered, true);
+        assert.strictEqual(second.refreshed, true);
+        assert.notStrictEqual(second.project_resource.index_version, firstVersion);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 await test('search_code routes through the registered project index', async () => {
@@ -247,7 +360,7 @@ await test('analyze_code rejects directories with actionable guidance', async ()
     assert.ok(!result.output.includes('EISDIR'));
 });
 
-await test('multiple projects are routed explicitly and undeclared siblings stay blocked', async () => {
+await test('multiple projects require explicit routing, while exact outside reads register their file project', async () => {
     const root = path.join(process.cwd(), '__kepler_project_registry_test__');
     const first = path.join(root, 'first');
     const second = path.join(root, 'second');
@@ -274,11 +387,19 @@ await test('multiple projects are routed explicitly and undeclared siblings stay
         assert.strictEqual(secondSearch.success, true);
         assert.ok(secondSearch.output.includes('second.py'));
 
-        const blocked = await multi.execute('read_file', {
-            path: path.join(undeclared, 'secret.txt'),
+        const blocked = await multi.execute('list_files', {
+            path: undeclared,
+            pattern: 'secret.txt',
         });
         assert.strictEqual(blocked.success, false);
         assert.ok(blocked.output.includes('outside registered project roots'));
+
+        const read = await multi.execute('read_file', {
+            path: path.join(undeclared, 'secret.txt'),
+        });
+        assert.strictEqual(read.success, true);
+        assert.ok(read.content.includes('not registered'));
+        assert.ok(multi.getProjectResources().some(resource => resource.root === undeclared));
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

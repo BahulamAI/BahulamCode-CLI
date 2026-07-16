@@ -84,11 +84,32 @@ function extractQuotedPaths(text) {
     return paths;
 }
 
+function isInsideQuotedSpan(source, index) {
+    let quote = null;
+    let escaped = false;
+    for (let i = 0; i < index; i++) {
+        const ch = source[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escaped = true;
+            continue;
+        }
+        if ((ch === '"' || ch === "'")) {
+            quote = quote === ch ? null : (quote || ch);
+        }
+    }
+    return Boolean(quote);
+}
+
 function extractPastedPaths(text) {
     const source = String(text || '');
     const paths = [];
     for (let i = 0; i < source.length; i++) {
         if (source[i] !== '/') continue;
+        if (isInsideQuotedSpan(source, i)) continue;
         const line = source.slice(i).split(/\r?\n/, 1)[0].replace(/[),.;:]+$/g, '');
         const parts = line.split(/\s+/).filter(Boolean);
         let candidate = '';
@@ -112,6 +133,18 @@ function uniqueRoots(entries) {
         result.push(entry);
     }
     return result;
+}
+
+export function promptProjectRoots(instruction = '') {
+    const roots = [];
+    const seen = new Set();
+    for (const raw of [...extractQuotedPaths(instruction), ...extractPastedPaths(instruction)]) {
+        const root = nearestProjectRoot(raw);
+        if (!root || seen.has(root)) continue;
+        seen.add(root);
+        roots.push(root);
+    }
+    return roots;
 }
 
 function roleForRoot(root, cwd) {
@@ -155,9 +188,7 @@ export function buildWorkScope({
         status: 'active',
     }];
 
-    for (const raw of [...extractQuotedPaths(instruction), ...extractPastedPaths(instruction)]) {
-        const root = nearestProjectRoot(raw);
-        if (!root) continue;
+    for (const root of promptProjectRoots(instruction)) {
         roots.push({
             path: root,
             role: roleForRoot(root, cwdRoot),
