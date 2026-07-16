@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildWorkScope, summarizeWorkScope } from '../src/core/work-scope.mjs';
+import { buildWorkScope, promptProjectRoots, summarizeWorkScope } from '../src/core/work-scope.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-work-scope-'));
 const rawCli = path.join(root, 'codekepler-npm');
@@ -52,6 +52,16 @@ try {
         cwd: cli,
     });
     assert.ok(pasted.active_roots.some(root => root.path === backend));
+
+    const spacedParent = path.join(root, 'Tarang Orca');
+    const docsRaw = path.join(spacedParent, 'appstak-platform', 'apps', 'kepler-docs');
+    const npmRaw = path.join(spacedParent, 'codekepler-npm');
+    fs.mkdirSync(path.join(docsRaw, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(npmRaw, '.git'), { recursive: true });
+    const docs = fs.realpathSync(docsRaw);
+    const npm = fs.realpathSync(npmRaw);
+    const routed = promptProjectRoots(`Docs '${docs}' should match CLI '${npm}'`);
+    assert.deepEqual(routed, [docs, npm]);
 
     console.log('  \x1b[32m✓\x1b[0m work scope derives active roots and stable cache metadata');
 } finally {

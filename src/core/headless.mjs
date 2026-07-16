@@ -13,7 +13,7 @@
 
 import { TarangStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
-import { buildWorkScope } from './work-scope.mjs';
+import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
@@ -99,7 +99,12 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });
 
-    const projectResources = toolExecutor.getProjectResources();
+    let projectResources = toolExecutor.getProjectResources();
+    const promptRoots = promptProjectRoots(instruction);
+    if (promptRoots.length > 0) {
+        await toolExecutor.registerProjectRoots(promptRoots);
+        projectResources = toolExecutor.getProjectResources();
+    }
     const execContext = {
         cwd: process.cwd(),
         freeswim: true,

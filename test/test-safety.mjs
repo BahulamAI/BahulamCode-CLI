@@ -65,8 +65,16 @@ test('blocks rm -rf /', () => {
   assert.strictEqual(validateShellCommand('rm -rf /').safe, false);
 });
 
-test('blocks rm -rf .', () => {
-  assert.strictEqual(validateShellCommand('rm -rf .').safe, false);
+test('blocks rm -rf home/current/wildcard targets', () => {
+  for (const command of ['rm -rf ~', 'rm -rf $HOME', 'rm -rf .', 'rm -rf *']) {
+    assert.strictEqual(validateShellCommand(command).safe, false, command);
+  }
+});
+
+test('allows absolute rm targets as high risk for approval', () => {
+  const result = validateShellCommand('rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/kepler-docs/node_modules');
+  assert.strictEqual(result.safe, true);
+  assert.strictEqual(result.highRisk, true);
 });
 
 test('blocks fork bomb', () => {

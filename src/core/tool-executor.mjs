@@ -48,8 +48,8 @@ export function createToolExecutor({
         return project.resource.root;
     }
 
-    function commandCwd(args = {}) {
-        return resolvePath(args.cwd || null, args);
+    async function commandCwd(args = {}) {
+        return await resolvePath(args.cwd || null, args);
     }
 
     function longRunningObservationTimeoutMs() {
@@ -229,6 +229,57 @@ export function createToolExecutor({
         return '';
     }
 
+    function buildDirectoryTree(rootPath, { maxDepth = 2, maxEntries = 200 } = {}) {
+        const ignored = new Set(['.git', 'node_modules', '.next', '.turbo', 'dist', 'build', 'coverage']);
+        const rootName = path.basename(rootPath) || rootPath;
+        const lines = [`${rootName}/`];
+        const files = [];
+        const directories = [rootPath];
+        let entriesSeen = 0;
+        let truncated = false;
+
+        function walk(dir, depth, prefix) {
+            if (depth >= maxDepth || truncated) return;
+            let entries;
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true })
+                    .filter(entry => !ignored.has(entry.name))
+                    .sort((a, b) => {
+                        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+                        return a.name.localeCompare(b.name);
+                    });
+            } catch (err) {
+                lines.push(`${prefix}[error: ${err.message}]`);
+                return;
+            }
+
+            for (let i = 0; i < entries.length; i++) {
+                if (entriesSeen >= maxEntries) {
+                    truncated = true;
+                    lines.push(`${prefix}... [truncated after ${maxEntries} entries]`);
+                    return;
+                }
+                const entry = entries[i];
+                const fullPath = path.join(dir, entry.name);
+                const isLast = i === entries.length - 1;
+                const connector = isLast ? '`-- ' : '|-- ';
+                entriesSeen++;
+
+                if (entry.isDirectory()) {
+                    directories.push(fullPath);
+                    lines.push(`${prefix}${connector}${entry.name}/`);
+                    walk(fullPath, depth + 1, `${prefix}${isLast ? '    ' : '|   '}`);
+                } else {
+                    files.push(fullPath);
+                    lines.push(`${prefix}${connector}${entry.name}`);
+                }
+            }
+        }
+
+        walk(rootPath, 0, '');
+        return { output: lines.join('\n'), files, directories, truncated };
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
@@ -260,7 +311,7 @@ export function createToolExecutor({
                 args._riskReason = classification.reason || shellCheck.reason;
             }
             args._classification = classification.classification; // 'safe' or 'contained'
-            const cwd = commandCwd(args);
+            const cwd = await commandCwd(args);
 
             // Pre-check: if command is rm/unlink, verify targets exist first
             const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
@@ -322,7 +373,7 @@ export function createToolExecutor({
 
         // 2. read_file → Read (with smart truncation for large files)
         read_file: async (args) => {
-            const filePath = resolvePath(args.file_path || args.path, args);
+            const filePath = await resolvePath(args.file_path || args.path, args, { allowExternalFileRead: true });
             const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
 
             // Nudge: if reading shallow overview files, remind agent to search deeper
@@ -385,7 +436,7 @@ export function createToolExecutor({
             if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
                 return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
             }
-            const filePath = resolvePath(rawPath, args, { allowMissing: true });
+            const filePath = await resolvePath(rawPath, args, { allowMissing: true });
             const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.content, projectRootFor(filePath));
             if (!writeCheck.safe) {
@@ -441,7 +492,7 @@ export function createToolExecutor({
                     errors.push('Missing path in file entry');
                     continue;
                 }
-                const filePath = resolvePath(rawPath, file, { allowMissing: true });
+                const filePath = await resolvePath(rawPath, file, { allowMissing: true });
                 const content = file.content || '';
 
                 const writeCheck = validateWrite(filePath, content, projectRootFor(filePath));
@@ -509,7 +560,7 @@ export function createToolExecutor({
         // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
-            const filePath = resolvePath(rawPath, args);
+            const filePath = await resolvePath(rawPath, args);
             const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.replace, projectRootFor(filePath));
             if (!writeCheck.safe) {
@@ -583,9 +634,27 @@ print('OK: replaced')
 
         // 5. list_files → Glob
         list_files: async (args) => {
+            const searchPath = await resolvePath(args.path || null, args);
+            if (args.format === 'tree' || args.tree === true) {
+                const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
+                const maxDepth = Number.isFinite(requestedDepth)
+                    ? Math.max(1, Math.min(6, Math.trunc(requestedDepth)))
+                    : 2;
+                const tree = buildDirectoryTree(searchPath, { maxDepth });
+                return {
+                    success: true,
+                    output: tree.output,
+                    tree: tree.output,
+                    files: tree.files,
+                    directories: tree.directories,
+                    truncated: tree.truncated,
+                    _tool: 'list_files',
+                    _format: 'tree',
+                };
+            }
             const result = await occRegistry.call('Glob', {
                 pattern: args.pattern || '**/*',
-                path: resolvePath(args.path || null, args),
+                path: searchPath,
             });
             const output = typeof result === 'string' ? result : String(result);
             const files = output.split('\n').filter(Boolean);
@@ -610,7 +679,7 @@ print('OK: replaced')
                     return { success: false, output: `Unknown project_id: ${args.project_id}`, _tool: 'search_code' };
                 }
             } else if (args.path) {
-                project = projectRegistry.projectForPath(resolvePath(args.path, args));
+                project = projectRegistry.projectForPath(await resolvePath(args.path, args));
             } else if (projectRegistry.resources().length === 1) {
                 project = projectRegistry.get(projectRegistry.resources()[0].project_id);
             } else {
@@ -620,7 +689,7 @@ print('OK: replaced')
                     _tool: 'search_code',
                 };
             }
-            const searchPath = args.path ? resolvePath(args.path, args) : project.resource.root;
+            const searchPath = args.path ? await resolvePath(args.path, args) : project.resource.root;
             const parts = [];
 
             // Layer 1: ripgrep — exact text matches with context
@@ -681,7 +750,7 @@ print('OK: replaced')
             if (query.includes('*') || query.includes('?')) {
                 const result = await occRegistry.call('Glob', {
                     pattern: query,
-                    path: resolvePath(args.path || null, args),
+                    path: await resolvePath(args.path || null, args),
                 });
                 const output = typeof result === 'string' ? result : String(result);
                 return {
@@ -695,7 +764,7 @@ print('OK: replaced')
             // For text patterns: grep with context lines (like grep -n -C 3)
             const result = await occRegistry.call('Grep', {
                 pattern: query,
-                path: resolvePath(args.path || null, args),
+                path: await resolvePath(args.path || null, args),
                 output_mode: 'content',
                 '-n': true,
                 '-C': 3,
@@ -715,7 +784,7 @@ print('OK: replaced')
             const pattern = args.pattern;
             if (!pattern) return { success: false, output: 'pattern required', _tool: 'grep' };
 
-            const searchPath = resolvePath(args.path || null, args);
+            const searchPath = await resolvePath(args.path || null, args);
             const includeFlag = args.include ? `--glob "${args.include}"` : '';
 
             try {
@@ -741,7 +810,7 @@ print('OK: replaced')
             const results = [];
             for (const p of paths) {
                 try {
-                    const filePath = resolvePath(p, args);
+                    const filePath = await resolvePath(p, args, { allowExternalFileRead: true });
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const lines = content.split('\n').length;
 
@@ -767,7 +836,7 @@ print('OK: replaced')
         // 9. delete_file + safety check + checkpoint for undo
         delete_file: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path, args);
+                const filePath = await resolvePath(args.file_path || args.path, args);
                 const delCheck = validateDelete(filePath, projectRootFor(filePath));
                 if (!delCheck.safe) {
                     return { success: false, output: `🛡️ BLOCKED: ${delCheck.reason}`, _tool: 'delete_file', _blocked: true };
@@ -786,7 +855,7 @@ print('OK: replaced')
         // 10. get_file_info
         get_file_info: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path, args);
+                const filePath = await resolvePath(args.file_path || args.path, args);
                 const stat = fs.statSync(filePath);
                 return {
                     success: true,
@@ -804,7 +873,7 @@ print('OK: replaced')
         // 11. validate_file (syntax check)
         validate_file: async (args) => {
             try {
-                const filePath = resolvePath(args.path, args);
+                const filePath = await resolvePath(args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
                 if (ext === '.py') cmd = `python3 -m py_compile "${filePath}"`;
@@ -839,9 +908,12 @@ print('OK: replaced')
         // 13. validate_structure
         validate_structure: async (args) => {
             const expected = args.expected || [];
-            const missing = expected.filter(f =>
-                !fs.existsSync(resolvePath(f, args, { allowMissing: true }))
-            );
+            const missing = [];
+            for (const f of expected) {
+                if (!fs.existsSync(await resolvePath(f, args, { allowMissing: true }))) {
+                    missing.push(f);
+                }
+            }
             return {
                 success: missing.length === 0,
                 missing,
@@ -853,7 +925,7 @@ print('OK: replaced')
         // 14. lint_check
         lint_check: async (args) => {
             try {
-                const filePath = resolvePath(args.file_path || args.path, args);
+                const filePath = await resolvePath(args.file_path || args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
                 if (ext === '.py') cmd = `python3 -m ruff check "${filePath}" 2>&1 || true`;
@@ -911,7 +983,21 @@ print('OK: replaced')
         // Returns function signatures, classes, imports instead of raw file contents
         // 10x more token-efficient than read_file
         analyze_code: async (args) => {
-            const filePath = resolvePath(args.file_path || args.path, args);
+            const filePath = await resolvePath(args.file_path || args.path, args);
+            let stat;
+            try {
+                stat = fs.statSync(filePath);
+            } catch (err) {
+                return { success: false, output: `Error: ${err.message}`, structure: {}, _tool: 'analyze_code' };
+            }
+            if (stat.isDirectory()) {
+                return {
+                    success: false,
+                    output: `Error: analyze_code expects a file, but got directory: ${filePath}. Use list_files/search_code first, then pass a specific source file.`,
+                    structure: {},
+                    _tool: 'analyze_code',
+                };
+            }
             const result = analyzeCode(filePath, {
                 startLine: args.start_line,
                 endLine: args.end_line,
@@ -927,12 +1013,15 @@ print('OK: replaced')
         // Project overview — on-demand index + skeleton
         get_project_overview: async (args) => {
             const projectPath = args.path || args.project_path;
-            const result = await projectRegistry.register(projectPath);
+            const result = await projectRegistry.register(projectPath, {
+                forceRefresh: Boolean(args.force_refresh || args.forceRefresh),
+            });
             return {
                 success: true,
                 output: result.output,
                 project_resource: result.resource,
                 already_registered: result.already_registered,
+                refreshed: result.refreshed,
                 _tool: 'get_project_overview',
             };
         },
@@ -1007,6 +1096,22 @@ print('OK: replaced')
 
         getProjectResources() {
             return projectRegistry.resources();
+        },
+
+        async registerProjectRoots(roots, { forceRefresh = false } = {}) {
+            const results = [];
+            const seen = new Set();
+            for (const root of Array.isArray(roots) ? roots : []) {
+                if (!root || seen.has(root)) continue;
+                seen.add(root);
+                try {
+                    const result = await projectRegistry.register(root, { forceRefresh });
+                    results.push({ success: true, root: result.resource.root, ...result });
+                } catch (err) {
+                    results.push({ success: false, root, error: err.message });
+                }
+            }
+            return results;
         },
 
         getAgentContext() {

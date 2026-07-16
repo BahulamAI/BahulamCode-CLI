@@ -194,6 +194,23 @@ test('executor classifier does not mark mutating shell forms safe', () => {
   assert.equal(classifyCommand('find . -exec rm {} \\;').classification, 'blocked');
 });
 
+test('executor classifier treats rm as approved-contained unless target is hard-blocked', () => {
+  for (const command of [
+    'rm apps/kepler-docs/package-lock.json',
+    'rm -rf apps/kepler-docs/node_modules',
+    'cd /Users/sree/Sites/Tarang\\ Orca/appstak-platform && rm apps/kepler-docs/package-lock.json && rm -rf apps/kepler-docs/node_modules',
+    'rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/kepler-docs/node_modules',
+  ]) {
+    const result = classifyCommand(command);
+    assert.equal(result.classification, 'contained', command);
+    assert.equal(result.highRisk, true, command);
+  }
+
+  for (const command of ['rm -rf /', 'rm -rf ~', 'rm -rf .', 'rm -rf *', 'rm -rf ../outside']) {
+    assert.equal(classifyCommand(command).classification, 'blocked', command);
+  }
+});
+
 test('executor classifier allows approved process cleanup through HITL', () => {
   for (const command of [
     'kill 57529',
