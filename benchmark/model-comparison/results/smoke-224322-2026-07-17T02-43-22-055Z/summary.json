@@ -1,0 +1,117 @@
+{
+  "schema": "kepler.model-comparison-run/1",
+  "label": "smoke-224322",
+  "started_at": "2026-07-17T02:43:22.056Z",
+  "env": {
+    "TARANG_ENV": "local",
+    "NODE_VERSION": "v22.21.1"
+  },
+  "config": {
+    "model": null,
+    "route": null,
+    "tag": "",
+    "questions_source": "/tmp/single-q.json"
+  },
+  "turns": [
+    {
+      "q": 1,
+      "question": "What version of Node do you see in this repo's package.json engines field? Answer in one line.",
+      "tests": "smoke",
+      "exit_code": 0,
+      "summary": {
+        "exit_ok": {
+          "type": "complete",
+          "tools": 3,
+          "tool_breakdown": {
+            "grep": 2,
+            "get_project_overview": 1
+          },
+          "sub_agents": [],
+          "stagnation_triggers": 0,
+          "usage": {
+            "input_tokens": 23073,
+            "output_tokens": 145,
+            "cache_read": 16512,
+            "cache_write": 0
+          },
+          "duration_s": 22.3,
+          "cost_usd": 0.012281,
+          "rate_limit": {
+            "allowed": true,
+            "product": "kepler",
+            "tier": "free",
+            "msgs_used_in_window": 18,
+            "msgs_per_window": 50,
+            "configured_msgs_per_window": 25,
+            "safety_multiplier": 2,
+            "window_seconds": 18000,
+            "window_reset_at": "2026-07-17T05:00:00Z",
+            "retry_after": 0,
+            "unlimited": false,
+            "byok": false,
+            "fast_quota_used": null,
+            "fast_quota_limit": 0,
+            "fast_opus_quota_limit": 0
+          },
+          "model": "default",
+          "content_length": 69
+        },
+        "duration_s": 22.3,
+        "cost_usd": 0.012281,
+        "tools_total": 3,
+        "tools_primary": 3,
+        "tools_sub_agent": 0,
+        "sub_agents": [],
+        "tool_breakdown": {
+          "grep": 2,
+          "get_project_overview": 1
+        },
+        "usage": {
+          "input_tokens": 23073,
+          "output_tokens": 145,
+          "cache_read": 16512,
+          "cache_write": 0
+        },
+        "stagnation_triggers": 0,
+        "content_length": 69,
+        "errors": [],
+        "timed_out": false,
+        "rate_limit": {
+          "allowed": true,
+          "product": "kepler",
+          "tier": "free",
+          "msgs_used_in_window": 18,
+          "msgs_per_window": 50,
+          "configured_msgs_per_window": 25,
+          "safety_multiplier": 2,
+          "window_seconds": 18000,
+          "window_reset_at": "2026-07-17T05:00:00Z",
+          "retry_after": 0,
+          "unlimited": false,
+          "byok": false,
+          "fast_quota_used": null,
+          "fast_quota_limit": 0,
+          "fast_opus_quota_limit": 0
+        },
+        "wall_duration_s": 22.5
+      },
+      "jsonl_path": "q1-raw.jsonl"
+    }
+  ],
+  "aggregate": {
+    "turns": 1,
+    "total_duration_s": 22.3,
+    "total_cost_usd": 0.012281,
+    "total_tools": 3,
+    "total_tools_primary": 3,
+    "total_tools_sub_agent": 0,
+    "total_input_tokens": 23073,
+    "total_output_tokens": 145,
+    "total_cache_read": 16512,
+    "total_cache_write": 0,
+    "cache_hit_rate_pct": 72,
+    "errors": 0,
+    "timed_out": 0
+  },
+  "completed_at": "2026-07-17T02:43:44.522Z"
+}
