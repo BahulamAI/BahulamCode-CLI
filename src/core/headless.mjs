@@ -118,13 +118,18 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     };
     if (model) execContext.model_override = model;
 
-    let toolCount = 0;
+    let primaryToolCount = 0;
+    let subAgentForwardedToolCount = 0;
+    let backendToolCount = null;
+    let backendPrimaryToolCount = null;
+    let backendSubAgentToolCount = null;
     let finalContent = '';
     let totalCost = 0;
     let rateLimit = null;
 
     // ── Telemetry collectors ──
-    const toolCalls = [];       // { tool, duration_ms, success }
+    const toolCalls = [];       // { tool, call_id, duration_ms, success, internal, sub_agent }
+    const emittedToolResults = new Set();
     const subAgents = [];       // { type, model, duration_s, tool_calls, success }
     let stagnationCount = 0;
     let usage = {};             // { input_tokens, output_tokens, cache_read, cache_write }
@@ -134,21 +139,72 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             const { type, data } = event;
 
             if (type === 'tool_call' || type === 'tool_request') {
-                toolCount++;
+                const isInternal = Boolean(data?.internal || data?.sub_agent);
                 const toolName = data?.tool || 'unknown';
                 const args = data?.args || {};
-                toolCalls.push({ tool: toolName, success: null, duration_ms: 0 });
-                emit({ type: 'tool_call', tool: toolName, args, approved: true });
+                if (isInternal) subAgentForwardedToolCount++;
+                else primaryToolCount++;
+                toolCalls.push({
+                    tool: toolName,
+                    call_id: data?.call_id || data?.request_id || '',
+                    success: null,
+                    duration_ms: 0,
+                    internal: isInternal,
+                    sub_agent: data?.sub_agent || null,
+                });
+                emit({
+                    type: 'tool_call',
+                    tool: toolName,
+                    args,
+                    call_id: data?.call_id || data?.request_id || '',
+                    approved: true,
+                    internal: isInternal,
+                    sub_agent: data?.sub_agent || null,
+                });
                 log(`Tool: ${toolName}`);
             }
 
             if (type === 'tool_result' || type === 'tool_done') {
                 const success = data?.success !== false;
-                const duration = data?.duration_s || 0;
+                const durationMs = data?.duration_ms ?? Math.round((data?.duration_s || 0) * 1000);
+                const callId = data?.call_id || data?._callId || data?.request_id || '';
+                const isInternal = Boolean(data?.internal || data?.sub_agent);
                 // Update last tool call with result
-                const last = toolCalls.findLast(t => t.tool === (data?.tool || ''));
-                if (last) { last.success = success; last.duration_ms = Math.round(duration * 1000); }
-                emit({ type: 'tool_result', tool: data?.tool || '', success, duration_ms: Math.round(duration * 1000) });
+                const last = toolCalls.findLast(t => (callId && t.call_id === callId) || t.tool === (data?.tool || ''));
+                if (last) {
+                    last.success = success;
+                    last.duration_ms = durationMs;
+                    if (isInternal) {
+                        last.internal = true;
+                        last.sub_agent = data?.sub_agent || last.sub_agent || null;
+                    }
+                } else if (data?.tool) {
+                    // Some backend-owned meta-tools (for example explore) emit a
+                    // result/complete event without a preceding client-visible
+                    // tool_call. Keep the breakdown honest without relying on a
+                    // duplicate rendered call line.
+                    toolCalls.push({
+                        tool: data.tool,
+                        call_id: callId,
+                        success,
+                        duration_ms: durationMs,
+                        internal: isInternal,
+                        sub_agent: data?.sub_agent || null,
+                    });
+                    if (isInternal) subAgentForwardedToolCount++;
+                    else primaryToolCount++;
+                }
+                if (callId && emittedToolResults.has(callId)) continue;
+                if (callId) emittedToolResults.add(callId);
+                emit({
+                    type: 'tool_result',
+                    tool: data?.tool || '',
+                    call_id: callId,
+                    success,
+                    duration_ms: durationMs,
+                    internal: isInternal,
+                    sub_agent: data?.sub_agent || null,
+                });
             }
 
             if (type === 'file_diff') {
@@ -203,14 +259,20 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 if (text) finalContent = text;
             }
 
-            if (type === 'session_info' && data?.rate_limit) {
-                rateLimit = data.rate_limit;
+            if (type === 'session_info') {
+                if (data?.rate_limit) rateLimit = data.rate_limit;
+                // Surface session_id in the JSONL so multi-turn harnesses can
+                // capture it from turn N and forward on turn N+1 (via TARANG_SESSION_ID).
+                if (data?.session_id) emit({ type: 'session_info', session_id: data.session_id });
             }
 
             if (type === 'complete') {
                 if (data?.rate_limit) rateLimit = data.rate_limit;
                 totalCost = data?.cost || data?.total_cost || 0;
                 if (data?.usage?.total_cost) totalCost = data.usage.total_cost;
+                if (Number.isFinite(data?.tool_calls)) backendToolCount = data.tool_calls;
+                if (Number.isFinite(data?.primary_tool_calls)) backendPrimaryToolCount = data.primary_tool_calls;
+                if (Number.isFinite(data?.sub_agent_tool_calls)) backendSubAgentToolCount = data.sub_agent_tool_calls;
                 // Capture token usage
                 if (data?.usage) {
                     usage = {
@@ -248,20 +310,42 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const durationS = (Date.now() - startTime) / 1000;
 
     // ── Tool breakdown ──
-    const toolBreakdown = {};
-    for (const t of toolCalls) {
-        toolBreakdown[t.tool] = (toolBreakdown[t.tool] || 0) + 1;
-    }
+    const countBreakdown = (items) => {
+        const out = {};
+        for (const t of items) out[t.tool] = (out[t.tool] || 0) + 1;
+        return out;
+    };
+    const toolBreakdown = countBreakdown(toolCalls);
+    const primaryToolBreakdown = countBreakdown(toolCalls.filter(t => !t.internal));
+    const subAgentToolBreakdown = countBreakdown(toolCalls.filter(t => t.internal));
 
-    // Include sub-agent tool counts in the total
-    for (const sa of subAgents) {
-        toolCount += sa.tool_calls || 0;
+    const subAgentReportedToolCount = subAgents.reduce((sum, sa) => sum + (sa.tool_calls || 0), 0);
+    const subAgentToolCount = backendSubAgentToolCount ?? Math.max(subAgentReportedToolCount, subAgentForwardedToolCount);
+    const totalToolCount = backendToolCount ?? (primaryToolCount + subAgentToolCount);
+    const primaryToolTotal = backendPrimaryToolCount ?? (
+        backendToolCount != null
+            ? Math.max(0, totalToolCount - subAgentToolCount)
+            : primaryToolCount
+    );
+    if (subAgentToolCount > subAgentReportedToolCount && !backendSubAgentToolCount) {
+        subAgents.push({
+            type: 'forwarded',
+            model: '',
+            duration_s: 0,
+            tool_calls: subAgentToolCount - subAgentReportedToolCount,
+            success: true,
+        });
     }
 
     emit({
         type: 'complete',
-        tools: toolCount,
+        tools: totalToolCount,
+        tools_primary: primaryToolTotal,
+        tools_sub_agent: subAgentToolCount,
+        tools_forwarded_sub_agent_events: subAgentForwardedToolCount,
         tool_breakdown: toolBreakdown,
+        tool_breakdown_primary: primaryToolBreakdown,
+        tool_breakdown_sub_agent: subAgentToolBreakdown,
         sub_agents: subAgents,
         stagnation_triggers: stagnationCount,
         usage,
@@ -313,7 +397,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         }
     }
 
-    log(`Done: ${toolCount} tools, ${durationS.toFixed(1)}s, $${totalCost.toFixed(3)}`);
+    log(`Done: ${totalToolCount} tools (${primaryToolTotal} primary, ${subAgentToolCount} sub-agent), ${durationS.toFixed(1)}s, $${totalCost.toFixed(3)}`);
 
     // Write final content to stderr so it's human-readable (stdout is JSONL)
     if (verbose && finalContent) {

@@ -5,7 +5,7 @@
  * the primary agent reads bright by contrast. Inner tool cards are indented
  * via the `subAgentIndent()` helper so they nest visually under the header.
  *
- *   🛰️ explore "JWT lifecycle"  ▸ running (deepseek/deepseek-v4-flash)
+ *   🛰️ explore "JWT lifecycle"  ▸ running
  *        🔭 Search code "expire"        → 6 matches
  *        🔭 Read file auth.py L120-180   → 60 lines
  *        └ ✅ returned 3 files identified · $0.004 · 2.1s
@@ -53,15 +53,15 @@ export function subAgentIndent(extraDepth = 0) {
  *
  * @returns {string} ANSI-styled multi-line block (no trailing newline).
  */
-export function renderSubAgentOpen({ id, type, model, query, parentDepth } = {}) {
+export function renderSubAgentOpen({ id, type, query, parentDepth } = {}) {
   const t = type || 'sub-agent';
   const depthBefore = _stack.length;
   _stack.push({ id: id || `${t}-${depthBefore}-${tag()}`, type: t, startedAt: Date.now() });
 
   const indent = ' '.repeat(2 + depthBefore * 3);
   const iconChar = SUB_ICONS[t] || icons.subAgent;
-  const head = `${indent}${iconChar} ${paint.brand.data(t)} ${paint.text.dim(`"${truncate(query || '', 60)}"`)}`;
-  const tag1 = paint.text.dim(`▸ running${model ? ` (${model})` : ''}`);
+  const head = `${indent}${iconChar} ${paint.brand.data(t)} ${paint.text.dim(`"${query || ''}"`)}`;
+  const tag1 = paint.text.dim('▸ running');
 
   return query
     ? `\n${head}  ${tag1}`

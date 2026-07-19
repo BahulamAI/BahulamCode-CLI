@@ -86,6 +86,47 @@ node benchmark/model-comparison/run.mjs \
   --label "custom" --questions ./my-questions.json
 ```
 
+### SWE-bench hard-10 set
+
+`questions-swe-hard10.json` is a companion question set built from the 10
+SWE-bench Lite instances that v5 (DeepSeek Flash) failed with sub-agent
+activity. Use it to A/B model × framework changes on real hard cases without
+spinning up the full SWE-bench pipeline. Warm-cache, one persistent session,
+matches interactive-user behavior.
+
+One-time setup — clones each repo at its base commit to
+`~/.kepler-bench-repos/<instance_id>`:
+
+```bash
+node benchmark/model-comparison/prep-swe-repos.mjs
+```
+
+Then fire against any model / framework combo:
+
+```bash
+# DeepSeek Flash (baseline)
+TARANG_ENV=local node benchmark/model-comparison/run-persistent.mjs \
+  --questions benchmark/model-comparison/questions-swe-hard10.json \
+  --label "3.4.4-deepseek-2026-07-18" \
+  --model deepseek/deepseek-v4-flash --route platform
+
+# GLM 5.2
+TARANG_ENV=local node benchmark/model-comparison/run-persistent.mjs \
+  --questions benchmark/model-comparison/questions-swe-hard10.json \
+  --label "3.4.4-glm52-2026-07-18" \
+  --model z-ai/glm-5.2 --route platform
+```
+
+To reset repos between runs (each question mutates its clone with `edit_file`):
+
+```bash
+node benchmark/model-comparison/prep-swe-repos.mjs --reset
+```
+
+Each question's `instance_id`, `repo`, and `base_commit` fields are surfaced
+in the summary so you can diff resolve outcomes against
+`benchmark/results/runs/swebench-*` runs.
+
 Schema (`kepler.model-comparison-questions/1`):
 
 ```json
@@ -117,3 +158,6 @@ Schema (`kepler.model-comparison-questions/1`):
 - After changing `PLATFORM_REASONING_MODEL` in the backend env
 - Whenever you promote a candidate model from `strategy/model-comparison.md`'s
   "Candidate Models To Track" table
+- After a framework version bump (e.g. `agent_framework 3.4.4`), use the
+  hard-10 set for a fast A/B before running the full 300-instance SWE-bench
+  Docker pipeline

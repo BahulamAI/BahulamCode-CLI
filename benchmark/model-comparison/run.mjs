@@ -103,7 +103,7 @@ function resolveKeplerMain() {
 }
 
 // ── Run one turn via CLI headless ──
-async function runTurn({ keplerMain, question, model, route, resume, timeoutS, verbose, jsonlPath }) {
+async function runTurn({ keplerMain, question, model, route, resume, timeoutS, verbose, jsonlPath, sessionId }) {
     return new Promise((resolve) => {
         const args = [keplerMain];
         if (route) args.push(route);      // 'platform' or 'byok' — must come BEFORE --headless
@@ -116,8 +116,15 @@ async function runTurn({ keplerMain, question, model, route, resume, timeoutS, v
 
         if (verbose) process.stderr.write(`\n  $ node ${args.join(' ')}\n`);
 
+        // Layer 3.7 requires backend session_id continuity across turns. Headless
+        // starts fresh per invocation and doesn't read --resume state, so we
+        // pipe the session_id from turn 1 forward via TARANG_SESSION_ID env var
+        // (stream-client.mjs constructor reads this).
+        const childEnv = { ...process.env };
+        if (sessionId) childEnv.TARANG_SESSION_ID = sessionId;
+
         const child = spawn('node', args, {
-            env: { ...process.env },
+            env: childEnv,
             stdio: ['ignore', 'pipe', verbose ? 'inherit' : 'pipe'],
         });
 
@@ -161,11 +168,16 @@ function summarizeTurn(events) {
         tool_calls: e.tool_calls || e.data?.tool_calls || 0,
         success: e.success !== false,
     }));
-    // Sub-agent tools from the CLI's own count in the completion event
-    const subAgentToolTotal = (completion.sub_agents || []).reduce((s, sa) => s + (sa.tool_calls || 0), 0);
-    // Primary tools = total tools - sub-agent tools (headless includes both in `tools`)
-    const totalTools = completion.tools || 0;
-    const primaryTools = Math.max(0, totalTools - subAgentToolTotal);
+    const completionSubAgents = completion.sub_agents || subAgents;
+    const subAgentToolTotal = Number.isFinite(completion.tools_sub_agent)
+        ? completion.tools_sub_agent
+        : completionSubAgents.reduce((s, sa) => s + (sa.tool_calls || 0), 0);
+    const totalTools = Number.isFinite(completion.tools)
+        ? completion.tools
+        : ((completion.tools_primary || 0) + subAgentToolTotal);
+    const primaryTools = Number.isFinite(completion.tools_primary)
+        ? completion.tools_primary
+        : Math.max(0, totalTools - subAgentToolTotal);
 
     return {
         exit_ok: !errors.length && !timeout && completion,
@@ -174,7 +186,7 @@ function summarizeTurn(events) {
         tools_total: totalTools,
         tools_primary: primaryTools,
         tools_sub_agent: subAgentToolTotal,
-        sub_agents: completion.sub_agents || subAgents,
+        sub_agents: completionSubAgents,
         tool_breakdown: completion.tool_breakdown || {},
         usage: completion.usage || {},
         stagnation_triggers: completion.stagnation_triggers || 0,
@@ -283,6 +295,10 @@ async function main() {
     process.stderr.write(`═══════════════════════════════════════════════════════\n`);
 
     const perTurn = [];
+    // Captured from turn 1's SESSION_INFO event; forwarded to turns 2+ so the
+    // backend attaches all turns to the same session (Layer 3.7 SharedMemory,
+    // resume-summarization continuity, plan pinning).
+    let sessionId = null;
     for (let i = 0; i < questions.length; i++) {
         const q = questions[i];
         const jsonlPath = path.join(outDir, `q${q.q}-raw.jsonl`);
@@ -297,7 +313,18 @@ async function main() {
             timeoutS: opts.timeoutS,
             verbose: opts.verbose,
             jsonlPath,
+            sessionId,
         });
+        // Headless emits a session_info event with session_id on turn 1
+        // (headless.mjs surfaces it). Capture once, forward on every later turn
+        // via TARANG_SESSION_ID so the backend attaches all turns to one session.
+        if (!sessionId) {
+            const sessInfo = events.find(e => e?.type === 'session_info' && e.session_id);
+            if (sessInfo?.session_id) {
+                sessionId = sessInfo.session_id;
+                process.stderr.write(`  ↳ session_id captured: ${sessionId.slice(0, 8)}…\n`);
+            }
+        }
         const wallSec = ((Date.now() - startMs) / 1000).toFixed(1);
         const summary = summarizeTurn(events);
         summary.wall_duration_s = parseFloat(wallSec);

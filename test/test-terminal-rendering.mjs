@@ -8,6 +8,7 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
+import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
@@ -74,6 +75,21 @@ test('uses concise structured tool summaries', () => {
     }, { cwd: '/repo' }),
     'src/main.js · match "const oldValue = true;"',
   );
+});
+
+test('sub-agent running line shows full query and hides model', () => {
+  resetSubAgents();
+  const query = '[Thoroughness: thorough] What is the codekepler-deploy-dashboard docker setup and backend deployment flow?';
+  const rendered = stripAnsi(renderSubAgentOpen({
+    type: 'explore',
+    model: 'deepseek/deepseek-v4-flash',
+    query,
+  }));
+  resetSubAgents();
+
+  assert.ok(rendered.includes(`"${query}"`), 'expected full query to render');
+  assert.ok(rendered.includes('▸ running'), 'expected running status');
+  assert.ok(!rendered.includes('deepseek/deepseek-v4-flash'), 'model should be hidden');
 });
 
 test('renders shell commands with semantic syntax colors', () => {

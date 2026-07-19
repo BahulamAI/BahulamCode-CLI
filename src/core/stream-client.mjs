@@ -67,7 +67,10 @@ export class TarangStreamClient {
         this.approval = approvalManager || new ApprovalManager();
         this.product = product || process.env.TARANG_PRODUCT || process.env.KEPLER_PRODUCT || 'kepler';
         this.currentTaskId = null;
-        this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
+        // Set by backend on first turn, reused on subsequent turns. Headless mode
+        // (which starts fresh per invocation) can pre-seed via TARANG_SESSION_ID
+        // so multi-turn benchmarks share one backend session across `node` runs.
+        this.sessionId = process.env.TARANG_SESSION_ID || null;
         this._cancelled = false;
         this._paused = false;
         this._pauseWaiters = new Set();
@@ -310,6 +313,7 @@ export class TarangStreamClient {
         const { call_id, request_id, tool, args } = data;
         const callId = call_id || request_id;
         const toolName = tool;
+        const isInternal = Boolean(data?.internal || data?.sub_agent);
 
         if (this.verbose) {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
@@ -343,6 +347,9 @@ export class TarangStreamClient {
                 tool: toolName,
                 args: args || {},
                 duration_ms: durationMs,
+                internal: isInternal,
+                sub_agent: data?.sub_agent || null,
+                local_callback: true,
             },
         };
     }

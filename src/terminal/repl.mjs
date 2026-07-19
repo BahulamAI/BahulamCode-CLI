@@ -912,8 +912,11 @@ const session = {
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
-  toolCalls: 0,
+  toolCalls: 0,        // primary-agent tool calls in the current turn
+  subAgentToolCalls: 0,// forwarded internal sub-agent tool calls in the current turn
   totalToolCalls: 0,   // across all turns
+  totalPrimaryToolCalls: 0,
+  totalSubAgentToolCalls: 0,
   turns: 0,
   history: [],         // display transcript (can include reconstructed tool entries)
   agentHistory: [],    // backend continuity payload (compact or full)
@@ -1284,19 +1287,23 @@ function computeCacheTotals() {
     read += b.cache_read_tokens || 0;
     write += b.cache_creation_tokens || 0;
   }
-  const denom = session.inputTokens + read;
-  const hitRate = denom > 0 ? Math.round((read / denom) * 100) : 0;
+  // OpenRouter/Anthropic/DeepSeek return `total_input_tokens` INCLUSIVE of
+  // cache-read tokens. session.inputTokens is that sum, so the denominator is
+  // just session.inputTokens (do NOT add `read` — would double-count).
+  const hitRate = session.inputTokens > 0
+    ? Math.round((read / session.inputTokens) * 100)
+    : 0;
   return { read, write, hitRate };
 }
 
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const elapsed = formatElapsed(session.startTime);
-  const cache = computeCacheTotals();
-
+  // Cache hit % lives under /cache — keep the always-on strip focused on
+  // volume + elapsed. Historical rate calc was double-counting the cache tokens
+  // vs OpenRouter's convention (see computeCacheTotals) which was misleading.
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    ...(cache.read > 0 ? [c.dim(`cache ${cache.hitRate}%`)] : []),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -1648,6 +1655,27 @@ function flushContent() {
   _lastRenderedBlock = 'content';
 }
 
+function renderStagnation(data = {}) {
+  const rawMessage = data?.message || '';
+  const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
+  const tool = data?.tool || data?.tool_name || '';
+  const suggestion = data?.suggestion || data?.recovery_strategy || data?.strategy || '';
+  const message = reason
+    ? `Stagnation${tool ? ` (${tool})` : ''}: ${reason}`
+    : `Stagnation${tool ? ` (${tool})` : ''} detected`;
+  const key = `${message}\n${suggestion}`;
+
+  if (session._lastStagnationWarning === key) return;
+  session._lastStagnationWarning = key;
+
+  stopSpinner();
+  flushContent();
+  flushPendingHead();
+  process.stderr.write(`  ${c.yellow('!')} ${c.yellow(message)}\n`);
+  if (suggestion) process.stderr.write(`    ${c.dim(suggestion)}\n`);
+  _lastRenderedBlock = 'status';
+}
+
 // ── Event Renderer ──
 
 function renderEvent(event) {
@@ -1662,7 +1690,17 @@ function renderEvent(event) {
     case 'status': {
       const msg = data?.message || '';
       if (!msg || msg === 'Agent started') return;
+      if (/^Stagnation:/i.test(msg)) {
+        renderStagnation(data);
+        break;
+      }
       startSpinner(msg);
+      break;
+    }
+
+    case 'stagnation':
+    case 'stagnation_detected': {
+      renderStagnation(data);
       break;
     }
 
@@ -1719,7 +1757,14 @@ function renderEvent(event) {
 
     case 'tool_call':
     case 'tool_request': {
-      session.toolCalls++;
+      const isInternal = Boolean(data?.internal || data?.sub_agent);
+      if (isInternal) {
+        session.subAgentToolCalls++;
+        session.totalSubAgentToolCalls++;
+      } else {
+        session.toolCalls++;
+        session.totalPrimaryToolCalls++;
+      }
       session.totalToolCalls++;
       stopSpinner();
       flushContent();
@@ -1850,9 +1895,8 @@ function renderEvent(event) {
       stopSpinner();
       clearPendingHead();
       const agentType = data?.type || 'sub-agent';
-      const model = data?.model || '';
       const query = data?.query || '';
-      process.stderr.write(renderSubAgentOpen({ type: agentType, model, query }) + '\n');
+      process.stderr.write(renderSubAgentOpen({ type: agentType, query }) + '\n');
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       startSpinner(`${agentType}: working...`);
@@ -2032,8 +2076,28 @@ function renderEvent(event) {
       // Sync cumulative session cost into the orbit (status bar shows it).
       if (_orbit) _orbit.onCost(session.totalCost);
 
-      // Compact turn summary
-      const tools = data?.tool_calls || session.toolCalls || 0;
+      // Compact turn summary. Backend's tool_calls is authoritative and
+      // includes primary + sub-agent internals for billing/credit rollups.
+      const observedPrimaryTools = session.toolCalls;
+      const observedSubAgentTools = session.subAgentToolCalls;
+      const observedTurnTools = observedPrimaryTools + observedSubAgentTools;
+      if (Number.isFinite(data?.primary_tool_calls)) {
+        session.toolCalls = data.primary_tool_calls;
+        const delta = data.primary_tool_calls - observedPrimaryTools;
+        if (delta > 0) session.totalPrimaryToolCalls += delta;
+      }
+      if (Number.isFinite(data?.sub_agent_tool_calls)) {
+        session.subAgentToolCalls = data.sub_agent_tool_calls;
+        const delta = data.sub_agent_tool_calls - observedSubAgentTools;
+        if (delta > 0) session.totalSubAgentToolCalls += delta;
+      }
+      if (Number.isFinite(data?.tool_calls)) {
+        const delta = data.tool_calls - observedTurnTools;
+        if (delta > 0) session.totalToolCalls += delta;
+      }
+      const tools = Number.isFinite(data?.tool_calls)
+        ? data.tool_calls
+        : (session.toolCalls + session.subAgentToolCalls);
 
       // Mission report — replaces the trailing "Done" when the turn did real
       // work (touched files or invoked tools). Plain chat turns keep the
@@ -2413,7 +2477,13 @@ async function handleCommand(input, ctx) {
       }
       process.stderr.write(`  ${c.dim('Env')}          ${env}\n`);
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
-      process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
+      const toolSplit = session.totalSubAgentToolCalls > 0
+        ? ` ${c.dim(`(${session.totalPrimaryToolCalls} primary, ${session.totalSubAgentToolCalls} sub-agent)`)}`
+        : '';
+      const lastTurnSplit = session.subAgentToolCalls > 0
+        ? ` ${c.dim(`(${session.toolCalls} primary, ${session.subAgentToolCalls} sub-agent)`)}`
+        : '';
+      process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total${toolSplit}, ${session.toolCalls + session.subAgentToolCalls} last turn${lastTurnSplit}\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
       if (session.isByok) {
         process.stderr.write(`  ${c.dim('Billing')}      ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
@@ -2540,7 +2610,11 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${progressBar(Math.round((usedMem / totalMem) * 100), 15, 'Memory')} ${(usedMem / 1024 / 1024 / 1024).toFixed(1)}G\n`);
       process.stderr.write(`  ${progressBar(Math.round((mem.heapUsed / mem.heapTotal) * 100), 15, 'Heap')} ${(mem.heapUsed / 1024 / 1024).toFixed(0)}M\n`);
       process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
-      process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
+      process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls + session.subAgentToolCalls}`);
+      if (session.subAgentToolCalls > 0) {
+        process.stderr.write(c.dim(` (${session.toolCalls} primary, ${session.subAgentToolCalls} sub-agent)`));
+      }
+      process.stderr.write('\n');
       process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
       if (session.isByok) {
         process.stderr.write(`  ${c.gray('Billing:')}   ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
@@ -2760,6 +2834,7 @@ async function handleCommand(input, ctx) {
       session.history.length = 0;
       session.agentHistory.length = 0;
       session.toolCalls = 0;
+      session.subAgentToolCalls = 0;
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
 
@@ -3625,6 +3700,7 @@ export async function startTerminalRepl() {
     session.agentHistory.push(userMessage);
     session.turns++;
     session.toolCalls = 0;
+    session.subAgentToolCalls = 0;
     session.lastTask = input;
     // Reset per-turn counts so the mission report reflects this turn only.
     session.toolCounts = {};

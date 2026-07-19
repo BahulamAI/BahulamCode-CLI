@@ -131,6 +131,39 @@ await test('tool_call triggers execution, callback, and tool_result', async () =
     assert.ok(callbackReceived, 'callback should have been sent');
 });
 
+await test('forwarded sub-agent tool_call preserves metadata on local tool_result', async () => {
+    const { server, port } = await createMockServer([
+        {
+            event: 'tool_call',
+            data: {
+                call_id: 'sub-tc1',
+                tool: 'read_file',
+                args: { path: 'test.txt' },
+                internal: true,
+                sub_agent: 'explore',
+            },
+        },
+        { event: 'complete', data: { summary: 'Done' } },
+    ]);
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) {
+        events.push(evt);
+    }
+    server.close();
+
+    const resultEvent = events.find(e => e.type === EVENT_TYPES.TOOL_RESULT);
+    assert.ok(resultEvent, 'local tool_result should be yielded');
+    assert.strictEqual(resultEvent.data.call_id, 'sub-tc1');
+    assert.strictEqual(resultEvent.data.internal, true);
+    assert.strictEqual(resultEvent.data.sub_agent, 'explore');
+    assert.strictEqual(resultEvent.data.local_callback, true);
+});
+
 await test('tool_result with file_diff yields structured file_diff event', async () => {
     const server = http.createServer((req, res) => {
         if (req.url === '/api/execute') {
