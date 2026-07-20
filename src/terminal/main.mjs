@@ -148,6 +148,9 @@ async function main() {
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
     KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)
+    KEPLER_RECONNECT_MAX_ELAPSED_MS
+                            Max reconnect window for dropped streams
+    KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
 
   \x1b[2mDocs: https://docs.codekepler.ai\x1b[0m
 `);
