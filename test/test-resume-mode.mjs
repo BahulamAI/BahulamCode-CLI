@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decideResumeMode,
+  modelContextWindowInfo,
   modelContextWindow,
   projectedTokensForChoice,
   formatTokens,
@@ -42,6 +43,8 @@ test('decideResumeMode: unknown model falls back to default context window', () 
     model: 'made-up/unknown-model-x',
   });
   assert.equal(d.windowSize, 128000);  // DEFAULT_CONTEXT_WINDOW
+  assert.equal(d.windowKnown, false);
+  assert.equal(d.windowSource, 'fallback');
   assert.equal(d.mode, 'full');
 });
 
@@ -70,6 +73,36 @@ test('modelContextWindow: known + fallback', () => {
   assert.equal(modelContextWindow('deepseek/deepseek-v4-flash'), 128000);
   assert.equal(modelContextWindow('unknown/model'), 128000);
   assert.equal(modelContextWindow(null), 128000);
+  assert.deepEqual(modelContextWindowInfo('deepseek/deepseek-v4-flash'), {
+    tokens: 128000,
+    known: true,
+    source: 'model_map',
+  });
+  assert.deepEqual(modelContextWindowInfo('unknown/model'), {
+    tokens: 128000,
+    known: false,
+    source: 'fallback',
+  });
+});
+
+test('modelContextWindow: backend catalog hint overrides fallback', () => {
+  const hint = { context_length: 300_000, source: 'models_catalog' };
+  assert.equal(modelContextWindow('unknown/model', hint), 300_000);
+  assert.deepEqual(modelContextWindowInfo('unknown/model', hint), {
+    tokens: 300_000,
+    known: true,
+    source: 'models_catalog',
+  });
+
+  const d = decideResumeMode({
+    transcriptTokens: 140_000,
+    model: 'unknown/model',
+    contextWindow: hint,
+  });
+  assert.equal(d.windowSize, 300_000);
+  assert.equal(d.windowKnown, true);
+  assert.equal(d.windowSource, 'models_catalog');
+  assert.equal(d.mode, 'full');
 });
 
 test('projectedTokensForChoice: mode-specific projections', () => {

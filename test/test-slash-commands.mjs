@@ -28,8 +28,8 @@ let captured = '';
 function capture() { captured = ''; process.stderr.write = (s) => { captured += s; }; process.stdout.write = (s) => { captured += s; }; }
 function restore() { process.stderr.write = origStderr; process.stdout.write = origStdout; }
 
-test('COMMANDS has 18 entries', () => {
-    assert.strictEqual(Object.keys(COMMANDS).length, 18);
+test('COMMANDS has 19 entries', () => {
+    assert.strictEqual(Object.keys(COMMANDS).length, 19);
 });
 
 test('/help lists commands', () => {
@@ -75,6 +75,17 @@ test('/clear resets formatter state', () => {
     assert.strictEqual(formatter.toolCount, 0);
     assert.strictEqual(formatter.phases.size, 0);
     assert.strictEqual(formatter.changes.length, 0);
+});
+
+test('/new starts a fresh session', () => {
+    const formatter = { toolCalls: [1, 2], toolCount: 2, phases: new Map([['a', 'b']]), changes: [1] };
+    capture();
+    handleSlashCommand('/new', { formatter });
+    restore();
+    assert.strictEqual(formatter.toolCount, 0);
+    assert.strictEqual(formatter.phases.size, 0);
+    assert.strictEqual(formatter.changes.length, 0);
+    assert.ok(captured.includes('New session started'));
 });
 
 test('/sessions works without session dir', () => {

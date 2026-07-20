@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import { AgentHistoryTurnBuilder } from '../src/core/agent-history.mjs';
+import { llmToolResultContent } from '../src/core/callback-client.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -54,10 +55,40 @@ await test('records assistant tool_use and user tool_result in provider order', 
     });
 });
 
-await test('ignores orphan tool_result blocks that would break provider history', async () => {
+await test('ignores orphan tool_result blocks without a tool name', async () => {
     const turn = new AgentHistoryTurnBuilder();
     assert.strictEqual(turn.addToolResult({ call_id: 'missing', output: 'orphan' }), false);
     assert.deepStrictEqual(turn.finish(), []);
+});
+
+await test('synthesizes server-side tool_use for non-internal tool_result continuity', async () => {
+    const turn = new AgentHistoryTurnBuilder();
+    assert.strictEqual(turn.addToolResult({
+        call_id: 'meta_explore',
+        tool: 'explore',
+        args: { query: 'find auth flow' },
+        output: 'explore summary',
+    }), true);
+
+    const messages = turn.finish();
+    assert.strictEqual(messages.length, 2);
+    assert.deepStrictEqual(messages[0], {
+        role: 'assistant',
+        content: [{
+            type: 'tool_use',
+            id: 'meta_explore',
+            name: 'explore',
+            input: { query: 'find auth flow' },
+        }],
+    });
+    assert.deepStrictEqual(messages[1], {
+        role: 'user',
+        content: [{
+            type: 'tool_result',
+            tool_use_id: 'meta_explore',
+            content: 'explore summary',
+        }],
+    });
 });
 
 await test('ignores internal sub-agent tool events for parent continuity', async () => {
@@ -100,6 +131,35 @@ await test('truncates only oversized tool results', async () => {
     const result = turn.finish()[1].content[0].content;
     assert.ok(result.startsWith('01234'));
     assert.ok(result.includes('truncated this tool result'));
+});
+
+await test('prefers backend llm_content over display output', async () => {
+    const turn = new AgentHistoryTurnBuilder();
+    turn.addToolUse({ call_id: 'call-1', tool: 'read_file', args: {} });
+    turn.addToolResult({
+        call_id: 'call-1',
+        output: 'display text',
+        llm_content: '{"output":"display text"}',
+    });
+
+    const messages = turn.finish();
+    assert.strictEqual(messages[1].content[0].content, '{"output":"display text"}');
+});
+
+await test('serializes local tool results in compact backend-compatible form', async () => {
+    assert.strictEqual(
+        llmToolResultContent('read_file', { success: true, output: 'abc', _meta: 'hidden' }),
+        '{"output":"abc"}',
+    );
+    assert.strictEqual(
+        llmToolResultContent('get_project_overview', {
+            success: true,
+            output: 'registered',
+            project_resource: { project_id: 'p1' },
+            already_registered: true,
+        }),
+        '{"output":"registered","project_resource":{"project_id":"p1"},"already_registered":true}',
+    );
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

@@ -12,6 +12,41 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+export function cleanCallbackResult(result = {}) {
+    // Clean result for the backend — strip internal CLI metadata so the LLM
+    // sees a clear, unambiguous tool result (not noisy JSON with _tool, _output_meta, etc.)
+    const cleanResult = {};
+    for (const [key, value] of Object.entries(result || {})) {
+        if (!key.startsWith('_')) {
+            cleanResult[key] = value;
+        }
+    }
+    return cleanResult;
+}
+
+export function backendToolResultForLlm(toolName, cleanResult = {}) {
+    const rawResult = cleanCallbackResult(cleanResult);
+    if (toolName === 'get_project_overview' && !Object.hasOwn(rawResult, 'error')) {
+        return {
+            output: rawResult.output || '',
+            project_resource: rawResult.project_resource,
+            already_registered: rawResult.already_registered || false,
+        };
+    }
+    if (!Object.hasOwn(rawResult, 'error')) {
+        const outputText = rawResult.output || '';
+        if (rawResult.success && outputText) {
+            return { output: outputText };
+        }
+        return rawResult;
+    }
+    return rawResult;
+}
+
+export function llmToolResultContent(toolName, result = {}) {
+    return JSON.stringify(backendToolResultForLlm(toolName, result));
+}
+
 /**
  * Send a tool execution result to the backend.
  * @param {string} baseUrl
@@ -23,15 +58,7 @@ function sleep(ms) {
  */
 export async function sendCallback(baseUrl, token, taskId, callId, result) {
     const url = `${baseUrl}/api/callback`;
-
-    // Clean result for the backend — strip internal CLI metadata so the LLM
-    // sees a clear, unambiguous tool result (not noisy JSON with _tool, _output_meta, etc.)
-    const cleanResult = {};
-    for (const [key, value] of Object.entries(result)) {
-        if (!key.startsWith('_')) {
-            cleanResult[key] = value;
-        }
-    }
+    const cleanResult = cleanCallbackResult(result);
 
     const body = JSON.stringify({
         task_id: taskId,
@@ -41,6 +68,7 @@ export async function sendCallback(baseUrl, token, taskId, callId, result) {
 
     const headers = {
         'Content-Type': 'application/json',
+        'Idempotency-Key': `${taskId}:${callId}`,
     };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -122,7 +150,10 @@ export async function sendApprovalDecision(baseUrl, token, taskId, toolId, decis
         reason,
     });
 
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': `${taskId}:${toolId}:${decision}`,
+    };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {

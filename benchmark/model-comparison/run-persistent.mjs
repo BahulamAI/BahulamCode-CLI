@@ -37,16 +37,23 @@ import { TarangStreamClient } from '../../src/core/stream-client.mjs';
 import { createToolExecutor } from '../../src/core/tool-executor.mjs';
 import { ApprovalManager } from '../../src/core/approval.mjs';
 import { buildWorkScope, promptProjectRoots } from '../../src/core/work-scope.mjs';
+import { AgentHistoryTurnBuilder } from '../../src/core/agent-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DEFAULT_BENCH_MODEL = process.env.KEPLER_BENCH_MODEL
+    || process.env.BENCHMARK_MODEL
+    || 'deepseek/deepseek-v4-flash';
+const DEFAULT_BENCH_ROUTE = process.env.KEPLER_BENCH_ROUTE
+    || process.env.BENCHMARK_ROUTE
+    || 'platform';
 
 // ── CLI args ──
 function parseArgs(argv) {
     const out = {
         label: 'unnamed',
-        model: null,
-        route: null,
+        model: DEFAULT_BENCH_MODEL,
+        route: DEFAULT_BENCH_ROUTE,
         tag: null,
         outDir: null,
         questions: path.join(__dirname, 'questions.json'),
@@ -77,8 +84,8 @@ Model Comparison Harness (persistent CLI mode)
 
 Options:
   --label <name>          Short identifier for this run (used in output paths)
-  --model <id>            e.g. deepseek/deepseek-v4-flash, z-ai/glm-5.2
-  --route <route>         platform or byok (required if --model set)
+  --model <id>            e.g. deepseek/deepseek-v4-flash, z-ai/glm-5.2 (default: ${DEFAULT_BENCH_MODEL})
+  --route <route>         platform or byok (default: ${DEFAULT_BENCH_ROUTE})
   --tag <notes>           Free-form annotation stored in the report
   --out-dir <dir>         Where to write results (default: results/<label>-<timestamp>)
   --questions <path>      Question set JSON (default: ./questions.json)
@@ -107,9 +114,14 @@ async function createPersistentClient() {
 
 // ── Run one turn against the persistent client. Matches the event shape
 // ── that run.mjs's summarizeTurn expects (compatible with existing analysis).
-async function runTurnPersistent({ client, toolExecutor, question, model, timeoutS, jsonlPath, verbose }) {
+async function runTurnPersistent({ client, toolExecutor, question, model, timeoutS, jsonlPath, verbose, agentHistory }) {
     const events = [];
     const rawJsonl = fs.createWriteStream(jsonlPath, { flags: 'w' });
+    const history = Array.isArray(agentHistory) ? agentHistory : [];
+    const userMessage = { role: 'user', content: question };
+    history.push(userMessage);
+    const turnHistory = new AgentHistoryTurnBuilder();
+    let assistantContent = '';
 
     // Per-turn counters populated from the SSE event stream. Backend's
     // `complete` event is authoritative for billing/usage totals; these local
@@ -131,6 +143,7 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
         instruction: question,
         model: model || 'default',
         cwd: process.cwd(),
+        prior_agent_history_messages: Math.max(0, history.length - 1),
     });
 
     // Register any project roots referenced by the prompt (same as headless.mjs)
@@ -162,9 +175,26 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
     }, timeoutS * 1000);
 
     try {
-        for await (const event of client.execute(question, execContext)) {
+        for await (const event of client.execute(question, execContext, history)) {
             if (timedOut) break;
             const { type, data } = event;
+
+            if (type === 'content_partial') {
+                const text = data?.text || '';
+                assistantContent += text;
+                turnHistory.addAssistantText(text);
+            } else if (type === 'content') {
+                const text = data?.text || '';
+                const newText = assistantContent && text.startsWith(assistantContent)
+                    ? text.slice(assistantContent.length)
+                    : text === assistantContent ? '' : text;
+                if (text) {
+                    assistantContent = assistantContent && !text.startsWith(assistantContent)
+                        ? assistantContent + text
+                        : text;
+                }
+                if (newText) turnHistory.addAssistantText(newText);
+            }
 
             // Surface session_info so run.mjs's session_id capture logic still works.
             if (type === 'session_info' && data?.session_id) {
@@ -176,6 +206,7 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
                 const isInternal = Boolean(data?.internal || data?.sub_agent);
                 const toolName = data?.tool || 'unknown';
                 const callId = data?.call_id || data?.request_id || '';
+                turnHistory.addToolUse(data || {});
                 if (isInternal) subAgentForwardedToolCount++;
                 else primaryToolCount++;
                 toolCalls.push({
@@ -221,6 +252,7 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
                     if (isInternal) subAgentForwardedToolCount++;
                     else primaryToolCount++;
                 }
+                turnHistory.addToolResult(data || {});
                 if (callId && emittedToolResults.has(callId)) continue;
                 if (callId) emittedToolResults.add(callId);
                 emit({
@@ -295,6 +327,7 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
                     content_length: (data?.content_length || 0),
                     rate_limit: data?.rate_limit || null,
                     model: data?.model,
+                    agent_history_messages_sent: history.length,
                 });
             }
 
@@ -311,10 +344,14 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
         emit({ type: 'error', error: String(e?.message || e) });
     } finally {
         clearTimeout(timeoutTimer);
+        const structuredTurn = turnHistory.finish();
+        if (structuredTurn.length) {
+            history.push(...structuredTurn);
+        }
         rawJsonl.end();
     }
 
-    return { exitCode: timedOut ? 2 : 0, events };
+    return { exitCode: timedOut ? 2 : 0, events, agentHistoryMessages: history.length };
 }
 
 // ── Aggregate a single turn's JSONL events (same schema as run.mjs) ──
@@ -432,6 +469,7 @@ async function main() {
     }
 
     const perTurn = [];
+    const agentHistory = [];
     for (let i = 0; i < questions.length; i++) {
         const q = questions[i];
         const jsonlPath = path.join(outDir, `q${q.q}-raw.jsonl`);
@@ -446,6 +484,7 @@ async function main() {
             timeoutS: opts.timeoutS,
             verbose: opts.verbose,
             jsonlPath,
+            agentHistory,
         });
 
         // First-turn session_id is captured naturally by the client instance;
@@ -465,6 +504,7 @@ async function main() {
             tests: q.tests,
             exit_code: exitCode,
             summary,
+            agent_history_messages: agentHistory.length,
             jsonl_path: path.relative(outDir, jsonlPath),
         });
 

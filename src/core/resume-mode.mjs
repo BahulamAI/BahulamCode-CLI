@@ -34,9 +34,32 @@ const MODEL_CONTEXT_WINDOWS = {
 };
 const DEFAULT_CONTEXT_WINDOW = 128000;
 
-export function modelContextWindow(model) {
-  if (!model) return DEFAULT_CONTEXT_WINDOW;
-  return MODEL_CONTEXT_WINDOWS[model] || DEFAULT_CONTEXT_WINDOW;
+function contextWindowHintInfo(hint) {
+  const raw = typeof hint === 'number'
+    ? hint
+    : hint?.context_length ?? hint?.contextLength ?? hint?.tokens ?? hint?.windowSize;
+  const tokens = Number(raw);
+  if (Number.isFinite(tokens) && tokens > 0) {
+    return {
+      tokens: Math.trunc(tokens),
+      known: true,
+      source: hint?.source || 'backend_catalog',
+    };
+  }
+  return null;
+}
+
+export function modelContextWindowInfo(model, contextWindowHint = null) {
+  const hinted = contextWindowHintInfo(contextWindowHint);
+  if (hinted) return hinted;
+  if (model && MODEL_CONTEXT_WINDOWS[model]) {
+    return { tokens: MODEL_CONTEXT_WINDOWS[model], known: true, source: 'model_map' };
+  }
+  return { tokens: DEFAULT_CONTEXT_WINDOW, known: false, source: 'fallback' };
+}
+
+export function modelContextWindow(model, contextWindowHint = null) {
+  return modelContextWindowInfo(model, contextWindowHint).tokens;
 }
 
 /**
@@ -45,6 +68,7 @@ export function modelContextWindow(model) {
  * @param {object} args
  * @param {number} args.transcriptTokens  — projected transcript size when serialized
  * @param {string} [args.model]           — current agent model id
+ * @param {object|number} [args.contextWindow] — backend/catalog context-window hint
  * @param {object} [args.settings]        — .kepler/settings.json contents (optional)
  * @param {number} [args.systemOverhead]  — override system overhead (defaults to 4k)
  * @returns {{
@@ -64,6 +88,7 @@ export function modelContextWindow(model) {
 export function decideResumeMode({
   transcriptTokens,
   model,
+  contextWindow = null,
   settings,
   systemOverhead = DEFAULT_SYSTEM_OVERHEAD_TOKENS,
 } = {}) {
@@ -71,7 +96,8 @@ export function decideResumeMode({
   const highWatermark = clampRatio(cfg.highWatermark, 0.50);
   const hardCap = clampRatio(cfg.hardCap, 0.85);
 
-  const windowSize = modelContextWindow(model);
+  const windowInfo = modelContextWindowInfo(model, contextWindow);
+  const windowSize = windowInfo.tokens;
   const projected = Math.max(0, Number(transcriptTokens) || 0) + systemOverhead;
   const usageRatio = windowSize > 0 ? projected / windowSize : 0;
 
@@ -94,6 +120,8 @@ export function decideResumeMode({
     defaultChoice,
     projected,
     windowSize,
+    windowKnown: windowInfo.known,
+    windowSource: windowInfo.source,
     usageRatio,
     highWatermark,
     hardCap,

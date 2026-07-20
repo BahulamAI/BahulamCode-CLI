@@ -129,6 +129,7 @@ async function main() {
     /stats                  Session metrics (tokens, cost, tools)
     /cost                   Detailed cost breakdown by model
     /history                Conversation history
+    /new                    Start a new session
     /clear                  Clear conversation history
     /safety                 Show safety guardrail status
     /revoke                 Revoke auto-approvals

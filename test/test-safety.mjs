@@ -77,6 +77,12 @@ test('allows absolute rm targets as high risk for approval', () => {
   assert.strictEqual(result.highRisk, true);
 });
 
+test('allows specific home rm targets as high risk for approval', () => {
+  const result = validateShellCommand('rm ~/.agent_framework/.license_lock');
+  assert.strictEqual(result.safe, true);
+  assert.strictEqual(result.highRisk, true);
+});
+
 test('blocks fork bomb', () => {
   assert.strictEqual(validateShellCommand(':(){ :|:& };').safe, false);
 });

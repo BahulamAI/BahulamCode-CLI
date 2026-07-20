@@ -149,6 +149,11 @@ await test('getRecentSessions returns most recent transcript first', async () =>
   assert.strictEqual(sessions[1].toolCalls[0].name, 'read_file');
   assert.strictEqual(sessions[0].resumeSummary.sourceMessageCount, 2);
   assert.strictEqual(sessions[0].resumeSummary.summarySource, 'backend');
+  assert.strictEqual(sessions[1].inputTokens, 120);
+  assert.strictEqual(sessions[1].cacheReadTokens, 12);
+  assert.ok(sessions[1].contextTokens > 0);
+  assert.notStrictEqual(sessions[1].contextTokens, 212);
+  assert.strictEqual(sessions[1].contextTokenSource, 'jsonl_bytes');
 });
 
 await test('getSessionDetail normalizes tool blocks', async () => {

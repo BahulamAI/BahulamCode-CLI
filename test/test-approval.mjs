@@ -63,8 +63,55 @@ await test('search_code auto-approves', async () => {
 
 await test('--yes flag approves writes', async () => {
     const mgr = new ApprovalManager({ autoApprove: true });
-    const r = await mgr.check('shell', { command: 'rm -rf /' });
+    const r = await mgr.check('shell', { command: 'rm ~/.agent_framework/.license_lock' });
     assert.strictEqual(r.approved, true);
+});
+
+await test('--yes flag does not override hard-blocked shell commands', async () => {
+    const mgr = new ApprovalManager({ autoApprove: true });
+
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+
+    try {
+        const r = await mgr.check('shell', { command: 'rm -rf /' });
+        assert.strictEqual(r.approved, false);
+        assert.strictEqual(r.blocked, true);
+        assert.ok(r.reason.includes('safety policy'));
+        assert.ok(output.includes('Blocked by safety policy'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+});
+
+await test('hard-blocked shell commands skip approval prompt', async () => {
+    const mgr = new ApprovalManager();
+    let readKeyCalled = false;
+    mgr._readKey = async () => {
+        readKeyCalled = true;
+        return 'y';
+    };
+
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+
+    try {
+        const r = await mgr.check('shell', { command: 'rm -rf /' });
+        assert.strictEqual(r.approved, false);
+        assert.strictEqual(r.blocked, true);
+        assert.strictEqual(readKeyCalled, false);
+        assert.ok(!output.includes('Decision'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
 });
 
 await test('--plan blocks writes', async () => {
@@ -137,7 +184,8 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         assert.ok(output.includes('npm publish'));
         assert.ok(/SHELL-(MEDIUM|DANGEROUS)/.test(output),
           'expected SHELL-MEDIUM or SHELL-DANGEROUS tier label');
-        assert.ok(output.includes('Publishes this package publicly'));
+        assert.ok(output.includes('[?] why'));
+        assert.ok(!output.includes('Publishes this package publicly'));
     } finally {
         process.stderr.write = originalWrite;
     }

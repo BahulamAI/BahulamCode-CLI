@@ -39,9 +39,9 @@ assert.strictEqual(overview.success, true);
 const projectId = overview.project_resource.project_id;
 
 // Test 1: listTools returns the complete bridge inventory
-await test('listTools returns all 23 tools', async () => {
+await test('listTools returns all 27 tools', async () => {
     const tools = executor.listTools();
-    assert.strictEqual(tools.length, 23);
+    assert.strictEqual(tools.length, 27);
     assert.ok(tools.includes('shell'));
     assert.ok(tools.includes('read_file'));
     assert.ok(tools.includes('write_file'));
@@ -49,6 +49,7 @@ await test('listTools returns all 23 tools', async () => {
     assert.ok(tools.includes('list_files'));
     assert.ok(tools.includes('search_code'));
     assert.ok(tools.includes('read_files'));
+    assert.ok(tools.includes('read_batch'));
     assert.ok(tools.includes('delete_file'));
     assert.ok(tools.includes('get_file_info'));
     assert.ok(tools.includes('run_tests'));
@@ -58,6 +59,9 @@ await test('listTools returns all 23 tools', async () => {
     assert.ok(tools.includes('get_project_overview'));
     assert.ok(tools.includes('skills_list'));
     assert.ok(tools.includes('skill_view'));
+    assert.ok(tools.includes('skill_install'));
+    assert.ok(tools.includes('skill_update'));
+    assert.ok(tools.includes('skill_remove'));
 });
 
 await test('project overview is session-stable and exposes project_id', async () => {
@@ -199,6 +203,34 @@ await test('read_file reads package.json', async () => {
     assert.ok(result.content.includes('@axplusb/kepler'));
 });
 
+await test('read_file reuses unchanged repeated reads and read_batch reads line ranges', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-read-cache-'));
+    const file = path.join(root, 'sample.txt');
+    fs.writeFileSync(file, 'one\ntwo\nthree\nfour\n');
+    try {
+        const cacheExecutor = createToolExecutor();
+        const first = await cacheExecutor.execute('read_file', { path: file, start_line: 1, end_line: 3 });
+        const second = await cacheExecutor.execute('read_file', { path: file, start_line: 1, end_line: 3 });
+        assert.strictEqual(first.success, true);
+        assert.strictEqual(second.success, true);
+        assert.strictEqual(second._cache_reused, true);
+        assert.ok(second.output.includes('reused prior read_file result'));
+
+        const batch = await cacheExecutor.execute('read_batch', {
+            items: [
+                { file_path: file, start_line: 2, end_line: 2 },
+                { file_path: file, start_line: 4, end_line: 4 },
+            ],
+        });
+        assert.strictEqual(batch.success, true);
+        assert.strictEqual(batch._tool, 'read_batch');
+        assert.strictEqual(batch.files.length, 2);
+        assert.ok(batch.output.includes('sample.txt'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Test 3: read_file on missing file returns error
 await test('read_file on missing file returns error', async () => {
     const result = await executor.execute('read_file', { path: 'nonexistent_file_xyz.txt' });
@@ -253,6 +285,28 @@ await test('shell runs echo', async () => {
     const result = await executor.execute('shell', { command: 'echo hello_tarang' });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes('hello_tarang'));
+});
+
+await test('shell rm with tilde target runs after approval path', async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-home-rm-'));
+    const lockFile = path.join(fakeHome, '.agent_framework', '.license_lock');
+    const previousHome = process.env.HOME;
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(lockFile, 'locked\n');
+
+    try {
+        process.env.HOME = fakeHome;
+        const result = await executor.execute('shell', {
+            command: 'rm ~/.agent_framework/.license_lock',
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(fs.existsSync(lockFile), false);
+        assert.ok(!result._skipped);
+    } finally {
+        if (previousHome == null) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
 });
 
 await test('shell observes likely long-running commands and returns tail', async () => {

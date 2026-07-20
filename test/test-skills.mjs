@@ -51,21 +51,27 @@ try {
     const source = path.join(root, 'vendor-source');
     writeSkill(path.join(source, 'skills'), 'vendor-skill', 'Vendor procedure', 'vendor');
     const installer = new SkillInstaller({ cwd: project, homeDir: home });
-    const installed = installer.install(source, { scope: 'global' });
+    const executor = createToolExecutor({ skillsLoader: loader, skillInstaller: installer });
+    const installed = await executor.execute('skill_install', { source, scope: 'global' });
+    assert.equal(installed.success, true);
     assert.deepEqual(installed.installed, ['vendor-skill']);
     assert.ok(installer.lock('global').skills['vendor-skill']);
-
-    loader.load(project);
     assert.equal(loader.get('vendor-skill').source, 'kepler-global');
 
-    const executor = createToolExecutor({ skillsLoader: loader });
     const listed = await executor.execute('skills_list', { query: 'vendor' });
     assert.equal(listed.success, true);
     assert.equal(listed.skills[0].name, 'vendor-skill');
     const viewed = await executor.execute('skill_view', { name: 'vendor-skill' });
     assert.match(viewed.skill.instructions, /Use vendor/);
 
-    installer.remove('vendor-skill', { scope: 'global' });
+    writeSkill(path.join(source, 'skills'), 'vendor-skill', 'Vendor procedure', 'updated');
+    const updated = await executor.execute('skill_update', { name: 'vendor-skill', scope: 'global' });
+    assert.equal(updated.success, true);
+    const viewedUpdated = await executor.execute('skill_view', { name: 'vendor-skill' });
+    assert.match(viewedUpdated.skill.instructions, /Use updated/);
+
+    const removed = await executor.execute('skill_remove', { name: 'vendor-skill', scope: 'global' });
+    assert.equal(removed.success, true);
     assert.equal(fs.existsSync(path.join(home, '.kepler', 'skills', 'vendor-skill')), false);
     console.log('Skills tests passed');
 } finally {

@@ -75,6 +75,20 @@ test('uses concise structured tool summaries', () => {
     }, { cwd: '/repo' }),
     'src/main.js · match "const oldValue = true;"',
   );
+  assert.strictEqual(
+    toolDisplaySummary('read_batch', {
+      items: [
+        { file_path: '/repo/a.js' },
+        { file_path: '/repo/b.js' },
+        { file_path: '/repo/c.js' },
+        { file_path: '/repo/d.js' },
+        { file_path: '/repo/e.js' },
+        { file_path: '/repo/f.js' },
+        { file_path: '/repo/g.js' },
+      ],
+    }, { cwd: '/repo' }),
+    'a.js, b.js, c.js · +4 more',
+  );
 });
 
 test('sub-agent running line shows full query and hides model', () => {
@@ -116,6 +130,8 @@ test('long shell tool heads wrap without hiding command text', () => {
   assert.ok(rendered.includes('appstak-platform'));
   assert.ok(rendered.includes('pnpm run dev'));
   assert.ok(rendered.includes('2>&1 | head -80'));
+  assert.ok(rendered.includes('in appstak-platform'));
+  assert.ok(!rendered.includes('cd "/Users/sree'));
   assert.ok(!rendered.includes('…'));
 
   const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
@@ -155,13 +171,63 @@ test('long shell tool heads wrap without hiding command text', () => {
   assert.ok(observed.includes('observed 15.0s tail'));
 });
 
+test('shell card compacts leading cd wrappers', () => {
+  const command = 'cd /Users/sree/Sites/Tarang\\ Orca/tarang-ai-agent-framework/agent-framework-pypi && git status --short';
+  const rendered = stripAnsi(formatCardHead('shell', {
+    command,
+  }, {
+    columns: 100,
+    cwd: '/Users/sree/Sites/Tarang Orca/codekepler-npm',
+  }));
+
+  assert.ok(rendered.includes('Running git status --short'));
+  assert.ok(rendered.includes('in tarang-ai-agent-framework/agent-framework-pypi'));
+  assert.ok(!rendered.includes('cd /Users/sree'));
+});
+
+test('search cards keep outcome inline by compacting long heads', () => {
+  const rendered = stripAnsi(formatCard({
+    tool: 'search_files',
+    args: {
+      query: 'compress|ingestion|tool_result.*compress',
+      path: '/repo/codekepler-backend/app/kepler',
+    },
+    result: {
+      success: true,
+      output: 'a.py:1:x\nb.py:2:x',
+      match_count: 37,
+      file_count: 6,
+    },
+    columns: 92,
+    cwd: '/repo',
+  }));
+
+  assert.strictEqual(rendered.split('\n').length, 1);
+  assert.ok(rendered.includes('Searching files'));
+  assert.ok(rendered.includes('37 matches in 6 files'));
+  assert.ok(rendered.includes('…'));
+});
+
 test('tool activity rows do not insert blank lines between consecutive tools', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
   assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
   assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
   assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes("if (_lastRenderedBlock === 'tool') process.stderr.write('\\n');"));
+  assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
+  assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
+  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: true })"));
+  assert.ok(replSource.includes("renderBlockBoundary('thinking')"));
+  assert.ok(replSource.includes('function thinkingPrefix(text)'));
+  assert.ok(replSource.includes('Thinking · ${kind}'));
+  assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
+  assert.ok(replSource.includes("renderBlockBoundary('content')"));
+  assert.ok(replSource.includes('function maybeCollapseReadTool(tool, data, callId)'));
+  assert.ok(replSource.includes("process.env.KEPLER_READ_TOOL_DETAIL_LIMIT || '8'"));
+  assert.ok(replSource.includes('Reading files ·'));
+  assert.ok(replSource.includes('latest: ${_compactReadRun.recent.join'));
+  assert.ok(replSource.includes('if (_compactReadRun.recent.length > 3) _compactReadRun.recent.shift();'));
   assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
 });
 
@@ -170,6 +236,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function printInputSeparator()'));
   assert.ok(replSource.includes("c.brand('input')"));
   assert.ok(replSource.includes('printInputSeparator();'));
+  assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
+  assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
   assert.ok(replSource.includes("function renderSlashHint(line = '', { preserveSelection = false } = {})"));
   assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
@@ -230,6 +298,27 @@ test('renders blockquotes and task lists with structural styling', () => {
   assert.ok(rendered.includes('\x1b[90m  │\x1b[0m \x1b[3mImportant'));
   assert.ok(rendered.includes('\x1b[32m✓ Done'));
   assert.ok(rendered.includes('\x1b[90m○ Pending'));
+});
+
+test('wraps Markdown list continuation lines with hanging indent', () => {
+  const originalColumns = process.stderr.columns;
+  Object.defineProperty(process.stderr, 'columns', {
+    value: 56,
+    configurable: true,
+  });
+  try {
+    const rendered = stripAnsi(renderMarkdown('- They are NOT in the dashboard sync list, so the dashboard cannot push them anywhere including to Vercel.'));
+    const lines = rendered.split('\n');
+    assert.ok(lines.length > 1, 'expected bullet to wrap');
+    assert.ok(lines[0].startsWith('  • '), JSON.stringify(lines[0]));
+    assert.ok(lines.slice(1).every(line => line.startsWith('    ')), JSON.stringify(lines));
+    assert.ok(lines.slice(1).every(line => !line.startsWith('to ')), JSON.stringify(lines));
+  } finally {
+    Object.defineProperty(process.stderr, 'columns', {
+      value: originalColumns,
+      configurable: true,
+    });
+  }
 });
 
 test('renders structured keys bold cyan and values regular cyan', () => {
@@ -296,7 +385,7 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
 });
 
-test('approval prompt uses risk title, scoped menu, and wrapped why', () => {
+test('approval prompt uses risk title and compact scoped menu', () => {
   const rendered = stripAnsi(renderApprovalPrompt({
     tool: 'shell',
     args: { command: 'rm -rf node_modules && npm install' },
@@ -307,7 +396,30 @@ test('approval prompt uses risk title, scoped menu, and wrapped why', () => {
   assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
   assert.ok(rendered.includes('Decision'));
   assert.ok(rendered.includes('stop'));
+  assert.ok(rendered.includes('[?] why'));
   assert.ok(rendered.includes('rm -rf node_modules'));
+  assert.ok(!rendered.includes('Why  Resetting dependencies'));
+  assert.ok(!rendered.includes('┃'));
+  assert.ok(!rendered.includes('▔'));
+});
+
+test('approval prompt compacts shell cwd wrapper', () => {
+  const command = [
+    'cd /Users/sree/Sites/Tarang\\ Orca/tarang-ai-agent-framework &&',
+    'git add agent-framework-pypi/src/pkg/requires.txt &&',
+    'git status --short',
+  ].join(' ');
+  const rendered = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'Mutates the workspace or environment.',
+    width: 100,
+  }));
+
+  assert.ok(rendered.includes('git add agent-framework-pypi/src/pkg/requires.txt && git status'));
+  assert.ok(rendered.includes('in tarang-ai-agent-framework'));
+  assert.ok(!rendered.includes('cd /Users/sree'));
 });
 
 test('approval compatibility wrapper uses unified prompt', () => {

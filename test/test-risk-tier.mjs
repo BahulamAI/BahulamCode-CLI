@@ -56,6 +56,10 @@ test('edit_file → LOCAL_EDIT', () => {
 test('write_file → LOCAL_EDIT', () => {
   assert.equal(classify('write_file', { file_path: 'b.ts' }), TIERS.LOCAL_EDIT);
 });
+test('skill install/update → LOCAL_EDIT', () => {
+  assert.equal(classify('skill_install', { source: './skills', scope: 'project' }), TIERS.LOCAL_EDIT);
+  assert.equal(classify('skill_update', { name: 'review', scope: 'global' }), TIERS.LOCAL_EDIT);
+});
 test('LOCAL_EDIT requires checkpoint', () => {
   assert.equal(requiresCheckpoint(TIERS.LOCAL_EDIT), true);
   assert.equal(requiresCheckpoint(TIERS.READ), false);
@@ -65,6 +69,9 @@ test('LOCAL_EDIT requires checkpoint', () => {
 
 test('delete_file → DESTRUCTIVE', () => {
   assert.equal(classify('delete_file', { file_path: 'x.py' }), TIERS.DESTRUCTIVE);
+});
+test('skill_remove → DESTRUCTIVE', () => {
+  assert.equal(classify('skill_remove', { name: 'review', scope: 'project' }), TIERS.DESTRUCTIVE);
 });
 test('DESTRUCTIVE requires explicit approval', () => {
   assert.equal(requiresExplicitApproval(TIERS.DESTRUCTIVE), true);
@@ -138,6 +145,7 @@ for (const cmd of [
 for (const cmd of [
   'rm -rf node_modules',
   'rm -r foo/',
+  'rm ~/.agent_framework/.license_lock',
   'sudo apt install x',
   'git push --force origin main',
   'git push -f',
@@ -197,6 +205,7 @@ test('executor classifier does not mark mutating shell forms safe', () => {
 test('executor classifier treats rm as approved-contained unless target is hard-blocked', () => {
   for (const command of [
     'rm apps/kepler-docs/package-lock.json',
+    'rm ~/.agent_framework/.license_lock',
     'rm -rf apps/kepler-docs/node_modules',
     'cd /Users/sree/Sites/Tarang\\ Orca/appstak-platform && rm apps/kepler-docs/package-lock.json && rm -rf apps/kepler-docs/node_modules',
     'rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/kepler-docs/node_modules',

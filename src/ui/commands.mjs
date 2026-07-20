@@ -43,6 +43,20 @@ export const COMMANDS = {
         },
     },
 
+    '/new': {
+        description: 'Start a new session',
+        handler(args, state) {
+            if (typeof state.startNewSession === 'function') {
+                return state.startNewSession();
+            }
+            state.messages.length = 0;
+            state.turnCount = 0;
+            state.sessionId = null;
+            state.tokenUsage = { input: 0, output: 0 };
+            return 'New session started.';
+        },
+    },
+
     '/compact': {
         description: 'Manually compact conversation context',
         handler(args, state) {

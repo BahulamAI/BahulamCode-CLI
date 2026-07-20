@@ -46,7 +46,7 @@ const SOURCE_DIRS = new Set([
 
 /** Shell patterns that are always blocked. */
 const DANGEROUS_SHELL_PATTERNS = [
-  /rm\s+(-\w*[rR]\w*\s+)*(?:\/(?:\s|$)|~(?:\s|\/|$)|\$HOME(?:\s|\/|$)|\.\.|\.\/\.\.)/,  // rm -rf /, ~, $HOME, or ..
+  /rm\s+(-\w*[rR]\w*\s+)*(?:\/(?:\s|$)|~(?:\s|\/?\s*$)|\$HOME(?:\s|\/?\s*$)|\.\.(?:\s|\/|$)|\.\/\.\.)/,  // rm -rf /, ~, $HOME, or ..
   /rm\s+(-\w*[rR]\w*\s+)*\.\s*$/,                         // rm -rf .
   /rm\s+(-\w*[rR]\w*\s+)*\*\s*$/,                         // rm -rf *
   /:\(\)\s*\{\s*:\|\s*:\s*&\s*\}\s*;/,                     // fork bomb

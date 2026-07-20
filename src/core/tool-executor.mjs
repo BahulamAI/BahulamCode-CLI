@@ -14,10 +14,12 @@ import { validatePath, validateDelete, validateShellCommand, validateWrite } fro
 import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
+import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 
@@ -30,13 +32,20 @@ import { execSync } from 'node:child_process';
 export function createToolExecutor({
     projectRegistry = new ProjectRegistry(),
     skillsLoader = new SkillsLoader().load(process.cwd()),
+    skillInstaller = null,
     checkpoints = null,
     hookRunner = null,
 } = {}) {
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
     if (skillTool) skillTool._skillsLoader = skillsLoader;
+    const installer = skillInstaller || new SkillInstaller({
+        cwd: process.cwd(),
+        homeDir: skillsLoader.homeDir || os.homedir(),
+    });
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
+    let _readOnlyCacheGeneration = 0;
+    const readOnlyResultCache = new Map();
 
     function resolvePath(p, args = {}, options = {}) {
         return projectRegistry.resolvePath(p, args.project_id, options);
@@ -50,6 +59,13 @@ export function createToolExecutor({
 
     async function commandCwd(args = {}) {
         return await resolvePath(args.cwd || null, args);
+    }
+
+    function shellTargetPath(cwd, target) {
+        const value = String(target || '');
+        if (value === '~') return os.homedir();
+        if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
+        return path.resolve(cwd, value);
     }
 
     function longRunningObservationTimeoutMs() {
@@ -78,6 +94,19 @@ export function createToolExecutor({
         return `... (tail truncated)\n${value.slice(value.length - maxChars)}`;
     }
 
+    function skillScope(args = {}) {
+        const scope = String(args.scope || '').trim();
+        if (scope !== 'project' && scope !== 'global') {
+            throw new Error('scope must be "project" or "global"');
+        }
+        return scope;
+    }
+
+    function reloadSkillCatalog() {
+        skillsLoader.load(installer.cwd || process.cwd());
+        return skillsLoader.list();
+    }
+
     function formatObservationTimeoutOutput(rawOutput, timeoutMs) {
         const tail = String(rawOutput || '')
             .replace(/^Error:\s*Command timed out after \d+ms\s*/i, '')
@@ -93,6 +122,7 @@ export function createToolExecutor({
         try {
             projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
         } catch { /* best effort */ }
+        _readOnlyCacheGeneration++;
     }
 
     function readTextIfExists(filePath) {
@@ -102,6 +132,74 @@ export function createToolExecutor({
         } catch {
             return '';
         }
+    }
+
+    function stable(value) {
+        if (Array.isArray(value)) return value.map(stable);
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(
+                Object.entries(value)
+                    .filter(([, v]) => v !== undefined)
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([k, v]) => [k, stable(v)]),
+            );
+        }
+        return value;
+    }
+
+    function clonePlain(value) {
+        return JSON.parse(JSON.stringify(value));
+    }
+
+    function fileFingerprint(filePath) {
+        try {
+            const stat = fs.statSync(filePath);
+            return {
+                filePath,
+                size: stat.size,
+                mtimeMs: Math.round(stat.mtimeMs),
+            };
+        } catch {
+            return { filePath, missing: true };
+        }
+    }
+
+    function cacheKey(kind, args, fingerprint) {
+        return JSON.stringify(stable({
+            kind,
+            args,
+            fingerprint,
+            generation: _readOnlyCacheGeneration,
+        }));
+    }
+
+    function compactCachedResult(kind, cached) {
+        const result = clonePlain(cached.result);
+        const output = String(result.output || result.content || result.message || '').trim();
+        const excerpt = output.length > 1200 ? `${output.slice(0, 1200)}\n[... cached output truncated ...]` : output;
+        result.output = `[Kepler reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
+        if (typeof result.content === 'string') {
+            result.content = result.content.length > 1200
+                ? `${result.content.slice(0, 1200)}\n[... cached content truncated ...]`
+                : result.content;
+        }
+        result._cache_reused = true;
+        result._cache_source_call = cached.callId;
+        return result;
+    }
+
+    async function withReadOnlyCache(kind, args, fingerprint, compute) {
+        const key = cacheKey(kind, args, fingerprint);
+        const cached = readOnlyResultCache.get(key);
+        if (cached) return compactCachedResult(kind, cached);
+        const result = await compute();
+        if (result?.success !== false) {
+            readOnlyResultCache.set(key, {
+                result: clonePlain(result),
+                callId: `${kind}-${readOnlyResultCache.size + 1}`,
+            });
+        }
+        return result;
     }
 
     function attachFileDiff(result, filePath, before, after) {
@@ -318,7 +416,7 @@ export function createToolExecutor({
             if (rmMatch) {
                 const targets = rmMatch[1].split(/\s+/).filter(t => !t.startsWith('-'));
                 const missing = targets.filter(t => {
-                    try { return !fs.existsSync(path.resolve(cwd, t)); } catch { return true; }
+                    try { return !fs.existsSync(shellTargetPath(cwd, t)); } catch { return true; }
                 });
                 if (missing.length > 0 && missing.length === targets.length) {
                     return {
@@ -375,59 +473,65 @@ export function createToolExecutor({
         read_file: async (args) => {
             const filePath = await resolvePath(args.file_path || args.path, args, { allowExternalFileRead: true });
             const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
-
-            // Nudge: if reading shallow overview files, remind agent to search deeper
-            const basename = path.basename(filePath).toLowerCase();
-            const isShallowFile = ['readme.md', 'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod'].includes(basename);
-            const nudge = isShallowFile && !_searchCodeUsed
-                ? '\n\nNOTE: You read a top-level overview file. Use search_code(query) to find actual implementations before drawing conclusions. READMEs and package.json do NOT show what features exist in the codebase.'
-                : '';
-
-            // If no line range specified, auto-truncate and return AST summary
-            if (!hasLineRange) {
-                try {
-                    const content = fs.readFileSync(filePath, 'utf-8');
-                    const lines = content.split('\n').length;
-
-                    if (lines > 50) {
-                        // File >50 lines: return AST summary with line numbers
-                        // Model must use start_line/end_line to read specific sections
-                        const analysis = analyzeCode(filePath);
-                        const firstLines = content.split('\n').slice(0, 20).join('\n');
-                        return {
-                            success: true,
-                            output: `${analysis.summary}\n\n` +
-                                    `## First 20 lines\n${firstLines}${nudge}`,
-                            _tool: 'read_file',
-                            _truncated: true,
-                            _total_lines: lines,
-                        };
-                    }
-                    // Small file (<50 lines): return full content
-                } catch { /* let Read handle the error */ }
-            }
-
-            // Convert start_line/end_line to offset/limit
             const offset = args.start_line ? args.start_line - 1 : args.offset;
             const limit = (args.start_line && args.end_line)
                 ? (args.end_line - args.start_line + 1)
                 : args.limit;
 
-            const result = await occRegistry.call('Read', {
-                file_path: filePath,
-                offset,
-                limit,
-            });
-            const output = typeof result === 'string' ? result : String(result);
-            const content = output.replace(/^\s*\d+[→\t]/gm, '');
-            const actNudge = solutionNudge(filePath);
-            return {
-                success: !isError(output),
-                content,
-                output: output + nudge + actNudge,
-                _tool: 'read_file',
-                _output_type: 'file_content',
-            };
+            return await withReadOnlyCache(
+                'read_file',
+                { filePath, offset, limit },
+                fileFingerprint(filePath),
+                async () => {
+
+                    // Nudge: if reading shallow overview files, remind agent to search deeper
+                    const basename = path.basename(filePath).toLowerCase();
+                    const isShallowFile = ['readme.md', 'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod'].includes(basename);
+                    const nudge = isShallowFile && !_searchCodeUsed
+                        ? '\n\nNOTE: You read a top-level overview file. Use search_code(query) to find actual implementations before drawing conclusions. READMEs and package.json do NOT show what features exist in the codebase.'
+                        : '';
+
+                    // If no line range specified, auto-truncate and return AST summary
+                    if (!hasLineRange) {
+                        try {
+                            const content = fs.readFileSync(filePath, 'utf-8');
+                            const lines = content.split('\n').length;
+
+                            if (lines > 50) {
+                                // File >50 lines: return AST summary with line numbers
+                                // Model must use start_line/end_line to read specific sections
+                                const analysis = analyzeCode(filePath);
+                                const firstLines = content.split('\n').slice(0, 20).join('\n');
+                                return {
+                                    success: true,
+                                    output: `${analysis.summary}\n\n` +
+                                            `## First 20 lines\n${firstLines}${nudge}`,
+                                    _tool: 'read_file',
+                                    _truncated: true,
+                                    _total_lines: lines,
+                                };
+                            }
+                            // Small file (<50 lines): return full content
+                        } catch { /* let Read handle the error */ }
+                    }
+
+                    const result = await occRegistry.call('Read', {
+                        file_path: filePath,
+                        offset,
+                        limit,
+                    });
+                    const output = typeof result === 'string' ? result : String(result);
+                    const content = output.replace(/^\s*\d+[→\t]/gm, '');
+                    const actNudge = solutionNudge(filePath);
+                    return {
+                        success: !isError(output),
+                        content,
+                        output: output + nudge + actNudge,
+                        _tool: 'read_file',
+                        _output_type: 'file_content',
+                    };
+                },
+            );
         },
 
         // 3. write_file → Write + auto-lint + safety check
@@ -635,35 +739,47 @@ print('OK: replaced')
         // 5. list_files → Glob
         list_files: async (args) => {
             const searchPath = await resolvePath(args.path || null, args);
-            if (args.format === 'tree' || args.tree === true) {
-                const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
-                const maxDepth = Number.isFinite(requestedDepth)
-                    ? Math.max(1, Math.min(6, Math.trunc(requestedDepth)))
-                    : 2;
-                const tree = buildDirectoryTree(searchPath, { maxDepth });
-                return {
-                    success: true,
-                    output: tree.output,
-                    tree: tree.output,
-                    files: tree.files,
-                    directories: tree.directories,
-                    truncated: tree.truncated,
-                    _tool: 'list_files',
-                    _format: 'tree',
-                };
-            }
-            const result = await occRegistry.call('Glob', {
-                pattern: args.pattern || '**/*',
-                path: searchPath,
-            });
-            const output = typeof result === 'string' ? result : String(result);
-            const files = output.split('\n').filter(Boolean);
-            return {
-                success: true,
-                files,
-                output,
-                _tool: 'list_files',
-            };
+            return await withReadOnlyCache(
+                'list_files',
+                {
+                    pattern: args.pattern || '**/*',
+                    path: searchPath,
+                    format: args.format || (args.tree === true ? 'tree' : 'glob'),
+                    max_depth: args.max_depth ?? args.maxDepth ?? null,
+                },
+                { generation: _readOnlyCacheGeneration },
+                async () => {
+                    if (args.format === 'tree' || args.tree === true) {
+                        const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
+                        const maxDepth = Number.isFinite(requestedDepth)
+                            ? Math.max(1, Math.min(6, Math.trunc(requestedDepth)))
+                            : 2;
+                        const tree = buildDirectoryTree(searchPath, { maxDepth });
+                        return {
+                            success: true,
+                            output: tree.output,
+                            tree: tree.output,
+                            files: tree.files,
+                            directories: tree.directories,
+                            truncated: tree.truncated,
+                            _tool: 'list_files',
+                            _format: 'tree',
+                        };
+                    }
+                    const result = await occRegistry.call('Glob', {
+                        pattern: args.pattern || '**/*',
+                        path: searchPath,
+                    });
+                    const output = typeof result === 'string' ? result : String(result);
+                    const files = output.split('\n').filter(Boolean);
+                    return {
+                        success: true,
+                        files,
+                        output,
+                        _tool: 'list_files',
+                    };
+                },
+            );
         },
 
         // 6. search_code → combined rg + BM25 for best results
@@ -745,38 +861,53 @@ print('OK: replaced')
         // 7. search_files → Grep with line numbers + context (like grep -n -C 3)
         search_files: async (args) => {
             const query = args.query || args.pattern || '*';
+            const searchPath = await resolvePath(args.path || null, args);
 
             // If it looks like a glob pattern, use Glob
             if (query.includes('*') || query.includes('?')) {
-                const result = await occRegistry.call('Glob', {
-                    pattern: query,
-                    path: await resolvePath(args.path || null, args),
-                });
-                const output = typeof result === 'string' ? result : String(result);
-                return {
-                    success: true,
-                    files: output.split('\n').filter(Boolean),
-                    output,
-                    _tool: 'search_files',
-                };
+                return await withReadOnlyCache(
+                    'search_files',
+                    { query, path: searchPath, mode: 'glob' },
+                    { generation: _readOnlyCacheGeneration },
+                    async () => {
+                        const result = await occRegistry.call('Glob', {
+                            pattern: query,
+                            path: searchPath,
+                        });
+                        const output = typeof result === 'string' ? result : String(result);
+                        return {
+                            success: true,
+                            files: output.split('\n').filter(Boolean),
+                            output,
+                            _tool: 'search_files',
+                        };
+                    },
+                );
             }
 
             // For text patterns: grep with context lines (like grep -n -C 3)
-            const result = await occRegistry.call('Grep', {
-                pattern: query,
-                path: await resolvePath(args.path || null, args),
-                output_mode: 'content',
-                '-n': true,
-                '-C': 3,
-                head_limit: 50,
-            });
-            const output = typeof result === 'string' ? result : String(result);
-            return {
-                success: true,
-                files: output.split('\n').filter(Boolean),
-                output,
-                _tool: 'search_files',
-            };
+            return await withReadOnlyCache(
+                'search_files',
+                { query, path: searchPath, mode: 'grep' },
+                { generation: _readOnlyCacheGeneration },
+                async () => {
+                    const result = await occRegistry.call('Grep', {
+                        pattern: query,
+                        path: searchPath,
+                        output_mode: 'content',
+                        '-n': true,
+                        '-C': 3,
+                        head_limit: 50,
+                    });
+                    const output = typeof result === 'string' ? result : String(result);
+                    return {
+                        success: true,
+                        files: output.split('\n').filter(Boolean),
+                        output,
+                        _tool: 'search_files',
+                    };
+                },
+            );
         },
 
         // 7b. grep → dedicated ripgrep tool (fast text/regex search)
@@ -806,31 +937,49 @@ print('OK: replaced')
 
         // 8. read_files → batch Read (with AST truncation for large files)
         read_files: async (args) => {
-            const paths = args.file_paths || args.paths || [];
+            const rawItems = args.items || args.files || args.file_paths || args.paths || [];
+            const items = (Array.isArray(rawItems) ? rawItems : [])
+                .map(item => typeof item === 'string' ? { file_path: item } : item)
+                .filter(Boolean);
             const results = [];
-            for (const p of paths) {
+            for (const item of items) {
+                const p = item.file_path || item.path;
                 try {
-                    const filePath = await resolvePath(p, args, { allowExternalFileRead: true });
-                    const content = fs.readFileSync(filePath, 'utf-8');
-                    const lines = content.split('\n').length;
-
-                    if (lines > 50) {
-                        // Large file: return AST summary instead of full content
-                        const analysis = analyzeCode(filePath);
-                        results.push({
-                            path: p, lines,
-                            content: analysis.summary,
-                            _truncated: true,
-                            success: true,
-                        });
-                    } else {
-                        results.push({ path: p, content, success: true });
-                    }
+                    const result = await toolMap.read_file({
+                        ...args,
+                        ...item,
+                        file_path: p,
+                    });
+                    results.push({
+                        path: p,
+                        success: result.success !== false,
+                        content: result.content,
+                        output: result.output,
+                        lines: result._total_lines,
+                        cached: Boolean(result._cache_reused),
+                        truncated: Boolean(result._truncated),
+                    });
                 } catch (err) {
                     results.push({ path: p, error: err.message, success: false });
                 }
             }
-            return { success: true, files: results, _tool: 'read_files' };
+            return {
+                success: results.every(item => item.success !== false),
+                files: results,
+                output: results.map(item => {
+                    const status = item.success === false ? 'ERROR' : item.cached ? 'CACHED' : 'OK';
+                    return `## ${item.path} [${status}]\n${item.output || item.content || item.error || ''}`;
+                }).join('\n\n'),
+                _tool: 'read_files',
+            };
+        },
+
+        read_batch: async (args) => {
+            const result = await toolMap.read_files({
+                ...args,
+                items: args.items || args.files || args.file_paths || args.paths || [],
+            });
+            return { ...result, _tool: 'read_batch' };
         },
 
         // 9. delete_file + safety check + checkpoint for undo
@@ -891,14 +1040,14 @@ print('OK: replaced')
         validate_build: async (args) => {
             try {
                 let cmd = args.command;
+                const cwd = await commandCwd(args);
                 if (!cmd) {
-                    const cwd = commandCwd(args);
                     if (fs.existsSync(path.join(cwd, 'package.json'))) cmd = 'npm run build';
                     else if (fs.existsSync(path.join(cwd, 'Makefile'))) cmd = 'make';
                     else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000, cwd: commandCwd(args) }).toString();
+                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000, cwd }).toString();
                 return { success: true, output, _tool: 'validate_build' };
             } catch (err) {
                 return { success: false, output: err.stderr?.toString() || err.message, _tool: 'validate_build' };
@@ -943,8 +1092,9 @@ print('OK: replaced')
         run_tests: async (args) => {
             try {
                 const cmd = args.command || 'npm test';
+                const cwd = await commandCwd(args);
                 const output = execSync(cmd, {
-                    stdio: 'pipe', timeout: 120_000, cwd: commandCwd(args),
+                    stdio: 'pipe', timeout: 120_000, cwd,
                     encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output.slice(-3000), _tool: 'run_tests' };
@@ -958,8 +1108,9 @@ print('OK: replaced')
         git_diff: async (args) => {
             try {
                 const filePath = args.file_path ? `-- "${args.file_path}"` : '';
+                const cwd = await commandCwd(args);
                 const output = execSync(`git diff ${filePath}`, {
-                    stdio: 'pipe', timeout: 10_000, cwd: commandCwd(args), encoding: 'utf-8',
+                    stdio: 'pipe', timeout: 10_000, cwd, encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output.slice(-5000) || '(no changes)', _tool: 'git_diff' };
             } catch (err) {
@@ -970,8 +1121,9 @@ print('OK: replaced')
         // 17. git_status
         git_status: async (args) => {
             try {
+                const cwd = await commandCwd(args);
                 const output = execSync('git status --short', {
-                    stdio: 'pipe', timeout: 10_000, cwd: commandCwd(args), encoding: 'utf-8',
+                    stdio: 'pipe', timeout: 10_000, cwd, encoding: 'utf-8',
                 }).toString();
                 return { success: true, output: output || '(clean)', _tool: 'git_status' };
             } catch (err) {
@@ -1053,6 +1205,45 @@ print('OK: replaced')
                 output: JSON.stringify(skill, null, 2),
                 skill,
                 _tool: 'skill_view',
+            };
+        },
+
+        skill_install: async (args) => {
+            const result = installer.install(args.source, {
+                scope: skillScope(args),
+                force: Boolean(args.force),
+            });
+            const skills = reloadSkillCatalog();
+            const payload = { ...result, skills };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'skill_install',
+            };
+        },
+
+        skill_update: async (args) => {
+            const result = installer.update(args.name, { scope: skillScope(args) });
+            const skills = reloadSkillCatalog();
+            const payload = { ...result, skills };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'skill_update',
+            };
+        },
+
+        skill_remove: async (args) => {
+            const result = installer.remove(args.name, { scope: skillScope(args) });
+            const skills = reloadSkillCatalog();
+            const payload = { ...result, skills };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'skill_remove',
             };
         },
     };

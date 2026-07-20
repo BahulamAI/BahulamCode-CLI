@@ -184,6 +184,7 @@ export function renderMarkdown(text) {
   const out = [];
   let inCodeBlock = false;
   let codeLang = '';
+  const columns = markdownColumns();
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
@@ -247,7 +248,7 @@ export function renderMarkdown(text) {
     // Blockquotes
     if (/^\s*>\s?/.test(line)) {
       const content = line.replace(/^\s*>\s?/, '');
-      out.push(`${c.gray('  │')} ${c.italic(content)}`);
+      out.push(...renderWrappedMarkdownLine(c.gray('  │') + ' ', '    ', content, columns, c.italic));
       continue;
     }
 
@@ -257,7 +258,13 @@ export function renderMarkdown(text) {
       const done = task[2].toLowerCase() === 'x';
       const renderState = done ? c.green : c.gray;
       const marker = done ? '✓' : '○';
-      out.push(`${task[1]}  ${renderState(`${marker} ${task[3]}`)}`);
+      out.push(...renderWrappedMarkdownLine(
+        `${task[1]}  `,
+        `${task[1]}    `,
+        `${marker} ${task[3]}`,
+        columns,
+        renderState,
+      ));
       continue;
     }
 
@@ -265,7 +272,13 @@ export function renderMarkdown(text) {
     if (/^\s*[-*]\s/.test(line)) {
       const indent = line.match(/^(\s*)/)[1];
       const content = line.replace(/^\s*[-*]\s/, '');
-      out.push(`${indent}  ${c.brand('•')} ${inlineMarkdown(content)}`);
+      out.push(...renderWrappedMarkdownLine(
+        `${indent}  ${c.brand('•')} `,
+        `${indent}    `,
+        content,
+        columns,
+        inlineMarkdown,
+      ));
       continue;
     }
 
@@ -273,7 +286,14 @@ export function renderMarkdown(text) {
     if (/^\s*\d+\.\s/.test(line)) {
       const match = line.match(/^(\s*)(\d+)\.\s(.*)/);
       if (match) {
-        out.push(`${match[1]}  ${c.brand(match[2] + '.')} ${inlineMarkdown(match[3])}`);
+        const marker = `${match[2]}.`;
+        out.push(...renderWrappedMarkdownLine(
+          `${match[1]}  ${c.brand(marker)} `,
+          `${match[1]}${' '.repeat(marker.length + 3)}`,
+          match[3],
+          columns,
+          inlineMarkdown,
+        ));
         continue;
       }
     }
@@ -283,6 +303,46 @@ export function renderMarkdown(text) {
   }
 
   return out.join('\n');
+}
+
+function markdownColumns() {
+  return Math.max(40, process.stderr.columns || process.stdout.columns || 100);
+}
+
+function renderWrappedMarkdownLine(firstPrefix, continuationPrefix, content, columns, renderContent) {
+  const firstWidth = Math.max(12, columns - stripAnsi(firstPrefix).length);
+  const nextWidth = Math.max(12, columns - stripAnsi(continuationPrefix).length);
+  const wrapped = wrapWords(String(content || ''), firstWidth, nextWidth);
+  return wrapped.map((part, index) => {
+    const prefix = index === 0 ? firstPrefix : continuationPrefix;
+    return `${prefix}${renderContent(part)}`;
+  });
+}
+
+function wrapWords(text, firstWidth, nextWidth) {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (!words.length) return [''];
+
+  const lines = [];
+  let width = firstWidth;
+  let current = '';
+
+  for (const word of words) {
+    if (!current) {
+      current = word;
+      continue;
+    }
+    if (current.length + 1 + word.length <= width) {
+      current += ` ${word}`;
+      continue;
+    }
+    lines.push(current);
+    width = nextWidth;
+    current = word;
+  }
+
+  if (current) lines.push(current);
+  return lines;
 }
 
 function renderCodeLine(line, language) {
