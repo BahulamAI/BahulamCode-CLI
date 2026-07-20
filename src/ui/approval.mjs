@@ -1,16 +1,14 @@
 /**
  * Approval prompt UI — Mission Control (PRD-055 §8.2).
  *
- *   ┃ AWAITING APPROVAL                                                ┃
- *   ┃                                                                  ┃
- *   ┃   ⚙️  shell "rm -rf node_modules"                                ┃
- *   ┃                                                                  ┃
- *   ┃   Tier:    SHELL-DANGEROUS                                       ┃
- *   ┃   Why:     Recursive delete in project directory                 ┃
- *   ┃                                                                  ┃
- *   ┃   [Enter] approve   [e] edit   [r] re-plan   [n] reject   [?] why
+ *   ── ⚠ APPROVAL · SHELL-MEDIUM · shell ───────────────────────────────
+ *   ⚙️ Running git add package.json && git status --short
+ *   Decision
+ *   ▸ [y] approve once     run this call
+ *     [t] always allow     auto-approve future calls to this tool
+ *   ↑↓ move · Enter pick · letter shortcut · Esc stop
  *
- * The border colour is `brand.accent` (magenta) for explicit-approval
+ * The rule colour is `brand.accent` (magenta) for explicit-approval
  * tiers; safe-default prompts use `brand.data` so they read as advisory.
  *
  * Pure — caller writes the returned string to stderr.
@@ -18,11 +16,8 @@
 
 import { paint, width as visibleWidth } from './palette.mjs';
 import { icon } from './icons.mjs';
-import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { shellCommandDisplay, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/risk-tier.mjs';
-
-const VBAR = '┃';
-const PAD_X = 3;
 
 /**
  * Default option set per tier. Caller can override via `opts.options`.
@@ -51,24 +46,17 @@ export function defaultOptions(tier) {
 }
 
 /**
- * Render the bordered prompt with vertical, arrow-navigable options.
+ * Render the compact horizontal prompt with arrow-navigable options.
  *
- *   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
- *   ┃ AWAITING APPROVAL          ┃
- *   ┃                            ┃
- *   ┃   ⚙️  shell "rm -rf …"     ┃
- *   ┃                            ┃
- *   ┃   Tier: SHELL-DANGEROUS    ┃
- *   ┃   Why:  Recursive delete…  ┃
- *   ┃                            ┃
- *   ┃   ▸ [y] approve            ┃   ← selected (accent)
- *   ┃     [e] edit               ┃
- *   ┃     [r] re-plan            ┃
- *   ┃     [n] reject             ┃
- *   ┃     [?] why                ┃
- *   ┃                            ┃
- *   ┃   ↑↓ move · Enter pick     ┃
- *   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+ *   ── ⚠ APPROVAL · SHELL-MEDIUM · shell ───────────────────────────────
+ *   ⚙️ Running rm -rf node_modules && npm install
+ *   Decision
+ *   ▸ [y] approve once
+ *     [r] re-plan...
+ *     [n] stop
+ *     [?] why
+ *   ↑↓ move · Enter pick · letter shortcut · Esc stop
+ *   ────────────────────────────────────────────────────────────────────
  *
  * @param {object} opts
  * @param {string} opts.tool
@@ -80,75 +68,32 @@ export function defaultOptions(tier) {
  * @param {number} [opts.selected]   — index of the highlighted option
  */
 export function renderApprovalPrompt({
-  tool, args = {}, tier, why = '', width,
+  tool, args = {}, tier, why: _why = '', width,
   options, selected = 0,
 } = {}) {
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const explicit = requiresExplicitApproval(tier);
   const accent = explicit ? paint.brand.accent : paint.brand.data;
   const opts = options || defaultOptions(tier);
-  const available = cols - 2 - PAD_X * 2;
   const title = `${riskIcon(tier)}  ${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
-    bar(cols, accent),
-    fill(' ' + ' '.repeat(PAD_X - 1) + paint.bold(accent(title)), cols, accent),
-    fill('', cols, accent),
+    horizontalRule(title, cols, accent),
     ...subjectRows(tool, args, cols, accent),
-    fill('', cols, accent),
+    ...decisionRows(opts, selected, accent),
+    `  ${paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc stop')}`,
+    horizontalRule('', cols, accent),
   ];
-  if (why) {
-    const whyLines = wrapText(why, Math.max(20, available - 6));
-    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why  ') + paint.text.primary(whyLines[0]), cols, accent));
-    for (const line of whyLines.slice(1, 4)) {
-      lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('     ') + paint.text.primary(line), cols, accent));
-    }
-    if (whyLines.length > 4) {
-      lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('     ...'), cols, accent));
-    }
-  } else {
-    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Why  ') + paint.text.muted('No additional reason provided'), cols, accent));
-  }
-  lines.push(fill('', cols, accent));
-  lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + paint.text.dim('Decision:'), cols, accent));
-
-  for (let i = 0; i < opts.length; i++) {
-    const o = opts[i];
-    const isSel = i === selected;
-    const cursor = isSel ? accent('▸ ') : paint.text.dim('  ');
-    const keyTag = paint.text.dim('[') + (isSel ? accent(o.key) : paint.brand.data(o.key)) + paint.text.dim('] ');
-    const label = isSel ? paint.bold(accent(o.label)) : paint.text.primary(o.label);
-    const hint = o.hint ? '  ' + paint.text.muted(o.hint) : '';
-    lines.push(fill(' ' + ' '.repeat(PAD_X - 1) + cursor + keyTag + label + hint, cols, accent));
-  }
-
-  lines.push(fill('', cols, accent));
-  lines.push(fill(' ' + ' '.repeat(PAD_X - 1) +
-    paint.text.dim('↑↓ ') + paint.brand.data('move') +
-    paint.text.dim('  ·  Enter ') + paint.brand.data('pick') +
-    paint.text.dim('  ·  letter shortcut  ·  Esc stop'), cols, accent));
-  lines.push(bar(cols, accent));
 
   return '\n' + lines.join('\n');
 }
 
 export function renderTrustedApproval({ tool, args = {}, scope = 'session', ruleId = '', delaySeconds = 0 } = {}) {
-  const summary = toolDisplaySummary(tool, args, {});
+  const summary = approvalSubjectSummary(tool, args);
   const subject = `${tool || 'tool'}${summary ? ` "${truncate(summary, 80)}"` : ''}`;
   const rule = ruleId ? ` · rule ${ruleId}` : '';
   const delay = delaySeconds > 0 ? ` · auto-approved after ${delaySeconds}s` : '';
   return `  ${paint.state.success('✓')} ${paint.text.primary(subject)} ${paint.text.dim(`· pre-approved (${String(scope || 'session').toLowerCase()}${rule})${delay}`)}\n`;
-}
-
-function bar(width, painter) {
-  // Top / bottom rule: a magenta vertical-stack line spanning the full width.
-  return painter('▔'.repeat(width));
-}
-
-function fill(text, width, painter, override) {
-  const visible = override ?? text;
-  const pad = Math.max(0, width - 2 - visibleWidth(visible));
-  return painter(VBAR) + visible + ' '.repeat(pad) + painter(VBAR);
 }
 
 function truncate(text, n) {
@@ -212,24 +157,53 @@ function approvalTitle(tier) {
   }
 }
 
+function horizontalRule(title, cols, accent) {
+  if (!title) return `  ${accent('─'.repeat(Math.max(24, cols - 2)))}`;
+  const label = ` ${paint.bold(accent(title))} `;
+  const remaining = Math.max(8, cols - 2 - visibleWidth(label) - 2);
+  return `  ${accent('─')} ${label}${accent('─'.repeat(remaining))}`;
+}
+
 function subjectRows(tool, args, cols, accent) {
-  const available = cols - 2 - PAD_X * 2;
-  const prefix = ' ' + ' '.repeat(PAD_X - 1);
   const rows = [];
+  const available = Math.max(24, cols - 4);
   const summary = toolDisplaySummary(tool, args, {});
   const label = `${icon(tool)} ${paint.text.primary(toolDisplayLabel(tool))}`;
-  rows.push(fill(prefix + label, cols, accent));
+  const details = subjectDetails(tool, args, summary, Math.max(24, available - visibleWidth(label) - 1));
 
-  for (const line of subjectDetails(tool, args, summary, available)) {
-    rows.push(fill(prefix + paint.text.primary(line), cols, accent));
+  if (details.length === 1 && visibleWidth(`${label} ${details[0]}`) <= available) {
+    rows.push(`  ${label} ${paint.text.primary(details[0])}`);
+    return rows;
+  }
+
+  rows.push(`  ${label}`);
+  for (const line of subjectDetails(tool, args, summary, Math.max(24, available - 2))) {
+    rows.push(`    ${paint.text.primary(line)}`);
   }
   return rows;
 }
 
+function decisionRows(opts, selected, accent) {
+  const rows = [`  ${paint.text.dim('Decision')}`];
+  for (let i = 0; i < opts.length; i++) {
+    rows.push(`  ${optionToken(opts[i], i === selected, accent)}`);
+  }
+  return rows;
+}
+
+function optionToken(option, selected, accent) {
+  const cursor = selected ? accent('▸ ') : paint.text.dim('  ');
+  const keyTag = paint.text.dim('[') + (selected ? accent(option.key) : paint.brand.data(option.key)) + paint.text.dim('] ');
+  const label = selected ? paint.bold(accent(option.label)) : paint.text.primary(option.label);
+  const hint = option.hint ? `  ${paint.text.muted(option.hint)}` : '';
+  return `${cursor}${keyTag}${label}${hint}`;
+}
+
 function subjectDetails(tool, args = {}, summary = '', available = 72) {
   if (tool === 'shell') {
-    const command = args.command || args.cmd || summary || '';
-    const lines = wrapText(command, available);
+    const display = shellCommandDisplay(args.command || args.cmd || summary || '');
+    const lines = wrapText(display.command, available);
+    if (display.cwdLabel) lines.push(`in ${display.cwdLabel}`);
     return lines.length ? lines : ['(empty command)'];
   }
   if (tool === 'write_file') {
@@ -254,6 +228,13 @@ function subjectDetails(tool, args = {}, summary = '', available = 72) {
     return [`Target ${hostFromUrl(url) || url}`];
   }
   return wrapText(summary || JSON.stringify(args || {}), available).slice(0, 4);
+}
+
+function approvalSubjectSummary(tool, args = {}) {
+  const summary = toolDisplaySummary(tool, args, {});
+  if (tool !== 'shell') return summary;
+  const display = shellCommandDisplay(args.command || args.cmd || summary || '');
+  return display.cwdLabel ? `${display.command} in ${display.cwdLabel}` : display.command;
 }
 
 function hostFromUrl(url) {

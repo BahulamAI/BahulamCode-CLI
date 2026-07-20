@@ -71,14 +71,15 @@ const TOOL_SCHEMAS = [
     },
     {
         name: 'list_files',
-        description: 'List files matching a glob pattern. Returns file paths relative to project root.',
+        description: 'List files matching a glob pattern, or return a bounded directory tree with format="tree".',
         input_schema: {
             type: 'object',
             properties: {
                 pattern: { type: 'string', description: 'Glob pattern (e.g., "src/**/*.ts", "*.json")' },
                 path: { type: 'string', description: 'Directory to search in (default: project root)' },
+                format: { type: 'string', enum: ['files', 'tree'], description: 'Output format. "files" returns file paths; "tree" returns folders and files.' },
+                max_depth: { type: 'number', description: 'Maximum tree depth when format="tree" (default 2, max 6)' },
             },
-            required: ['pattern'],
         },
     },
     {

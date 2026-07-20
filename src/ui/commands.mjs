@@ -43,6 +43,20 @@ export const COMMANDS = {
         },
     },
 
+    '/new': {
+        description: 'Start a new session',
+        handler(args, state) {
+            if (typeof state.startNewSession === 'function') {
+                return state.startNewSession();
+            }
+            state.messages.length = 0;
+            state.turnCount = 0;
+            state.sessionId = null;
+            state.tokenUsage = { input: 0, output: 0 };
+            return 'New session started.';
+        },
+    },
+
     '/compact': {
         description: 'Manually compact conversation context',
         handler(args, state) {
@@ -400,12 +414,35 @@ export const COMMANDS = {
             const telemetryStats = telemetry.getStats();
             const cacheRead = state.tokenUsage.cache_read || 0;
             const cacheWrite = state.tokenUsage.cache_creation || 0;
-            const denom = state.tokenUsage.input + cacheRead;
-            const rate = denom > 0 ? Math.round((cacheRead / denom) * 100) : 0;
+            // state.tokenUsage.input already includes cache-read (provider convention).
+            // Do NOT add cacheRead to the denominator — double-counts and reports
+            // a hit-rate ~half the true rate.
+            const rate = state.tokenUsage.input > 0
+                ? Math.round((cacheRead / state.tokenUsage.input) * 100)
+                : 0;
             return [
                 `Tokens: in=${state.tokenUsage.input}, out=${state.tokenUsage.output}`,
                 `Cache: read=${cacheRead}, write=${cacheWrite}, hit-rate=${rate}%`,
                 `Telemetry: ${telemetryStats.totalEvents} events`,
+            ].join('\n');
+        },
+    },
+
+    '/cache': {
+        description: 'Show session cache stats (hit-rate, read, write)',
+        handler(args, state) {
+            const cacheRead = state.tokenUsage.cache_read || 0;
+            const cacheWrite = state.tokenUsage.cache_creation || 0;
+            const input = state.tokenUsage.input || 0;
+            const rate = input > 0 ? Math.round((cacheRead / input) * 100) : 0;
+            const nonCached = Math.max(0, input - cacheRead);
+            const fmt = (n) => n.toLocaleString();
+            return [
+                `Cache hit-rate: ${rate}%  (matches provider dashboards)`,
+                `  cache_read:   ${fmt(cacheRead)} tok`,
+                `  non-cached:   ${fmt(nonCached)} tok`,
+                `  total input:  ${fmt(input)} tok`,
+                `  cache_write:  ${fmt(cacheWrite)} tok`,
             ].join('\n');
         },
     },

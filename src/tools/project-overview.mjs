@@ -347,7 +347,30 @@ export class ProjectRegistry {
         };
     }
 
-    async register(rawPath) {
+    // PRD-69 project context is live metadata, not index cache. Re-read it on
+    // every registration attempt so repeated get_project_overview calls pick up
+    // .kepler/KEPLER.md, goal/plan/style, skills, AGENTS.md, etc. changes.
+    _attachLiveContext(resource, root) {
+        const keplerDir = path.join(root, '.kepler');
+        resource.environment = detectEnvironment();
+        resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
+            _readIfExists(root, 'KEPLER.md', 10000) ||
+            _readIfExists(keplerDir, 'project.md', 8000);
+        resource.style = _readIfExists(keplerDir, 'style.md', 4000);
+        resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
+        resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
+        resource.skills_index = _scanSkills(keplerDir);
+
+        if (!resource.project_context) {
+            for (const name of ['.kepler.md', 'AGENTS.md', 'CLAUDE.md']) {
+                const content = _readIfExists(root, name, 8000);
+                if (content) { resource.project_context = content; break; }
+            }
+        }
+        return resource;
+    }
+
+    async register(rawPath, { forceRefresh = false, force_refresh = false } = {}) {
         if (!rawPath) {
             throw new Error('get_project_overview requires a project path');
         }
@@ -385,10 +408,14 @@ export class ProjectRegistry {
         }
 
         const id = projectId(root);
+        const fingerprint = projectFingerprint(root);
         const existing = this.projects.get(id);
-        if (existing) {
+        const shouldForceRefresh = Boolean(forceRefresh || force_refresh);
+        if (existing && !shouldForceRefresh && existing.resource.index_version === fingerprint) {
+            this._attachLiveContext(existing.resource, root);
             return {
                 already_registered: true,
+                refreshed: false,
                 resource: existing.resource,
                 output:
                     `Project already registered as project_id=${id}. ` +
@@ -396,14 +423,13 @@ export class ProjectRegistry {
             };
         }
 
-        const fingerprint = projectFingerprint(root);
         const retriever = new ContextRetriever(root);
         const resourcePath = path.join(getIndexDir(root), RESOURCE_FILE);
         let resource = null;
 
         try {
             const persisted = JSON.parse(fs.readFileSync(resourcePath, 'utf-8'));
-            if (persisted.index_version === fingerprint && retriever.loadIndex()) {
+            if (!shouldForceRefresh && persisted.index_version === fingerprint && retriever.loadIndex()) {
                 resource = persisted;
             }
         } catch { /* missing or stale index */ }
@@ -424,27 +450,17 @@ export class ProjectRegistry {
             fs.writeFileSync(resourcePath, JSON.stringify(resource));
         }
 
-        // Read project-level context files (.kepler/KEPLER.md, project.md, goal.md, plan.md, style.md, skills/)
-        const keplerDir = path.join(root, '.kepler');
-        resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
-            _readIfExists(root, 'KEPLER.md', 10000) ||
-            _readIfExists(keplerDir, 'project.md', 8000);
-        resource.style = _readIfExists(keplerDir, 'style.md', 4000);
-        resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
-        resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
-        resource.skills_index = _scanSkills(keplerDir);
-
-        // Also check for top-level context files (AGENTS.md, CLAUDE.md, .kepler.md)
-        if (!resource.project_context) {
-            for (const name of ['.kepler.md', 'AGENTS.md', 'CLAUDE.md']) {
-                const content = _readIfExists(root, name, 8000);
-                if (content) { resource.project_context = content; break; }
-            }
-        }
-
+        this._attachLiveContext(resource, root);
         this.projects.set(id, { resource, retriever });
-        return { already_registered: false, resource, output: formatResource(resource) };
+        const refreshed = Boolean(existing);
+        return {
+            already_registered: refreshed,
+            refreshed,
+            resource,
+            output: refreshed
+                ? `Project refreshed: ${resource.name} (project_id=${id})\nRoot: ${resource.root}`
+                : formatResource(resource),
+        };
     }
 
     resources() {
@@ -472,7 +488,34 @@ export class ProjectRegistry {
         return this.allowedScratchRoots().some(root => isWithin(root, candidate));
     }
 
-    resolvePath(rawPath, projectIdValue, { allowMissing = false } = {}) {
+    async registerFileRead(candidate) {
+        if (!candidate || !fs.existsSync(candidate)) return null;
+        let stat;
+        try {
+            stat = fs.statSync(candidate);
+        } catch {
+            return null;
+        }
+        if (!stat.isFile()) return null;
+
+        const filePath = fs.realpathSync(candidate);
+        const dir = path.dirname(filePath);
+        if (dir === path.parse(dir).root || dir === os.homedir()) return null;
+
+        const registered = await this.register(dir);
+        const owner = this.projects.get(registered.resource.project_id);
+        if (!owner) return null;
+
+        const files = Array.isArray(owner.resource.files_read)
+            ? owner.resource.files_read
+            : [];
+        if (!files.includes(filePath)) {
+            owner.resource.files_read = [...files, filePath];
+        }
+        return { filePath, project: owner, registered };
+    }
+
+    async resolvePath(rawPath, projectIdValue, { allowMissing = false, allowExternalFileRead = false } = {}) {
         let root = null;
         if (projectIdValue) {
             root = this.get(projectIdValue)?.resource.root || null;
@@ -552,6 +595,18 @@ export class ProjectRegistry {
         }
 
         if (!containingProject && !containingScratchRoot) {
+            if (allowExternalFileRead) {
+                let external = await this.registerFileRead(candidate);
+                if (!external) {
+                    const unescaped = unescapeShellPath(rawPath);
+                    if (unescaped !== rawPath) {
+                        try {
+                            external = await this.registerFileRead(buildCandidate(unescaped));
+                        } catch { /* keep original outside-root error */ }
+                    }
+                }
+                if (external) return external.filePath;
+            }
             throw new Error(`Path is outside registered project roots: ${rawPath}`);
         }
         if (!allowMissing && !fs.existsSync(candidate)) {

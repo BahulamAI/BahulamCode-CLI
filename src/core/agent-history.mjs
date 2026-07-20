@@ -65,8 +65,19 @@ export class AgentHistoryTurnBuilder {
     addToolResult(data = {}) {
         if (data.internal || data.sub_agent) return false;
         const id = data.call_id || data._callId || data.request_id || data.id || data.tool_use_id;
-        if (!id || !this.toolUseIds.has(id)) return false;
         if (this.toolResultIds.has(id)) return false;
+        if (!id) return false;
+        if (!this.toolUseIds.has(id)) {
+            const name = data.tool || data.name;
+            if (!name) return false;
+            this.assistantBlocks.push({
+                type: 'tool_use',
+                id,
+                name,
+                input: data.args || data.input || {},
+            });
+            this.toolUseIds.add(id);
+        }
 
         this.flushAssistant();
         this.messages.push({
@@ -74,7 +85,7 @@ export class AgentHistoryTurnBuilder {
             content: [{
                 type: 'tool_result',
                 tool_use_id: id,
-                content: maybeTruncate(data.output ?? data.result ?? data.message ?? '', this.maxToolResultChars),
+            content: maybeTruncate(data.llm_content ?? data.output ?? data.result ?? data.message ?? '', this.maxToolResultChars),
                 ...(data.success === false || data.is_error ? { is_error: true } : {}),
             }],
         });

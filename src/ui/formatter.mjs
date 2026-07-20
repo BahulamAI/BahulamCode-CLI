@@ -38,6 +38,7 @@ export class EventFormatter {
         this._completed = false;
         this._seenCallIds = new Set();
         this._lastThinking = '';
+        this._lastBlock = null;
     }
 
     render(event) {
@@ -99,13 +100,19 @@ export class EventFormatter {
                 this._delegation(data);
                 return true;
             case 'cancelled':
-                process.stderr.write(`\n${YELLOW}  Cancelled${data?.reason ? ': ' + data.reason : ''}${RESET}\n`);
+                this._boundary('status', { compactSame: true });
+                process.stderr.write(`${YELLOW}  Cancelled${data?.reason ? ': ' + data.reason : ''}${RESET}\n`);
+                this._lastBlock = 'status';
                 return true;
             case 'paused':
+                this._boundary('status', { compactSame: true });
                 process.stderr.write(`${CYAN}  Paused${RESET}\n`);
+                this._lastBlock = 'status';
                 return true;
             case 'resumed':
+                this._boundary('status', { compactSame: true });
                 process.stderr.write(`${GREEN}  Resumed${RESET}\n`);
+                this._lastBlock = 'status';
                 return true;
             case 'pause_instruction':
                 this._pauseInstruction(data);
@@ -124,6 +131,21 @@ export class EventFormatter {
         return `${CYAN}${frame}${RESET}`;
     }
 
+    _boundary(nextBlock, { compactSame = false } = {}) {
+        if (!this._lastBlock) return;
+        if (compactSame && this._lastBlock === nextBlock) return;
+
+        const mode = String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
+        if (mode === 'off' || mode === 'none') return;
+        if (mode === 'dotted' || mode === 'dots') {
+            const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);
+            process.stderr.write(`  ${DIM}${'·'.repeat(Math.min(44, cols - 4))}${RESET}\n`);
+            return;
+        }
+
+        process.stderr.write('\n');
+    }
+
     _status(data) {
         const msg = data?.message || '';
         // Skip noisy per-turn statuses. Backend emits "Creating agent..." and
@@ -131,7 +153,9 @@ export class EventFormatter {
         // repeating them clutters the transcript.
         if (!msg || msg === 'Agent started') return;
         if (msg.startsWith('Creating agent') || msg.startsWith('Task type:')) return;
+        this._boundary('status', { compactSame: true });
         process.stderr.write(`  ${this._spinner()} ${CYAN}${msg}${RESET}\n`);
+        this._lastBlock = 'status';
     }
 
     _thinking(data) {
@@ -144,7 +168,10 @@ export class EventFormatter {
         // Skip generic "Processing (iteration N)..." — too noisy
         if (text.startsWith('Processing')) return;
 
-        process.stderr.write(`  ${this._spinner()} ${CYAN}${text.slice(0, 200)}${RESET}\n`);
+        this._boundary('thinking');
+        const clipped = text.length > 200 ? `${text.slice(0, 198)} …` : text;
+        process.stderr.write(`  ${this._spinner()} ${CYAN}Thinking · ${clipped}${RESET}\n`);
+        this._lastBlock = 'thinking';
     }
 
     _content(data) {
@@ -155,8 +182,7 @@ export class EventFormatter {
         if (text === this._lastContent) return;
         this._lastContent = text;
 
-        // Add newline separator before content block
-        if (this.toolCount > 0 || this._hasContent) process.stdout.write('\n');
+        this._boundary('content');
         this._hasContent = true;
 
         // Render content with 2-space indent
@@ -164,6 +190,7 @@ export class EventFormatter {
         for (const line of lines) {
             process.stdout.write(`  ${line}\n`);
         }
+        this._lastBlock = 'content';
     }
 
     _toolCall(data) {
@@ -184,6 +211,7 @@ export class EventFormatter {
         }
 
         this.toolCount++;
+        this._boundary('tool', { compactSame: true });
 
         const label = toolDisplayLabel(tool);
         const summary = toolDisplaySummary(tool, args);
@@ -193,12 +221,14 @@ export class EventFormatter {
                 process.stderr.write(`  ${DIM}  ${line}${RESET}\n`);
             }
             this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
+            this._lastBlock = 'tool';
             return;
         }
         const detail = summary ? `${DIM}${summary}${RESET}` : '';
         process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${CYAN}${label}${RESET}${detail ? `  ${detail}` : ''}\n`);
 
         this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
+        this._lastBlock = 'tool';
     }
 
     _toolDone(data) {
@@ -246,13 +276,15 @@ export class EventFormatter {
     _plan(data) {
         const milestones = data?.milestones || [];
         if (milestones.length === 0) return;
-        process.stderr.write(`\n  ${BOLD}Plan${RESET}\n`);
+        this._boundary('plan');
+        process.stderr.write(`  ${BOLD}Plan${RESET}\n`);
         for (const m of milestones) {
             const icon = m.status === 'completed' ? `${GREEN}✓${RESET}` :
                          m.status === 'started' ? `${CYAN}◐${RESET}` :
                          `${DIM}○${RESET}`;
             process.stderr.write(`  ${icon} ${m.name}\n`);
         }
+        this._lastBlock = 'plan';
     }
 
     _phaseStart(data) {

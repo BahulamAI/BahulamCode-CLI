@@ -14,6 +14,7 @@ export const COMMANDS = {
     '/status':   { description: 'Alias for /git', handler: cmdGit },
     '/commit':   { description: 'Interactive git commit', handler: cmdCommit },
     '/diff':     { description: 'Show git diff', handler: cmdDiff },
+    '/new':      { description: 'Start a new session', handler: cmdNew },
     '/clear':    { description: 'Clear conversation history', handler: cmdClear },
     '/sessions': { description: 'List previous sessions', handler: cmdSessions },
     '/exit':     { description: 'Exit CLI', handler: cmdExit },
@@ -38,7 +39,7 @@ const COMMAND_GROUPS = [
     {
         key: 'session',
         title: 'Session',
-        commands: ['/clear', '/sessions', '/exit', '/quit'],
+        commands: ['/new', '/clear', '/sessions', '/exit', '/quit'],
     },
     {
         key: 'usage',
@@ -143,6 +144,20 @@ function cmdClear(ctx) {
         ctx.formatter.changes = [];
     }
     process.stderr.write('Conversation cleared.\n');
+}
+
+function cmdNew(ctx) {
+    if (typeof ctx.startNewSession === 'function') {
+        ctx.startNewSession();
+        return;
+    }
+    if (ctx.formatter) {
+        ctx.formatter.toolCalls = [];
+        ctx.formatter.toolCount = 0;
+        ctx.formatter.phases.clear();
+        ctx.formatter.changes = [];
+    }
+    process.stderr.write('New session started.\n');
 }
 
 function cmdSessions() {

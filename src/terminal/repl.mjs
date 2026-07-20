@@ -24,7 +24,7 @@ import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
-import { buildWorkScope } from '../core/work-scope.mjs';
+import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
@@ -64,6 +64,7 @@ import {
   lastCard,
   getCard,
   allCards,
+  clearCards,
 } from '../ui/tool-card.mjs';
 import { detailFor } from '../ui/tool-details.mjs';
 import { paint } from '../ui/palette.mjs';
@@ -153,7 +154,10 @@ function normalizeResumableSession(s) {
     // PRD-068 §5.14.11 derived fields for the picker
     endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
     contextTokens: s.contextTokens || 0,       // projected transcript token count
+    contextTokenSource: s.contextTokenSource || 'jsonl_bytes',
     resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
+    models: Array.isArray(s.models) ? s.models : [],
+    modelLimits: s.modelLimits && typeof s.modelLimits === 'object' ? s.modelLimits : {},
     costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
     partial: !!s.partial,                      // true if the transcript file was partially malformed
     source: 'transcript',
@@ -348,10 +352,13 @@ async function chooseThresholdMode(ctx, decision) {
       const cols = Math.max(60, process.stderr.columns || 120);
       const pct = Math.round(decision.usageRatio * 100);
       const projected = formatCtxTokens(decision.projected);
-      const win = formatCtxTokens(decision.windowSize);
+      const win = `${formatCtxTokens(decision.windowSize)}${decision.windowKnown ? '' : ' est'}`;
       const lines = [];
       const rawLabel = hasCheckpoint ? 'Raw full transcript would use' : 'This session would use';
       lines.push(`  ${rawLabel}  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
+      if (!decision.windowKnown) {
+        lines.push(`  ${c.dim('Model context window is a CLI fallback estimate; backend/provider limits may differ.')}`);
+      }
       if (decision.resumeSummary?.sourceMessageCount) {
         const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
         const full = Number(decision.resumeSummary.fullMessageCount) || 0;
@@ -912,14 +919,18 @@ const session = {
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
-  toolCalls: 0,
+  toolCalls: 0,        // primary-agent tool calls in the current turn
+  subAgentToolCalls: 0,// forwarded internal sub-agent tool calls in the current turn
   totalToolCalls: 0,   // across all turns
+  totalPrimaryToolCalls: 0,
+  totalSubAgentToolCalls: 0,
   turns: 0,
   history: [],         // display transcript (can include reconstructed tool entries)
   agentHistory: [],    // backend continuity payload (compact or full)
   inputHistory: [],    // previous prompts (for Up/Down)
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
+  modelLimits: {},     // role -> {model, context_length, max_output, source}
   blockedOps: 0,       // safety guardrail blocks
   delegations: [],     // agent delegation events: { from, to, time }
   phases: [],          // phase history: { name, time }
@@ -961,6 +972,7 @@ const COMMANDS = {
   '/plan':     'Show plan/tasks',
   '/tasks':    'Show or update project tasks',
   '/stats':    'Progress bars & metrics',
+  '/new':      'Start a new session',
   '/clear':    'Clear conversation',
   '/git':      'Git status',
   '/diff':     'Git diff',
@@ -1077,6 +1089,7 @@ const HELP_GROUPS = [
       ['/sessions', 'List resumable sessions'],
       ['/resume [id]', 'Resume a session'],
       ['/compact', 'Compact conversation context'],
+      ['/new', 'Start a fresh session'],
       ['/clear', 'Clear conversation'],
       ['/exit', 'Exit CLI'],
     ],
@@ -1284,19 +1297,23 @@ function computeCacheTotals() {
     read += b.cache_read_tokens || 0;
     write += b.cache_creation_tokens || 0;
   }
-  const denom = session.inputTokens + read;
-  const hitRate = denom > 0 ? Math.round((read / denom) * 100) : 0;
+  // OpenRouter/Anthropic/DeepSeek return `total_input_tokens` INCLUSIVE of
+  // cache-read tokens. session.inputTokens is that sum, so the denominator is
+  // just session.inputTokens (do NOT add `read` — would double-count).
+  const hitRate = session.inputTokens > 0
+    ? Math.round((read / session.inputTokens) * 100)
+    : 0;
   return { read, write, hitRate };
 }
 
 function buildContextStrip() {
   const totalTokens = session.inputTokens + session.outputTokens;
   const elapsed = formatElapsed(session.startTime);
-  const cache = computeCacheTotals();
-
+  // Cache hit % lives under /cache — keep the always-on strip focused on
+  // volume + elapsed. Historical rate calc was double-counting the cache tokens
+  // vs OpenRouter's convention (see computeCacheTotals) which was misleading.
   const right = [
     c.dim(`${formatTokens(totalTokens)} tok`),
-    ...(cache.read > 0 ? [c.dim(`cache ${cache.hitRate}%`)] : []),
     c.dim(elapsed),
   ].join(c.dim(' · '));
 
@@ -1344,7 +1361,9 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   if (toolCount > 0) parts.push(`${toolCount} tools`);
   if (durationS) parts.push(`${Number(durationS).toFixed(1)}s`);
   if (parts.length > 0) {
-    process.stderr.write(`\n  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
+    renderBlockBoundary('status', { compactSame: true });
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
+    _lastRenderedBlock = 'status';
   }
 }
 
@@ -1379,7 +1398,27 @@ function updateStatusBar() {
 // buffered head as a regular two-line shape first so the interleaving
 // content lands below it.
 let _pendingHead = null; // { callId, head, indent }
-let _lastRenderedBlock = null; // 'tool' | 'content' | null
+let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
+let _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+
+function blockSeparatorMode() {
+  return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
+}
+
+function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
+  if (!_lastRenderedBlock) return;
+  if (compactSame && _lastRenderedBlock === nextBlock) return;
+
+  const mode = blockSeparatorMode();
+  if (mode === 'off' || mode === 'none') return;
+  if (mode === 'dotted' || mode === 'dots') {
+    const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);
+    process.stderr.write(`  ${c.dim('·'.repeat(Math.min(44, cols - 4)))}\n`);
+    return;
+  }
+
+  process.stderr.write('\n');
+}
 
 function flushPendingHead() {
   if (!_pendingHead) return;
@@ -1394,6 +1433,88 @@ function clearPendingHead() {
   flushPendingHead();
 }
 
+function isCompactReadTool(tool) {
+  return ['read_file', 'read', 'get_file_info'].includes(String(tool || '').toLowerCase());
+}
+
+function isInlineOutcomeTool(tool) {
+  return [
+    'read_file', 'read_files', 'read_batch', 'get_file_info',
+    'search_code', 'search_files', 'grep', 'list_files',
+  ].includes(String(tool || '').toLowerCase());
+}
+
+function compactHeadForOutcome(head, outcome, cols) {
+  const reserve = stripAnsi(outcome).length + 4;
+  const maxHead = Math.max(28, cols - reserve);
+  return fitAnsiLine(head, maxHead);
+}
+
+function readToolLabel(tool, data = {}) {
+  const args = data.args || {};
+  const filePath = args.file_path || args.path || data.file_path || data.path || '';
+  if (filePath) return shortPath(String(filePath));
+  const output = String(data.output_preview || data.output || '').split('\n').find(Boolean) || '';
+  const match = output.match(/^([^:\s][^:\n]*):/);
+  return match ? shortPath(match[1]) : String(tool || 'file');
+}
+
+function rememberCompactRead(label) {
+  const file = String(label || '').trim();
+  if (!file) return;
+  _compactReadRun.recent.push(file);
+  if (_compactReadRun.recent.length > 3) _compactReadRun.recent.shift();
+}
+
+function compactReadSummary() {
+  const latest = _compactReadRun.recent.length
+    ? ` · latest: ${_compactReadRun.recent.join(', ')}`
+    : '';
+  return `Reading files · ${_compactReadRun.count} read${latest}`;
+}
+
+function compactReadSummaryLine() {
+  const cols = process.stderr.columns || 120;
+  return `  ${paint.text.dim(fitAnsiLine(compactReadSummary(), Math.max(32, cols - 2)))}`;
+}
+
+function renderCompactReadRun() {
+  const line = compactReadSummaryLine();
+  inPlace(line);
+  _compactReadRun.lineActive = true;
+  _lastRenderedBlock = 'tool';
+}
+
+function maybeCollapseReadTool(tool, data, callId) {
+  if (!isCompactReadTool(tool)) {
+    flushCompactReadRun();
+    return false;
+  }
+
+  _compactReadRun.count++;
+  rememberCompactRead(readToolLabel(tool, data));
+  const threshold = Number.parseInt(process.env.KEPLER_READ_TOOL_DETAIL_LIMIT || '8', 10);
+  const limit = Number.isFinite(threshold) && threshold >= 0 ? threshold : 8;
+  if (_compactReadRun.count <= limit) return false;
+
+  _compactReadRun.hidden++;
+  if (_pendingHead && (!callId || _pendingHead.callId === callId)) {
+    _pendingHead = null;
+  }
+
+  renderCompactReadRun();
+  return true;
+}
+
+function flushCompactReadRun() {
+  if (_compactReadRun.hidden > 0) {
+    if (_compactReadRun.lineActive) inPlace('');
+    process.stderr.write(`${compactReadSummaryLine()}\n`);
+    _lastRenderedBlock = 'tool';
+  }
+  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+}
+
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
@@ -1403,6 +1524,8 @@ function renderToolCall(data) {
   // If a previous head is still pending (no result yet), flush it as a
   // regular two-line shape before starting the next one.
   flushPendingHead();
+  if (!isCompactReadTool(tool)) flushCompactReadRun();
+  renderBlockBoundary('tool', { compactSame: true });
 
   const head = formatCardHead(tool, args, {
     cwd: safeCwd(),
@@ -1413,6 +1536,7 @@ function renderToolCall(data) {
   recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   _pendingHead = { callId, head, indent };
+  _lastRenderedBlock = 'tool';
   // Spinner shows what's running until the result arrives.
   startSpinner(`${tool}…`);
 }
@@ -1465,6 +1589,10 @@ function renderToolResult(data, eventType = 'tool_result') {
     columns: process.stderr.columns || 120,
   });
 
+  if (data.success !== false && maybeCollapseReadTool(tool, data, callId)) {
+    return;
+  }
+
   // ── Single-line combined emit ──
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
@@ -1474,6 +1602,14 @@ function renderToolResult(data, eventType = 'tool_result') {
     const combined = `${_pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
+      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
+      _lastRenderedBlock = 'tool';
+      _pendingHead = null;
+      return;
+    }
+    if (isInlineOutcomeTool(tool)) {
+      const compactHead = compactHeadForOutcome(_pendingHead.head, outcome, cols);
+      process.stderr.write(`${compactHead}  ${outcome}\n`);
       if (diffPreview) process.stderr.write(`${diffPreview}\n`);
       _lastRenderedBlock = 'tool';
       _pendingHead = null;
@@ -1570,6 +1706,16 @@ function thinkingKind(text) {
     : 'Thinking';
 }
 
+function thinkingPrefix(text) {
+  const kind = thinkingKind(text);
+  return kind === 'Thinking' ? 'Thinking' : `Thinking · ${kind}`;
+}
+
+function clippedThinking(text, limit = 200) {
+  const value = String(text || '');
+  return value.length > limit ? `${value.slice(0, limit - 2)} …` : value;
+}
+
 // ── Live Spinner ──
 // A real animated spinner that ticks on an interval, not just per-call.
 // Shows what's happening right now — thinking, tool executing, etc.
@@ -1612,6 +1758,7 @@ function startContentStream() {
   _streamBuffer = '';
   _streamedPartialText = '';
   _renderedToolResults.clear();
+  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
   _renderedContentThisTurn = false;
   _lastRenderedBlock = null;
   stopSpinner();
@@ -1638,7 +1785,8 @@ function flushContent() {
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
   flushPendingHead();
-  if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
+  flushCompactReadRun();
+  renderBlockBoundary('content');
   const rendered = renderMarkdown(_streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
@@ -1646,6 +1794,28 @@ function flushContent() {
   _streamBuffer = '';
   _renderedContentThisTurn = true;
   _lastRenderedBlock = 'content';
+}
+
+function renderStagnation(data = {}) {
+  const rawMessage = data?.message || '';
+  const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
+  const tool = data?.tool || data?.tool_name || '';
+  const suggestion = data?.suggestion || data?.recovery_strategy || data?.strategy || '';
+  const message = reason
+    ? `Stagnation${tool ? ` (${tool})` : ''}: ${reason}`
+    : `Stagnation${tool ? ` (${tool})` : ''} detected`;
+  const key = `${message}\n${suggestion}`;
+
+  if (session._lastStagnationWarning === key) return;
+  session._lastStagnationWarning = key;
+
+  stopSpinner();
+  flushContent();
+  flushPendingHead();
+  renderBlockBoundary('status', { compactSame: true });
+  process.stderr.write(`  ${c.yellow('!')} ${c.yellow(message)}\n`);
+  if (suggestion) process.stderr.write(`    ${c.dim(suggestion)}\n`);
+  _lastRenderedBlock = 'status';
 }
 
 // ── Event Renderer ──
@@ -1662,7 +1832,17 @@ function renderEvent(event) {
     case 'status': {
       const msg = data?.message || '';
       if (!msg || msg === 'Agent started') return;
+      if (/^Stagnation:/i.test(msg)) {
+        renderStagnation(data);
+        break;
+      }
       startSpinner(msg);
+      break;
+    }
+
+    case 'stagnation':
+    case 'stagnation_detected': {
+      renderStagnation(data);
       break;
     }
 
@@ -1673,9 +1853,12 @@ function renderEvent(event) {
         // follow the agent's reasoning, not just see a spinner blip. We
         // print at most one line per distinct thought, dim italic.
         if (text.length > 12 && text !== session._lastEmittedThinking) {
+          flushContent();
           flushPendingHead();
           stopSpinner();
-          process.stderr.write(`  ${c.dim(thinkingKind(text) + ' · ')}${c.italic(c.dim(text.slice(0, 200)))}\n`);
+          renderBlockBoundary('thinking');
+          process.stderr.write(`  ${c.dim(thinkingPrefix(text) + ' · ')}${c.italic(c.dim(clippedThinking(text)))}\n`);
+          _lastRenderedBlock = 'thinking';
           session._lastEmittedThinking = text;
         }
         startSpinner(text.slice(0, 80));
@@ -1697,7 +1880,7 @@ function renderEvent(event) {
         }
       }
       if (text) {
-        if (_lastRenderedBlock === 'tool') process.stderr.write('\n');
+        renderBlockBoundary('content');
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
@@ -1705,6 +1888,40 @@ function renderEvent(event) {
         _renderedContentThisTurn = true;
         _lastRenderedBlock = 'content';
       }
+      break;
+    }
+
+    case 'reconnecting': {
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const attempt = data?.attempt ? `attempt ${data.attempt}` : 'reconnecting';
+      const after = data?.after != null ? ` from event ${data.after}` : '';
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${after}`)}\n`);
+      _lastRenderedBlock = 'status';
+      break;
+    }
+
+    case 'reconnected': {
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const replayed = data?.replayed != null ? ` · replayed ${data.replayed} events` : '';
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`reconnected${replayed}`)}\n`);
+      _lastRenderedBlock = 'status';
+      break;
+    }
+
+    case 'reconnect_failed': {
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const message = data?.message || 'connection lost and reconnect failed. Use /resume to continue from saved history.';
+      process.stderr.write(`  ${c.red('✗')} ${c.dim(message)}\n`);
+      _lastRenderedBlock = 'status';
       break;
     }
 
@@ -1719,7 +1936,14 @@ function renderEvent(event) {
 
     case 'tool_call':
     case 'tool_request': {
-      session.toolCalls++;
+      const isInternal = Boolean(data?.internal || data?.sub_agent);
+      if (isInternal) {
+        session.subAgentToolCalls++;
+        session.totalSubAgentToolCalls++;
+      } else {
+        session.toolCalls++;
+        session.totalPrimaryToolCalls++;
+      }
       session.totalToolCalls++;
       stopSpinner();
       flushContent();
@@ -1740,12 +1964,14 @@ function renderEvent(event) {
       // otherwise invisible, so show one dim confirmation before the tool card.
       const scope = data?.grant_scope || data?.scope || '';
       if (scope === 'auto_read') {
+        renderBlockBoundary('status', { compactSame: true });
         const toolName = data?.tool || data?.tool_name || '';
         const args = data?.args || data?.input || {};
         const summary = toolDisplaySummary(toolName, args);
         const label = toolDisplayLabel(toolName);
         const subject = summary ? `${label} ${summary}` : label;
         process.stderr.write(`  ${c.green('✓')} ${c.dim(`${subject} · auto-approved read`)}\n`);
+        _lastRenderedBlock = 'status';
       }
       break;
     }
@@ -1754,7 +1980,9 @@ function renderEvent(event) {
       const reason = data?.reason || 'User denied';
       const toolName = data?.tool || '';
       const indent = subAgentIndent();
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`${indent}${c.red('✗')} ${c.dim(`Denied ${toolName}: ${reason}`)}\n`);
+      _lastRenderedBlock = 'status';
       break;
     }
 
@@ -1770,7 +1998,8 @@ function renderEvent(event) {
       flushContent();
       const milestones = data?.milestones || data?.steps || [];
       const title = data?.title || 'Plan';
-      process.stderr.write(`\n  ${c.brand('▸')} ${c.bold(title)}\n`);
+      renderBlockBoundary('plan');
+      process.stderr.write(`  ${c.brand('▸')} ${c.bold(title)}\n`);
       for (const [index, milestone] of milestones.entries()) {
         const label = typeof milestone === 'string'
           ? milestone
@@ -1779,6 +2008,7 @@ function renderEvent(event) {
         const marker = status === 'complete' || status === 'completed' ? c.green('✓') : c.dim(`${index + 1}.`);
         process.stderr.write(`     ${marker} ${label}\n`);
       }
+      _lastRenderedBlock = 'plan';
       break;
     }
 
@@ -1788,7 +2018,9 @@ function renderEvent(event) {
       const filePath = shortPath(data?.path || '');
       const icon = changeType === 'create' ? c.green('+') :
                    changeType === 'delete' ? c.red('-') : c.yellow('~');
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${icon} ${c.dim(filePath)}\n`);
+      _lastRenderedBlock = 'status';
       // Track changed files
       if (filePath && !session.filesChanged.includes(filePath)) {
         session.filesChanged.push(filePath);
@@ -1802,7 +2034,9 @@ function renderEvent(event) {
       if (phase) {
         stopSpinner();
         session.phases.push({ name: phase, time: Date.now() });
-        process.stderr.write(`\n  ${c.brand('▸')} ${c.bold(phase)}\n`);
+        renderBlockBoundary('plan');
+        process.stderr.write(`  ${c.brand('▸')} ${c.bold(phase)}\n`);
+        _lastRenderedBlock = 'plan';
       }
       break;
     }
@@ -1810,7 +2044,9 @@ function renderEvent(event) {
     case 'phase_summary': {
       const summary = data?.summary || '';
       if (summary) {
+        renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.dim(summary.slice(0, 120))}\n`);
+        _lastRenderedBlock = 'status';
       }
       break;
     }
@@ -1826,7 +2062,11 @@ function renderEvent(event) {
     case 'worker_done': {
       stopSpinner();
       const worker = data?.worker || data?.name || '';
-      if (worker) process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)}\n`);
+      if (worker) {
+        renderBlockBoundary('status', { compactSame: true });
+        process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)}\n`);
+        _lastRenderedBlock = 'status';
+      }
       break;
     }
 
@@ -1836,11 +2076,13 @@ function renderEvent(event) {
       const from = data?.from || '';
       const to = data?.to || '';
       session.delegations.push({ from, to, time: Date.now() });
-      process.stderr.write(`\n  ${c.brand('↳')} ${c.dim(from)} ${c.brand('→')} ${c.bold(to)}`);
+      renderBlockBoundary('status', { compactSame: true });
+      process.stderr.write(`  ${c.brand('↳')} ${c.dim(from)} ${c.brand('→')} ${c.bold(to)}`);
       if (data?.instruction) {
         process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
+      _lastRenderedBlock = 'status';
       break;
     }
 
@@ -1850,9 +2092,10 @@ function renderEvent(event) {
       stopSpinner();
       clearPendingHead();
       const agentType = data?.type || 'sub-agent';
-      const model = data?.model || '';
       const query = data?.query || '';
-      process.stderr.write(renderSubAgentOpen({ type: agentType, model, query }) + '\n');
+      renderBlockBoundary('subagent');
+      process.stderr.write(renderSubAgentOpen({ type: agentType, query }).replace(/^\n/, '') + '\n');
+      _lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       startSpinner(`${agentType}: working...`);
@@ -1888,18 +2131,23 @@ function renderEvent(event) {
         toolCalls: data?.tool_calls,
         iterations: data?.iterations,
         error: data?.error,
-      }) + '\n\n');
+      }) + '\n');
+      _lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock();
       break;
     }
 
     case 'plan_created': {
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project plan prepared')}\n`);
+      _lastRenderedBlock = 'status';
       break;
     }
 
     case 'goal_created': {
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project goal prepared')}\n`);
+      _lastRenderedBlock = 'status';
       break;
     }
 
@@ -1910,6 +2158,10 @@ function renderEvent(event) {
         if (_sessionMgr) _sessionMgr.setSessionInfo({ session_id: data.session_id });
       }
       if (data?.model) session.model = data.model;
+      if (data?.models?.coder) session.model = data.models.coder;
+      if (data?.model_limits && typeof data.model_limits === 'object') {
+        session.modelLimits = data.model_limits;
+      }
       if (data?.user) session.user = { ...session.user, ...data.user };
       // BYOK users pay their model provider directly; the platform does not
       // charge them credits. Hide cost + credits when this flag is set.
@@ -1932,13 +2184,15 @@ function renderEvent(event) {
       flushContent();
       {
         const guidance = formatAgentErrorGuidance(data || {});
-        process.stderr.write(`\n  ${c.red('✗')} ${guidance.title}\n`);
+        renderBlockBoundary('status', { compactSame: true });
+        process.stderr.write(`  ${c.red('✗')} ${guidance.title}\n`);
         for (const line of guidance.lines) {
           process.stderr.write(`  ${c.dim(line)}\n`);
         }
         if (guidance.meta.length) {
           process.stderr.write(`  ${c.dim(guidance.meta.join(' · '))}\n`);
         }
+        _lastRenderedBlock = 'status';
       }
       break;
 
@@ -1950,11 +2204,13 @@ function renderEvent(event) {
 
       const summary = data?.summary || '';
       if (summary && !_renderedContentThisTurn) {
+        renderBlockBoundary('content');
         const rendered = renderMarkdown(summary);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
         _renderedContentThisTurn = true;
+        _lastRenderedBlock = 'content';
       }
 
       // Update session token counts
@@ -1998,11 +2254,13 @@ function renderEvent(event) {
         const msgStatus = lowWindowStatus(session.rateLimit);
         if (!session.msgsLowWarned && msgStatus !== 'ok') {
           const windowLine = formatMessageWindow(session.rateLimit);
+          renderBlockBoundary('status', { compactSame: true });
           if (msgStatus === 'exhausted') {
-            process.stderr.write(`\n  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at codekepler.ai/pricing.`)}\n`);
+            process.stderr.write(`  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at codekepler.ai/pricing.`)}\n`);
           } else {
-            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
+            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
           }
+          _lastRenderedBlock = 'status';
           session.msgsLowWarned = true;
         }
 
@@ -2020,10 +2278,14 @@ function renderEvent(event) {
         if (!session.creditsLowWarned && typeof session.creditsTotal === 'number' && session.creditsLimit) {
           const threshold = Math.max(10, Math.floor(session.creditsLimit * 0.2));
           if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
-            process.stderr.write(`\n  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
+            renderBlockBoundary('status', { compactSame: true });
+            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
+            _lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
-            process.stderr.write(`\n  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            renderBlockBoundary('status', { compactSame: true });
+            process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            _lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           }
         }
@@ -2032,8 +2294,28 @@ function renderEvent(event) {
       // Sync cumulative session cost into the orbit (status bar shows it).
       if (_orbit) _orbit.onCost(session.totalCost);
 
-      // Compact turn summary
-      const tools = data?.tool_calls || session.toolCalls || 0;
+      // Compact turn summary. Backend's tool_calls is authoritative and
+      // includes primary + sub-agent internals for billing/credit rollups.
+      const observedPrimaryTools = session.toolCalls;
+      const observedSubAgentTools = session.subAgentToolCalls;
+      const observedTurnTools = observedPrimaryTools + observedSubAgentTools;
+      if (Number.isFinite(data?.primary_tool_calls)) {
+        session.toolCalls = data.primary_tool_calls;
+        const delta = data.primary_tool_calls - observedPrimaryTools;
+        if (delta > 0) session.totalPrimaryToolCalls += delta;
+      }
+      if (Number.isFinite(data?.sub_agent_tool_calls)) {
+        session.subAgentToolCalls = data.sub_agent_tool_calls;
+        const delta = data.sub_agent_tool_calls - observedSubAgentTools;
+        if (delta > 0) session.totalSubAgentToolCalls += delta;
+      }
+      if (Number.isFinite(data?.tool_calls)) {
+        const delta = data.tool_calls - observedTurnTools;
+        if (delta > 0) session.totalToolCalls += delta;
+      }
+      const tools = Number.isFinite(data?.tool_calls)
+        ? data.tool_calls
+        : (session.toolCalls + session.subAgentToolCalls);
 
       // Mission report — replaces the trailing "Done" when the turn did real
       // work (touched files or invoked tools). Plain chat turns keep the
@@ -2059,7 +2341,9 @@ function renderEvent(event) {
             : ['/why', '/undo', '/re-plan'],
           cwd: safeCwd(),
         });
-        process.stderr.write(report + '\n');
+        renderBlockBoundary('status', { compactSame: true });
+        process.stderr.write(report.replace(/^\n/, '') + '\n');
+        _lastRenderedBlock = 'status';
       } else {
         printTurnSummary(tools, data?.duration_s, turnCost);
       }
@@ -2069,17 +2353,23 @@ function renderEvent(event) {
     case 'cancelled':
       stopSpinner();
       flushContent();
-      process.stderr.write(`\n  ${c.yellow('⏹')} Cancelled${data?.reason ? ': ' + c.dim(data.reason) : ''}\n`);
+      renderBlockBoundary('status', { compactSame: true });
+      process.stderr.write(`  ${c.yellow('⏹')} Cancelled${data?.reason ? ': ' + c.dim(data.reason) : ''}\n`);
+      _lastRenderedBlock = 'status';
       break;
 
     case 'paused':
       stopSpinner();
       flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.yellow('⏸')} Paused${data?.reason ? '  ' + c.dim(data.reason) : ''}\n`);
+      _lastRenderedBlock = 'status';
       break;
 
     case 'resumed':
+      renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.green('▶')} Resumed\n`);
+      _lastRenderedBlock = 'status';
       break;
 
     default:
@@ -2413,7 +2703,13 @@ async function handleCommand(input, ctx) {
       }
       process.stderr.write(`  ${c.dim('Env')}          ${env}\n`);
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
-      process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total, ${session.toolCalls} last turn\n`);
+      const toolSplit = session.totalSubAgentToolCalls > 0
+        ? ` ${c.dim(`(${session.totalPrimaryToolCalls} primary, ${session.totalSubAgentToolCalls} sub-agent)`)}`
+        : '';
+      const lastTurnSplit = session.subAgentToolCalls > 0
+        ? ` ${c.dim(`(${session.toolCalls} primary, ${session.subAgentToolCalls} sub-agent)`)}`
+        : '';
+      process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total${toolSplit}, ${session.toolCalls + session.subAgentToolCalls} last turn${lastTurnSplit}\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
       if (session.isByok) {
         process.stderr.write(`  ${c.dim('Billing')}      ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
@@ -2540,7 +2836,11 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${progressBar(Math.round((usedMem / totalMem) * 100), 15, 'Memory')} ${(usedMem / 1024 / 1024 / 1024).toFixed(1)}G\n`);
       process.stderr.write(`  ${progressBar(Math.round((mem.heapUsed / mem.heapTotal) * 100), 15, 'Heap')} ${(mem.heapUsed / 1024 / 1024).toFixed(0)}M\n`);
       process.stderr.write(`  ${c.gray('Turns:')}     ${session.turns}\n`);
-      process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls}\n`);
+      process.stderr.write(`  ${c.gray('Tools:')}     ${session.toolCalls + session.subAgentToolCalls}`);
+      if (session.subAgentToolCalls > 0) {
+        process.stderr.write(c.dim(` (${session.toolCalls} primary, ${session.subAgentToolCalls} sub-agent)`));
+      }
+      process.stderr.write('\n');
       process.stderr.write(`  ${c.gray('Blocked:')}   ${session.blockedOps}\n`);
       if (session.isByok) {
         process.stderr.write(`  ${c.gray('Billing:')}   ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
@@ -2756,10 +3056,17 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/new':
+      if (ctx.startNewSession) await ctx.startNewSession();
+      else process.stderr.write(`  ${c.yellow('!')} ${c.dim('New session reset is unavailable in this mode.')}\n`);
+      return;
+
     case '/clear':
       session.history.length = 0;
       session.agentHistory.length = 0;
       session.toolCalls = 0;
+      session.subAgentToolCalls = 0;
+      clearCards();
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
 
@@ -2893,10 +3200,15 @@ async function handleCommand(input, ctx) {
       // 2. Decide the mode. Force-flag > preview-preset > auto-decide > overlay.
       let mode = forcedMode || picked._presetMode || null;
       if (!mode) {
-        const currentModel = session?.model || session?.user?.default_reasoning_model || null;
+        const currentModel = picked.modelLimits?.coder?.model
+          || picked.models?.[picked.models.length - 1]
+          || session?.model
+          || session?.user?.default_reasoning_model
+          || null;
         const decision = decideResumeMode({
           transcriptTokens: picked.contextTokens,
           model: currentModel,
+          contextWindow: picked.modelLimits?.coder || session?.modelLimits?.coder || null,
           settings: ctx.effectivePolicy?.policy?.resume ? { resume: ctx.effectivePolicy.policy.resume } : {},
         });
         decision.resumeSummary = picked.resumeSummary || null;
@@ -3073,6 +3385,104 @@ export async function startTerminalRepl() {
   let streamClient = null;
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
+
+  async function startNewSession({ announce = true } = {}) {
+    stopSpinner();
+    flushContent();
+    flushPendingHead();
+    flushCompactReadRun();
+    clearCards();
+
+    const preserved = {
+      inputHistory: session.inputHistory,
+      user: session.user,
+      model: session.model,
+      modelLimits: session.modelLimits,
+      isByok: session.isByok,
+      subscriptionTier: session.subscriptionTier,
+      creditsTotal: session.creditsTotal,
+      creditsIncluded: session.creditsIncluded,
+      creditsPurchased: session.creditsPurchased,
+      creditsLimit: session.creditsLimit,
+      rateLimit: session.rateLimit,
+    };
+
+    try { await jsonlWriter.close(); } catch {}
+
+    checkpoints = new CheckpointManager(safeCwd());
+    effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
+    hookRunner = new HookRunner({ cwd: safeCwd() });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    if (ctx._rl) approval.setReadline(ctx._rl);
+    sessionMgr = new SessionManager(safeCwd());
+    _sessionMgr = sessionMgr;
+    jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
+    streamClient = null;
+    latestProjectContext = null;
+    latestEnvelope = null;
+
+    Object.assign(session, {
+      id: null,
+      startTime: Date.now(),
+      inputTokens: 0,
+      outputTokens: 0,
+      toolCalls: 0,
+      subAgentToolCalls: 0,
+      totalToolCalls: 0,
+      totalPrimaryToolCalls: 0,
+      totalSubAgentToolCalls: 0,
+      turns: 0,
+      history: [],
+      agentHistory: [],
+      inputHistory: preserved.inputHistory,
+      user: preserved.user,
+      model: preserved.model,
+      modelLimits: preserved.modelLimits,
+      blockedOps: 0,
+      delegations: [],
+      phases: [],
+      inSubAgent: false,
+      filesChanged: [],
+      filesRead: [],
+      lastTurnDuration: 0,
+      toolCounts: {},
+      subAgentCounts: {},
+      savedUsd: 0,
+      lastTask: '',
+      lastReasoning: '',
+      budgetUsd: null,
+      budgetExceeded: false,
+      costBreakdown: [],
+      totalCost: 0,
+      costAccurate: false,
+      isByok: preserved.isByok,
+      subscriptionTier: preserved.subscriptionTier,
+      creditsTotal: preserved.creditsTotal,
+      creditsIncluded: preserved.creditsIncluded,
+      creditsPurchased: preserved.creditsPurchased,
+      creditsLimit: preserved.creditsLimit,
+      creditsCharged: 0,
+      creditsLowWarned: false,
+      rateLimit: preserved.rateLimit,
+      msgsLowWarned: false,
+      _lastEmittedThinking: '',
+    });
+
+    Object.assign(ctx, {
+      toolExecutor,
+      approval,
+      jsonlWriter,
+      sessionMgr,
+      checkpoints,
+      effectivePolicy,
+      latestProjectContext,
+      latestEnvelope,
+    });
+
+    if (announce) process.stderr.write(`  ${c.green('✓')} ${c.dim('New session started.')}\n`);
+  }
+  ctx.startNewSession = startNewSession;
 
   /**
    * Activate a previously-recorded session for continuation.
@@ -3355,16 +3765,12 @@ export async function startTerminalRepl() {
   // The prompt label is the USER speaking, not the agent. Use the signed-in
   // GitHub handle if known, otherwise fall back to "You".
   //
-  // readline counts every byte of the prompt as a visible column when it
-  // computes cursor position for line-wrapping; ANSI color codes throw the
-  // math off and produce duplicated text on wrap. Wrap each escape sequence
-  // in SOH (\x01) ... STX (\x02) so readline skips it when measuring width.
-  function rlSafe(s) {
-    return String(s || '').replace(/\x1b\[[0-9;]*m/g, '\x01$&\x02');
-  }
+  // Modern Node readline strips ANSI escapes when calculating prompt width.
+  // Bash-style SOH/STX markers confuse readline redraws on long wrapped input
+  // and can make the first prompt line appear duplicated.
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
-    return rlSafe(`${c.brand(who)} ${c.dim('›')} `);
+    return `${c.brand(who)} ${c.dim('›')} `;
   }
 
   function printInputSeparator() {
@@ -3415,7 +3821,7 @@ export async function startTerminalRepl() {
   }
 
   function promptColumns() {
-    return stripAnsi(userPrompt().replace(/[\x01\x02]/g, '')).length;
+    return stripAnsi(userPrompt()).length;
   }
 
   function restoreReadlineCursor() {
@@ -3625,6 +4031,7 @@ export async function startTerminalRepl() {
     session.agentHistory.push(userMessage);
     session.turns++;
     session.toolCalls = 0;
+    session.subAgentToolCalls = 0;
     session.lastTask = input;
     // Reset per-turn counts so the mission report reflects this turn only.
     session.toolCounts = {};
@@ -3798,7 +4205,12 @@ export async function startTerminalRepl() {
       if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
       hookRunner.reload();
       latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous: latestProjectContext });
-      const projectResources = toolExecutor.getProjectResources();
+      let projectResources = toolExecutor.getProjectResources();
+      const promptRoots = promptProjectRoots(input);
+      if (promptRoots.length > 0) {
+        await toolExecutor.registerProjectRoots(promptRoots);
+        projectResources = toolExecutor.getProjectResources();
+      }
       const promptHook = await hookRunner.run('UserPromptSubmit', {
         input: { prompt: input },
         turnId: String(session.turns),

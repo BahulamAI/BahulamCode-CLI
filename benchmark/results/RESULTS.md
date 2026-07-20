@@ -9,7 +9,10 @@
 | v1 | 06-09 | DS-V4-Flash | 300 | 198 (66%)† | n/a | n/a | 92 (28%*) | n/a | $13.76 | Baseline, no preflight |
 | v2 | 06-13 | DS-V4-Flash | 300 | 172 (57%)† | 62% | 48% | 121 (38%*) | 40% | $6.15 | +OperatingBrief |
 | v3 | 06-13 | DS-V4-Flash | 100‡ | 45 (45%) | 27% | 22% | 38 (32%) | 39% | — | Fixed harness, no stagnation§ |
-| **v4** | **06-14** | **DS-V4-Flash** | **296** | **165 (56%)** | **60%** | **45%** | **109 (36.8%)** | **50%** | **$10.91** | **+Scratchpad, +cache fixes** |
+| v4 | 06-14 | DS-V4-Flash | 296 | 165 (56%) | 60% | 45% | 109 (36.8%) | 50% | $10.91 | +Scratchpad, +cache fixes |
+| v5 | 07-15 | DS-V4-Flash | 300 | 212 (71%) | — | — | 142 (47.3%) | 91% | $4.14 | +PRD-071 cache parity, fw 3.2.7 |
+| v6 | 07-15 | Tencent HY3 (free) | 300 | 230 (77%) | — | — | 133 (44.3%) | 93% | $3.48 | Free-tier main; sub-agents never fired |
+| **v7** | **07-17** | **GLM 5.2** | **300** | **235 (78%)** | — | — | **183 (61.0%)** | **94%** | **$46** | **Same-tier as top Claude 4 Sonnet on Lite leaderboard (OpenRouter actual cost incl. sub-agents)** |
 
 † v1/v2 used old harness that leaked `test_patch` into `git diff`. Real patch count excludes test-only diffs.
 
@@ -21,12 +24,14 @@
 
 ### Resolve Quality
 
-| Metric | v1 | v2 | v3 | v4 |
-|--------|----|----|----|----|
-| Resolve / evaluated | 39% | 41% | 72% | **61.6%** |
-| Resolve / real patch | 46% | 66% | 71% | **~66%** |
-| Evaluated | 238 | 297 | 53 | 177 |
-| No-patch instances | 9† | 2† | 47 | 119 |
+| Metric | v1 | v2 | v3 | v4 | v5 | v6 | v7 |
+|--------|----|----|----|----|-----|-----|-----|
+| Resolve / evaluated | 39% | 41% | 72% | 61.6% | 68.6% | 58.8% | **79.9%** |
+| Resolve / real patch | 46% | 66% | 71% | ~66% | 67.0% | 57.8% | **77.9%** |
+| Evaluated | 238 | 297 | 53 | 177 | 207 | 226 | 229 |
+| No-patch instances | 9† | 2† | 47 | 119 | 88 | 70 | 65 |
+
+**v7 delivers the highest resolve-per-patch ratio ever measured on Kepler (77.9%)**. Every 4 patches GLM 5.2 produces, ~3 pass Docker eval. That's the model-quality axis — v5 (DeepSeek Flash) and v6 (Tencent free) produced more raw patches per dollar, but GLM 5.2's patches actually fix the tests they claim to.
 
 The **resolve/evaluated rate of 61.6%** is the highest on a full run. When v4 produces a patch, it resolves 2 out of 3 times.
 
@@ -109,6 +114,9 @@ results/
 │   ├── swebench-v2-flash-300/      (38%, harness contaminated)
 │   ├── swebench-v3-flash-rerun100/ (32%, fixed harness, no stagnation)
 │   ├── swebench-v4-flash-300/      (36.8%, scratchpad + cache, 61.6% resolve/eval)
+│   ├── swebench-v5-flash-300/      (47.3%, PRD-071 cache parity, 91% cache, $4.14)
+│   ├── swebench-v6-tencent-free-300/ (44.3%, Tencent HY3 free, 93% cache, $3.48)
+│   ├── swebench-v7-glm-5.2-300/    (61.0%, GLM 5.2, 94% cache, $46 OR, 77.9% resolve/patch)
 │   └── tbench-v1-flash-10/         (40%)
 └── archive/
 ```

@@ -10,7 +10,7 @@
  * Shell commands are risk-assessed (safe/medium/high).
  */
 
-import { toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { shellCommandDisplay, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import {
   classify as classifyTier,
   TIERS,
@@ -23,6 +23,8 @@ import {
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
+import { validateShellCommand } from './safety.mjs';
+import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
 import { TrustStore } from './trust.mjs';
 import { loadEffectivePolicy } from './policy-resolver.mjs';
@@ -35,12 +37,14 @@ import { loadEffectivePolicy } from './policy-resolver.mjs';
 const WRITE_TOOLS = new Set([
     'shell', 'write_file', 'write_project', 'edit_file', 'delete_file',
     'validate_build', 'lint_check',
+    'skill_install', 'skill_update', 'skill_remove',
 ]);
 
 function defaultWhy(tier, tool, args) {
+    const subject = approvalSummary(tool, args);
     switch (tier) {
         case TIERS.SENSITIVE_READ:
-            return `Reads a sensitive path (${toolDisplaySummary(tool, args) || 'secret-like file'}). Confirm before exposing its contents to the agent.`;
+            return `Reads a sensitive path (${subject || 'secret-like file'}). Confirm before exposing its contents to the agent.`;
         case TIERS.SHELL_DANGEROUS:
             return `Shell command matches a high-risk pattern (rm -rf, sudo, force push, etc.). Confirm before running.`;
         case TIERS.DESTRUCTIVE:
@@ -52,6 +56,23 @@ function defaultWhy(tier, tool, args) {
         default:
             return '';
     }
+}
+
+function approvalSummary(tool, args = {}) {
+    const summary = toolDisplaySummary(tool, args);
+    if (tool !== 'shell') return summary;
+    const display = shellCommandDisplay(args.command || args.cmd || summary || '');
+    return display.cwdLabel ? `${display.command} in ${display.cwdLabel}` : display.command;
+}
+
+function shellHardBlockReason(tool, args = {}) {
+    if (tool !== 'shell') return '';
+    const command = args.command || args.cmd || '';
+    const safety = validateShellCommand(command);
+    if (!safety.safe) return safety.reason || 'Blocked by shell safety policy';
+    const classification = classifyCommand(command);
+    if (classification.classification === 'blocked') return classification.reason || 'Blocked by shell safety policy';
+    return '';
 }
 
 // ── ANSI helpers ──
@@ -112,13 +133,23 @@ export class ApprovalManager {
         if (this.planMode && WRITE_TOOLS.has(toolName)) {
             return { approved: false, reason: `Blocked by plan mode: ${toolName}` };
         }
-        // Auto-approve everything in headless/autoApprove mode (no TTY prompts)
-        if (this.autoApprove) {
-            this.history.push({ tool: toolName, decision: 'auto', time: Date.now() });
-            return { approved: true, tier: classifyTier(toolName, args) };
-        }
 
         const tier = classifyTier(toolName, args);
+        const hardBlock = shellHardBlockReason(toolName, args);
+        if (hardBlock) {
+            const reason = `Blocked by safety policy: ${hardBlock}`;
+            this.history.push({ tool: toolName, decision: 'safety-block', tier, time: Date.now(), reason });
+            this.approvalLog.append({ tool: toolName, args, tier, decision: 'safety_block', scope: 'none', reason });
+            write(`  ${RED}✗${RST}  ${DIM}${reason}${RST}\n\n`);
+            return { approved: false, tier, reason, blocked: true, code: 'safety_block' };
+        }
+
+        // Auto-approve everything in headless/autoApprove mode (no TTY prompts).
+        // Non-overridable shell safety blocks are checked above.
+        if (this.autoApprove) {
+            this.history.push({ tool: toolName, decision: 'auto', tier, time: Date.now() });
+            return { approved: true, tier };
+        }
 
         // 'auto' tiers: read, shell-safe.
         if (tier === TIERS.READ || tier === TIERS.SHELL_SAFE) {
@@ -169,7 +200,7 @@ export class ApprovalManager {
     async _prompt(toolName, args, context = {}) {
         const tier = context.tier || classifyTier(toolName, args);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
-        const summary = toolDisplaySummary(toolName, args);
+        const summary = approvalSummary(toolName, args);
         const options = this._optionsFor(tier);
 
         let selected = 0; // arrow-driven cursor

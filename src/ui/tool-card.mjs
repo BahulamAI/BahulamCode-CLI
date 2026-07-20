@@ -28,6 +28,7 @@ import {
   toolDisplayLabel,
   toolDisplaySummary,
   formatShellCommand,
+  shellCommandDisplay,
 } from '../terminal/tool-display.mjs';
 
 // ── Family → label colorizer ─────────────────────────────────────────────
@@ -49,7 +50,11 @@ function formatArgs(tool, args, cwd) {
   const summary = toolDisplaySummary(tool, args || {}, { cwd });
   if (!summary) return '';
   if (tool === 'shell') {
-    return formatShellCommand(summary, paintShellAdapter);
+    const display = shellCommandDisplay(summary, { cwd });
+    const command = formatShellCommand(display.command, paintShellAdapter);
+    return display.cwdLabel
+      ? `${command} ${paint.text.dim('in')} ${paint.brand.data(display.cwdLabel)}`
+      : command;
   }
   return paint.text.muted(summary);
 }
@@ -296,11 +301,14 @@ export function formatCardHead(tool, args, opts = {}) {
 
   if (tool === 'shell' && visibleWidth(argsText) > budget) {
     const wrapWidth = Math.max(32, cols - visibleWidth(indent) - 4);
-    const command = toolDisplaySummary(tool, args || {}, { cwd });
-    const commandLines = wrapCommand(command, wrapWidth)
+    const display = shellCommandDisplay(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
+    const commandLines = wrapCommand(display.command, wrapWidth)
       .map(line => `${indent}${paint.text.dim('  ')}${formatShellCommand(line, paintShellAdapter)}`);
     const head = `${indent}${paintLabel(tool, label)}`;
-    return `${head}\n${commandLines.join('\n')}`;
+    const cwdLine = display.cwdLabel
+      ? `\n${indent}${paint.text.dim('  in ')}${paint.brand.data(display.cwdLabel)}`
+      : '';
+    return `${head}\n${commandLines.join('\n')}${cwdLine}`;
   }
 
   const argsTruncated = truncateMiddle(argsText, budget);
@@ -335,10 +343,22 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
 
   const candidate = `${head}  ${arrow} ${body}${tail}`;
   if (!head.includes('\n') && visibleWidth(candidate) <= cols) return candidate;
+  if (!head.includes('\n') && isInlineOutcomeTool(tool)) {
+    const reserve = visibleWidth(`${arrow} ${body}${tail}`) + 4;
+    const compactHead = truncateMiddle(head, Math.max(28, cols - reserve));
+    return `${compactHead}  ${arrow} ${body}${tail}`;
+  }
 
   // Doesn't fit on one line → push outcome to a separate gutter line.
   const gutterIndent = (indent || '  ') + paint.text.dim('⎿  ');
   return `${head}\n${gutterIndent}${arrow} ${body}${tail}`;
+}
+
+function isInlineOutcomeTool(tool) {
+  return [
+    'read_file', 'read_files', 'read_batch', 'get_file_info',
+    'search_code', 'search_files', 'grep', 'list_files',
+  ].includes(String(tool || '').toLowerCase());
 }
 
 function truncateMiddle(text, max) {

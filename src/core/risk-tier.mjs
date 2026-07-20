@@ -71,10 +71,11 @@ const READ_PATH_ARRAY_KEYS = [
 
 const LOCAL_EDIT_TOOLS = new Set([
   'edit_file', 'write_file', 'write_project',
+  'skill_install', 'skill_update',
 ]);
 
 const DESTRUCTIVE_TOOLS = new Set([
-  'delete_file',
+  'delete_file', 'skill_remove',
 ]);
 
 const NETWORK_TOOLS = new Set([
@@ -104,6 +105,7 @@ const SHELL_SAFE_RE = [
 ];
 
 const SHELL_DANGEROUS_RE = [
+  /\brm\s/i,
   /\brm\s+-r/i,
   /\brm\s+--recursive/i,
   /\brm\s+-rf?\b/i,

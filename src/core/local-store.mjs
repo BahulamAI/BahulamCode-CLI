@@ -190,12 +190,14 @@ async function parseSessionMeta(filePath) {
     cacheCreationTokens: 0,
     toolCalls: [],   // [{name, count}]
     models: [],      // [model strings]
+    modelLimits: {},  // role -> {model, context_length, max_output, source}
     startTime: null,
     endTime: null,
     gitBranch: null,
     // ── PRD-068 §5.14 derived fields ───────────────────────────────────
     endStatus: 'unknown',   // 'completed' | 'interrupted' | 'errored' | 'unknown'
     contextTokens: 0,       // projected transcript size when serialized
+    contextTokenSource: 'jsonl_bytes',
     costUsd: 0,             // sum of per-turn provider costs recorded in transcript
     partial: false,         // true if some lines failed to parse
     fileBytes: 0,           // raw file size (byte-based ctx fallback if no usage totals)
@@ -236,7 +238,18 @@ async function parseSessionMeta(filePath) {
       if (obj.type === 'kepler_event' && obj.event) {
         const ev = obj.event;
         if (ev.type === 'complete' && typeof ev.cost_usd === 'number') meta.costUsd += ev.cost_usd;
-        if (ev.type === 'session_info' && typeof ev.total_cost_usd === 'number') meta.costUsd = ev.total_cost_usd;
+        if (ev.type === 'session_info') {
+          if (typeof ev.total_cost_usd === 'number') meta.costUsd = ev.total_cost_usd;
+          const info = ev.data || ev;
+          if (info.model_limits && typeof info.model_limits === 'object') {
+            meta.modelLimits = info.model_limits;
+          }
+          if (info.models && typeof info.models === 'object') {
+            for (const model of Object.values(info.models)) {
+              if (typeof model === 'string' && model) modelSet.add(model);
+            }
+          }
+        }
         if (ev.type === 'error' || ev.error === true) hadError = true;
         if (ev.type === 'resume_summary' && typeof ev.data?.summary === 'string') {
           meta.resumeSummary = {
@@ -306,10 +319,11 @@ async function parseSessionMeta(filePath) {
     .sort((a, b) => b.count - a.count);
   meta.models = [...modelSet];
 
-  // Projected context size — prefer recorded usage totals if available, else
-  // fall back to the byte-based estimate (~4 chars/token for English).
-  const usageTotal = meta.inputTokens + meta.outputTokens + meta.cacheReadTokens;
-  meta.contextTokens = usageTotal > 0 ? usageTotal : Math.round(meta.fileBytes / 4);
+  // Projected context size for resume should estimate the serialized payload,
+  // not cumulative provider usage. Provider input tokens are charged per turn
+  // and include repeated/cache-read context, so summing them can show millions
+  // of "context" tokens for a transcript that serializes far smaller.
+  meta.contextTokens = Math.max(0, Math.round(meta.fileBytes / 4));
 
   // Derive endStatus from the tail of the transcript.
   if (hadError) {

@@ -88,6 +88,25 @@ test('renders content to stdout', () => {
     assert.ok(captured.includes('Hello world'));
 });
 
+test('supports opt-in dotted block separator', () => {
+    const previous = process.env.KEPLER_BLOCK_SEPARATOR;
+    try {
+        process.env.KEPLER_BLOCK_SEPARATOR = 'dotted';
+        const f = new EventFormatter();
+        capture();
+        f.render({ type: 'content', data: { text: 'First block' } });
+        f.render({ type: 'tool_call', data: { call_id: 'call_1', tool: 'read_file', args: { file_path: 'src/a.js' } } });
+        restore();
+        assert.ok(captured.includes('First block'));
+        assert.ok(captured.includes('····'));
+        assert.ok(captured.includes('Reading'));
+    } finally {
+        restore();
+        if (previous == null) delete process.env.KEPLER_BLOCK_SEPARATOR;
+        else process.env.KEPLER_BLOCK_SEPARATOR = previous;
+    }
+});
+
 test('renders thinking only when verbose', () => {
     const f1 = new EventFormatter({ verbose: false });
     capture();
@@ -99,6 +118,7 @@ test('renders thinking only when verbose', () => {
     capture();
     f2.render({ type: 'thinking', data: { text: 'Pondering...' } });
     restore();
+    assert.ok(captured.includes('Thinking'));
     assert.ok(captured.includes('Pondering'));
 });
 

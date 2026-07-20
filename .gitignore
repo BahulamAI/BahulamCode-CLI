@@ -9,5 +9,6 @@ __pycache__/
 
 .npmrc
 benchmark/.venv/
+benchmark/model-comparison/results/
 .vercel
 .env*

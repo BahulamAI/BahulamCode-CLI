@@ -4,7 +4,7 @@
  * Classifies shell commands into three categories:
  *   - 'safe'      → read-only, auto-approved, no sandbox
  *   - 'contained' → needs .venv/sandbox (tests, builds, installs)
- *   - 'blocked'   → requires HITL approval (destructive, network-exec)
+ *   - 'blocked'   → denied locally before execution (critical destructive targets, network-exec)
  *
  * Based on openclaude-reference/src/tools/BashTool/readOnlyValidation.ts
  * Ported: COMMAND_ALLOWLIST, flag validation, expansion detection.
@@ -318,12 +318,12 @@ function isContainedCommand(command) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Section 5: Blocked Commands (always need HITL approval)
+// Section 5: Blocked Commands (always denied before execution)
 // ═══════════════════════════════════════════════════════════════════
 
 /** Shell patterns that are ALWAYS blocked. */
 const BLOCKED_PATTERNS = [
-    /rm\s+(-\w*[rR]\w*\s+)*(\/|~|\$HOME|\.\.|\.\/\.\.)/,  // rm -rf / or ~ or ..
+    /rm\s+(-\w*[rR]\w*\s+)*(?:\/(?:\s|$)|~(?:\s|\/?\s*$)|\$HOME(?:\s|\/?\s*$)|\.\.(?:\s|\/|$)|\.\/\.\.)/,  // rm -rf /, ~, $HOME, or ..
     /rm\s+(-\w*[rR]\w*\s+)*\.\s*$/,                         // rm -rf .
     /rm\s+(-\w*[rR]\w*\s+)*\*\s*$/,                         // rm -rf *
     /:\(\)\s*\{\s*:\|\s*:\s*&\s*\}\s*;/,                     // fork bomb
@@ -535,13 +535,14 @@ export function classifyCommand(command) {
         }
     }
 
-    // ── Step 4: Check for high-risk patterns (escalate to blocked) ──
+    // ── Step 4: Check for high-risk patterns (require HITL, then contained execution) ──
     let highRisk = false;
     for (const pattern of HIGH_RISK_PATTERNS) {
         if (pattern.test(trimmed)) {
             highRisk = true;
-            // High-risk patterns escalate contained → blocked
-            if (worstLevel !== 'blocked') worstLevel = 'blocked';
+            // High-risk commands are approved-contained, not hard-blocked.
+            // Truly dangerous targets are caught by BLOCKED_PATTERNS above.
+            if (worstLevel === 'safe') worstLevel = 'contained';
             break;
         }
     }

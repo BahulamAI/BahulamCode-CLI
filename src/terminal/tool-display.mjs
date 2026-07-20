@@ -4,6 +4,7 @@ const TOOL_LABELS = Object.freeze({
   shell: 'Running',
   read_file: 'Reading',
   read_files: 'Reading',
+  read_batch: 'Reading batch',
   write_file: 'Writing',
   write_project: 'Writing files',
   edit_file: 'Editing',
@@ -22,6 +23,11 @@ const TOOL_LABELS = Object.freeze({
   git_status: 'Checking git',
   analyze_code: 'Analyzing',
   get_project_overview: 'Indexing project',
+  skills_list: 'Listing skills',
+  skill_view: 'Loading skill',
+  skill_install: 'Installing skill',
+  skill_update: 'Updating skill',
+  skill_remove: 'Removing skill',
   explore: 'Exploring',
   plan: 'Planning',
   verify: 'Verifying',
@@ -70,9 +76,13 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
       return filePath;
     }
     case 'read_files':
-      return (args.file_paths || args.paths || [])
-        .map(filePath => shortPath(filePath, cwd))
-        .join(', ');
+    case 'read_batch': {
+      const files = (args.file_paths || args.paths || [])
+        .concat((args.items || []).map(item => typeof item === 'string' ? item : item?.file_path || item?.path).filter(Boolean))
+        .map(filePath => shortPath(filePath, cwd));
+      if (files.length <= 6) return files.join(', ');
+      return `${files.slice(0, 3).join(', ')} · +${files.length - 3} more`;
+    }
     case 'write_file': {
       const filePath = shortPath(args.file_path || args.path, cwd);
       const lineCount = typeof args.content === 'string'
@@ -105,6 +115,15 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
     case 'git_diff':
     case 'git_status':
       return args.path ? shortPath(args.path, cwd) : '';
+    case 'skills_list':
+      return [args.query ? `"${args.query}"` : '', args.scope || '', args.source || ''].filter(Boolean).join(' · ');
+    case 'skill_view':
+      return [args.name || '', args.path || '', args.source_id || ''].filter(Boolean).join(' · ');
+    case 'skill_install':
+      return `${args.source || ''}${args.scope ? ` → ${args.scope}` : ''}${args.force ? ' · force' : ''}`;
+    case 'skill_update':
+    case 'skill_remove':
+      return `${args.name || ''}${args.scope ? ` · ${args.scope}` : ''}`;
     case 'explore':
     case 'plan':
     case 'verify':
@@ -119,6 +138,16 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
         .join(', ')
         .slice(0, 120);
   }
+}
+
+export function shellCommandDisplay(command, { cwd = currentWorkingDirectory() } = {}) {
+  const parsed = parseLeadingCd(command);
+  if (!parsed) return { command: String(command || '(empty command)'), cwdLabel: '' };
+
+  return {
+    command: parsed.command || '(empty command)',
+    cwdLabel: compactShellCwd(parsed.cwd, cwd),
+  };
 }
 
 export function formatShellCommand(command, colors) {
@@ -140,4 +169,37 @@ export function formatShellCommand(command, colors) {
     }
     return colors.white(token);
   }).join('');
+}
+
+function parseLeadingCd(command) {
+  const text = String(command || '').trim();
+  const match = text.match(/^cd\s+((?:"(?:\\.|[^"\\])*")|'(?:\\.|[^'\\])*'|(?:\\.|[^\s&])+)\s*&&\s*([\s\S]+)$/);
+  if (!match) return null;
+  return {
+    cwd: unquoteShellToken(match[1]),
+    command: match[2].trim(),
+  };
+}
+
+function unquoteShellToken(token) {
+  const text = String(token || '');
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    const body = text.slice(1, -1);
+    return text.startsWith('"')
+      ? body.replace(/\\(["\\$`])/g, '$1')
+      : body;
+  }
+  return text.replace(/\\(.)/g, '$1');
+}
+
+function compactShellCwd(dir, cwd) {
+  const value = String(dir || '');
+  if (!value) return '';
+  if (cwd && value === cwd) return '';
+  if (cwd && value.startsWith(`${cwd}/`)) return value.slice(cwd.length + 1);
+
+  const parts = value.split('/').filter(Boolean);
+  if (parts.length <= 2) return value || dir;
+  if (/\s/.test(parts[parts.length - 2] || '')) return parts[parts.length - 1];
+  return parts.slice(-2).join('/');
 }

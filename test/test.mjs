@@ -647,13 +647,13 @@ fs.rmSync(skillDir, { recursive: true, force: true });
 
 // ---------- Slash Commands Tests ----------
 
-section('Slash Commands (39)');
+section('Slash Commands (40)');
 
 const commandCount = Object.keys(COMMANDS).length;
-assert(commandCount >= 38, `Should have >= 38 commands, got ${commandCount}`);
+assert(commandCount >= 39, `Should have >= 39 commands, got ${commandCount}`);
 
 const expectedCommands = [
-    '/help', '/clear', '/compact', '/cost', '/doctor', '/fast', '/model',
+    '/help', '/new', '/clear', '/compact', '/cost', '/doctor', '/fast', '/model',
     '/tokens', '/tools', '/quit', '/exit', '/bug', '/review', '/init',
     '/login', '/logout', '/status', '/config', '/memory', '/forget',
     '/effort', '/think', '/plan', '/vim', '/terminal-setup', '/mcp',
@@ -694,6 +694,16 @@ assertEqual(cmdState.model, 'new-model', 'Model switched');
 // /clear
 COMMANDS['/clear'].handler('', cmdState);
 assertEqual(cmdState.messages.length, 0, 'Clear empties messages');
+
+// /new
+cmdState.messages.push({ role: 'user', content: 'fresh' });
+cmdState.turnCount = 2;
+cmdState.tokenUsage = { input: 123, output: 45 };
+const newResult = COMMANDS['/new'].handler('', cmdState);
+assertIncludes(newResult, 'New session started', 'New starts session');
+assertEqual(cmdState.messages.length, 0, 'New empties messages');
+assertEqual(cmdState.turnCount, 0, 'New resets turns');
+assertEqual(cmdState.tokenUsage.input, 0, 'New resets token usage');
 
 // /cost
 cmdState.tokenUsage = { input: 1000, output: 500 };

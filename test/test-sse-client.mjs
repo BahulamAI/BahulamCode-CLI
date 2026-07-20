@@ -85,6 +85,74 @@ await test('parses status event', async () => {
     assert.strictEqual(events[1].type, 'complete');
 });
 
+await test('parses SSE id and retry fields', async () => {
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-ids' });
+            res.write(`id: 7\nretry: 25\nevent: status\ndata: ${JSON.stringify({ message: 'Starting...' })}\n\n`);
+            res.write(`id: 8\nevent: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+            res.end();
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.strictEqual(events[0].event_id, '7');
+    assert.strictEqual(events[0].retry, 25);
+    assert.strictEqual(client.lastEventId, '8');
+    assert.strictEqual(client.retryDelayMs, 25);
+});
+
+await test('reconnects to task events after mid-stream drop', async () => {
+    let replayRequested = false;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-reconnect' });
+            res.write(`id: 1\nretry: 10\nevent: status\ndata: ${JSON.stringify({ message: 'Started' })}\n\n`);
+            setTimeout(() => {
+                res.socket?.destroy(new Error('simulated drop'));
+            }, 10);
+        } else if (req.url === '/api/execute/task-reconnect/events?after=1') {
+            replayRequested = true;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-reconnect' });
+            res.write(`id: 2\nevent: content\ndata: ${JSON.stringify({ text: 'Recovered' })}\n\n`);
+            res.write(`id: 3\nevent: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+            res.end();
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+        reconnectMaxElapsedMs: 1000,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.ok(replayRequested, 'client should request replay endpoint');
+    assert.ok(events.some(e => e.type === EVENT_TYPES.RECONNECTING));
+    assert.ok(events.some(e => e.type === EVENT_TYPES.CONTENT && e.data.text === 'Recovered'));
+    assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
+    assert.strictEqual(client.lastEventId, '3');
+});
+
 // Test 2: Tool call triggers execution + callback and exposes the local result
 await test('tool_call triggers execution, callback, and tool_result', async () => {
     let callbackReceived = false;
@@ -129,6 +197,39 @@ await test('tool_call triggers execution, callback, and tool_result', async () =
     assert.strictEqual(resultEvent.data.output, 'mock result for read_file');
     assert.ok(Number.isInteger(resultEvent.data.duration_ms));
     assert.ok(callbackReceived, 'callback should have been sent');
+});
+
+await test('forwarded sub-agent tool_call preserves metadata on local tool_result', async () => {
+    const { server, port } = await createMockServer([
+        {
+            event: 'tool_call',
+            data: {
+                call_id: 'sub-tc1',
+                tool: 'read_file',
+                args: { path: 'test.txt' },
+                internal: true,
+                sub_agent: 'explore',
+            },
+        },
+        { event: 'complete', data: { summary: 'Done' } },
+    ]);
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) {
+        events.push(evt);
+    }
+    server.close();
+
+    const resultEvent = events.find(e => e.type === EVENT_TYPES.TOOL_RESULT);
+    assert.ok(resultEvent, 'local tool_result should be yielded');
+    assert.strictEqual(resultEvent.data.call_id, 'sub-tc1');
+    assert.strictEqual(resultEvent.data.internal, true);
+    assert.strictEqual(resultEvent.data.sub_agent, 'explore');
+    assert.strictEqual(resultEvent.data.local_callback, true);
 });
 
 await test('tool_result with file_diff yields structured file_diff event', async () => {

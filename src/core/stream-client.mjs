@@ -9,7 +9,7 @@
  * Phase 2: handles all 22 event types. Approval flow integrated.
  */
 
-import { sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
+import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
 import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 
@@ -45,11 +45,18 @@ export const EVENT_TYPES = Object.freeze({
     PAUSED: 'paused',
     RESUMED: 'resumed',
     PAUSE_INSTRUCTION: 'pause_instruction',
+    RECONNECTING: 'reconnecting',
+    RECONNECTED: 'reconnected',
+    RECONNECT_FAILED: 'reconnect_failed',
     // HITL approval events (from framework)
     APPROVAL_REQUIRED: 'approval_required',
     APPROVAL_GRANTED: 'approval_granted',
     APPROVAL_DENIED: 'approval_denied',
 });
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 export class TarangStreamClient {
     /**
@@ -59,7 +66,15 @@ export class TarangStreamClient {
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
      */
-    constructor({ baseUrl, token, toolExecutor, verbose = false, approvalManager = null, product = null }) {
+    constructor({
+        baseUrl,
+        token,
+        toolExecutor,
+        verbose = false,
+        approvalManager = null,
+        product = null,
+        reconnectMaxElapsedMs = null,
+    }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.toolExecutor = toolExecutor;
@@ -67,7 +82,15 @@ export class TarangStreamClient {
         this.approval = approvalManager || new ApprovalManager();
         this.product = product || process.env.TARANG_PRODUCT || process.env.KEPLER_PRODUCT || 'kepler';
         this.currentTaskId = null;
-        this.sessionId = null;  // Set by backend on first turn, reused on subsequent turns
+        this.lastEventId = null;
+        this.retryDelayMs = null;
+        this.pendingToolCallbacks = new Map();
+        this.reconnectMaxElapsedMs = reconnectMaxElapsedMs
+            ?? Number(process.env.KEPLER_RECONNECT_MAX_ELAPSED_MS || 300_000);
+        // Set by backend on first turn, reused on subsequent turns. Headless mode
+        // (which starts fresh per invocation) can pre-seed via TARANG_SESSION_ID
+        // so multi-turn benchmarks share one backend session across `node` runs.
+        this.sessionId = process.env.TARANG_SESSION_ID || null;
         this._cancelled = false;
         this._paused = false;
         this._pauseWaiters = new Set();
@@ -156,80 +179,152 @@ export class TarangStreamClient {
             return;
         }
 
-        // Grab task ID from response header
-        this.currentTaskId = response.headers.get('X-Task-ID') || null;
-
-        // Parse SSE stream
-        for await (const { event, data } of this._parseSSE(response)) {
+        try {
+            yield* this._consumeResponse(response);
+        } catch (err) {
             if (this._cancelled) {
                 return;
             }
+            yield* this._reconnectAfterDrop(err);
+        }
+    }
+
+    async *_consumeResponse(response) {
+        const taskId = response.headers.get('X-Task-ID');
+        if (taskId) this.currentTaskId = taskId;
+
+        for await (const parsed of this._parseSSE(response)) {
+            if (this._cancelled) return;
             await this._waitIfPaused();
-            if (this._cancelled) {
-                return;
-            }
+            if (this._cancelled) return;
 
-            // Capture session_id from backend (first turn creates it, subsequent turns reuse)
-            if (event === EVENT_TYPES.SESSION_INFO && data?.session_id) {
-                this.sessionId = data.session_id;
-            }
+            if (parsed.id != null) this.lastEventId = parsed.id;
+            if (parsed.retry != null) this.retryDelayMs = parsed.retry;
+            if (parsed.data?.task_id) this.currentTaskId = parsed.data.task_id;
 
-            // Framework HITL: approval_required — show menu, POST decision
-            if (event === EVENT_TYPES.APPROVAL_REQUIRED) {
-                yield { type: event, data }; // Show to user (renders "Approval needed: write_file")
-                const approvalEvent = await this._handleApprovalRequired(data);
-                if (approvalEvent) yield approvalEvent;
-                continue;
+            for await (const event of this._handleStreamEvent(parsed)) {
+                yield event;
             }
+        }
+    }
 
-            // Framework HITL: approval result events — yield for rendering
-            if (event === EVENT_TYPES.APPROVAL_GRANTED || event === EVENT_TYPES.APPROVAL_DENIED) {
-                yield { type: event, data };
-                continue;
-            }
+    async *_handleStreamEvent({ event, data, id = null, retry = null }) {
+        const rendered = { type: event, data, event_id: id, retry };
 
-            // Tool requests — show to user, then execute locally and POST callback
-            // NOTE: With framework HITL enabled, tool_call events no longer carry
-            // require_approval — the framework handles that via approval_required above.
-            // This path remains for backwards compatibility with older backends.
-            if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
-                yield { type: event, data }; // Show tool call to user first
+        // Capture session_id from backend (first turn creates it, subsequent turns reuse)
+        if (event === EVENT_TYPES.SESSION_INFO && data?.session_id) {
+            this.sessionId = data.session_id;
+        }
+
+        // Framework HITL: approval_required — show menu, POST decision
+        if (event === EVENT_TYPES.APPROVAL_REQUIRED) {
+            yield rendered;
+            const approvalEvent = await this._handleApprovalRequired(data);
+            if (approvalEvent) yield approvalEvent;
+            return;
+        }
+
+        if (event === EVENT_TYPES.APPROVAL_GRANTED || event === EVENT_TYPES.APPROVAL_DENIED) {
+            yield rendered;
+            return;
+        }
+
+        // Tool requests — show to user, then execute locally and POST callback.
+        if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
+            yield rendered;
+            await this._waitIfPaused();
+            if (this._cancelled || data?.server_side) return;
+            const toolEvent = await this._handleToolRequest(data);
+            if (toolEvent) {
                 await this._waitIfPaused();
-                if (this._cancelled) {
-                    return;
-                }
-                if (data?.server_side) continue;
-                const toolEvent = await this._handleToolRequest(data);
-                if (toolEvent) {
-                    await this._waitIfPaused();
-                    if (this._cancelled) {
-                        return;
-                    }
-                    yield toolEvent;
-                    for (const diffEvent of fileDiffEventsForToolResult(toolEvent)) {
-                        yield diffEvent;
-                    }
-                }
-                continue;
-            }
-
-            // All other events yielded to caller. If a server-side tool result
-            // already contains diff metadata, expose the same first-class
-            // file_diff event shape local tools emit.
-            const passthrough = { type: event, data };
-            yield passthrough;
-            if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
-                for (const diffEvent of fileDiffEventsForToolResult(passthrough)) {
+                if (this._cancelled) return;
+                yield toolEvent;
+                for (const diffEvent of fileDiffEventsForToolResult(toolEvent)) {
                     yield diffEvent;
                 }
             }
+            return;
         }
+
+        yield rendered;
+        if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
+            for (const diffEvent of fileDiffEventsForToolResult(rendered)) {
+                yield diffEvent;
+            }
+        }
+    }
+
+    async *_reconnectAfterDrop(err) {
+        const taskId = this.currentTaskId;
+        if (!taskId || this.lastEventId == null) {
+            yield {
+                type: EVENT_TYPES.ERROR,
+                data: {
+                    message: `Stream interrupted: ${err?.message || 'connection lost'}. Use /resume to continue from saved history.`,
+                    fatal: true,
+                },
+            };
+            return;
+        }
+
+        const started = Date.now();
+        let attempt = 0;
+        let delayMs = Math.max(250, Math.min(this.retryDelayMs || 1000, 30_000));
+
+        while (!this._cancelled && Date.now() - started < this.reconnectMaxElapsedMs) {
+            attempt++;
+            const after = this.lastEventId;
+            yield {
+                type: EVENT_TYPES.RECONNECTING,
+                data: { task_id: taskId, after, attempt, delay_ms: delayMs },
+            };
+            await sleep(delayMs);
+            try {
+                const url = `${this.baseUrl}/api/execute/${encodeURIComponent(taskId)}/events?after=${encodeURIComponent(after)}`;
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: this._headers({ Accept: 'text/event-stream' }),
+                    signal: AbortSignal.timeout(30_000),
+                });
+                if (response.status === 404 || response.status === 410) {
+                    yield {
+                        type: EVENT_TYPES.RECONNECT_FAILED,
+                        data: {
+                            task_id: taskId,
+                            code: response.status === 410 ? 'reconnect_buffer_expired' : 'task_not_found',
+                            retryable: false,
+                        },
+                    };
+                    return;
+                }
+                if (!response.ok) throw new Error(`reconnect failed (${response.status})`);
+                for await (const event of this._consumeResponse(response)) {
+                    yield event;
+                }
+                return;
+            } catch (nextErr) {
+                if (this._cancelled) return;
+                err = nextErr;
+                delayMs = Math.min(delayMs * 2, 30_000);
+            }
+        }
+
+        yield {
+            type: EVENT_TYPES.RECONNECT_FAILED,
+            data: {
+                task_id: taskId,
+                after: this.lastEventId,
+                code: 'reconnect_timeout',
+                message: err?.message || 'connection lost',
+                retryable: false,
+            },
+        };
     }
 
     /**
      * Parse SSE from a fetch Response using ReadableStream.
      * @param {Response} response
-     * @yields {{ event: string, data: Object }}
+     * @yields {{ event: string, data: Object, id: string|null, retry: number|null }}
      */
     async *_parseSSE(response) {
         const reader = response.body.getReader();
@@ -237,6 +332,8 @@ export class TarangStreamClient {
         let buffer = '';
         let currentEvent = 'message';
         let currentData = [];
+        let currentId = null;
+        let currentRetry = null;
 
         try {
             while (true) {
@@ -256,7 +353,8 @@ export class TarangStreamClient {
                 buffer = lines.pop(); // keep incomplete last line
 
                 for (const line of lines) {
-                    const trimmed = line.trim();
+                    const rawLine = line.endsWith('\r') ? line.slice(0, -1) : line;
+                    const trimmed = rawLine.trim();
 
                     if (!trimmed) {
                         // Empty line = event boundary
@@ -268,16 +366,23 @@ export class TarangStreamClient {
                             } catch {
                                 parsed = { message: rawData };
                             }
-                            yield { event: currentEvent, data: parsed };
+                            yield { event: currentEvent, data: parsed, id: currentId, retry: currentRetry };
                         }
                         currentEvent = 'message';
                         currentData = [];
+                        currentId = null;
+                        currentRetry = null;
                     } else if (trimmed.startsWith('event:')) {
                         currentEvent = trimmed.slice(6).trim();
                     } else if (trimmed.startsWith('data:')) {
                         currentData.push(trimmed.slice(5).trim());
+                    } else if (trimmed.startsWith('id:')) {
+                        currentId = trimmed.slice(3).trim();
+                    } else if (trimmed.startsWith('retry:')) {
+                        const parsedRetry = Number(trimmed.slice(6).trim());
+                        if (Number.isFinite(parsedRetry) && parsedRetry >= 0) currentRetry = parsedRetry;
                     }
-                    // ignore other fields (id:, retry:, comments)
+                    // comments and unknown SSE fields are ignored.
                 }
             }
 
@@ -290,7 +395,7 @@ export class TarangStreamClient {
                 } catch {
                     parsed = { message: rawData };
                 }
-                yield { event: currentEvent, data: parsed };
+                yield { event: currentEvent, data: parsed, id: currentId, retry: currentRetry };
             }
         } finally {
             reader.releaseLock();
@@ -310,6 +415,7 @@ export class TarangStreamClient {
         const { call_id, request_id, tool, args } = data;
         const callId = call_id || request_id;
         const toolName = tool;
+        const isInternal = Boolean(data?.internal || data?.sub_agent);
 
         if (this.verbose) {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
@@ -342,7 +448,11 @@ export class TarangStreamClient {
                 call_id: callId,
                 tool: toolName,
                 args: args || {},
+                llm_content: llmToolResultContent(toolName, result),
                 duration_ms: durationMs,
+                internal: isInternal,
+                sub_agent: data?.sub_agent || null,
+                local_callback: true,
             },
         };
     }
