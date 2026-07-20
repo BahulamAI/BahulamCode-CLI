@@ -184,30 +184,39 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         assert.ok(output.includes('npm publish'));
         assert.ok(/SHELL-(MEDIUM|DANGEROUS)/.test(output),
           'expected SHELL-MEDIUM or SHELL-DANGEROUS tier label');
-        assert.ok(output.includes('[?] why'));
+        assert.ok(output.includes('[t] always allow'));
+        assert.ok(output.includes('[n] cancel'));
+        assert.ok(!output.includes('[?] why'));
+        assert.ok(!output.includes('re-plan'));
         assert.ok(!output.includes('Publishes this package publicly'));
     } finally {
         process.stderr.write = originalWrite;
     }
 });
 
-await test('approval re-plan captures note for next context', async () => {
+await test('approval approve once does not print duplicate confirmation', async () => {
     const mgr = new ApprovalManager();
-    mgr._readKey = async () => 'r';
-    mgr._readLinePrompt = async () => 'too broad; use a narrower command';
+    mgr._readKey = async () => 'y';
 
-    const result = await mgr.check('shell', { command: 'npm publish' });
-    assert.strictEqual(result.approved, false);
-    assert.ok(result.reason.includes('too broad'));
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
 
-    const hints = mgr.consumeRejectionHints();
-    assert.strictEqual(hints.length, 1);
-    assert.strictEqual(hints[0].decision, 'replan');
-    assert.strictEqual(hints[0].note, 'too broad; use a narrower command');
-    assert.strictEqual(mgr.consumeRejectionHints().length, 0);
+    try {
+        const result = await mgr.check('shell', { command: 'npm publish' });
+        assert.strictEqual(result.approved, true);
+        assert.ok(output.includes('Decision'));
+        assert.ok(!output.includes('✓'));
+        assert.ok(!output.includes('npm publish\n\n'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
 });
 
-await test('approval stop does not prompt for a reason', async () => {
+await test('approval cancel does not prompt for a reason', async () => {
     const mgr = new ApprovalManager();
     let prompted = false;
     mgr._readKey = async () => 'n';

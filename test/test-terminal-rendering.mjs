@@ -208,7 +208,7 @@ test('search cards keep outcome inline by compacting long heads', () => {
   assert.ok(rendered.includes('…'));
 });
 
-test('tool activity rows do not insert blank lines between consecutive tools', () => {
+test('tool activity rows only force blank spacing between shell commands', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
   assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
@@ -217,7 +217,7 @@ test('tool activity rows do not insert blank lines between consecutive tools', (
   assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
   assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
   assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
-  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: true })"));
+  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
   assert.ok(replSource.includes("renderBlockBoundary('thinking')"));
   assert.ok(replSource.includes('function thinkingPrefix(text)'));
   assert.ok(replSource.includes('Thinking · ${kind}'));
@@ -444,8 +444,9 @@ test('approval prompt uses risk title and compact scoped menu', () => {
   }));
   assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
   assert.ok(rendered.includes('Decision'));
-  assert.ok(rendered.includes('stop'));
-  assert.ok(rendered.includes('[?] why'));
+  assert.ok(rendered.includes('cancel'));
+  assert.ok(!rendered.includes('[?] why'));
+  assert.ok(!rendered.includes('re-plan'));
   assert.ok(rendered.includes('rm -rf node_modules'));
   assert.ok(!rendered.includes('Why  Resetting dependencies'));
   assert.ok(!rendered.includes('┃'));
@@ -481,6 +482,8 @@ test('approval compatibility wrapper uses unified prompt', () => {
   assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
   assert.ok(inline.includes('Decision'));
   assert.ok(inline.includes('always allow'));
+  assert.ok(inline.includes('cancel'));
+  assert.ok(!inline.includes('[?] why'));
 
   const trusted = stripAnsi(renderTrustedApproval({
     tool: 'shell',
