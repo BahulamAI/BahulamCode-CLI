@@ -191,12 +191,18 @@ await test('hook runner blocks tools and captures feedback', async () => {
   assert.strictEqual(prompt.results[0].parsed.feedback, 'load testing skill');
 });
 
-await test('approval manager supports session trust and approval log', async () => {
+await test('approval manager honors saved session trust and approval log', async () => {
   const cwd = tempProject();
   scaffoldKeplerProject({ cwd });
   const policy = loadEffectivePolicy({ cwd, cli: { hitl: { alwaysAskForDangerous: false } } }).policy;
   const mgr = new ApprovalManager({ cwd, policy });
-  mgr._readKey = async () => 's';
+  mgr.trustStore.add({
+    tool: 'shell',
+    args: { command: 'rm -rf build' },
+    tier: 'shell-dangerous',
+    scope: 'SESSION',
+  });
+  mgr._readKey = async () => 'n';
   const originalWrite = process.stderr.write;
   process.stderr.write = () => true;
   try {
@@ -210,7 +216,6 @@ await test('approval manager supports session trust and approval log', async () 
     process.stderr.write = originalWrite;
   }
   const log = fs.readFileSync(path.join(cwd, '.kepler', 'approvals.log'), 'utf-8');
-  assert.ok(log.includes('approve_trusted'));
   assert.ok(log.includes('auto_trusted'));
 });
 

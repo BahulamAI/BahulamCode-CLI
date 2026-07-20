@@ -1815,7 +1815,7 @@ function renderToolCall(data) {
   // regular two-line shape before starting the next one.
   flushPendingHead();
   if (!isCompactReadTool(tool)) flushCompactReadRun();
-  renderBlockBoundary('tool', { compactSame: true });
+  renderBlockBoundary('tool', { compactSame: tool !== 'shell' });
 
   const head = formatCardHead(tool, args, {
     cwd: safeCwd(),

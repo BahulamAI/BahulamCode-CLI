@@ -6,7 +6,8 @@
  *   Decision
  *   ▸ [y] approve once     run this call
  *     [t] always allow     auto-approve future calls to this tool
- *   ↑↓ move · Enter pick · letter shortcut · Esc stop
+ *     [n] cancel           do not run
+ *   ↑↓ move · Enter pick · letter shortcut · Esc cancel
  *
  * The rule colour is `brand.accent` (magenta) for explicit-approval
  * tiers; safe-default prompts use `brand.data` so they read as advisory.
@@ -29,19 +30,15 @@ import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/ris
  *   hint  — secondary description shown to the right of the label
  */
 export function defaultOptions(tier) {
-  const shared = [
-    { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' },
-    { key: 'r', label: 're-plan with note...',  value: 'replan',   hint: 'steer the agent' },
-    { key: 'n', label: 'stop', value: 'reject',   hint: 'do not run' },
-    { key: '?', label: 'why',      value: 'why',      hint: 'show reasoning' },
-  ];
+  const approve = { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' };
+  const cancel = { key: 'n', label: 'cancel', value: 'reject', hint: 'do not run' };
   if (requiresExplicitApproval(tier)) {
-    return shared;
+    return [approve, cancel];
   }
   return [
-    shared[0],
+    approve,
     { key: 't', label: 'always allow',    value: 'allow-type',  hint: 'auto-approve future calls to this tool' },
-    ...shared.slice(1),
+    cancel,
   ];
 }
 
@@ -52,10 +49,9 @@ export function defaultOptions(tier) {
  *   ⚙️ Running rm -rf node_modules && npm install
  *   Decision
  *   ▸ [y] approve once
- *     [r] re-plan...
- *     [n] stop
- *     [?] why
- *   ↑↓ move · Enter pick · letter shortcut · Esc stop
+ *     [t] always allow
+ *     [n] cancel
+ *   ↑↓ move · Enter pick · letter shortcut · Esc cancel
  *   ────────────────────────────────────────────────────────────────────
  *
  * @param {object} opts
@@ -81,7 +77,7 @@ export function renderApprovalPrompt({
     horizontalRule(title, cols, accent),
     ...subjectRows(tool, args, cols, accent),
     ...decisionRows(opts, selected, accent),
-    `  ${paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc stop')}`,
+    `  ${paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc cancel')}`,
     horizontalRule('', cols, accent),
   ];
 

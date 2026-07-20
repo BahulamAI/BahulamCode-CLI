@@ -201,7 +201,6 @@ export class ApprovalManager {
     async _prompt(toolName, args, context = {}) {
         const tier = context.tier || classifyTier(toolName, args);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
-        const summary = approvalSummary(toolName, args);
         const options = this._optionsFor(tier);
 
         let selected = 0; // arrow-driven cursor
@@ -267,7 +266,6 @@ export class ApprovalManager {
 
         switch (value) {
             case 'approve':
-                write(`  ${GREEN}✓${RST}  ${DIM}${toolName}${RST} ${DIM}${summary.slice(0, 60)}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once' });
                 return { approved: true, tier };
@@ -311,7 +309,6 @@ export class ApprovalManager {
             case 'allow-type':
                 if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
-                write(`  ${GREEN}✓${RST}  ${DIM}always allow ${toolName}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session' });
                 return { approved: true, tier };
@@ -428,16 +425,7 @@ export class ApprovalManager {
     }
 
     _optionsFor(tier) {
-        const options = approvalOptions(tier);
-        if (requiresExplicitApproval(tier)) {
-            if (this.policy.hitl?.allowSessionTrust) {
-                options.splice(1, 0, { key: 's', label: 'session', value: 'allow-session', hint: 'trust this pattern until expiry' });
-            }
-            if (this.policy.hitl?.allowProjectTrust) {
-                options.splice(1, 0, { key: 'a', label: 'project', value: 'allow-project', hint: 'trust this pattern in this repo' });
-            }
-        }
-        return options;
+        return approvalOptions(tier);
     }
 
     getSummary() {
