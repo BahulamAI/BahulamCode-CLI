@@ -117,6 +117,23 @@ The agent receives:
 3. the checkpointed or freshly generated summary
 4. the retained recent tail for summary-plus-tail modes
 
+## Resilient Streaming
+
+Kepler keeps a per-task SSE event cursor while a turn is running. If the network
+connection drops mid-turn, the CLI reconnects to the same backend task and asks
+for events after the last rendered event id. This protects long-running tool
+sessions from transient connection drops.
+
+The terminal shows reconnect states inline:
+
+```text
+! connection lost; attempt 1 from event 42
+✓ reconnected · replayed 6 events
+```
+
+Tool callbacks use idempotency keys, so retry/reconnect windows do not duplicate
+completed local tool results.
+
 ## Approvals And HITL
 
 Kepler auto-approves low-risk reads and safe shell inspection commands. It asks
@@ -201,6 +218,13 @@ Common local paths:
 Provider API keys can be configured in the dashboard or through environment
 variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and
 `OPENROUTER_API_KEY`.
+
+Runtime controls:
+
+```text
+KEPLER_RECONNECT_MAX_ELAPSED_MS    Max reconnect window for a dropped stream
+KEPLER_BLOCK_SEPARATOR             space, dotted, or off
+```
 
 ## Troubleshooting
 

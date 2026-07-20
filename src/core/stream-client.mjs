@@ -12,6 +12,7 @@
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
 import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
+import * as telemetry from '../telemetry/index.mjs';
 
 export const EVENT_TYPES = Object.freeze({
     // Phase 1 — handled
@@ -274,6 +275,11 @@ export class TarangStreamClient {
         while (!this._cancelled && Date.now() - started < this.reconnectMaxElapsedMs) {
             attempt++;
             const after = this.lastEventId;
+            telemetry.track('stream.reconnect.attempt', {
+                task_id: taskId,
+                after,
+                attempt,
+            });
             yield {
                 type: EVENT_TYPES.RECONNECTING,
                 data: { task_id: taskId, after, attempt, delay_ms: delayMs },
@@ -287,6 +293,14 @@ export class TarangStreamClient {
                     signal: AbortSignal.timeout(30_000),
                 });
                 if (response.status === 404 || response.status === 410) {
+                    telemetry.track('stream.reconnect.failed', {
+                        task_id: taskId,
+                        after,
+                        attempt,
+                        status: response.status,
+                        code: response.status === 410 ? 'reconnect_buffer_expired' : 'task_not_found',
+                        retryable: false,
+                    });
                     yield {
                         type: EVENT_TYPES.RECONNECT_FAILED,
                         data: {
@@ -298,17 +312,42 @@ export class TarangStreamClient {
                     return;
                 }
                 if (!response.ok) throw new Error(`reconnect failed (${response.status})`);
+                let replayed = 0;
                 for await (const event of this._consumeResponse(response)) {
+                    if (event.type !== EVENT_TYPES.RECONNECTED) replayed++;
+                    if (event.type === EVENT_TYPES.RECONNECTED) {
+                        replayed = Number(event.data?.replayed ?? replayed);
+                    }
                     yield event;
                 }
+                telemetry.track('stream.reconnect.succeeded', {
+                    task_id: taskId,
+                    after,
+                    attempt,
+                    replayed,
+                    elapsed_ms: Date.now() - started,
+                });
                 return;
             } catch (nextErr) {
                 if (this._cancelled) return;
+                telemetry.track('stream.reconnect.retry', {
+                    task_id: taskId,
+                    after,
+                    attempt,
+                    message: nextErr?.message || 'reconnect failed',
+                });
                 err = nextErr;
                 delayMs = Math.min(delayMs * 2, 30_000);
             }
         }
 
+        telemetry.track('stream.reconnect.failed', {
+            task_id: taskId,
+            after: this.lastEventId,
+            code: 'reconnect_timeout',
+            retryable: false,
+            elapsed_ms: Date.now() - started,
+        });
         yield {
             type: EVENT_TYPES.RECONNECT_FAILED,
             data: {
@@ -437,8 +476,16 @@ export class TarangStreamClient {
         }
 
         // POST callback to backend
+        let callbackPosted = false;
         if (this.currentTaskId && callId) {
-            await sendCallback(this.baseUrl, this.token, this.currentTaskId, callId, result);
+            callbackPosted = await sendCallback(this.baseUrl, this.token, this.currentTaskId, callId, result);
+            telemetry.track(callbackPosted ? 'tool.callback.posted' : 'tool.callback.failed', {
+                task_id: this.currentTaskId,
+                call_id: callId,
+                tool: toolName,
+                success: Boolean(result?.success !== false),
+                duration_ms: durationMs,
+            });
         }
 
         return {

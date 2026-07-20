@@ -3,6 +3,7 @@
  */
 
 import { TarangStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
+import * as telemetry from '../src/telemetry/index.mjs';
 import * as http from 'node:http';
 import assert from 'node:assert';
 
@@ -115,6 +116,7 @@ await test('parses SSE id and retry fields', async () => {
 });
 
 await test('reconnects to task events after mid-stream drop', async () => {
+    telemetry.clear();
     let replayRequested = false;
     const server = http.createServer((req, res) => {
         if (req.url === '/api/execute') {
@@ -151,6 +153,106 @@ await test('reconnects to task events after mid-stream drop', async () => {
     assert.ok(events.some(e => e.type === EVENT_TYPES.CONTENT && e.data.text === 'Recovered'));
     assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
     assert.strictEqual(client.lastEventId, '3');
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.attempt'], 1);
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.succeeded'], 1);
+});
+
+await test('reconnect after tool_call does not duplicate local tool execution', async () => {
+    telemetry.clear();
+    let executions = 0;
+    let callbacks = 0;
+    let replayRequested = false;
+    let streamRes = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            streamRes = res;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-tool-drop' });
+            res.write(`id: 1\nevent: tool_call\ndata: ${JSON.stringify({ call_id: 'tc-drop', tool: 'read_file', args: { path: 'a.txt' } })}\n\n`);
+        } else if (req.url === '/api/callback') {
+            callbacks++;
+            req.resume();
+            req.on('end', () => {
+                res.writeHead(200);
+                res.end('{}');
+                setTimeout(() => {
+                    streamRes?.socket?.destroy(new Error('drop after callback'));
+                }, 5);
+            });
+        } else if (req.url === '/api/execute/task-tool-drop/events?after=1') {
+            replayRequested = true;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-tool-drop' });
+            res.write(`id: 2\nevent: tool_done\ndata: ${JSON.stringify({ call_id: 'tc-drop', tool: 'read_file', success: true })}\n\n`);
+            res.write(`id: 3\nevent: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+            res.end();
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: {
+            async execute(name) {
+                executions++;
+                return { success: true, output: `mock result for ${name}`, _tool: name };
+            },
+        },
+        reconnectMaxElapsedMs: 1000,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.ok(replayRequested, 'client should replay after the tool callback window');
+    assert.strictEqual(executions, 1, 'local tool should execute exactly once');
+    assert.strictEqual(callbacks, 1, 'callback should be posted exactly once');
+    assert.strictEqual(events.filter(e => e.type === EVENT_TYPES.TOOL_CALL).length, 1);
+    assert.strictEqual(events.filter(e => e.type === EVENT_TYPES.TOOL_RESULT && e.data.local_callback).length, 1);
+    assert.ok(events.some(e => e.type === EVENT_TYPES.TOOL_DONE && e.data.call_id === 'tc-drop'));
+    assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
+    assert.strictEqual(telemetry.getStats().eventCounts['tool.callback.posted'], 1);
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.succeeded'], 1);
+});
+
+await test('reconnect replays complete when task finished while disconnected', async () => {
+    telemetry.clear();
+    let replayRequested = false;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-offline-complete' });
+            res.write(`id: 1\nevent: content\ndata: ${JSON.stringify({ text: 'partial' })}\n\n`);
+            setTimeout(() => res.socket?.destroy(new Error('offline')), 5);
+        } else if (req.url === '/api/execute/task-offline-complete/events?after=1') {
+            replayRequested = true;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-offline-complete' });
+            res.write(`id: 2\nevent: complete\ndata: ${JSON.stringify({ summary: 'Finished offline' })}\n\n`);
+            res.end();
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+        reconnectMaxElapsedMs: 1000,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.ok(replayRequested, 'client should request final replay');
+    assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
+    assert.strictEqual(events.at(-1).data.summary, 'Finished offline');
+    assert.strictEqual(client.lastEventId, '2');
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.succeeded'], 1);
 });
 
 // Test 2: Tool call triggers execution + callback and exposes the local result
