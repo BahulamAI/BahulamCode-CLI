@@ -255,6 +255,54 @@ await test('reconnect replays complete when task finished while disconnected', a
     assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.succeeded'], 1);
 });
 
+await test('stale approval callback surfaces a continuation error', async () => {
+    telemetry.clear();
+    let approvalPosted = false;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-approval-stale' });
+            res.write(`id: 1\nevent: approval_required\ndata: ${JSON.stringify({ tool_id: 'call_stale', tool: 'shell', args: { command: 'npm test' }, risk: 'shell-medium' })}\n\n`);
+            setTimeout(() => {
+                res.write(`id: 2\nevent: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+                res.end();
+            }, 20);
+        } else if (req.url === '/api/approval_callback') {
+            approvalPosted = true;
+            req.resume();
+            req.on('end', () => {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ detail: 'No matching approval request' }));
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const client = new TarangStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+        approvalManager: {
+            approveAll: false,
+            approvedToolTypes: new Set(),
+            async check() {
+                return { approved: true, scope: 'once' };
+            },
+        },
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.ok(approvalPosted, 'approval callback should be posted');
+    const errorEvent = events.find(e => e.type === EVENT_TYPES.ERROR && e.data?.code === 'approval_callback_failed');
+    assert.ok(errorEvent, 'stale approval should surface a continuation error');
+    assert.strictEqual(telemetry.getStats().eventCounts['approval.callback.failed'], 1);
+});
+
 // Test 2: Tool call triggers execution + callback and exposes the local result
 await test('tool_call triggers execution, callback, and tool_result', async () => {
     let callbackReceived = false;

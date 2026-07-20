@@ -28,6 +28,9 @@ const TOOL_LABELS = Object.freeze({
   skill_install: 'Installing skill',
   skill_update: 'Updating skill',
   skill_remove: 'Removing skill',
+  agents_list: 'Listing agents',
+  agent_create: 'Creating agent',
+  agent_sync: 'Syncing agents',
   explore: 'Exploring',
   plan: 'Planning',
   verify: 'Verifying',
@@ -124,6 +127,12 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
     case 'skill_update':
     case 'skill_remove':
       return `${args.name || ''}${args.scope ? ` · ${args.scope}` : ''}`;
+    case 'agents_list':
+      return [args.query ? `"${args.query}"` : '', args.scope || ''].filter(Boolean).join(' · ');
+    case 'agent_create':
+      return [args.name || '', args.role || '', args.model || ''].filter(Boolean).join(' · ');
+    case 'agent_sync':
+      return args.name || args.slug || 'all local agents';
     case 'explore':
     case 'plan':
     case 'verify':

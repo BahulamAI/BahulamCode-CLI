@@ -72,6 +72,7 @@ const READ_PATH_ARRAY_KEYS = [
 const LOCAL_EDIT_TOOLS = new Set([
   'edit_file', 'write_file', 'write_project',
   'skill_install', 'skill_update',
+  'agent_create', 'agent_sync',
 ]);
 
 const DESTRUCTIVE_TOOLS = new Set([

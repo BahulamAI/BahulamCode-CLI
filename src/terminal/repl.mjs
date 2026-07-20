@@ -43,6 +43,7 @@ import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
+import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
@@ -948,6 +949,7 @@ const session = {
   costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
+  modelOverrides: {},  // session-local role -> model overrides sent to backend
   isByok: false,       // set from session_info; hides cost + credits when true
   // ── Subscription / credit state (server-authoritative; set from
   //    session_info + complete events) ──
@@ -977,6 +979,7 @@ const COMMANDS = {
   '/git':      'Git status',
   '/diff':     'Git diff',
   '/cost':     'Show session cost',
+  '/model':    'Show or set session model overrides',
   '/history':  'Show conversation',
   '/settings': 'Show policy/settings',
   '/last':     'Expand last tool output',
@@ -1028,6 +1031,7 @@ const HELP_GROUPS = [
       ['/status context', 'Loaded .kepler context'],
       ['/status metrics', 'Progress bars and runtime metrics'],
       ['/status cost', 'Credits and message window'],
+      ['/model [role] [model]', 'Show or set session model override'],
       ['/status budget <amount|clear>', 'Set or clear session budget'],
     ],
   },
@@ -1075,7 +1079,10 @@ const HELP_GROUPS = [
     title: 'Agents',
     summary: 'specialist modes',
     commands: [
-      ['/agents', 'List built-in agents'],
+      ['/agents', 'List built-in and local agents'],
+      ['/agents create <name>', 'Create .kepler/agents/<name>.yaml'],
+      ['/agents edit <name>', 'Open local agent YAML'],
+      ['/agents sync [name]', 'Sync all or one local agent to cloud'],
       ['/explore <instruction>', 'Explore code'],
       ['/review <instruction>', 'Review code'],
       ['/architect <instruction>', 'Design an approach'],
@@ -1224,6 +1231,289 @@ function renderKeyboardHelp() {
   process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
   process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
   process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+}
+
+const MODEL_ROLE_ALIASES = new Map([
+  ['reasoning', 'reasoning'],
+  ['main', 'reasoning'],
+  ['coder', 'reasoning'],
+  ['coding', 'reasoning'],
+  ['smart', 'reasoning'],
+  ['fast', 'fast'],
+  ['explorer', 'fast'],
+  ['orchestrator', 'orchestrator'],
+  ['planner', 'orchestrator'],
+  ['local', 'local'],
+  ['worker', 'worker'],
+  ['explore', 'explore'],
+  ['plan', 'plan'],
+  ['verify', 'verify'],
+  ['debug', 'debug'],
+  ['refactor', 'refactor'],
+]);
+
+const MODEL_ROLE_LABELS = {
+  reasoning: 'coding',
+  fast: 'fast',
+  orchestrator: 'orchestrator',
+  local: 'local',
+  worker: 'worker',
+  explore: 'explore',
+  plan: 'plan',
+  verify: 'verify',
+  debug: 'debug',
+  refactor: 'refactor',
+};
+
+const MODEL_ROLE_ORDER = [
+  'reasoning',
+  'fast',
+  'orchestrator',
+  'local',
+  'worker',
+  'explore',
+  'plan',
+  'verify',
+  'debug',
+  'refactor',
+];
+
+function normalizeModelRole(value) {
+  return MODEL_ROLE_ALIASES.get(String(value || '').trim().toLowerCase()) || null;
+}
+
+function sessionModelOverrideEntries() {
+  return Object.entries(session.modelOverrides || {})
+    .filter(([, model]) => typeof model === 'string' && model.trim())
+    .sort(([a], [b]) => MODEL_ROLE_ORDER.indexOf(a) - MODEL_ROLE_ORDER.indexOf(b));
+}
+
+function printModelCommandUsage() {
+  process.stderr.write(`  ${c.gray('Usage:')} /model [model]\n`);
+  process.stderr.write(`         /model <role> <model>\n`);
+  process.stderr.write(`         /model clear [role]\n`);
+  process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
+}
+
+function printModelStatus() {
+  process.stderr.write(`\n  ${c.bold('Models')}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
+  process.stderr.write(`  ${c.gray('Active coding')} ${session.model || 'backend default'}\n`);
+
+  const limits = session.modelLimits || {};
+  const rows = [
+    ['coder', limits.coder?.model],
+    ['explorer', limits.explorer?.model],
+    ['orchestrator', limits.orchestrator?.model],
+  ].filter(([, model]) => model);
+  if (rows.length) {
+    process.stderr.write(`\n  ${c.bold('Backend roles')}\n`);
+    for (const [role, model] of rows) {
+      process.stderr.write(`  ${c.brand(role.padEnd(14))} ${c.dim(model)}\n`);
+    }
+  }
+
+  const overrides = sessionModelOverrideEntries();
+  process.stderr.write(`\n  ${c.bold('Session overrides')}\n`);
+  if (!overrides.length) {
+    process.stderr.write(`  ${c.dim('(none)')}\n`);
+  } else {
+    for (const [role, model] of overrides) {
+      process.stderr.write(`  ${c.brand((MODEL_ROLE_LABELS[role] || role).padEnd(14))} ${model}\n`);
+    }
+  }
+  process.stderr.write('\n');
+  printModelCommandUsage();
+}
+
+function handleModelCommand(rest = '') {
+  const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    printModelStatus();
+    return;
+  }
+
+  if (parts[0] === 'clear' || parts[0] === 'reset') {
+    if (parts.length === 1) {
+      session.modelOverrides = {};
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared all session model overrides.')}\n`);
+      return;
+    }
+    const role = normalizeModelRole(parts[1]);
+    if (!role) {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model role: ${parts[1]}`)}\n`);
+      printModelCommandUsage();
+      return;
+    }
+    delete session.modelOverrides[role];
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Cleared ${MODEL_ROLE_LABELS[role] || role} model override.`)}\n`);
+    return;
+  }
+
+  let role = 'reasoning';
+  let model = parts.join(' ');
+  const maybeRole = normalizeModelRole(parts[0]);
+  if (maybeRole && parts.length >= 2) {
+    role = maybeRole;
+    model = parts.slice(1).join(' ');
+  }
+
+  if (!model || normalizeModelRole(model)) {
+    printModelCommandUsage();
+    return;
+  }
+
+  session.modelOverrides = { ...(session.modelOverrides || {}), [role]: model };
+  if (role === 'reasoning') session.model = model;
+  process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
+  process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
+}
+
+function parseSimpleFlags(parts) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part.startsWith('--')) {
+      const key = part.slice(2);
+      const next = parts[i + 1];
+      if (!next || next.startsWith('--')) {
+        flags[key] = true;
+      } else {
+        flags[key] = next;
+        i++;
+      }
+    } else {
+      positional.push(part);
+    }
+  }
+  return { flags, positional };
+}
+
+function printAgentsUsage() {
+  process.stderr.write(`  ${c.gray('Usage:')} /agents\n`);
+  process.stderr.write(`         /agents create <name> [--description text] [--role specialist] [--model id] [--tools a,b] [--open|--no-open]\n`);
+  process.stderr.write(`         /agents edit <name>\n`);
+  process.stderr.write(`         /agents sync [name]\n`);
+}
+
+function printAgentsList() {
+  const local = listLocalAgents(safeCwd());
+  process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
+  for (const agent of BUILTIN_AGENTS) {
+    process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
+  }
+
+  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.kepler/agents + ~/.kepler/agents')}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
+  if (!local.length) {
+    process.stderr.write(`  ${c.dim('(none)')}\n`);
+  } else {
+    for (const agent of local) {
+      const scope = agent.source_scope === 'project' ? c.green('project') : c.dim(agent.source_scope);
+      const model = agent.model ? c.dim(` · ${agent.model}`) : '';
+      process.stderr.write(`  ${c.brand(agent.slug.padEnd(18))} ${scope} ${agent.description || ''}${model}\n`);
+    }
+  }
+  process.stderr.write('\n');
+  printAgentsUsage();
+}
+
+async function handleAgentsCommand(rest = '', ctx) {
+  const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  const action = (parts.shift() || 'list').toLowerCase();
+
+  if (action === 'list' || action === 'ls') {
+    printAgentsList();
+    return;
+  }
+
+  if (action === 'create' || action === 'new') {
+    const { flags, positional } = parseSimpleFlags(parts);
+    const name = positional[0];
+    if (!name) {
+      printAgentsUsage();
+      return;
+    }
+    try {
+      const created = createAgentFile({
+        cwd: safeCwd(),
+        name,
+        description: flags.description || flags.desc || '',
+        role: flags.role || 'specialist',
+        model: flags.model || '',
+        tools: flags.tools || 'read_file,search_code,list_files',
+        force: Boolean(flags.force),
+      });
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Created local agent:')} ${created.filePath}\n`);
+      const shouldOpen = !flags['no-open'] && (Boolean(flags.open) || isVsCodeTerminal());
+      if (shouldOpen) {
+        const opened = openAgentFile(created.filePath, {
+          allowConfiguredEditor: Boolean(flags.open),
+        });
+        if (opened.opened) {
+          process.stderr.write(`  ${c.dim('Opened in:')} ${opened.editor}\n`);
+        } else {
+          process.stderr.write(`  ${c.dim(opened.reason)}\n`);
+        }
+      }
+      process.stderr.write(`  ${c.dim('Sync explicitly with:')} /agents sync ${created.slug}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  if (action === 'edit' || action === 'open') {
+    const target = parts.find(p => !p.startsWith('--'));
+    if (!target) {
+      printAgentsUsage();
+      return;
+    }
+    const local = listLocalAgents(safeCwd());
+    const agent = local.find(item => item.slug === target || item.name === target);
+    if (!agent?.source) {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`No local agent found: ${target}`)}\n`);
+      return;
+    }
+    const opened = openAgentFile(agent.source, { allowConfiguredEditor: true });
+    if (opened.opened) {
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Opened ${agent.slug} in ${opened.editor}.`)}\n`);
+    } else {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(opened.reason)}\n`);
+      process.stderr.write(`  ${c.dim('Agent file:')} ${agent.source}\n`);
+    }
+    process.stderr.write(`  ${c.dim('Sync after editing:')} /agents sync ${agent.slug}\n`);
+    return;
+  }
+
+  if (action === 'sync') {
+    const target = parts.find(p => !p.startsWith('--'));
+    const local = listLocalAgents(safeCwd());
+    const selected = target
+      ? local.filter(agent => agent.slug === target || agent.name === target)
+      : local;
+    if (!selected.length) {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(target ? `No local agent found: ${target}` : 'No local agents to sync.')}\n`);
+      return;
+    }
+    try {
+      const creds = ctx.auth.loadCredentials();
+      const result = await syncAgentsToBackend({
+        backendUrl: creds.backendUrl,
+        token: creds.token,
+        agents: selected,
+      });
+      const synced = result.synced ?? selected.length;
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Synced ${synced} agent${synced === 1 ? '' : 's'} to Supabase.`)}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  printAgentsUsage();
 }
 
 function commandCompletions(line) {
@@ -2698,6 +2988,15 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`  ${c.dim('ID')}           ${session.id || c.dim('(not assigned yet)')}\n`);
       process.stderr.write(`  ${c.dim('User')}         ${session.user?.github_username || '—'}\n`);
       process.stderr.write(`  ${c.dim('Model')}        ${session.model || 'backend default'}\n`);
+      const modelOverrides = sessionModelOverrideEntries();
+      if (modelOverrides.length) {
+        const summary = modelOverrides
+          .slice(0, 4)
+          .map(([role, model]) => `${MODEL_ROLE_LABELS[role] || role}=${model}`)
+          .join(', ');
+        const more = modelOverrides.length > 4 ? ` +${modelOverrides.length - 4} more` : '';
+        process.stderr.write(`  ${c.dim('Overrides')}    ${summary}${more}\n`);
+      }
       if (env === 'local') {
         process.stderr.write(`  ${c.dim('Backend')}      ${creds.backendUrl}\n`);
       }
@@ -3056,6 +3355,11 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/model': {
+      handleModelCommand(rest);
+      return;
+    }
+
     case '/new':
       if (ctx.startNewSession) await ctx.startNewSession();
       else process.stderr.write(`  ${c.yellow('!')} ${c.dim('New session reset is unavailable in this mode.')}\n`);
@@ -3296,14 +3600,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/agents':
-      process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
-      process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-      for (const agent of BUILTIN_AGENTS) {
-        process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
-        process.stderr.write(`  ${' '.repeat(14)} ${c.gray(agent.detail)}\n`);
-      }
-      process.stderr.write(`\n  ${c.gray('Usage: /<agent> <instruction>')}\n`);
-      process.stderr.write(`  ${c.gray('Example: /explore how does the auth flow work?')}\n\n`);
+      await handleAgentsCommand(rest, ctx);
       return;
 
     case '/explore':
@@ -3398,6 +3695,7 @@ export async function startTerminalRepl() {
       user: session.user,
       model: session.model,
       modelLimits: session.modelLimits,
+      modelOverrides: session.modelOverrides,
       isByok: session.isByok,
       subscriptionTier: session.subscriptionTier,
       creditsTotal: session.creditsTotal,
@@ -3439,6 +3737,7 @@ export async function startTerminalRepl() {
       user: preserved.user,
       model: preserved.model,
       modelLimits: preserved.modelLimits,
+      modelOverrides: preserved.modelOverrides,
       blockedOps: 0,
       delegations: [],
       phases: [],
@@ -4240,6 +4539,11 @@ export async function startTerminalRepl() {
       ctx.latestEnvelope = latestEnvelope;
       Object.assign(execContext, latestEnvelope);
       if (skipPerms) execContext.freeswim = true;
+      const modelOverrides = Object.fromEntries(sessionModelOverrideEntries());
+      if (Object.keys(modelOverrides).length > 0) {
+        execContext.model_overrides = modelOverrides;
+        if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
+      }
       // PRD-071: seed work_scope from CLI so the backend has a byte-stable
       // scope block from turn 1. Uses projectResources already gathered by
       // the envelope above.

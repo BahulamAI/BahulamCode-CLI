@@ -548,10 +548,26 @@ export class TarangStreamClient {
 
         // POST decision to backend
         if (this.currentTaskId && tool_id) {
-            await sendApprovalDecision(
+            const posted = await sendApprovalDecision(
                 this.baseUrl, this.token, this.currentTaskId,
                 tool_id, decision, scope, denyReason || '',
             );
+            telemetry.track(posted ? 'approval.callback.posted' : 'approval.callback.failed', {
+                task_id: this.currentTaskId,
+                tool_id,
+                tool,
+                decision,
+            });
+            if (!posted) {
+                return {
+                    type: EVENT_TYPES.ERROR,
+                    data: {
+                        message: `Approval for ${tool} could not be applied. The request may have timed out or the stream may be stale; retry the command if it did not continue.`,
+                        code: 'approval_callback_failed',
+                        fatal: false,
+                    },
+                };
+            }
         }
 
         if (!approved) {

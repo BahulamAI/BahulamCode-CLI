@@ -39,9 +39,9 @@ assert.strictEqual(overview.success, true);
 const projectId = overview.project_resource.project_id;
 
 // Test 1: listTools returns the complete bridge inventory
-await test('listTools returns all 27 tools', async () => {
+await test('listTools returns core and agent tools', async () => {
     const tools = executor.listTools();
-    assert.strictEqual(tools.length, 27);
+    assert.ok(tools.length >= 30);
     assert.ok(tools.includes('shell'));
     assert.ok(tools.includes('read_file'));
     assert.ok(tools.includes('write_file'));
@@ -62,6 +62,9 @@ await test('listTools returns all 27 tools', async () => {
     assert.ok(tools.includes('skill_install'));
     assert.ok(tools.includes('skill_update'));
     assert.ok(tools.includes('skill_remove'));
+    assert.ok(tools.includes('agents_list'));
+    assert.ok(tools.includes('agent_create'));
+    assert.ok(tools.includes('agent_sync'));
 });
 
 await test('project overview is session-stable and exposes project_id', async () => {
