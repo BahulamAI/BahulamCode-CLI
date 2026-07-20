@@ -1,9 +1,10 @@
 /**
- * Agent Loader — loads custom agent definitions from .claude/agents/
+ * Agent Loader — loads custom agent definitions from .kepler/agents/
  *
  * Supports two formats:
- * - JSON: .claude/agents/*.json
- * - Markdown with YAML frontmatter: .claude/agents/*.md
+ * - YAML: .kepler/agents/*.yaml / *.yml (native Kepler SubAgent config)
+ * - JSON: .kepler/agents/*.json
+ * - Markdown with YAML frontmatter: .kepler/agents/*.md
  *
  * Agent definitions specify: name, description, model, tools, hooks, prompt.
  */
@@ -24,8 +25,8 @@ export class AgentLoader {
      */
     load(cwd = process.cwd()) {
         this.searchPaths = [
-            path.join(cwd, '.claude', 'agents'),
-            path.join(process.env.HOME || '', '.claude', 'agents'),
+            path.join(cwd, '.kepler', 'agents'),
+            path.join(process.env.HOME || '', '.kepler', 'agents'),
         ];
 
         for (const dir of this.searchPaths) {
@@ -41,13 +42,13 @@ export class AgentLoader {
             for (const entry of entries) {
                 if (!entry.isFile()) continue;
                 const ext = path.extname(entry.name);
-                if (ext !== '.json' && ext !== '.md') continue;
+                if (!['.yaml', '.yml', '.json', '.md'].includes(ext)) continue;
 
                 const filePath = path.join(dir, entry.name);
                 try {
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const agent = parseAgentDefinition(content, ext);
-                    if (agent && agent.name) {
+                    if (agent && agent.name && !this.agents.has(agent.name)) {
                         this.agents.set(agent.name, { ...agent, source: filePath });
                     }
                 } catch (err) {

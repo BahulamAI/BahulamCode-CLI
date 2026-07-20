@@ -16,6 +16,8 @@ import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
+import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import * as fs from 'node:fs';
@@ -105,6 +107,68 @@ export function createToolExecutor({
     function reloadSkillCatalog() {
         skillsLoader.load(installer.cwd || process.cwd());
         return skillsLoader.list();
+    }
+
+    function normalizeAgentTools(tools) {
+        if (Array.isArray(tools) && tools.length > 0) {
+            return tools.map(tool => String(tool).trim()).filter(Boolean);
+        }
+        if (typeof tools === 'string' && tools.trim()) {
+            return tools.split(',').map(tool => tool.trim()).filter(Boolean);
+        }
+        return ['read_file', 'search_code', 'list_files'];
+    }
+
+    function agentMatches(agent, query) {
+        const needle = String(query || '').trim().toLowerCase();
+        if (!needle) return true;
+        return [
+            agent.slug,
+            agent.name,
+            agent.description,
+            agent.role,
+            agent.model,
+            ...(Array.isArray(agent.tools) ? agent.tools : []),
+            ...(Array.isArray(agent.capabilities) ? agent.capabilities : []),
+            ...(Array.isArray(agent.domains) ? agent.domains : []),
+        ].some(value => String(value || '').toLowerCase().includes(needle));
+    }
+
+    function compactAgentMetadata(agent) {
+        return {
+            slug: agent.slug,
+            name: agent.name,
+            description: agent.description || '',
+            role: agent.role || 'specialist',
+            model: agent.model || null,
+            models: agent.models && Object.keys(agent.models).length ? agent.models : undefined,
+            tools: Array.isArray(agent.tools) ? agent.tools : [],
+            capabilities: Array.isArray(agent.capabilities) ? agent.capabilities : [],
+            domains: Array.isArray(agent.domains) ? agent.domains : [],
+            source_scope: agent.source_scope || 'unknown',
+            source: agent.source || '',
+            content_hash: agent.content_hash || '',
+        };
+    }
+
+    function filterLocalAgents(args = {}) {
+        const scope = String(args.scope || '').trim();
+        if (scope && scope !== 'project' && scope !== 'global') {
+            throw new Error('scope must be "project" or "global"');
+        }
+        return listLocalAgents(process.cwd())
+            .filter(agent => !scope || agent.source_scope === scope)
+            .filter(agent => agentMatches(agent, args.query || args.name || ''));
+    }
+
+    function selectAgentsForSync(args = {}) {
+        const target = String(args.name || args.slug || '').trim();
+        const agents = listLocalAgents(process.cwd());
+        if (!target) return agents;
+        return agents.filter(agent => (
+            agent.slug === target ||
+            String(agent.name || '').toLowerCase() === target.toLowerCase()
+        ));
     }
 
     function formatObservationTimeoutOutput(rawOutput, timeoutMs) {
@@ -1246,6 +1310,73 @@ print('OK: replaced')
                 _tool: 'skill_remove',
             };
         },
+
+        // User-defined agents — metadata first, project YAML + backend sync on demand.
+        agents_list: async (args = {}) => {
+            const agents = filterLocalAgents(args).map(compactAgentMetadata);
+            const payload = { agents, count: agents.length };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'agents_list',
+            };
+        },
+
+        agent_create: async (args = {}) => {
+            if (!args.name || !String(args.name).trim()) {
+                throw new Error('name is required');
+            }
+            const result = createAgentFile({
+                cwd: process.cwd(),
+                name: args.name,
+                description: args.description || '',
+                role: args.role || 'specialist',
+                model: args.model || '',
+                tools: normalizeAgentTools(args.tools),
+                prompt: args.system_prompt || args.prompt || '',
+                force: Boolean(args.force),
+            });
+            const created = listLocalAgents(process.cwd()).find(agent => agent.slug === result.slug);
+            const payload = {
+                ...result,
+                agent: created ? compactAgentMetadata(created) : null,
+                next_actions: [
+                    `Edit ${result.filePath}`,
+                    `Run /agents sync ${result.slug} when ready`,
+                ],
+            };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'agent_create',
+            };
+        },
+
+        agent_sync: async (args = {}) => {
+            const selected = selectAgentsForSync(args);
+            if (!selected.length) {
+                const target = args.name || args.slug || '';
+                throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .kepler/agents');
+            }
+            const creds = new TarangAuth().loadCredentials();
+            const result = await syncAgentsToBackend({
+                backendUrl: creds.backendUrl,
+                token: creds.token,
+                agents: selected,
+            });
+            const payload = {
+                ...result,
+                agents: selected.map(compactAgentMetadata),
+            };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'agent_sync',
+            };
+        },
     };
 
     return {
@@ -1311,6 +1442,19 @@ print('OK: replaced')
                 identity: global.identity,
                 preferences: global.preferences,
                 global_skills: skillsLoader.list(),
+                available_agents: listLocalAgents(process.cwd()).map(agent => ({
+                    slug: agent.slug,
+                    name: agent.name,
+                    description: agent.description,
+                    role: agent.role,
+                    model: agent.model,
+                    models: agent.models,
+                    tools: agent.tools,
+                    capabilities: agent.capabilities,
+                    domains: agent.domains,
+                    source_scope: agent.source_scope,
+                    spec: agent.spec,
+                })),
                 source: 'cli',
             };
         },

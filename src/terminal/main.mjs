@@ -128,6 +128,7 @@ async function main() {
     /help                   Show available commands
     /stats                  Session metrics (tokens, cost, tools)
     /cost                   Detailed cost breakdown by model
+    /model [role] [model]   Show or set session model override
     /history                Conversation history
     /new                    Start a new session
     /clear                  Clear conversation history
@@ -136,6 +137,9 @@ async function main() {
     /explore <query>        Spawn read-only codebase explorer
     /review <query>         Spawn code review agent
     /architect <query>      Spawn architecture planning agent
+    /agents create <name>   Create project-local user-defined agent YAML
+    /agents edit <name>     Open a local agent YAML in your editor
+    /agents sync [name]     Sync all or one local agent to Supabase
     /exit                   Exit the REPL
 
   \x1b[1mKeyboard:\x1b[0m

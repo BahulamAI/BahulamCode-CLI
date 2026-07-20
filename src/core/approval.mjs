@@ -38,6 +38,7 @@ const WRITE_TOOLS = new Set([
     'shell', 'write_file', 'write_project', 'edit_file', 'delete_file',
     'validate_build', 'lint_check',
     'skill_install', 'skill_update', 'skill_remove',
+    'agent_create', 'agent_sync',
 ]);
 
 function defaultWhy(tier, tool, args) {

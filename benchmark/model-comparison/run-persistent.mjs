@@ -48,6 +48,16 @@ const DEFAULT_BENCH_ROUTE = process.env.KEPLER_BENCH_ROUTE
     || process.env.BENCHMARK_ROUTE
     || 'platform';
 
+function parseOptionalJsonEnv(name) {
+    const raw = process.env[name];
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw);
+    } catch (err) {
+        throw new Error(`${name} must be valid JSON: ${err.message}`);
+    }
+}
+
 // ── CLI args ──
 function parseArgs(argv) {
     const out = {
@@ -114,7 +124,18 @@ async function createPersistentClient() {
 
 // ── Run one turn against the persistent client. Matches the event shape
 // ── that run.mjs's summarizeTurn expects (compatible with existing analysis).
-async function runTurnPersistent({ client, toolExecutor, question, model, timeoutS, jsonlPath, verbose, agentHistory }) {
+async function runTurnPersistent({
+    client,
+    toolExecutor,
+    question,
+    model,
+    modelOverrides,
+    agentSpec,
+    timeoutS,
+    jsonlPath,
+    verbose,
+    agentHistory,
+}) {
     const events = [];
     const rawJsonl = fs.createWriteStream(jsonlPath, { flags: 'w' });
     const history = Array.isArray(agentHistory) ? agentHistory : [];
@@ -142,6 +163,8 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
         timestamp: Date.now(),
         instruction: question,
         model: model || 'default',
+        model_overrides: modelOverrides || null,
+        agent_spec: agentSpec || null,
         cwd: process.cwd(),
         prior_agent_history_messages: Math.max(0, history.length - 1),
     });
@@ -165,6 +188,12 @@ async function runTurnPersistent({ client, toolExecutor, question, model, timeou
         agent_context: toolExecutor.getAgentContext(),
     };
     if (model) execContext.model_override = model;
+    if (modelOverrides && Object.keys(modelOverrides).length > 0) {
+        execContext.model_overrides = modelOverrides;
+    }
+    if (agentSpec && Object.keys(agentSpec).length > 0) {
+        execContext.agent_spec = agentSpec;
+    }
 
     let timedOut = false;
     const timeoutTimer = setTimeout(() => {
@@ -425,6 +454,8 @@ function summarizeSession(turnSummaries) {
 // ── Main ──
 async function main() {
     const opts = parseArgs(process.argv);
+    const modelOverrides = parseOptionalJsonEnv('KEPLER_BENCH_MODEL_OVERRIDES_JSON');
+    const agentSpec = parseOptionalJsonEnv('KEPLER_BENCH_AGENT_SPEC_JSON');
     const qFile = JSON.parse(fs.readFileSync(opts.questions, 'utf8'));
     const questions = qFile.questions;
 
@@ -446,6 +477,8 @@ async function main() {
             route: opts.route,
             tag: opts.tag,
             questions_source: opts.questions,
+            model_overrides: modelOverrides,
+            agent_spec: agentSpec,
         },
         turns: [],
     };
@@ -481,6 +514,8 @@ async function main() {
             toolExecutor,
             question: q.text,
             model: opts.model,
+            modelOverrides,
+            agentSpec,
             timeoutS: opts.timeoutS,
             verbose: opts.verbose,
             jsonlPath,
