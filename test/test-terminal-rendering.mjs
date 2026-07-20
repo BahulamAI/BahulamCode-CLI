@@ -321,6 +321,55 @@ test('wraps Markdown list continuation lines with hanging indent', () => {
   }
 });
 
+test('normalizes soft-wrapped Markdown paragraphs before terminal wrapping', () => {
+  const originalColumns = process.stderr.columns;
+  Object.defineProperty(process.stderr, 'columns', {
+    value: 70,
+    configurable: true,
+  });
+  try {
+    const rendered = stripAnsi(renderMarkdown([
+      "It's installed. The entire ComposioHQ/awesome-claude-skills repo was cloned project-scoped, so all skills from that repo are available - including twitter-algorithm-optimizer.",
+      '',
+      'You can use it by invoking skill_view("twitter-algorithm-optimizer") to load its instructions, then it will be active for the session.',
+    ].join('\n')));
+    const lines = rendered.split('\n');
+    assert.ok(lines.some(line => line.includes('project-scoped')), JSON.stringify(lines));
+    assert.ok(lines.some(line => line.includes('twitter-algorithm-optimizer')), JSON.stringify(lines));
+    assert.ok(lines.every(line => line.length <= 70), JSON.stringify(lines));
+    assert.ok(lines.some(line => line.includes('load its instructions')), JSON.stringify(lines));
+  } finally {
+    Object.defineProperty(process.stderr, 'columns', {
+      value: originalColumns,
+      configurable: true,
+    });
+  }
+});
+
+test('folds indented wrapped bullet continuation into the bullet item', () => {
+  const originalColumns = process.stderr.columns;
+  Object.defineProperty(process.stderr, 'columns', {
+    value: 72,
+    configurable: true,
+  });
+  try {
+    const rendered = stripAnsi(renderMarkdown([
+      "- skill_view: loaded successfully - it's a skill that analyzes/optimizes tweets",
+      "  for reach using Twitter's open-source ranking models (RealGraph, SimClusters).",
+    ].join('\n')));
+    const lines = rendered.split('\n');
+    assert.ok(lines[0].startsWith('  • '), JSON.stringify(lines));
+    assert.ok(lines.slice(1).every(line => line.startsWith('    ')), JSON.stringify(lines));
+    assert.ok(lines.every(line => !line.startsWith('for reach')), JSON.stringify(lines));
+    assert.ok(rendered.includes('for reach using'), JSON.stringify(lines));
+  } finally {
+    Object.defineProperty(process.stderr, 'columns', {
+      value: originalColumns,
+      configurable: true,
+    });
+  }
+});
+
 test('renders structured keys bold cyan and values regular cyan', () => {
   // Post-Phase-1 palette emits bold and color as separate SGRs:
   //   \x1b[1m\x1b[36mstatus\x1b[0m... \x1b[36m ready\x1b[0m

@@ -180,7 +180,7 @@ export function hr(char = '─', color = 'gray') {
 export function renderMarkdown(text) {
   if (!text) return '';
 
-  const lines = text.split('\n');
+  const lines = normalizeMarkdownFlow(text).split('\n');
   const out = [];
   let inCodeBlock = false;
   let codeLang = '';
@@ -298,11 +298,85 @@ export function renderMarkdown(text) {
       }
     }
 
-    // Regular line with inline formatting
-    out.push(inlineMarkdown(line));
+    // Regular paragraph line. Wrap before writing so the terminal does not
+    // split long words at the viewport edge.
+    const indent = line.match(/^(\s*)/)[1] || '';
+    const content = line.slice(indent.length);
+    out.push(...renderWrappedMarkdownLine(indent, indent, content, columns, inlineMarkdown));
   }
 
   return out.join('\n');
+}
+
+function normalizeMarkdownFlow(text) {
+  const source = String(text || '').split('\n');
+  const normalized = [];
+  let paragraph = [];
+  let inCodeBlock = false;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    normalized.push(paragraph.map(line => line.trim()).join(' '));
+    paragraph = [];
+  };
+
+  const isStructural = (line) => {
+    const trimmed = line.trim();
+    return (
+      !trimmed ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('>') ||
+      trimmed.startsWith('|') ||
+      /^---+$/.test(trimmed) ||
+      /^\s*[-*]\s+/.test(line) ||
+      /^\s*[-*]\s+\[[ xX]\]\s+/.test(line) ||
+      /^\s*\d+\.\s+/.test(line)
+    );
+  };
+
+  const appendToPreviousList = (line) => {
+    if (!normalized.length) return false;
+    const previous = normalized[normalized.length - 1];
+    if (!/^\s*(?:[-*]|\d+\.)\s+/.test(previous)) return false;
+    if (isStructural(line)) return false;
+    normalized[normalized.length - 1] = `${previous} ${line.trim()}`;
+    return true;
+  };
+
+  for (const line of source) {
+    if (line.trimStart().startsWith('```')) {
+      flushParagraph();
+      normalized.push(line);
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      normalized.push(line);
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      normalized.push('');
+      continue;
+    }
+
+    if (appendToPreviousList(line)) {
+      continue;
+    }
+
+    if (isStructural(line)) {
+      flushParagraph();
+      normalized.push(line);
+      continue;
+    }
+
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  return normalized.join('\n');
 }
 
 function markdownColumns() {
@@ -328,6 +402,12 @@ function wrapWords(text, firstWidth, nextWidth) {
   let current = '';
 
   for (const word of words) {
+    if (!current && word.length > width) {
+      lines.push(...splitLongWord(word, width));
+      width = nextWidth;
+      current = '';
+      continue;
+    }
     if (!current) {
       current = word;
       continue;
@@ -338,11 +418,25 @@ function wrapWords(text, firstWidth, nextWidth) {
     }
     lines.push(current);
     width = nextWidth;
+    if (word.length > width) {
+      lines.push(...splitLongWord(word, width));
+      current = '';
+      continue;
+    }
     current = word;
   }
 
   if (current) lines.push(current);
   return lines;
+}
+
+function splitLongWord(word, width) {
+  const chunks = [];
+  const safeWidth = Math.max(8, width);
+  for (let i = 0; i < word.length; i += safeWidth) {
+    chunks.push(word.slice(i, i + safeWidth));
+  }
+  return chunks;
 }
 
 function renderCodeLine(line, language) {
