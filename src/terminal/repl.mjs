@@ -2626,9 +2626,7 @@ function renderEvent(event) {
             ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
             : null,
           blockers: !successOverall ? (data?.blockers || extractBlockers(data)) : null,
-          nextActions: successOverall
-            ? ['/commit', '/pr', '/undo', '/report']
-            : ['/why', '/undo', '/re-plan'],
+          nextActions: [],
           cwd: safeCwd(),
         });
         renderBlockBoundary('status', { compactSame: true });
@@ -3276,7 +3274,7 @@ async function handleCommand(input, ctx) {
         subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
         costUsd: session.isByok ? null : session.totalCost,
         durationS: (Date.now() - session.startTime) / 1000,
-        nextActions: ['/commit', '/pr', '/undo'],
+        nextActions: [],
         cwd: safeCwd(),
       };
       const out = saveReport(state, { cwd: safeCwd() });
