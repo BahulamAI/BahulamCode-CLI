@@ -63,6 +63,7 @@ import {
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
+import { session } from './repl-state.mjs';
 import {
   COMMANDS,
   HELP_GROUPS,
@@ -943,54 +944,10 @@ function startResumeProgress(mode = 'full') {
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
 let _orbit = null;      // Mission Control orbit state machine; set in startTerminalRepl
 
-const session = {
-  id: null,                  // set by backend on first turn via session_info event
-  startTime: Date.now(),
-  inputTokens: 0,
-  outputTokens: 0,
-  toolCalls: 0,        // primary-agent tool calls in the current turn
-  subAgentToolCalls: 0,// forwarded internal sub-agent tool calls in the current turn
-  totalToolCalls: 0,   // across all turns
-  totalPrimaryToolCalls: 0,
-  totalSubAgentToolCalls: 0,
-  turns: 0,
-  history: [],         // display transcript (can include reconstructed tool entries)
-  agentHistory: [],    // backend continuity payload (compact or full)
-  inputHistory: [],    // previous prompts (for Up/Down)
-  user: null,          // { github_username, email, role }
-  model: null,         // from backend user profile
-  modelLimits: {},     // role -> {model, context_length, max_output, source}
-  blockedOps: 0,       // safety guardrail blocks
-  delegations: [],     // agent delegation events: { from, to, time }
-  phases: [],          // phase history: { name, time }
-  inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
-  filesChanged: [],    // files modified this session
-  filesRead: [],       // files read this turn
-  lastTurnDuration: 0,
-  toolCounts: {},      // per-tool histogram (mission report)
-  subAgentCounts: {},  // per-sub-agent histogram (mission report)
-  savedUsd: 0,         // total sub-agent cost (for "saved by routing")
-  lastTask: '',        // most recent user prompt (mission report title)
-  lastReasoning: '',   // captured from agent for /why
-  budgetUsd: null,     // /budget cap, null = unlimited
-  budgetExceeded: false,
-  costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
-  totalCost: 0,        // accumulated session cost (USD)
-  costAccurate: false, // true if backend provides per-model breakdown
-  modelOverrides: {},  // session-local role -> model overrides sent to backend
-  isByok: false,       // set from session_info; hides cost + credits when true
-  // ── Subscription / credit state (server-authoritative; set from
-  //    session_info + complete events) ──
-  subscriptionTier: null,        // 'free' | 'cli' | 'pro' | 'pro_plus' | 'enterprise'
-  creditsTotal: null,            // remaining credits (included + purchased)
-  creditsIncluded: null,         // remaining included credits this period
-  creditsPurchased: null,        // remaining purchased credits
-  creditsLimit: null,            // per-period included credits limit
-  creditsCharged: 0,             // session-cumulative server-reported charges
-  creditsLowWarned: false,       // emit the low-balance hint only once per turn
-  rateLimit: null,               // rolling message-window state from backend
-  msgsLowWarned: false,          // emit the low-window hint only once per turn
-};
+// The `session` object lives in repl-state.mjs so other repl-* modules
+// (resume helpers, tool renderers, streaming, etc.) can import it during
+// the ongoing split. Everything below still references `session.<field>`
+// directly; only the declaration site moved.
 
 // ── Commands ──
 
