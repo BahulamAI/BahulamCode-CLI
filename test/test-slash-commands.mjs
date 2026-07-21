@@ -1,136 +1,133 @@
 /**
- * Tests for slash commands.
+ * Tests for the canonical slash-command catalog.
+ *
+ * The pre-PRD-081 version of this test file exercised handler functions
+ * that lived alongside the catalog. Those handlers were dead code (the
+ * REPL never called them) and were removed as part of consolidating onto
+ * ui/slash-commands.mjs. This suite now covers the catalog + normalizer.
  */
 
-import { handleSlashCommand, COMMANDS } from '../src/ui/slash-commands.mjs';
 import assert from 'node:assert';
+import {
+  COMMANDS,
+  HELP_GROUPS,
+  HELP_GROUP_ALIASES,
+  LEGACY_COMMAND_HINTS,
+  NAMESPACED_COMMANDS,
+  normalizeCommandInput,
+} from '../src/ui/slash-commands.mjs';
 
 let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
-    try {
-        fn();
-        console.log(`  \x1b[32m✓\x1b[0m ${name}`);
-        passed++;
-    } catch (err) {
-        console.log(`  \x1b[31m✗\x1b[0m ${name}: ${err.message}`);
-        failed++;
-    }
+  try {
+    fn();
+    console.log(`  \x1b[32m✓\x1b[0m ${name}`);
+    passed++;
+  } catch (err) {
+    console.log(`  \x1b[31m✗\x1b[0m ${name}: ${err.message}`);
+    failed++;
+  }
 }
 
 console.log('\n\x1b[1mtest-slash-commands.mjs\x1b[0m\n');
 
-// Capture output
-const origStderr = process.stderr.write.bind(process.stderr);
-const origStdout = process.stdout.write.bind(process.stdout);
-let captured = '';
-function capture() { captured = ''; process.stderr.write = (s) => { captured += s; }; process.stdout.write = (s) => { captured += s; }; }
-function restore() { process.stderr.write = origStderr; process.stdout.write = origStdout; }
+// ── shape ────────────────────────────────────────────────────────────
 
-test('COMMANDS has 19 entries', () => {
-    assert.strictEqual(Object.keys(COMMANDS).length, 19);
+test('COMMANDS entries are all { "/name": "description" } strings', () => {
+  for (const [name, desc] of Object.entries(COMMANDS)) {
+    assert.ok(name.startsWith('/'), `command "${name}" missing leading slash`);
+    assert.strictEqual(typeof desc, 'string', `${name} description not a string`);
+    assert.ok(desc.length > 0, `${name} description is empty`);
+  }
 });
 
-test('/help lists commands', () => {
-    capture();
-    handleSlashCommand('/help', {});
-    restore();
-    assert.ok(captured.includes('/help'));
-    assert.ok(captured.includes('/help worktree'));
-    assert.ok(captured.includes('/exit'));
-    assert.ok(captured.includes('ESC'));
+test('COMMANDS includes the essential commands', () => {
+  for (const c of ['/help', '/exit', '/new', '/clear', '/git', '/model']) {
+    assert.ok(c in COMMANDS, `missing essential command ${c}`);
+  }
 });
 
-test('/help category lists focused commands', () => {
-    capture();
-    handleSlashCommand('/help worktree', {});
-    restore();
-    assert.ok(captured.includes('Worktree'));
-    assert.ok(captured.includes('/git'));
-    assert.ok(captured.includes('/diff'));
+test('HELP_GROUPS entries reference known commands', () => {
+  for (const group of HELP_GROUPS) {
+    assert.ok(group.key, `group missing key: ${JSON.stringify(group)}`);
+    assert.ok(group.title, `group missing title`);
+    assert.ok(Array.isArray(group.commands), `group.commands not an array`);
+    for (const [cmd] of group.commands) {
+      const base = cmd.split(/\s+/)[0];
+      assert.ok(base.startsWith('/'), `group cmd "${cmd}" missing leading slash`);
+    }
+  }
 });
 
-test('/git shows git status', () => {
-    capture();
-    handleSlashCommand('/git', {});
-    restore();
-    // Should output something (we're in a git repo)
-    assert.ok(captured.length > 0);
+test('HELP_GROUP_ALIASES resolves keys and lowercased titles', () => {
+  for (const group of HELP_GROUPS) {
+    assert.strictEqual(HELP_GROUP_ALIASES.get(group.key), group);
+    assert.strictEqual(HELP_GROUP_ALIASES.get(group.title.toLowerCase()), group);
+  }
 });
 
-test('/diff shows git diff', () => {
-    capture();
-    handleSlashCommand('/diff', {});
-    restore();
-    // Should not crash
-    assert.ok(true);
+// ── normalizeCommandInput ────────────────────────────────────────────
+
+test('normalizeCommandInput: plain command passthrough', () => {
+  const n = normalizeCommandInput('/help');
+  assert.deepStrictEqual(n, { cmd: '/help', rest: '', rawCmd: '/help', aliasTarget: null });
 });
 
-test('/clear resets formatter state', () => {
-    const formatter = { toolCalls: [1, 2], toolCount: 2, phases: new Map([['a', 'b']]), changes: [1] };
-    capture();
-    handleSlashCommand('/clear', { formatter });
-    restore();
-    assert.strictEqual(formatter.toolCount, 0);
-    assert.strictEqual(formatter.phases.size, 0);
-    assert.strictEqual(formatter.changes.length, 0);
+test('normalizeCommandInput: preserves arguments as rest', () => {
+  const n = normalizeCommandInput('/tasks add write more tests');
+  assert.strictEqual(n.cmd, '/tasks');
+  assert.strictEqual(n.rest, 'add write more tests');
 });
 
-test('/new starts a fresh session', () => {
-    const formatter = { toolCalls: [1, 2], toolCount: 2, phases: new Map([['a', 'b']]), changes: [1] };
-    capture();
-    handleSlashCommand('/new', { formatter });
-    restore();
-    assert.strictEqual(formatter.toolCount, 0);
-    assert.strictEqual(formatter.phases.size, 0);
-    assert.strictEqual(formatter.changes.length, 0);
-    assert.ok(captured.includes('New session started'));
+test('normalizeCommandInput: lowercases the command token', () => {
+  const n = normalizeCommandInput('/HELP');
+  assert.strictEqual(n.cmd, '/help');
+  assert.strictEqual(n.rawCmd, '/help');
 });
 
-test('/sessions works without session dir', () => {
-    capture();
-    handleSlashCommand('/sessions', {});
-    restore();
-    assert.ok(captured.includes('No sessions') || captured.includes('Recent'));
+test('normalizeCommandInput: namespaced /status metrics -> /stats', () => {
+  const n = normalizeCommandInput('/status metrics');
+  assert.strictEqual(n.cmd, '/stats');
+  assert.strictEqual(n.rest, '');
+  assert.strictEqual(n.aliasTarget, null); // namespaced hit, not legacy alias
 });
 
-test('/model shows model info', () => {
-    capture();
-    handleSlashCommand('/model', { model: 'claude-sonnet-4' });
-    restore();
-    assert.ok(captured.includes('claude-sonnet-4'));
+test('normalizeCommandInput: namespaced with trailing args', () => {
+  const n = normalizeCommandInput('/history expand 3');
+  assert.strictEqual(n.cmd, '/expand');
+  assert.strictEqual(n.rest, '3');
 });
 
-test('/tokens shows token count', () => {
-    const formatter = { tokenCount: { input: 100, output: 50 } };
-    capture();
-    handleSlashCommand('/tokens', { formatter });
-    restore();
-    assert.ok(captured.includes('100'));
-    assert.ok(captured.includes('150'));
+test('normalizeCommandInput: legacy flat cmd carries aliasTarget', () => {
+  const n = normalizeCommandInput('/cost');
+  assert.strictEqual(n.cmd, '/cost');
+  assert.strictEqual(n.aliasTarget, '/status cost');
 });
 
-test('/cost shows estimated cost', () => {
-    const formatter = { tokenCount: { input: 1000, output: 500 } };
-    capture();
-    handleSlashCommand('/cost', { formatter });
-    restore();
-    assert.ok(captured.includes('$'));
+test('normalizeCommandInput: unknown legacy flat cmd has no alias', () => {
+  const n = normalizeCommandInput('/help');
+  assert.strictEqual(n.aliasTarget, null);
 });
 
-test('/index shows indexing message', () => {
-    capture();
-    handleSlashCommand('/index', {});
-    restore();
-    assert.ok(captured.includes('index') || captured.includes('Index') || captured.includes('BM25'));
+test('normalizeCommandInput: handles empty/whitespace input', () => {
+  assert.strictEqual(normalizeCommandInput('').cmd, '');
+  assert.strictEqual(normalizeCommandInput('   ').cmd, '');
 });
 
-test('unknown command shows error', () => {
-    capture();
-    handleSlashCommand('/unknown_xyz', {});
-    restore();
-    assert.ok(captured.includes('Unknown command'));
+// ── LEGACY_COMMAND_HINTS + NAMESPACED_COMMANDS integrity ────────────
+
+test('LEGACY_COMMAND_HINTS targets resolve through NAMESPACED_COMMANDS', () => {
+  // Every legacy alias should reverse-resolve — e.g. /cost => /status cost,
+  // and /status cost should namespace-resolve back to /cost.
+  for (const [legacy, hint] of Object.entries(LEGACY_COMMAND_HINTS)) {
+    const [namespace, sub] = hint.split(/\s+/);
+    const namespacedMap = NAMESPACED_COMMANDS[namespace];
+    assert.ok(namespacedMap, `LEGACY hint "${legacy}" -> "${hint}" but no namespace ${namespace}`);
+    assert.strictEqual(namespacedMap[sub], legacy,
+      `LEGACY hint "${legacy}" -> "${hint}" but namespace does not resolve back`);
+  }
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

@@ -29,7 +29,7 @@ import { TarangAuth } from './auth/tarang-auth.mjs';
 import { ApprovalManager } from './core/approval.mjs';
 import { SessionManager } from './core/session-manager.mjs';
 import { EventFormatter } from './ui/formatter.mjs';
-import { handleSlashCommand, COMMANDS } from './ui/slash-commands.mjs';
+import { COMMANDS } from './ui/slash-commands.mjs';
 import { selectMode } from './core/mode-selector.mjs';
 import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyledConfig, printGoodbye } from './ui/banner.mjs';
 import { ContextRetriever } from './context/retriever.mjs';
@@ -200,7 +200,7 @@ function printUsage() {
     process.stderr.write('\n');
     process.stderr.write(`${B}SLASH COMMANDS${R} ${D}(interactive mode)${R}\n`);
     for (const [k, v] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${C}${k.padEnd(14)}${R} ${v.description}\n`);
+        process.stderr.write(`  ${C}${k.padEnd(14)}${R} ${v}\n`);
     }
     process.stderr.write('\n');
 }

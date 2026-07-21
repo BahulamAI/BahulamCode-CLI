@@ -1,347 +1,245 @@
 /**
- * Slash Commands — T10: 14 commands for interactive REPL.
+ * Slash Commands — canonical catalog + input normalizer.
+ *
+ * This module is the ONE source of truth for the REPL's slash commands.
+ * Consumers:
+ *   - src/terminal/repl.mjs imports COMMANDS, HELP_GROUPS, etc. for its
+ *     runtime dispatch and slash-hint suggestions.
+ *   - src/index.mjs iterates COMMANDS for `kepler --help` output.
+ *
+ * The runtime *handlers* live in repl.mjs (they need session/ctx access
+ * that only the REPL has). This module is data-only + pure normalization.
  */
 
-import { execSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { printGoodbye } from './banner.mjs';
-import { ContextRetriever } from '../context/retriever.mjs';
-
+// name -> one-line description (bare string).
 export const COMMANDS = {
-    '/help':     { description: 'Show available commands', handler: cmdHelp },
-    '/git':      { description: 'Show git status', handler: cmdGit },
-    '/status':   { description: 'Alias for /git', handler: cmdGit },
-    '/commit':   { description: 'Interactive git commit', handler: cmdCommit },
-    '/diff':     { description: 'Show git diff', handler: cmdDiff },
-    '/new':      { description: 'Start a new session', handler: cmdNew },
-    '/clear':    { description: 'Clear conversation history', handler: cmdClear },
-    '/sessions': { description: 'List previous sessions', handler: cmdSessions },
-    '/exit':     { description: 'Exit CLI', handler: cmdExit },
-    '/quit':     { description: 'Alias for /exit', handler: cmdExit },
-    '/index':    { description: 'Build/rebuild BM25 context index', handler: cmdIndex },
-    '/model':    { description: 'Show current model', handler: cmdModel },
-    '/tokens':   { description: 'Show token usage', handler: cmdTokens },
-    '/cost':     { description: 'Show session cost', handler: cmdCost },
-    '/config':   { description: 'Open settings in browser', handler: cmdConfig },
-    '/login':    { description: 'Re-authenticate via browser', handler: cmdLogin },
-    '/refresh':  { description: 'Reload credentials from disk', handler: cmdRefresh },
-    '/sync':     { description: 'Sync settings from web', handler: cmdSync },
-    '/whoami':   { description: 'Show logged-in user', handler: cmdWhoami },
-    '/create':   { description: 'Create workflow from YAML file', handler: cmdCreate },
+  '/help':        'Show commands',
+  '/login':       'Sign in via browser',
+  '/whoami':      'Show logged-in user',
+  '/status':      'Session status & system info',
+  '/plan':        'Show plan/tasks',
+  '/tasks':       'Show or update project tasks',
+  '/stats':       'Progress bars & metrics',
+  '/new':         'Start a new session',
+  '/clear':       'Clear conversation',
+  '/git':         'Git status',
+  '/diff':        'Git diff',
+  '/cost':        'Show session cost',
+  '/model':       'Show or set session model overrides',
+  '/attach':      'Attach image path or clipboard image to next prompt',
+  '/attachments': 'List or clear pending image attachments',
+  '/history':     'Show conversation',
+  '/settings':    'Show policy/settings',
+  '/last':        'Expand last tool output',
+  '/expand':      'Expand tool output by index (or "all")',
+  '/fold':        'Hide previously expanded tool output',
+  '/checkpoint':  'List recent file checkpoints',
+  '/undo':        'Restore the last file checkpoint',
+  '/preflight':   'Re-run the onboarding diagnostic',
+  '/report':      'Save the mission report as markdown',
+  '/why':         'Print the agent reasoning for the last decision',
+  '/map':         'Show the registered project tree',
+  '/budget':      'Set / clear a hard session cost cap',
+  '/quiet':       'Verbosity: hide sub-agent inner tools',
+  '/verbose':     'Verbosity: show sub-agent inner tools',
+  '/surgical':    'Verbosity: show everything (reasoning, expanded tools)',
+  '/compact':     'Compact conversation context',
+  '/agents':      'List available agents',
+  '/explore':     'Code explorer agent',
+  '/review':      'Code review agent',
+  '/architect':   'Feature architect agent',
+  '/safety':      'Show safety guardrail status',
+  '/revoke':      'Revoke auto-approvals',
+  '/resume':      'Resume a previous session',
+  '/sessions':    'List resumable sessions',
+  '/logout':      'Sign out and clear credentials',
+  '/exit':        'Exit CLI',
 };
 
-const COMMAND_GROUPS = [
-    {
-        key: 'worktree',
-        title: 'Worktree',
-        commands: ['/git', '/status', '/commit', '/diff', '/index'],
-    },
-    {
-        key: 'session',
-        title: 'Session',
-        commands: ['/new', '/clear', '/sessions', '/exit', '/quit'],
-    },
-    {
-        key: 'usage',
-        title: 'Usage',
-        commands: ['/model', '/tokens', '/cost'],
-    },
-    {
-        key: 'settings',
-        title: 'Settings',
-        commands: ['/config', '/login', '/refresh', '/sync', '/whoami'],
-    },
+// Grouped view for the `/help` interactive display. Each entry is
+// [command-with-args, description] so subcommands appear inline.
+export const HELP_GROUPS = [
+  {
+    key: 'plan',
+    title: 'Plan',
+    summary: 'plan and project tasks',
+    commands: [
+      ['/plan', 'Plan and task overview'],
+      ['/plan status', 'Plan owner and task files'],
+      ['/plan edit', 'Show editable task/plan paths'],
+      ['/tasks', 'List project tasks'],
+      ['/tasks add <text>', 'Add backlog task'],
+      ['/tasks active|blocked|done <text>', 'Append to a task list'],
+    ],
+  },
+  {
+    key: 'status',
+    title: 'Status',
+    summary: 'session, usage, budget',
+    commands: [
+      ['/status', 'Session snapshot'],
+      ['/status context', 'Loaded .kepler context'],
+      ['/status metrics', 'Progress bars and runtime metrics'],
+      ['/status cost', 'Credits and message window'],
+      ['/model [role] [model]', 'Show or set session model override'],
+      ['/attach <image>', 'Attach image to the next prompt'],
+      ['/attach clipboard', 'Attach image currently copied to macOS/Windows clipboard'],
+      ['/attachments', 'List pending image attachments'],
+      ['/attachments clear', 'Clear pending image attachments'],
+      ['/status budget <amount|clear>', 'Set or clear session budget'],
+    ],
+  },
+  {
+    key: 'history',
+    title: 'History',
+    summary: 'transcript, reports, undo',
+    commands: [
+      ['/history', 'Recent transcript'],
+      ['/history approvals', 'Approval log'],
+      ['/history last', 'Expand last tool output'],
+      ['/history expand [n|all]', 'Expand tool output'],
+      ['/history checkpoint', 'List checkpoints'],
+      ['/history undo', 'Restore latest checkpoint'],
+      ['/history report', 'Save mission report'],
+    ],
+  },
+  {
+    key: 'settings',
+    title: 'Settings',
+    summary: 'auth, policy, verbosity',
+    commands: [
+      ['/settings policy', 'Effective project policy'],
+      ['/settings login', 'Sign in'],
+      ['/settings logout', 'Sign out'],
+      ['/settings whoami', 'Current user'],
+      ['/settings quiet|verbose|surgical', 'Verbosity'],
+      ['/settings revoke', 'Revoke auto-approvals'],
+    ],
+  },
+  {
+    key: 'worktree',
+    title: 'Worktree',
+    summary: 'git and files',
+    commands: [
+      ['/git', 'Git status'],
+      ['/diff', 'Git diff'],
+      ['/map', 'Registered project tree'],
+      ['/preflight', 'Onboarding diagnostic'],
+      ['/safety', 'Safety guardrail status'],
+    ],
+  },
+  {
+    key: 'agents',
+    title: 'Agents',
+    summary: 'specialist modes',
+    commands: [
+      ['/agents', 'List built-in and local agents'],
+      ['/agents create <name>', 'Create .kepler/agents/<name>.yaml'],
+      ['/agents edit <name>', 'Open local agent YAML'],
+      ['/agents sync [name]', 'Sync all or one local agent to cloud'],
+      ['/explore <instruction>', 'Explore code'],
+      ['/review <instruction>', 'Review code'],
+      ['/architect <instruction>', 'Design an approach'],
+    ],
+  },
+  {
+    key: 'session',
+    title: 'Session',
+    summary: 'resume and clear',
+    commands: [
+      ['/sessions', 'List resumable sessions'],
+      ['/resume [id]', 'Resume a session'],
+      ['/compact', 'Compact conversation context'],
+      ['/new', 'Start a fresh session'],
+      ['/clear', 'Clear conversation'],
+      ['/exit', 'Exit CLI'],
+    ],
+  },
 ];
 
-function run(cmd) {
-    try {
-        return execSync(cmd, { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] });
-    } catch (err) {
-        return err.stderr || err.stdout || err.message;
-    }
-}
+export const HELP_GROUP_ALIASES = new Map(
+  HELP_GROUPS.flatMap(group => [[group.key, group], [group.title.toLowerCase(), group]])
+);
 
-function cmdHelp(ctx, args = []) {
-    const BOLD = '\x1b[1m', CYAN = '\x1b[36m', DIM = '\x1b[2m', GREEN = '\x1b[32m', BLUE = '\x1b[34m', RESET = '\x1b[0m';
-    const topic = String(args[0] || '').toLowerCase();
-    const group = COMMAND_GROUPS.find(g => g.key === topic || g.title.toLowerCase() === topic);
+// Old flat commands that the user might still type. Map them to the new
+// namespaced form so completion + help nudge them toward the current UX.
+export const LEGACY_COMMAND_HINTS = {
+  '/stats':      '/status metrics',
+  '/cost':       '/status cost',
+  '/budget':     '/status budget',
+  '/last':       '/history last',
+  '/expand':     '/history expand',
+  '/fold':       '/history fold',
+  '/undo':       '/history undo',
+  '/checkpoint': '/history checkpoint',
+  '/report':     '/history report',
+  '/login':      '/settings login',
+  '/logout':     '/settings logout',
+  '/whoami':     '/settings whoami',
+  '/quiet':      '/settings quiet',
+  '/verbose':    '/settings verbose',
+  '/surgical':   '/settings surgical',
+  '/revoke':     '/settings revoke',
+};
 
-    process.stderr.write(`\n${BLUE}┌──────────────────────────────────────────────┐${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Kepler Help${RESET}                                   ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}├──────────────────────────────────────────────┤${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-    if (topic === 'all') {
-        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}All commands:${RESET}                               ${BLUE}│${RESET}\n`);
-        for (const [name, { description }] of Object.entries(COMMANDS)) {
-            writeHelpCommandLine(BLUE, CYAN, RESET, name, description);
-        }
-    } else if (group) {
-        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}${group.title}:${RESET}${' '.repeat(Math.max(0, 40 - group.title.length))}${BLUE}│${RESET}\n`);
-        for (const name of group.commands) {
-            writeHelpCommandLine(BLUE, CYAN, RESET, name, COMMANDS[name]?.description || '');
-        }
-    } else {
-        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Top commands:${RESET}                               ${BLUE}│${RESET}\n`);
-        for (const name of ['/help', '/status', '/sessions', '/config', '/whoami', '/exit']) {
-            writeHelpCommandLine(BLUE, CYAN, RESET, name, COMMANDS[name]?.description || '');
-        }
-        process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-        process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Categories:${RESET}                                 ${BLUE}│${RESET}\n`);
-        for (const g of COMMAND_GROUPS) {
-            const line = `  ${CYAN}${('/help ' + g.key).padEnd(16)}${RESET} ${g.title}`;
-            process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - visibleLen(`/help ${g.key}`) - g.title.length))}${BLUE}│${RESET}\n`);
-        }
-        process.stderr.write(`${BLUE}│${RESET}  ${DIM}/help all for legacy command list${RESET}        ${BLUE}│${RESET}\n`);
-    }
-    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Keyboard:${RESET}                                   ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}ESC${RESET}${DIM}=${RESET}cancel  ${BOLD}SPACE${RESET}${DIM}=${RESET}pause  ${BOLD}Ctrl+C${RESET}${DIM}=${RESET}exit       ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${BOLD}Tips:${RESET}                                       ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Type naturally: "add a login button"${RESET}        ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Reference files: "fix bug in src/main.py"${RESET}   ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}  ${DIM}Ask questions: "explain how auth works"${RESET}     ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}│${RESET}                                              ${BLUE}│${RESET}\n`);
-    process.stderr.write(`${BLUE}└──────────────────────────────────────────────┘${RESET}\n\n`);
-}
-
-function writeHelpCommandLine(BLUE, CYAN, RESET, name, description) {
-    const line = `  ${CYAN}${name.padEnd(12)}${RESET} ${description}`;
-    process.stderr.write(`${BLUE}│${RESET}${line}${' '.repeat(Math.max(0, 44 - name.length - description.length))}${BLUE}│${RESET}\n`);
-}
-
-function visibleLen(s) {
-    return String(s || '').length;
-}
-
-function cmdGit() {
-    process.stdout.write(run('git status --short --branch') + '\n');
-}
-
-function cmdCommit(ctx) {
-    const status = run('git status --short');
-    if (!status.trim()) {
-        process.stderr.write('Nothing to commit.\n');
-        return;
-    }
-    process.stdout.write('\x1b[1mStaged changes:\x1b[0m\n');
-    process.stdout.write(run('git diff --cached --stat') || '(no staged changes)\n');
-    process.stdout.write('\n\x1b[1mUnstaged changes:\x1b[0m\n');
-    process.stdout.write(status + '\n');
-    process.stderr.write('\x1b[2mUse git add + git commit from shell to commit.\x1b[0m\n');
-}
-
-function cmdDiff() {
-    const diff = run('git diff --stat');
-    process.stdout.write(diff || '(no changes)\n');
-}
-
-function cmdClear(ctx) {
-    if (ctx.formatter) {
-        ctx.formatter.toolCalls = [];
-        ctx.formatter.toolCount = 0;
-        ctx.formatter.phases.clear();
-        ctx.formatter.changes = [];
-    }
-    process.stderr.write('Conversation cleared.\n');
-}
-
-function cmdNew(ctx) {
-    if (typeof ctx.startNewSession === 'function') {
-        ctx.startNewSession();
-        return;
-    }
-    if (ctx.formatter) {
-        ctx.formatter.toolCalls = [];
-        ctx.formatter.toolCount = 0;
-        ctx.formatter.phases.clear();
-        ctx.formatter.changes = [];
-    }
-    process.stderr.write('New session started.\n');
-}
-
-function cmdSessions() {
-    const sessDir = path.join(process.cwd(), '.kepler', 'sessions');
-    if (!fs.existsSync(sessDir)) {
-        process.stderr.write('No sessions found.\n');
-        return;
-    }
-    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.json')).sort().reverse().slice(0, 20);
-    if (files.length === 0) {
-        process.stderr.write('No sessions found.\n');
-        return;
-    }
-    process.stderr.write('\n\x1b[1mRecent Sessions:\x1b[0m\n');
-    for (const file of files) {
-        try {
-            const data = JSON.parse(fs.readFileSync(path.join(sessDir, file), 'utf-8'));
-            const date = file.replace('.json', '').replace(/T/g, ' ').replace(/-/g, ':').slice(0, 19);
-            const instr = (data.instruction || '').slice(0, 40);
-            const status = data.status || 'unknown';
-            process.stderr.write(`  ${date}  ${status.padEnd(10)}  ${instr}\n`);
-        } catch {
-            process.stderr.write(`  ${file}  (unreadable)\n`);
-        }
-    }
-    process.stderr.write('\n');
-}
-
-function cmdExit() {
-    printGoodbye();
-    process.exit(0);
-}
-
-async function cmdIndex() {
-    const cwd = process.cwd();
-    process.stderr.write('\x1b[2mBuilding BM25 index...\x1b[0m\n');
-    try {
-        const retriever = new ContextRetriever(cwd);
-        const result = await retriever.buildIndex();
-        process.stderr.write(`\x1b[32m✓ Index built: ${result.fileCount} files, ${result.chunkCount} chunks\x1b[0m\n`);
-        process.stderr.write(`\x1b[2m  Stored at: ${path.join(cwd, '.kepler', 'index')}\x1b[0m\n`);
-    } catch (err) {
-        process.stderr.write(`\x1b[31mIndex build failed: ${err.message}\x1b[0m\n`);
-    }
-}
-
-function cmdModel(ctx) {
-    process.stderr.write(`Model: ${ctx.model || 'default (set by backend)'}\n`);
-}
-
-function cmdTokens(ctx) {
-    const t = ctx.formatter?.tokenCount || { input: 0, output: 0 };
-    process.stderr.write(`Tokens: ${t.input} input, ${t.output} output, ${t.input + t.output} total\n`);
-}
-
-function cmdCost(ctx) {
-    const t = ctx.formatter?.tokenCount || { input: 0, output: 0 };
-    // Rough estimate: Sonnet ~$3/$15 per MTok
-    const cost = (t.input * 3 + t.output * 15) / 1_000_000;
-    process.stderr.write(`Estimated cost: $${cost.toFixed(4)}\n`);
-}
-
-function cmdConfig(ctx) {
-    // Show local config summary
-    if (ctx.auth) ctx.auth.printConfig();
-
-    // Open settings in browser
-    import('../core/backend-url.mjs').then(({ resolveWebUrl }) => {
-        const webUrl = resolveWebUrl();
-        const settingsUrl = `${webUrl}/dashboard/settings?tab=providers&source=cli`;
-        process.stderr.write(`\x1b[36mOpening settings...\x1b[0m \x1b[2m${settingsUrl}\x1b[0m\n`);
-        const openCmd = process.platform === 'darwin' ? 'open' :
-                        process.platform === 'win32' ? 'start' : 'xdg-open';
-        import('node:child_process').then(({ exec }) => {
-            exec(`${openCmd} "${settingsUrl}"`, () => {});
-        });
-    });
-}
-
-function cmdLogin(ctx) {
-    if (ctx.auth) {
-        process.stderr.write('\x1b[36mStarting login flow...\x1b[0m\n');
-        ctx.auth.login().then(() => {
-            process.stderr.write('\x1b[32m✓ Login successful!\x1b[0m\n');
-        }).catch((err) => {
-            process.stderr.write(`\x1b[31m✗ Login failed: ${err.message}\x1b[0m\n`);
-        });
-    }
-}
-
-function cmdRefresh(ctx) {
-    if (!ctx.auth) {
-        process.stderr.write('\x1b[31mNo auth module available.\x1b[0m\n');
-        return;
-    }
-    // Force re-read from ~/.kepler/config.json
-    ctx.auth._config = null;
-    const creds = ctx.auth.loadCredentials();
-    const GREEN = '\x1b[32m', DIM = '\x1b[2m', CYAN = '\x1b[36m', RESET = '\x1b[0m';
-    process.stderr.write(`\n${GREEN}✓ Credentials reloaded${RESET}\n`);
-    process.stderr.write(`  ${DIM}Auth:${RESET}     ${creds.token ? 'logged in' : 'not logged in'}\n`);
-    process.stderr.write(`  ${DIM}Gateway:${RESET}  ${creds.gatewayType}\n`);
-    process.stderr.write(`  ${DIM}Backend:${RESET}  ${creds.backendUrl}\n`);
-    if (creds.models?.orchestrator) process.stderr.write(`  ${DIM}Model:${RESET}    ${creds.models.orchestrator}\n`);
-    process.stderr.write(`\n  ${DIM}Next prompt will use updated credentials.${RESET}\n\n`);
-}
-
-function cmdSync(ctx) {
-    if (ctx.auth) {
-        process.stderr.write('\x1b[36mSyncing settings from web...\x1b[0m\n');
-        ctx.auth.syncSettings().then((remote) => {
-            process.stderr.write(`\x1b[32m✓ Synced:\x1b[0m gateway=${remote.gateway_type}`);
-            if (remote.models?.orchestrator) process.stderr.write(`, orchestrator=${remote.models.orchestrator}`);
-            if (remote.models?.reasoning) process.stderr.write(`, coding=${remote.models.reasoning}`);
-            process.stderr.write('\n');
-        }).catch((err) => {
-            process.stderr.write(`\x1b[31m✗ Sync failed: ${err.message}\x1b[0m\n`);
-        });
-    }
-}
-
-function cmdCreate(ctx, args) {
-    const filePath = args[0];
-    if (!filePath) {
-        process.stderr.write('\x1b[31mUsage: /create <path-to-workflow.yaml>\x1b[0m\n');
-        return;
-    }
-    // Lazy-import to avoid circular deps at module load time
-    import('../commands/workflow.mjs').then(({ handleWorkflowCommand }) => {
-        const cliArgs = {
-            workflowSubcommand: 'create',
-            workflowFile: filePath,
-            command: 'workflow',
-            // Pass through auth context
-            ...(ctx.auth ? {} : {}),
-        };
-        handleWorkflowCommand(cliArgs).catch(err => {
-            process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
-        });
-    });
-}
-
-function cmdWhoami(ctx) {
-    if (!ctx.auth) {
-        process.stderr.write('\x1b[31mNot logged in.\x1b[0m\n');
-        return;
-    }
-    const creds = ctx.auth.loadCredentials();
-    if (!creds.token) {
-        process.stderr.write('\x1b[31mNot logged in. Run /login first.\x1b[0m\n');
-        return;
-    }
-    const backendUrl = creds.backendUrl;
-    process.stderr.write('\x1b[2mFetching user info...\x1b[0m\n');
-    fetch(`${backendUrl}/api/user/me`, {
-        headers: { 'Authorization': `Bearer ${creds.token}` },
-    }).then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-    }).then(data => {
-        const GREEN = '\x1b[32m', CYAN = '\x1b[36m', DIM = '\x1b[2m', RESET = '\x1b[0m';
-        process.stderr.write(`\n  ${GREEN}✓${RESET} ${data.github_username || 'unknown'}\n`);
-        process.stderr.write(`  ${DIM}Email:${RESET}    ${data.email || 'n/a'}\n`);
-        process.stderr.write(`  ${DIM}User ID:${RESET}  ${data.id}\n`);
-        process.stderr.write(`  ${DIM}Step:${RESET}     ${data.onboarding_step || 'signed_up'}\n`);
-        process.stderr.write(`  ${DIM}Role:${RESET}     ${data.role || 'user'}\n\n`);
-    }).catch(err => {
-        process.stderr.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
-    });
-}
+// Namespaced subcommands. `/status metrics` -> `/stats`, etc.
+export const NAMESPACED_COMMANDS = {
+  '/status': {
+    metrics: '/stats',
+    stats:   '/stats',
+    cost:    '/cost',
+    credits: '/cost',
+    budget:  '/budget',
+  },
+  '/history': {
+    last:        '/last',
+    expand:      '/expand',
+    fold:        '/fold',
+    undo:        '/undo',
+    checkpoint:  '/checkpoint',
+    checkpoints: '/checkpoint',
+    report:      '/report',
+  },
+  '/settings': {
+    login:    '/login',
+    logout:   '/logout',
+    whoami:   '/whoami',
+    quiet:    '/quiet',
+    verbose:  '/verbose',
+    surgical: '/surgical',
+    revoke:   '/revoke',
+  },
+};
 
 /**
- * Execute a slash command if input starts with /.
- * @returns {boolean} true if handled
+ * Normalize a raw slash-command input like "/status metrics arg" into
+ * { cmd: '/stats', rest: 'arg', rawCmd, aliasTarget }, resolving legacy
+ * aliases and namespaced subcommands to their canonical form.
+ *
+ * - `rawCmd`      the lower-cased first token as the user typed it
+ * - `cmd`         the canonical command (namespaced hit if any, else rawCmd)
+ * - `rest`        the remaining args joined with spaces
+ * - `aliasTarget` for legacy flat commands, the new namespaced form to
+ *                 suggest to the user (null when not aliased)
  */
-export function handleSlashCommand(input, ctx) {
-    const parts = input.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
-    const entry = COMMANDS[cmd];
-    if (!entry) {
-        process.stderr.write(`Unknown command: ${cmd}. Type /help for available commands.\n`);
-        return true;
-    }
-    entry.handler(ctx, parts.slice(1));
-    return true;
+export function normalizeCommandInput(input) {
+  const parts = String(input || '').trim().split(/\s+/).filter(Boolean);
+  const rawCmd = (parts[0] || '').toLowerCase();
+  const restParts = parts.slice(1);
+  const sub = (restParts[0] || '').toLowerCase();
+  const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
+  if (namespaced) {
+    return {
+      cmd: namespaced,
+      rest: restParts.slice(1).join(' '),
+      rawCmd,
+      aliasTarget: null,
+    };
+  }
+  return {
+    cmd: rawCmd,
+    rest: restParts.join(' '),
+    rawCmd,
+    aliasTarget: LEGACY_COMMAND_HINTS[rawCmd] || null,
+  };
 }

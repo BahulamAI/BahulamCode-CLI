@@ -63,6 +63,14 @@ import {
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
+import {
+  COMMANDS,
+  HELP_GROUPS,
+  HELP_GROUP_ALIASES,
+  LEGACY_COMMAND_HINTS,
+  NAMESPACED_COMMANDS,
+  normalizeCommandInput,
+} from '../ui/slash-commands.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
@@ -986,221 +994,10 @@ const session = {
 
 // ── Commands ──
 
-const COMMANDS = {
-  '/help':     'Show commands',
-  '/login':    'Sign in via browser',
-  '/whoami':   'Show logged-in user',
-  '/status':   'Session status & system info',
-  '/plan':     'Show plan/tasks',
-  '/tasks':    'Show or update project tasks',
-  '/stats':    'Progress bars & metrics',
-  '/new':      'Start a new session',
-  '/clear':    'Clear conversation',
-  '/git':      'Git status',
-  '/diff':     'Git diff',
-  '/cost':     'Show session cost',
-  '/model':    'Show or set session model overrides',
-  '/attach':   'Attach image path or clipboard image to next prompt',
-  '/attachments':'List or clear pending image attachments',
-  '/history':  'Show conversation',
-  '/settings': 'Show policy/settings',
-  '/last':     'Expand last tool output',
-  '/expand':   'Expand tool output by index (or "all")',
-  '/fold':     'Hide previously expanded tool output',
-  '/checkpoint':'List recent file checkpoints',
-  '/undo':     'Restore the last file checkpoint',
-  '/preflight':'Re-run the onboarding diagnostic',
-  '/report':   'Save the mission report as markdown',
-  '/why':      'Print the agent reasoning for the last decision',
-  '/map':      'Show the registered project tree',
-  '/budget':   'Set / clear a hard session cost cap',
-  '/quiet':    'Verbosity: hide sub-agent inner tools',
-  '/verbose':  'Verbosity: show sub-agent inner tools',
-  '/surgical': 'Verbosity: show everything (reasoning, expanded tools)',
-  '/compact':  'Compact conversation context',
-  '/agents':   'List available agents',
-  '/explore':  'Code explorer agent',
-  '/review':   'Code review agent',
-  '/architect':'Feature architect agent',
-  '/safety':   'Show safety guardrail status',
-  '/revoke':   'Revoke auto-approvals',
-  '/resume':   'Resume a previous session',
-  '/sessions': 'List resumable sessions',
-  '/logout':   'Sign out and clear credentials',
-  '/exit':     'Exit CLI',
-};
+// COMMANDS + HELP_GROUPS + HELP_GROUP_ALIASES + LEGACY_COMMAND_HINTS +
+// NAMESPACED_COMMANDS + normalizeCommandInput are now the canonical
+// catalog in ui/slash-commands.mjs. See imports at the top of this file.
 
-const HELP_GROUPS = [
-  {
-    key: 'plan',
-    title: 'Plan',
-    summary: 'plan and project tasks',
-    commands: [
-      ['/plan', 'Plan and task overview'],
-      ['/plan status', 'Plan owner and task files'],
-      ['/plan edit', 'Show editable task/plan paths'],
-      ['/tasks', 'List project tasks'],
-      ['/tasks add <text>', 'Add backlog task'],
-      ['/tasks active|blocked|done <text>', 'Append to a task list'],
-    ],
-  },
-  {
-    key: 'status',
-    title: 'Status',
-    summary: 'session, usage, budget',
-    commands: [
-      ['/status', 'Session snapshot'],
-      ['/status context', 'Loaded .kepler context'],
-      ['/status metrics', 'Progress bars and runtime metrics'],
-      ['/status cost', 'Credits and message window'],
-      ['/model [role] [model]', 'Show or set session model override'],
-      ['/attach <image>', 'Attach image to the next prompt'],
-      ['/attach clipboard', 'Attach image currently copied to macOS/Windows clipboard'],
-      ['/attachments', 'List pending image attachments'],
-      ['/attachments clear', 'Clear pending image attachments'],
-      ['/status budget <amount|clear>', 'Set or clear session budget'],
-    ],
-  },
-  {
-    key: 'history',
-    title: 'History',
-    summary: 'transcript, reports, undo',
-    commands: [
-      ['/history', 'Recent transcript'],
-      ['/history approvals', 'Approval log'],
-      ['/history last', 'Expand last tool output'],
-      ['/history expand [n|all]', 'Expand tool output'],
-      ['/history checkpoint', 'List checkpoints'],
-      ['/history undo', 'Restore latest checkpoint'],
-      ['/history report', 'Save mission report'],
-    ],
-  },
-  {
-    key: 'settings',
-    title: 'Settings',
-    summary: 'auth, policy, verbosity',
-    commands: [
-      ['/settings policy', 'Effective project policy'],
-      ['/settings login', 'Sign in'],
-      ['/settings logout', 'Sign out'],
-      ['/settings whoami', 'Current user'],
-      ['/settings quiet|verbose|surgical', 'Verbosity'],
-      ['/settings revoke', 'Revoke auto-approvals'],
-    ],
-  },
-  {
-    key: 'worktree',
-    title: 'Worktree',
-    summary: 'git and files',
-    commands: [
-      ['/git', 'Git status'],
-      ['/diff', 'Git diff'],
-      ['/map', 'Registered project tree'],
-      ['/preflight', 'Onboarding diagnostic'],
-      ['/safety', 'Safety guardrail status'],
-    ],
-  },
-  {
-    key: 'agents',
-    title: 'Agents',
-    summary: 'specialist modes',
-    commands: [
-      ['/agents', 'List built-in and local agents'],
-      ['/agents create <name>', 'Create .kepler/agents/<name>.yaml'],
-      ['/agents edit <name>', 'Open local agent YAML'],
-      ['/agents sync [name]', 'Sync all or one local agent to cloud'],
-      ['/explore <instruction>', 'Explore code'],
-      ['/review <instruction>', 'Review code'],
-      ['/architect <instruction>', 'Design an approach'],
-    ],
-  },
-  {
-    key: 'session',
-    title: 'Session',
-    summary: 'resume and clear',
-    commands: [
-      ['/sessions', 'List resumable sessions'],
-      ['/resume [id]', 'Resume a session'],
-      ['/compact', 'Compact conversation context'],
-      ['/new', 'Start a fresh session'],
-      ['/clear', 'Clear conversation'],
-      ['/exit', 'Exit CLI'],
-    ],
-  },
-];
-
-const HELP_GROUP_ALIASES = new Map(
-  HELP_GROUPS.flatMap(group => [[group.key, group], [group.title.toLowerCase(), group]])
-);
-
-const LEGACY_COMMAND_HINTS = {
-  '/stats': '/status metrics',
-  '/cost': '/status cost',
-  '/budget': '/status budget',
-  '/last': '/history last',
-  '/expand': '/history expand',
-  '/fold': '/history fold',
-  '/undo': '/history undo',
-  '/checkpoint': '/history checkpoint',
-  '/report': '/history report',
-  '/login': '/settings login',
-  '/logout': '/settings logout',
-  '/whoami': '/settings whoami',
-  '/quiet': '/settings quiet',
-  '/verbose': '/settings verbose',
-  '/surgical': '/settings surgical',
-  '/revoke': '/settings revoke',
-};
-
-const NAMESPACED_COMMANDS = {
-  '/status': {
-    metrics: '/stats',
-    stats: '/stats',
-    cost: '/cost',
-    credits: '/cost',
-    budget: '/budget',
-  },
-  '/history': {
-    last: '/last',
-    expand: '/expand',
-    fold: '/fold',
-    undo: '/undo',
-    checkpoint: '/checkpoint',
-    checkpoints: '/checkpoint',
-    report: '/report',
-  },
-  '/settings': {
-    login: '/login',
-    logout: '/logout',
-    whoami: '/whoami',
-    quiet: '/quiet',
-    verbose: '/verbose',
-    surgical: '/surgical',
-    revoke: '/revoke',
-  },
-};
-
-function normalizeCommandInput(input) {
-  const parts = input.trim().split(/\s+/).filter(Boolean);
-  const rawCmd = (parts[0] || '').toLowerCase();
-  const restParts = parts.slice(1);
-  const sub = (restParts[0] || '').toLowerCase();
-  const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
-  if (namespaced) {
-    return {
-      cmd: namespaced,
-      rest: restParts.slice(1).join(' '),
-      rawCmd,
-      aliasTarget: null,
-    };
-  }
-  return {
-    cmd: rawCmd,
-    rest: restParts.join(' '),
-    rawCmd,
-    aliasTarget: LEGACY_COMMAND_HINTS[rawCmd] || null,
-  };
-}
 
 function renderHelp(topic = '') {
   const key = String(topic || '').trim().toLowerCase();
