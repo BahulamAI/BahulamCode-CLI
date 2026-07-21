@@ -33,6 +33,7 @@ export function parseArgs(args) {
         resumeSessionId: null,
         headless: false,
         freeswim: false,
+        vision: [],
         verbose: false,
         debug: false,
         showVersion: false,
@@ -116,6 +117,12 @@ export function parseArgs(args) {
                 result.local = true;
                 break;
 
+            case '--vision': {
+                const value = args[++i];
+                if (value) result.vision.push(value);
+                break;
+            }
+
             case '--freeswim-open-waters':
             case '--freeswim':
             case '--yes':
@@ -175,6 +182,7 @@ Options:
   --continue                 Alias for --resume
   --headless                 Non-interactive mode: auto-approve, JSONL output
   --cache-report <file>      Write prompt-cache summary JSON to <file> (headless only)
+  --vision <image-path>      Attach image path in headless mode
   --freeswim-open-waters     Skip all approval prompts (no boundaries)
   --freeswim                 Alias for --freeswim-open-waters
   --yes                      Alias for --freeswim-open-waters

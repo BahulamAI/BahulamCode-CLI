@@ -1788,7 +1788,29 @@ function updateStatusBar() {
 // content lands below it.
 let _pendingHead = null; // { callId, head, indent }
 let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
-let _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+// Explore-run collapse: reduces bursts of list/read/search/index tool calls
+// into one in-place summary line so the user sees the agent's PROGRESS
+// (12 files listed, 8 read, latest name) instead of a wall of individual
+// tool cards. Any non-explore event flushes it to a static line so the
+// summary survives when the transcript scrolls.
+let _exploreRun = { counts: {}, recent: [], lineActive: false };
+const EXPLORE_TOOL_CATEGORY = new Map([
+  ['read_file', 'read'], ['read', 'read'], ['read_files', 'read'],
+  ['read_batch', 'read'], ['get_file_info', 'read'],
+  ['list_files', 'list'], ['glob', 'list'], ['ls', 'list'],
+  ['search_code', 'search'], ['search_files', 'search'], ['grep', 'search'],
+  ['index_project', 'index'], ['register_project', 'index'],
+]);
+function exploreCollapseEnabled() {
+  return process.env.KEPLER_EXPLORE_COLLAPSE !== '0';
+}
+function isExploreTool(tool) {
+  if (!exploreCollapseEnabled()) return false;
+  return EXPLORE_TOOL_CATEGORY.has(String(tool || '').toLowerCase());
+}
+function exploreCategory(tool) {
+  return EXPLORE_TOOL_CATEGORY.get(String(tool || '').toLowerCase()) || 'explore';
+}
 
 function blockSeparatorMode() {
   return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
@@ -1822,10 +1844,6 @@ function clearPendingHead() {
   flushPendingHead();
 }
 
-function isCompactReadTool(tool) {
-  return ['read_file', 'read', 'get_file_info'].includes(String(tool || '').toLowerCase());
-}
-
 function isInlineOutcomeTool(tool) {
   return [
     'read_file', 'read_files', 'read_batch', 'get_file_info',
@@ -1841,68 +1859,59 @@ function compactHeadForOutcome(head, outcome, cols) {
 
 function readToolLabel(tool, data = {}) {
   const args = data.args || {};
-  const filePath = args.file_path || args.path || data.file_path || data.path || '';
+  const filePath = args.file_path || args.path || data.file_path || data.path
+    || args.pattern || args.query || '';
   if (filePath) return shortPath(String(filePath));
   const output = String(data.output_preview || data.output || '').split('\n').find(Boolean) || '';
   const match = output.match(/^([^:\s][^:\n]*):/);
   return match ? shortPath(match[1]) : String(tool || 'file');
 }
 
-function rememberCompactRead(label) {
-  const file = String(label || '').trim();
-  if (!file) return;
-  _compactReadRun.recent.push(file);
-  if (_compactReadRun.recent.length > 3) _compactReadRun.recent.shift();
+function rememberExplore(label) {
+  const value = String(label || '').trim();
+  if (!value) return;
+  _exploreRun.recent.push(value);
+  if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();
 }
 
-function compactReadSummary() {
-  const latest = _compactReadRun.recent.length
-    ? ` · latest: ${_compactReadRun.recent.join(', ')}`
-    : '';
-  return `Reading files · ${_compactReadRun.count} read${latest}`;
+function exploreSummary() {
+  const { counts, recent } = _exploreRun;
+  const bits = [];
+  if (counts.list)   bits.push(`${counts.list} listed`);
+  if (counts.read)   bits.push(`${counts.read} read`);
+  if (counts.search) bits.push(`${counts.search} searched`);
+  if (counts.index)  bits.push(`${counts.index} indexed`);
+  const stats = bits.length ? bits.join(' · ') : 'starting…';
+  const latest = recent.length ? ` · ${recent[recent.length - 1]}` : '';
+  return `exploring · ${stats}${latest}`;
 }
 
-function compactReadSummaryLine() {
-  const cols = process.stderr.columns || 120;
-  return `  ${paint.text.dim(fitAnsiLine(compactReadSummary(), Math.max(32, cols - 2)))}`;
-}
-
-function renderCompactReadRun() {
-  const line = compactReadSummaryLine();
-  inPlace(line);
-  _compactReadRun.lineActive = true;
+function renderExploreRun() {
+  // Use the existing animated spinner so the summary line pulses while
+  // background exploration is still in flight. updateSpinner just swaps the
+  // text; the 80ms interval keeps the frame rotating.
+  const text = exploreSummary();
+  if (_spinInterval) updateSpinner(text);
+  else startSpinner(text);
+  _exploreRun.lineActive = true;
   _lastRenderedBlock = 'tool';
 }
 
-function maybeCollapseReadTool(tool, data, callId) {
-  if (!isCompactReadTool(tool)) {
-    flushCompactReadRun();
-    return false;
-  }
-
-  _compactReadRun.count++;
-  rememberCompactRead(readToolLabel(tool, data));
-  const threshold = Number.parseInt(process.env.KEPLER_READ_TOOL_DETAIL_LIMIT || '8', 10);
-  const limit = Number.isFinite(threshold) && threshold >= 0 ? threshold : 8;
-  if (_compactReadRun.count <= limit) return false;
-
-  _compactReadRun.hidden++;
-  if (_pendingHead && (!callId || _pendingHead.callId === callId)) {
-    _pendingHead = null;
-  }
-
-  renderCompactReadRun();
-  return true;
-}
-
-function flushCompactReadRun() {
-  if (_compactReadRun.hidden > 0) {
-    if (_compactReadRun.lineActive) inPlace('');
-    process.stderr.write(`${compactReadSummaryLine()}\n`);
+function flushExploreRun() {
+  const total = Object.values(_exploreRun.counts).reduce((a, b) => a + b, 0);
+  if (total > 0) {
+    if (_exploreRun.lineActive) stopSpinner();
+    const cols = process.stderr.columns || 120;
+    const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
+    process.stderr.write(`${line}\n`);
     _lastRenderedBlock = 'tool';
   }
-  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+  _exploreRun = { counts: {}, recent: [], lineActive: false };
 }
+
+// Legacy alias — several sites (resetContentStream, older event handlers)
+// call this. Keep pointing at the new flush so nothing has to change.
+const flushCompactReadRun = flushExploreRun;
 
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
@@ -1913,7 +1922,23 @@ function renderToolCall(data) {
   // If a previous head is still pending (no result yet), flush it as a
   // regular two-line shape before starting the next one.
   flushPendingHead();
-  if (!isCompactReadTool(tool)) flushCompactReadRun();
+
+  // ── Explore-run collapse ────────────────────────────────────────────────
+  // For list/read/search/index tools, skip the per-call head entirely and
+  // update a single animated summary spinner. The transcript stays clean;
+  // the user still sees live progress (12 read · 3 listed · latest: foo.py).
+  if (isExploreTool(tool)) {
+    _exploreRun.counts[exploreCategory(tool)] =
+      (_exploreRun.counts[exploreCategory(tool)] || 0) + 1;
+    session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
+    const label = readToolLabel(tool, { args });
+    if (label) rememberExplore(label);
+    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    renderExploreRun();
+    return;
+  }
+
+  flushExploreRun();
   renderBlockBoundary('tool', { compactSame: tool !== 'shell' });
 
   const head = formatCardHead(tool, args, {
@@ -1978,7 +2003,13 @@ function renderToolResult(data, eventType = 'tool_result') {
     columns: process.stderr.columns || 120,
   });
 
-  if (data.success !== false && maybeCollapseReadTool(tool, data, callId)) {
+  // Explore tools: the call already updated the summary spinner. Refresh
+  // the "latest" hint with the result's file if we have one, and skip the
+  // per-result render entirely.
+  if (isExploreTool(tool)) {
+    const label = readToolLabel(tool, data);
+    if (label) rememberExplore(label);
+    renderExploreRun();
     return;
   }
 
@@ -2150,7 +2181,7 @@ function startContentStream() {
   _streamBuffer = '';
   _streamedPartialText = '';
   _renderedToolResults.clear();
-  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+  _exploreRun = { counts: {}, recent: [], lineActive: false };
   _renderedContentThisTurn = false;
   _lastRenderedBlock = null;
   stopSpinner();

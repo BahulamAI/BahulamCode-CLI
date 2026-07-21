@@ -96,6 +96,26 @@ export function createToolExecutor({
         return `... (tail truncated)\n${value.slice(value.length - maxChars)}`;
     }
 
+    function isAbortError(err) {
+        return err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+    }
+
+    function throwIfAborted(signal) {
+        if (!signal?.aborted) return;
+        const err = new Error('Cancelled by user');
+        err.name = 'AbortError';
+        throw err;
+    }
+
+    function cancelledToolResult(name) {
+        return {
+            success: false,
+            output: 'Cancelled by user',
+            _tool: name,
+            _cancelled: true,
+        };
+    }
+
     function skillScope(args = {}) {
         const scope = String(args.scope || '').trim();
         if (scope !== 'project' && scope !== 'global') {
@@ -446,7 +466,8 @@ export function createToolExecutor({
 
     const toolMap = {
         // 1. shell → Bash + classification + smart output filtering
-        shell: async (args) => {
+        shell: async (args, options = {}) => {
+            throwIfAborted(options.signal);
             // Phase 1: legacy safety check (kept for backward compat)
             const shellCheck = validateShellCommand(args.command);
             if (!shellCheck.safe) {
@@ -500,13 +521,15 @@ export function createToolExecutor({
                 timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
                 cwd,
+                signal: options.signal,
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
+            const cancelled = /^Error:\s*Command cancelled by user/i.test(rawOutput);
             const timedOut = /^Error:\s*Command timed out after \d+ms/i.test(rawOutput);
             const exitMatch = rawOutput.match(/Exit code: (\d+)/);
-            const exitCode = timedOut ? 124 : (exitMatch ? parseInt(exitMatch[1]) : 0);
+            const exitCode = cancelled ? 130 : (timedOut ? 124 : (exitMatch ? parseInt(exitMatch[1]) : 0));
             // Semantic exit code: grep returns 1 for "no matches" (not an error)
-            const success = observationTimeout && timedOut ? true : (!timedOut && !isExitCodeError(args.command, exitCode));
+            const success = cancelled ? false : (observationTimeout && timedOut ? true : (!timedOut && !isExitCodeError(args.command, exitCode)));
 
             // Apply smart filtering based on command type
             const filtered = observationTimeout && timedOut
@@ -528,6 +551,7 @@ export function createToolExecutor({
                 _commandType: filtered.commandType,
                 _filtered: filtered.truncated || filtered.originalLines !== filtered.filteredLines,
                 _timed_out: timedOut,
+                _cancelled: cancelled,
                 _observation_timeout: observationTimeout && timedOut,
                 _observation_timeout_ms: observationTimeout && timedOut ? effectiveTimeout : undefined,
             };
@@ -1101,8 +1125,9 @@ print('OK: replaced')
         },
 
         // 12. validate_build
-        validate_build: async (args) => {
+        validate_build: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 let cmd = args.command;
                 const cwd = await commandCwd(args);
                 if (!cmd) {
@@ -1111,9 +1136,24 @@ print('OK: replaced')
                     else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000, cwd }).toString();
-                return { success: true, output, _tool: 'validate_build' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: Math.min(args.timeout || 120_000, 600_000),
+                    description: `Validate build: ${cmd.slice(0, 80)}`,
+                    cwd,
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', exit_code: 130, _cancelled: true, _tool: 'validate_build' };
+                }
+                const exitMatch = rawOutput.match(/Exit code: (\d+)/);
+                if (exitMatch || /^Error:\s*Command timed out/i.test(rawOutput)) {
+                    return { success: false, output: rawOutput, exit_code: exitMatch ? Number(exitMatch[1]) : 124, _tool: 'validate_build' };
+                }
+                return { success: true, output: rawOutput, _tool: 'validate_build' };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('validate_build');
                 return { success: false, output: err.stderr?.toString() || err.message, _tool: 'validate_build' };
             }
         },
@@ -1136,8 +1176,9 @@ print('OK: replaced')
         },
 
         // 14. lint_check
-        lint_check: async (args) => {
+        lint_check: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 const filePath = await resolvePath(args.file_path || args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
@@ -1145,24 +1186,51 @@ print('OK: replaced')
                 else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
                 else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
 
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 30_000, cwd: projectRootFor(filePath) }).toString();
-                return { success: true, output, issues: output.split('\n').filter(Boolean), _tool: 'lint_check' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: 30_000,
+                    description: `Lint: ${path.basename(filePath)}`,
+                    cwd: projectRootFor(filePath),
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', _cancelled: true, _tool: 'lint_check' };
+                }
+                return { success: true, output: rawOutput, issues: rawOutput.split('\n').filter(Boolean), _tool: 'lint_check' };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('lint_check');
                 return { success: false, output: err.message, _tool: 'lint_check' };
             }
         },
 
         // 15. run_tests
-        run_tests: async (args) => {
+        run_tests: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 const cmd = args.command || 'npm test';
                 const cwd = await commandCwd(args);
-                const output = execSync(cmd, {
-                    stdio: 'pipe', timeout: 120_000, cwd,
-                    encoding: 'utf-8',
-                }).toString();
-                return { success: true, output: output.slice(-3000), _tool: 'run_tests' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: Math.min(args.timeout || 120_000, 600_000),
+                    description: `Run tests: ${cmd.slice(0, 80)}`,
+                    cwd,
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', exit_code: 130, _cancelled: true, _tool: 'run_tests' };
+                }
+                const exitMatch = rawOutput.match(/Exit code: (\d+)/);
+                const timedOut = /^Error:\s*Command timed out/i.test(rawOutput);
+                return {
+                    success: !exitMatch && !timedOut,
+                    output: rawOutput.slice(-3000),
+                    exit_code: exitMatch ? Number(exitMatch[1]) : (timedOut ? 124 : 0),
+                    _tool: 'run_tests',
+                };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('run_tests');
                 const output = (err.stdout || '') + (err.stderr || '');
                 return { success: false, output: output.slice(-3000), exit_code: err.status, _tool: 'run_tests' };
             }
@@ -1386,19 +1454,24 @@ print('OK: replaced')
          * @param {Object} args - Tool arguments
          * @returns {Promise<Object>} - { success, output, ... }
          */
-        async execute(name, args) {
+        async execute(name, args, options = {}) {
             const handler = toolMap[name];
             if (!handler) {
                 return { success: false, output: `Unknown tool: ${name}`, _tool: name };
             }
             const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
             try {
+                throwIfAborted(options.signal);
                 const pre = await hooks.run('PreToolUse', { toolName: name, input: args || {} });
+                throwIfAborted(options.signal);
                 if (pre.blocked) {
                     return { success: false, output: `BLOCKED by hook: ${pre.message}`, _tool: name, _blocked: true };
                 }
-                let result = await handler(args);
+                let result = await handler(args || {}, options);
+                if (result?._cancelled) return result;
+                throwIfAborted(options.signal);
                 const post = await hooks.run('PostToolUse', { toolName: name, input: args || {}, result });
+                throwIfAborted(options.signal);
                 for (const item of post.results || []) {
                     if (item.parsed?.modifiedResult !== undefined) result = item.parsed.modifiedResult;
                     if (item.parsed?.feedback && result && typeof result === 'object') {
@@ -1407,6 +1480,9 @@ print('OK: replaced')
                 }
                 return result;
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) {
+                    return cancelledToolResult(name);
+                }
                 return { success: false, output: `Tool error (${name}): ${err.message}`, _tool: name };
             }
         },

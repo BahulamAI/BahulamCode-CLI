@@ -105,6 +105,8 @@ async function main() {
     kepler                    Start interactive REPL
     kepler "instruction"      Run a single instruction
     kepler --headless -p "x"  Non-interactive: auto-approve, JSONL output
+    kepler --headless -p "x" --vision screenshot.png
+                              Attach an image via the vision analysis pipeline
     kepler --resume            Resume last conversation
     kepler dashboard          Open Kepler Pulse analytics dashboard
     kepler login              Sign in via browser
@@ -140,6 +142,8 @@ async function main() {
     /agents create <name>   Create project-local user-defined agent YAML
     /agents edit <name>     Open a local agent YAML in your editor
     /agents sync [name]     Sync all or one local agent to Supabase
+    /attach <image-path>    Attach an image to next prompt
+    /attach clipboard       Attach image copied to macOS/Windows clipboard
     /exit                   Exit the REPL
 
   \x1b[1mKeyboard:\x1b[0m
@@ -172,6 +176,7 @@ async function main() {
       verbose: args.verbose,
       cacheReport: args.cacheReport,
       local: args.local,
+      vision: args.vision,
     });
     return;
   }
