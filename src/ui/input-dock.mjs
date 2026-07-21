@@ -1,27 +1,41 @@
 /**
  * Fixed input dock.
  *
- * Reserves a few rows at the bottom of the terminal so agent/tool output
- * scrolls above the prompt. The readline prompt itself owns the input row.
+ * Reserves rows at the bottom of the terminal so agent/tool output scrolls
+ * above the prompt. The dock has a fixed max height (top rule + N input
+ * rows + bottom rule + tips + safety row); when the input buffer wraps
+ * beyond N visible rows, only the last N render with a leading '…' marker.
+ * Growing the dock dynamically would resize the scroll region on every
+ * paste — that's disruptive to the content above, so the reservation is
+ * fixed at max.
  *
- * Layout (double-rule sandwich):
- *   ══════════════════ context ══════════   ← top rule (brand)
- *      You › build a login page             ← input row (indented)
- *   ══════════════════════════════════════   ← bottom rule (dim)
+ * Layout (double-rule sandwich, with input rows = 2 by default):
+ *   ══════════════════ context ══════════   ← top rule
+ *      + add instruction › foo bar          ← input row 1
+ *      baz quux                             ← input row 2 (empty if 1-line)
+ *   ══════════════════════════════════════   ← bottom rule
  *      [Enter] send · [/] commands …        ← tips row
  *   (one blank row at very bottom for cursor safety)
+ *
+ * Config:
+ *   KEPLER_INPUT_ROWS    1..5   input row count (default 2)
+ *   KEPLER_FIXED_INPUT=0        disable dock entirely (fallback readline)
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
 import { term, onResize } from './term.mjs';
+import { wrapToLines, tailWithEllipsis, cursorPositionInLines } from './text-layout.mjs';
 
 const ESC = '\x1b[';
 const OUT = process.stderr;
-const DEFAULT_ROWS = 5;
 const INPUT_INDENT = 3;
+const DEFAULT_INPUT_ROWS = 2;
+const MIN_INPUT_ROWS = 1;
+const MAX_INPUT_ROWS = 5;
 
 let mounted = false;
-let reservedRows = DEFAULT_ROWS;
+let inputRows = DEFAULT_INPUT_ROWS;
+let reservedRows = 4 + DEFAULT_INPUT_ROWS; // top + input(N) + bottom + tips + safety
 let unsubResize = null;
 let lastFrame = { context: '', tips: '' };
 let resetting = false;
@@ -46,10 +60,24 @@ function contentBottomRow() {
   return Math.max(1, rows() - reservedRows);
 }
 
-function topRuleRow()    { return contentBottomRow() + 1; }
-function inputRow()      { return contentBottomRow() + 2; }
-function bottomRuleRow() { return contentBottomRow() + 3; }
-function tipsRow()       { return contentBottomRow() + 4; }
+function topRuleRow()       { return contentBottomRow() + 1; }
+function inputRowStart()    { return contentBottomRow() + 2; }
+function inputRowEnd()      { return inputRowStart() + inputRows - 1; }
+function bottomRuleRow()    { return inputRowEnd() + 1; }
+function tipsRow()          { return bottomRuleRow() + 1; }
+
+function inputTextBudget() {
+  return Math.max(8, cols() - INPUT_INDENT - 1);
+}
+
+function resolveInputRows(requested) {
+  const raw = requested != null
+    ? requested
+    : process.env.KEPLER_INPUT_ROWS;
+  const n = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(n)) return DEFAULT_INPUT_ROWS;
+  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS, n));
+}
 
 function padLine(text) {
   const value = String(text || '');
@@ -116,10 +144,45 @@ function renderFrame(frame = {}) {
   restoreCursor();
 }
 
-function clearInputRow() {
+function clearInputRows() {
   saveCursor();
-  moveTo(inputRow(), 1);
-  clearLine();
+  for (let row = inputRowStart(); row <= inputRowEnd(); row++) {
+    moveTo(row, 1);
+    clearLine();
+  }
+  restoreCursor();
+}
+
+/**
+ * Wrap `prefix + value` into visible lines, keeping only the last N rows
+ * with an ellipsis marker on overflow. Returned lines are already indented
+ * for the input area.
+ */
+function layoutInput(prefix, value) {
+  const budget = inputTextBudget();
+  const combined = `${prefix || ''}${value || ''}`;
+  const wrapped = wrapToLines(combined, budget);
+  const tail = tailWithEllipsis(wrapped, inputRows);
+  return {
+    lines: tail.visible,
+    truncated: tail.truncated,
+    dropped: tail.dropped,
+    wrapped, // full wrap for cursor math
+    prefix: prefix || '',
+  };
+}
+
+function drawInputLines(lines) {
+  saveCursor();
+  const indent = ' '.repeat(INPUT_INDENT);
+  for (let i = 0; i < inputRows; i++) {
+    const row = inputRowStart() + i;
+    moveTo(row, 1);
+    clearLine();
+    if (i < lines.length) {
+      write(`${indent}${lines[i]}`);
+    }
+  }
   restoreCursor();
 }
 
@@ -127,12 +190,13 @@ export function isInputDockMounted() {
   return mounted;
 }
 
-export function mountInputDock({ rows: requestedRows = DEFAULT_ROWS } = {}) {
+export function mountInputDock({ inputRows: requestedInputRows } = {}) {
   const t = term();
   if (!t.isTTY || t.plain || process.env.KEPLER_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 
-  reservedRows = Math.max(4, Math.min(7, Number.parseInt(String(requestedRows), 10) || DEFAULT_ROWS));
+  inputRows = resolveInputRows(requestedInputRows);
+  reservedRows = 4 + inputRows; // top + input(N) + bottom + tips + safety
   mounted = true;
   applyLayout();
 
@@ -199,38 +263,61 @@ export function clearPinnedStatus() {
 
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
-  clearInputRow();
+  clearInputRows();
   renderFrame({ context, tips });
-  moveTo(inputRow(), INPUT_INDENT + 1);
+  moveTo(inputRowStart(), INPUT_INDENT + 1);
   return true;
 }
 
 export function clearInputPrompt() {
   if (!mounted) return false;
-  clearInputRow();
+  clearInputRows();
   renderFrame(lastFrame);
   return true;
 }
 
 export function renderDockInput(prefix, value, { context = '', tips = '' } = {}) {
   if (!mounted) return false;
-  clearInputRow();
   renderFrame({ context, tips });
-  moveTo(inputRow(), INPUT_INDENT + 1);
-  write(`${prefix}${value || ''}`);
+  const layout = layoutInput(prefix, value);
+  drawInputLines(layout.lines);
+  // Position cursor at the logical end of the buffer.
+  focusDockInput(prefix, value);
   return true;
 }
 
+/**
+ * Move the terminal cursor to the position that corresponds to the logical
+ * end of `prefix + value` within the (possibly wrapped and truncated) input
+ * area. If the buffer overflowed, the cursor lands on the last visible row.
+ */
 export function focusDockInput(prefix, value = '') {
   if (!mounted) return false;
-  const w = cols();
-  const pos = INPUT_INDENT + visibleWidth(`${prefix || ''}${value || ''}`);
-  // Input never wraps within the dock — clamp to the input row.
-  const col = Math.min(w, pos + 1);
-  moveTo(inputRow(), col);
+  const layout = layoutInput(prefix, value);
+  const offset = visibleWidth(`${prefix || ''}${value || ''}`);
+  const pos = cursorPositionInLines(layout.wrapped, offset);
+  // Clamp the row into the visible input area — offscreen rows map to the
+  // last visible row (mirroring the tail-with-ellipsis behavior).
+  const visibleRowIdx = Math.max(
+    0,
+    Math.min(inputRows - 1, pos.row - Math.max(0, layout.wrapped.length - inputRows)),
+  );
+  const row = inputRowStart() + visibleRowIdx;
+  const col = Math.min(cols(), INPUT_INDENT + 1 + Math.max(0, pos.col));
+  moveTo(row, col);
   return true;
 }
 
 export function inputRowColumn() {
   return INPUT_INDENT + 1;
+}
+
+// Test-only accessors.
+export function _internals() {
+  return {
+    inputRows: () => inputRows,
+    reservedRows: () => reservedRows,
+    layoutInput,
+    inputTextBudget,
+  };
 }

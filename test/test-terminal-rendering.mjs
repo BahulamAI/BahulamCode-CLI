@@ -283,7 +283,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
-  assert.ok(replSource.includes('if (!input) { showPrompt(); return; }'));
+  // Empty-Enter branch now clears the phantom prompt line(s) before
+  // re-rendering — see PRD-081 §5.1 acceptance "Empty Enter must not leave
+  // phantom prompt lines".
+  assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
   assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
@@ -303,12 +306,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('Ctrl+D'));
 });
 
-test('fixed input dock clears input row before repainting', () => {
+test('fixed input dock clears input rows before repainting', () => {
+  // Post-PRD-081: the dock now supports N input rows (1..5, default 2),
+  // so `clearInputRow` is `clearInputRows` and covers the full input area.
   const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
-  assert.ok(dockSource.includes('function clearInputRow()'));
-  assert.ok(dockSource.includes('moveTo(inputRow(), 1);'));
-  assert.ok(dockSource.includes('clearInputRow();\n  renderFrame({ context, tips });'));
+  assert.ok(dockSource.includes('function clearInputRows()'));
+  assert.ok(dockSource.includes('moveTo(row, 1);'));
+  assert.ok(dockSource.includes('clearInputRows();\n  renderFrame({ context, tips });'));
   assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
+  assert.ok(dockSource.includes("from './text-layout.mjs'"));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
