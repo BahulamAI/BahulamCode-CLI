@@ -63,7 +63,7 @@ import {
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
-import { session, orbitRef } from './repl-state.mjs';
+import { session, orbitRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import {
   chooseResumeHistoryMode,
@@ -730,7 +730,7 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   if (parts.length > 0) {
     renderBlockBoundary('status', { compactSame: true });
     process.stderr.write(`  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
-    _lastRenderedBlock = 'status';
+    runtime.lastRenderedBlock = 'status';
   }
 }
 
@@ -764,8 +764,8 @@ function updateStatusBar() {
 // content event, a sub-agent open, an error, completion), we flush the
 // buffered head as a regular two-line shape first so the interleaving
 // content lands below it.
-let _pendingHead = null; // { callId, head, indent }
-let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
 // Explore-run collapse: reduces bursts of list/read/search/index tool calls
 // into one in-place summary line so the user sees the agent's PROGRESS
 // (12 files listed, 8 read, latest name) instead of a wall of individual
@@ -773,15 +773,15 @@ let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | '
 // summary survives when the transcript scrolls.
 // Mutable run state stays here for now — see repl-explore.mjs for the pure
 // classifier. Split TBD.
-let _exploreRun = { counts: {}, recent: [], lineActive: false };
+// (declaration moved to repl-state.mjs runtime.*)
 
 function blockSeparatorMode() {
   return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
 }
 
 function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
-  if (!_lastRenderedBlock) return;
-  if (compactSame && _lastRenderedBlock === nextBlock) return;
+  if (!runtime.lastRenderedBlock) return;
+  if (compactSame && runtime.lastRenderedBlock === nextBlock) return;
 
   const mode = blockSeparatorMode();
   if (mode === 'off' || mode === 'none') return;
@@ -795,10 +795,10 @@ function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
 }
 
 function flushPendingHead() {
-  if (!_pendingHead) return;
-  process.stderr.write(`${_pendingHead.head}\n`);
-  _lastRenderedBlock = 'tool';
-  _pendingHead = null;
+  if (!runtime.pendingHead) return;
+  process.stderr.write(`${runtime.pendingHead.head}\n`);
+  runtime.lastRenderedBlock = 'tool';
+  runtime.pendingHead = null;
 }
 
 function clearPendingHead() {
@@ -833,12 +833,12 @@ function readToolLabel(tool, data = {}) {
 function rememberExplore(label) {
   const value = String(label || '').trim();
   if (!value) return;
-  _exploreRun.recent.push(value);
-  if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();
+  runtime.exploreRun.recent.push(value);
+  if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();
 }
 
 function exploreSummary() {
-  const { counts, recent } = _exploreRun;
+  const { counts, recent } = runtime.exploreRun;
   const bits = [];
   if (counts.list)   bits.push(`${counts.list} listed`);
   if (counts.read)   bits.push(`${counts.read} read`);
@@ -852,25 +852,25 @@ function exploreSummary() {
 function renderExploreRun() {
   // Set the lock BEFORE touching the spinner so the interval's next tick
   // picks up exploreSummary() text instead of any stale label.
-  _exploreRun.lineActive = true;
+  runtime.exploreRun.lineActive = true;
 
   // Paint the pinned line immediately so the user sees the update from
   // the very first tool call, not after the 80 ms interval delay.
   if (isInputDockMounted()) {
-    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+    const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
     drawPinnedStatus(`  ${c.brand(frame)} ${c.dim(exploreSummary())}`);
   }
 
-  if (!_spinInterval) {
-    // Bypass the lockout in startSpinner by seeding _spinText directly.
-    _spinText = exploreSummary();
-    _spinFrame = 0;
-    _spinInterval = setInterval(() => {
-      const isExploreActive = _exploreRun && _exploreRun.lineActive;
-      const label = isExploreActive ? exploreSummary() : _spinText;
+  if (!runtime.spinInterval) {
+    // Bypass the lockout in startSpinner by seeding runtime.spinText directly.
+    runtime.spinText = exploreSummary();
+    runtime.spinFrame = 0;
+    runtime.spinInterval = setInterval(() => {
+      const isExploreActive = runtime.exploreRun && runtime.exploreRun.lineActive;
+      const label = isExploreActive ? exploreSummary() : runtime.spinText;
       if (!label) return;
-      const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
-      _spinFrame++;
+      const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
+      runtime.spinFrame++;
       const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
       if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
         return;
@@ -879,18 +879,18 @@ function renderExploreRun() {
       inPlace(rendered);
     }, 80);
   }
-  _lastRenderedBlock = 'tool';
+  runtime.lastRenderedBlock = 'tool';
 }
 
 function flushExploreRun() {
-  const total = Object.values(_exploreRun.counts).reduce((a, b) => a + b, 0);
+  const total = Object.values(runtime.exploreRun.counts).reduce((a, b) => a + b, 0);
   // Release the lock first so the real spinner teardown can run.
-  const wasActive = _exploreRun.lineActive;
-  _exploreRun.lineActive = false;
+  const wasActive = runtime.exploreRun.lineActive;
+  runtime.exploreRun.lineActive = false;
   if (total > 0) {
     if (wasActive) {
-      if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
-      _spinText = '';
+      if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
+      runtime.spinText = '';
       // Clear the pinned status row instead of using inPlace (which is
       // unreliable near the bottom of the scroll region).
       if (isInputDockMounted()) clearPinnedStatus();
@@ -898,9 +898,9 @@ function flushExploreRun() {
     const cols = process.stderr.columns || 120;
     const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
     process.stderr.write(`${line}\n`);
-    _lastRenderedBlock = 'tool';
+    runtime.lastRenderedBlock = 'tool';
   }
-  _exploreRun = { counts: {}, recent: [], lineActive: false };
+  runtime.exploreRun = { counts: {}, recent: [], lineActive: false };
 }
 
 // Legacy alias — several sites (resetContentStream, older event handlers)
@@ -922,8 +922,8 @@ function renderToolCall(data) {
   // update a single animated summary spinner. The transcript stays clean;
   // the user still sees live progress (12 read · 3 listed · latest: foo.py).
   if (isExploreTool(tool)) {
-    _exploreRun.counts[exploreCategory(tool)] =
-      (_exploreRun.counts[exploreCategory(tool)] || 0) + 1;
+    runtime.exploreRun.counts[exploreCategory(tool)] =
+      (runtime.exploreRun.counts[exploreCategory(tool)] || 0) + 1;
     session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
     const label = readToolLabel(tool, { args });
     if (label) rememberExplore(label);
@@ -943,8 +943,8 @@ function renderToolCall(data) {
 
   recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  _pendingHead = { callId, head, indent };
-  _lastRenderedBlock = 'tool';
+  runtime.pendingHead = { callId, head, indent };
+  runtime.lastRenderedBlock = 'tool';
   // Spinner shows what's running until the result arrives.
   startSpinner(`${tool}…`);
 }
@@ -952,7 +952,7 @@ function renderToolCall(data) {
 /**
  * Render a tool result (success/failure, output snippet).
  */
-const _renderedToolResults = new Set();
+// (declaration moved to repl-state.mjs runtime.*)
 
 function formatToolDuration(data) {
   const ms = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
@@ -967,8 +967,8 @@ function renderToolResult(data, eventType = 'tool_result') {
   const callId = data.call_id || data._callId;
   // Either tool_result or tool_done is allowed to render — whichever wins
   // the race. Subsequent events for the same callId are duplicates.
-  if (callId && _renderedToolResults.has(callId)) return;
-  if (callId) _renderedToolResults.add(callId);
+  if (callId && runtime.renderedToolResults.has(callId)) return;
+  if (callId) runtime.renderedToolResults.add(callId);
 
   const tool = data.tool || data._tool || '';
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
@@ -1011,27 +1011,27 @@ function renderToolResult(data, eventType = 'tool_result') {
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
   // and skip the gutter entirely.
-  if (_pendingHead && _pendingHead.callId === callId && !hasLint && !_pendingHead.head.includes('\n')) {
+  if (runtime.pendingHead && runtime.pendingHead.callId === callId && !hasLint && !runtime.pendingHead.head.includes('\n')) {
     const cols = process.stderr.columns || 120;
-    const combined = `${_pendingHead.head}  ${outcome}`;
+    const combined = `${runtime.pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
       if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-      _lastRenderedBlock = 'tool';
-      _pendingHead = null;
+      runtime.lastRenderedBlock = 'tool';
+      runtime.pendingHead = null;
       return;
     }
     if (isInlineOutcomeTool(tool)) {
-      const compactHead = compactHeadForOutcome(_pendingHead.head, outcome, cols);
+      const compactHead = compactHeadForOutcome(runtime.pendingHead.head, outcome, cols);
       process.stderr.write(`${compactHead}  ${outcome}\n`);
       if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-      _lastRenderedBlock = 'tool';
-      _pendingHead = null;
+      runtime.lastRenderedBlock = 'tool';
+      runtime.pendingHead = null;
       return;
     }
     // Combined too wide — flush the head as 2-line and fall through.
     flushPendingHead();
-  } else if (_pendingHead) {
+  } else if (runtime.pendingHead) {
     // Stale pending head (different callId) — flush it before printing this
     // result's gutter line below.
     flushPendingHead();
@@ -1040,7 +1040,7 @@ function renderToolResult(data, eventType = 'tool_result') {
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
   if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-  _lastRenderedBlock = 'tool';
+  runtime.lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
   if (hasLint) {
@@ -1135,23 +1135,23 @@ function clippedThinking(text, limit = 200) {
 // Shows what's happening right now — thinking, tool executing, etc.
 
 const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-let _spinInterval = null;
-let _spinFrame = 0;
-let _spinText = '';
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
 
 function startSpinner(text) {
-  _spinText = text;
-  _spinFrame = 0;
-  if (_spinInterval) return; // already running
-  _spinInterval = setInterval(() => {
+  runtime.spinText = text;
+  runtime.spinFrame = 0;
+  if (runtime.spinInterval) return; // already running
+  runtime.spinInterval = setInterval(() => {
     // While an explore run is active, its live counts own the spinner
     // line — re-fetch on every tick so the text stays current no matter
     // which handler happened to call startSpinner/updateSpinner last.
-    const isExploreActive = _exploreRun && _exploreRun.lineActive;
-    const label = isExploreActive ? exploreSummary() : _spinText;
+    const isExploreActive = runtime.exploreRun && runtime.exploreRun.lineActive;
+    const label = isExploreActive ? exploreSummary() : runtime.spinText;
     if (!label) return;
-    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
-    _spinFrame++;
+    const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
+    runtime.spinFrame++;
     const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
     // Explore uses ABSOLUTE cursor positioning to a pinned row inside the
     // content region. inPlace()'s _lastLineCount-based approach stacks copies
@@ -1166,35 +1166,35 @@ function startSpinner(text) {
 }
 
 function updateSpinner(text) {
-  _spinText = text;
+  runtime.spinText = text;
 }
 
 function stopSpinner() {
   // Explore owns the line while active — a stray stopSpinner from a
   // transient handler must not blank the progress feedback.
   // flushExploreRun() releases the lock and does the real teardown.
-  if (_exploreRun && _exploreRun.lineActive) return;
-  if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
-  _spinText = '';
+  if (runtime.exploreRun && runtime.exploreRun.lineActive) return;
+  if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
+  runtime.spinText = '';
   if (isInputDockMounted()) moveToContent();
   inPlace('');
 }
 
 // ── Content Streaming Display ──
 
-let _streamBuffer = '';
-let _streamedPartialText = '';
-let _streamTimer = null;
-let _renderedContentThisTurn = false;
-let _afterContentFlush = null;
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
 
 function startContentStream() {
-  _streamBuffer = '';
-  _streamedPartialText = '';
-  _renderedToolResults.clear();
-  _exploreRun = { counts: {}, recent: [], lineActive: false };
-  _renderedContentThisTurn = false;
-  _lastRenderedBlock = null;
+  runtime.streamBuffer = '';
+  runtime.streamedPartialText = '';
+  runtime.renderedToolResults.clear();
+  runtime.exploreRun = { counts: {}, recent: [], lineActive: false };
+  runtime.renderedContentThisTurn = false;
+  runtime.lastRenderedBlock = null;
   stopSpinner();
 }
 
@@ -1203,17 +1203,17 @@ function appendContent(text) {
   // Any streamed content between renderToolCall and renderToolResult would
   // scroll the head off "the line above", breaking the in-place collapse.
   clearPendingHead();
-  _streamBuffer += text;
-  _streamedPartialText += text;
+  runtime.streamBuffer += text;
+  runtime.streamedPartialText += text;
 
   // Debounce rendering to avoid flicker on rapid partial updates
-  if (_streamTimer) clearTimeout(_streamTimer);
-  _streamTimer = setTimeout(() => flushContent(), 50);
+  if (runtime.streamTimer) clearTimeout(runtime.streamTimer);
+  runtime.streamTimer = setTimeout(() => flushContent(), 50);
 }
 
 function flushContent() {
-  if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
-  if (!_streamBuffer) return;
+  if (runtime.streamTimer) { clearTimeout(runtime.streamTimer); runtime.streamTimer = null; }
+  if (!runtime.streamBuffer) return;
 
   if (isInputDockMounted()) moveToContent();
   stopSpinner();
@@ -1222,14 +1222,14 @@ function flushContent() {
   flushPendingHead();
   flushCompactReadRun();
   renderBlockBoundary('content');
-  const rendered = renderMarkdown(_streamBuffer);
+  const rendered = renderMarkdown(runtime.streamBuffer);
   for (const line of rendered.split('\n')) {
     process.stdout.write(`  ${line}\n`);
   }
-  _streamBuffer = '';
-  _renderedContentThisTurn = true;
-  _lastRenderedBlock = 'content';
-  if (typeof _afterContentFlush === 'function') _afterContentFlush();
+  runtime.streamBuffer = '';
+  runtime.renderedContentThisTurn = true;
+  runtime.lastRenderedBlock = 'content';
+  if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();
 }
 
 function renderStagnation(data = {}) {
@@ -1251,7 +1251,7 @@ function renderStagnation(data = {}) {
   renderBlockBoundary('status', { compactSame: true });
   process.stderr.write(`  ${c.yellow('!')} ${c.yellow(message)}\n`);
   if (suggestion) process.stderr.write(`    ${c.dim(suggestion)}\n`);
-  _lastRenderedBlock = 'status';
+  runtime.lastRenderedBlock = 'status';
 }
 
 // ── Event Renderer ──
@@ -1270,7 +1270,7 @@ function renderEvent(event) {
   // worker/phase updates, session_info) don't write and must NOT flush —
   // otherwise every sub-agent tool call fires a `sub_agent_tool` event
   // right before its `tool_call`, splitting each burst into a fresh line.
-  if (_exploreRun.lineActive) {
+  if (runtime.exploreRun.lineActive) {
     const isExploreEvent =
       (type === 'tool_call' || type === 'tool_request' ||
        type === 'tool_result' || type === 'tool_done') &&
@@ -1319,7 +1319,7 @@ function renderEvent(event) {
           stopSpinner();
           renderBlockBoundary('thinking');
           process.stderr.write(`  ${c.dim(thinkingPrefix(text) + ' · ')}${c.italic(c.dim(clippedThinking(text)))}\n`);
-          _lastRenderedBlock = 'thinking';
+          runtime.lastRenderedBlock = 'thinking';
           session._lastEmittedThinking = text;
         }
         startSpinner(text.slice(0, 80));
@@ -1334,9 +1334,9 @@ function renderEvent(event) {
       if (text) {
         flushContent();
         stopSpinner();
-        if (_streamedPartialText && text.startsWith(_streamedPartialText)) {
-          text = text.slice(_streamedPartialText.length);
-        } else if (_streamedPartialText.includes(text)) {
+        if (runtime.streamedPartialText && text.startsWith(runtime.streamedPartialText)) {
+          text = text.slice(runtime.streamedPartialText.length);
+        } else if (runtime.streamedPartialText.includes(text)) {
           text = '';
         }
       }
@@ -1346,8 +1346,8 @@ function renderEvent(event) {
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
-        _renderedContentThisTurn = true;
-        _lastRenderedBlock = 'content';
+        runtime.renderedContentThisTurn = true;
+        runtime.lastRenderedBlock = 'content';
       }
       break;
     }
@@ -1364,7 +1364,7 @@ function renderEvent(event) {
         : '';
       const after = data?.after != null ? ` from event ${data.after}` : '';
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${wait}${after}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1375,7 +1375,7 @@ function renderEvent(event) {
       renderBlockBoundary('status', { compactSame: true });
       const replayed = data?.replayed != null ? ` · replayed ${data.replayed} events` : '';
       process.stderr.write(`  ${c.green('✓')} ${c.dim(`reconnected${replayed}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1386,7 +1386,7 @@ function renderEvent(event) {
       renderBlockBoundary('status', { compactSame: true });
       const message = data?.message || 'connection lost and reconnect failed. Use /resume to continue from saved history.';
       process.stderr.write(`  ${c.red('✗')} ${c.dim(message)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1436,7 +1436,7 @@ function renderEvent(event) {
         const label = toolDisplayLabel(toolName);
         const subject = summary ? `${label} ${summary}` : label;
         process.stderr.write(`  ${c.green('✓')} ${c.dim(`${subject} · auto-approved read`)}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -1447,7 +1447,7 @@ function renderEvent(event) {
       const indent = subAgentIndent();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`${indent}${c.red('✗')} ${c.dim(`Denied ${toolName}: ${reason}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1473,7 +1473,7 @@ function renderEvent(event) {
         const marker = status === 'complete' || status === 'completed' ? c.green('✓') : c.dim(`${index + 1}.`);
         process.stderr.write(`     ${marker} ${label}\n`);
       }
-      _lastRenderedBlock = 'plan';
+      runtime.lastRenderedBlock = 'plan';
       break;
     }
 
@@ -1485,7 +1485,7 @@ function renderEvent(event) {
                    changeType === 'delete' ? c.red('-') : c.yellow('~');
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${icon} ${c.dim(filePath)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       // Track changed files
       if (filePath && !session.filesChanged.includes(filePath)) {
         session.filesChanged.push(filePath);
@@ -1501,7 +1501,7 @@ function renderEvent(event) {
         session.phases.push({ name: phase, time: Date.now() });
         renderBlockBoundary('plan');
         process.stderr.write(`  ${c.brand('▸')} ${c.bold(phase)}\n`);
-        _lastRenderedBlock = 'plan';
+        runtime.lastRenderedBlock = 'plan';
       }
       break;
     }
@@ -1511,7 +1511,7 @@ function renderEvent(event) {
       if (summary) {
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.dim(summary.slice(0, 120))}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -1530,7 +1530,7 @@ function renderEvent(event) {
       if (worker) {
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -1547,7 +1547,7 @@ function renderEvent(event) {
         process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1560,7 +1560,7 @@ function renderEvent(event) {
       const query = data?.query || '';
       renderBlockBoundary('subagent');
       process.stderr.write(renderSubAgentOpen({ type: agentType, query }).replace(/^\n/, '') + '\n');
-      _lastRenderedBlock = 'subagent';
+      runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       startSpinner(`${agentType}: working...`);
@@ -1577,7 +1577,7 @@ function renderEvent(event) {
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
       // spinner would flip-flop between the two texts and read as blank.
-      if (_exploreRun.lineActive && isExploreTool(tool)) break;
+      if (runtime.exploreRun.lineActive && isExploreTool(tool)) break;
       updateSpinner(`${agentType} → ${tool}`);
       break;
     }
@@ -1603,7 +1603,7 @@ function renderEvent(event) {
         iterations: data?.iterations,
         error: data?.error,
       }) + '\n');
-      _lastRenderedBlock = 'subagent';
+      runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock();
       break;
     }
@@ -1611,14 +1611,14 @@ function renderEvent(event) {
     case 'plan_created': {
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project plan prepared')}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
     case 'goal_created': {
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project goal prepared')}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -1663,7 +1663,7 @@ function renderEvent(event) {
         if (guidance.meta.length) {
           process.stderr.write(`  ${c.dim(guidance.meta.join(' · '))}\n`);
         }
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
 
@@ -1674,14 +1674,14 @@ function renderEvent(event) {
       session.inSubAgent = false;
 
       const summary = data?.summary || '';
-      if (summary && !_renderedContentThisTurn) {
+      if (summary && !runtime.renderedContentThisTurn) {
         renderBlockBoundary('content');
         const rendered = renderMarkdown(summary);
         for (const line of rendered.split('\n')) {
           process.stdout.write(`  ${line}\n`);
         }
-        _renderedContentThisTurn = true;
-        _lastRenderedBlock = 'content';
+        runtime.renderedContentThisTurn = true;
+        runtime.lastRenderedBlock = 'content';
       }
 
       // Update session token counts
@@ -1731,7 +1731,7 @@ function renderEvent(event) {
           } else {
             process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
           }
-          _lastRenderedBlock = 'status';
+          runtime.lastRenderedBlock = 'status';
           session.msgsLowWarned = true;
         }
 
@@ -1751,12 +1751,12 @@ function renderEvent(event) {
           if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
             renderBlockBoundary('status', { compactSame: true });
             process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
-            _lastRenderedBlock = 'status';
+            runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
             renderBlockBoundary('status', { compactSame: true });
             process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
-            _lastRenderedBlock = 'status';
+            runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           }
         }
@@ -1812,7 +1812,7 @@ function renderEvent(event) {
         });
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(report.replace(/^\n/, '') + '\n');
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       } else {
         printTurnSummary(tools, data?.duration_s, turnCost);
       }
@@ -1824,7 +1824,7 @@ function renderEvent(event) {
       flushContent();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.yellow('⏹')} Cancelled${data?.reason ? ': ' + c.dim(data.reason) : ''}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     case 'paused':
@@ -1832,13 +1832,13 @@ function renderEvent(event) {
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.yellow('⏸')} Paused${data?.reason ? '  ' + c.dim(data.reason) : ''}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     case 'resumed':
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.green('▶')} Resumed\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     default:
@@ -3789,7 +3789,7 @@ export async function startTerminalRepl() {
       if (!isInputDockMounted()) return;
       focusDockInput(executionInputPrefix(), executionInputBuffer);
     }
-    _afterContentFlush = focusExecutionInput;
+    runtime.afterContentFlush = focusExecutionInput;
 
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
@@ -4175,7 +4175,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
       // Clean up execution keypress listener
-      _afterContentFlush = null;
+      runtime.afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
     }
 

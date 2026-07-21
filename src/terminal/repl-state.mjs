@@ -15,6 +15,33 @@
 // like previewResumeSession() that need to temporarily suppress state updates.
 export const orbitRef = { current: null };
 
+// Per-turn runtime state — content streaming buffers, spinner interval,
+// pending tool-head, explore-run counters, block-boundary tracker. All
+// mutated in place by tool renderers, event handlers, and the streaming
+// pipeline. Grouped into one object so consumers can `import { runtime }`
+// once instead of pulling twelve individual let-bindings across modules.
+export const runtime = {
+  // Content streaming (SSE partials that flush as a single markdown block).
+  streamBuffer: '',
+  streamedPartialText: '',
+  streamTimer: null,
+  renderedContentThisTurn: false,
+  afterContentFlush: null,   // callback fired after each flushContent()
+
+  // Tool head + block-boundary tracking (single-line vs 2-line card emit).
+  pendingHead: null,          // { callId, head, indent } buffered until result arrives
+  lastRenderedBlock: null,    // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
+  renderedToolResults: new Set(),
+
+  // Explore-run collapse (read/list/search/index bursts as one animated line).
+  exploreRun: { counts: {}, recent: [], lineActive: false },
+
+  // Animated spinner state (single shared interval; text/frame drive inPlace).
+  spinInterval: null,
+  spinText: '',
+  spinFrame: 0,
+};
+
 // Full session state for the current CLI process. Set by the REPL loop
 // as backend events (session_info, complete, etc.) arrive. Fields that
 // look "server-authoritative" (subscriptionTier, credits*) come from

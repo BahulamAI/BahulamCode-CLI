@@ -228,10 +228,13 @@ test('search cards keep outcome inline by compacting long heads', () => {
 
 test('tool activity rows only force blank spacing between shell commands', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  // Post PRD-081 repl split: mutable state lives in repl-state.mjs
+  // exported as `runtime.*`, so what used to be _pendingHead is now
+  // runtime.pendingHead.
   assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
+  assert.ok(!replSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
   assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
+  assert.ok(replSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
   assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
   assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
   assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
@@ -248,8 +251,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
   assert.ok(replSource.includes('function exploreSummary()'));
   assert.ok(replSource.includes('exploring · ${stats}${latest}'));
-  assert.ok(replSource.includes('if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();'));
-  assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
+  assert.ok(replSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
+  assert.ok(replSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -300,9 +303,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
-  assert.ok(replSource.includes('_afterContentFlush = focusExecutionInput;'));
-  assert.ok(replSource.includes('_afterContentFlush = null;'));
-  assert.ok(replSource.includes("if (typeof _afterContentFlush === 'function') _afterContentFlush();"));
+  // Post PRD-081 repl split: _afterContentFlush is now runtime.afterContentFlush.
+  assert.ok(replSource.includes('runtime.afterContentFlush = focusExecutionInput;'));
+  assert.ok(replSource.includes('runtime.afterContentFlush = null;'));
+  assert.ok(replSource.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
   assert.ok(replSource.includes('client.resume(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
