@@ -1230,7 +1230,7 @@ function renderHelp(topic = '') {
 function renderKeyboardHelp() {
   process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
   process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
-  process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+  process.stderr.write(`  ${c.gray('Ctrl+D')}  expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
 }
 
 const MODEL_ROLE_ALIASES = new Map([
@@ -4067,13 +4067,13 @@ export async function startTerminalRepl() {
   // and can make the first prompt line appear duplicated.
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
-    return `${c.brand(who)} ${c.dim('›')} `;
+    return `${c.dim('│')} ${c.brand(who)} ${c.dim('›')} `;
   }
 
   function printInputSeparator() {
     if (term().plain) return;
     const w = process.stdout.columns || 80;
-    const label = ` ${c.brand('input')} `;
+    const label = ` ${c.brand('message')} `;
     const labelPlain = stripAnsi(label);
     const lineLen = Math.max(0, w - labelPlain.length - 4);
     process.stderr.write(`${c.dim('╭─')}${label}${c.dim('─'.repeat(lineLen))}\n`);
@@ -4259,41 +4259,53 @@ export async function startTerminalRepl() {
     });
   }
 
-  // Guard against concurrent line handlers.
+  // Guard against concurrent line handlers and multiline paste bursts.
   //
-  // rl.on('line', async ...) does NOT wait for the previous async handler to
-  // complete before firing again. So a stray '\n' (from readline processing
-  // '\r\n' as two events after an interactive picker resumes it, or from a
-  // paste) can spawn a second handleCommand run while the first is still
-  // awaiting inside /resume, /login, etc. Symptom: the picker or overlay
-  // appears to render twice.
-  //
-  // Rules:
-  //   - Only one command runs at a time.
-  //   - Empty lines that arrive while a command is in flight are dropped
-  //     (they are almost always stray '\n's from raw-mode key handling).
-  //   - Non-empty lines are queued and replayed after the current command
-  //     finishes, so the user can queue up work while a long-running command
-  //     is still executing.
+  // Node readline emits one `line` event per pasted newline. Buffering for a
+  // few milliseconds lets a pasted paragraph/list land as one prompt while a
+  // normal Enter still feels immediate.
   let _lineInFlight = false;
   const _queuedLines = [];
-  rl.on('line', async (line) => {
+  let _pasteLines = [];
+  let _pasteFlushTimer = null;
+
+  function pasteFlushDelayMs() {
+    const raw = Number.parseInt(process.env.KEPLER_PASTE_FLUSH_MS || '35', 10);
+    return Number.isFinite(raw) && raw >= 0 ? Math.min(250, raw) : 35;
+  }
+
+  function queueOrRunLine(line) {
     if (_lineInFlight) {
       if (line && line.trim()) _queuedLines.push(line);
       return;
     }
     _lineInFlight = true;
-    try {
-      await _handleLine(line);
-    } finally {
-      _lineInFlight = false;
-      if (_queuedLines.length) {
-        const next = _queuedLines.shift();
-        // Fire the next queued line asynchronously so we don't hold this
-        // finally block open while the next command runs.
-        setImmediate(() => rl.emit('line', next));
-      }
+    Promise.resolve()
+      .then(() => _handleLine(line))
+      .finally(() => {
+        _lineInFlight = false;
+        if (_queuedLines.length) {
+          const next = _queuedLines.shift();
+          setImmediate(() => queueOrRunLine(next));
+        }
+      });
+  }
+
+  function flushPastedLines() {
+    if (_pasteFlushTimer) {
+      clearTimeout(_pasteFlushTimer);
+      _pasteFlushTimer = null;
     }
+    if (!_pasteLines.length) return;
+    const line = _pasteLines.join('\n');
+    _pasteLines = [];
+    queueOrRunLine(line);
+  }
+
+  rl.on('line', async (line) => {
+    _pasteLines.push(line);
+    if (_pasteFlushTimer) clearTimeout(_pasteFlushTimer);
+    _pasteFlushTimer = setTimeout(flushPastedLines, pasteFlushDelayMs());
   });
 
   async function _handleLine(line) {
@@ -4388,8 +4400,59 @@ export async function startTerminalRepl() {
     let keypressCleanup = null;
     let execListenerActive = false;
     let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
-    let lastPrintableInputAt = 0;
-    let textInputWarningShown = false;
+    let executionInputBuffer = '';
+    let executionInputVisible = false;
+
+    function executionInputPrefix() {
+      return `  ${c.dim('follow-up ›')} `;
+    }
+
+    function redrawExecutionInput() {
+      if (!executionInputVisible) {
+        stopSpinner();
+        process.stderr.write(`\n${executionInputPrefix()}`);
+        executionInputVisible = true;
+      }
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
+      process.stderr.write(`${executionInputPrefix()}${executionInputBuffer}`);
+    }
+
+    async function submitExecutionInstruction() {
+      const instruction = executionInputBuffer.trim();
+      executionInputBuffer = '';
+      if (!instruction) {
+        if (executionInputVisible) process.stderr.write('\n');
+        executionInputVisible = false;
+        return;
+      }
+      if (executionInputVisible) process.stderr.write('\n');
+      executionInputVisible = false;
+      try {
+        await client.resume(instruction);
+        jsonlWriter.writeKeplerEvent({
+          type: 'user_intervention',
+          data: { instruction, task_id: client.currentTaskId || null },
+        });
+        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent follow-up to running agent')}\n`);
+      } catch {
+        _queuedLines.push(instruction);
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued follow-up for the next turn')}\n`);
+      }
+    }
+
+    function appendExecutionInput(text) {
+      if (!text) return;
+      executionInputBuffer += text;
+      redrawExecutionInput();
+    }
+
+    function backspaceExecutionInput() {
+      if (!executionInputBuffer) return false;
+      executionInputBuffer = executionInputBuffer.slice(0, -1);
+      redrawExecutionInput();
+      return true;
+    }
 
     if (process.stdin.isTTY) {
       rl.pause();
@@ -4401,10 +4464,19 @@ export async function startTerminalRepl() {
       const onData = (data) => {
         if (!execListenerActive) return; // paused for approval menu
         const bytes = [...data];
-        const now = Date.now();
+        const text = data.toString('utf8');
 
         // Esc key (single byte 0x1b, not part of arrow sequence)
         if (bytes.length === 1 && bytes[0] === 0x1b) {
+          if (executionInputVisible || executionInputBuffer) {
+            executionInputBuffer = '';
+            if (executionInputVisible) {
+              readline.clearLine(process.stderr, 0);
+              readline.cursorTo(process.stderr, 0);
+            }
+            executionInputVisible = false;
+            return;
+          }
           stopSpinner();
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
           // cancel() now aborts the in-flight SSE reader; the for-await loop
@@ -4414,15 +4486,23 @@ export async function startTerminalRepl() {
           return;
         }
 
-        // Space — toggle pause/resume
-        if (bytes.length === 1 && bytes[0] === 0x20) {
-          if (now - lastPrintableInputAt < 750) {
-            if (!textInputWarningShown) {
-              process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
-              textInputWarningShown = true;
-            }
-            return;
+        if (bytes.length === 1 && (bytes[0] === 0x7f || bytes[0] === 0x08)) {
+          backspaceExecutionInput();
+          return;
+        }
+
+        if (text.includes('\r') || text.includes('\n')) {
+          const parts = text.split(/\r?\n|\r/);
+          if (parts[0]) appendExecutionInput(parts[0]);
+          submitExecutionInstruction();
+          for (const extra of parts.slice(1).filter(Boolean)) {
+            _queuedLines.push(extra);
           }
+          return;
+        }
+
+        // Space — toggle pause/resume
+        if (bytes.length === 1 && bytes[0] === 0x20 && !executionInputBuffer && !executionInputVisible) {
           if (executionPaused) {
             executionPaused = false;
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
@@ -4434,18 +4514,6 @@ export async function startTerminalRepl() {
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
-          }
-          return;
-        }
-
-        // Ignore ordinary typing during execution. Without this guard, spaces
-        // inside a typed sentence become pause/resume toggles because stdin is
-        // in raw mode while the agent is running.
-        if (bytes.length === 1 && bytes[0] >= 0x20 && bytes[0] <= 0x7e && bytes[0] !== 0x64 && bytes[0] !== 0x44) {
-          lastPrintableInputAt = now;
-          if (!textInputWarningShown) {
-            process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
-            textInputWarningShown = true;
           }
           return;
         }
@@ -4467,10 +4535,19 @@ export async function startTerminalRepl() {
           return;
         }
 
-        // `d` — expand last tool card (Mission Control §6.2)
-        if (bytes.length === 1 && (bytes[0] === 0x64 || bytes[0] === 0x44)) {
+        // Ctrl+D — expand last tool card (Mission Control §6.2). Plain
+        // letters are reserved for live follow-up instructions while running.
+        if (!executionInputBuffer && bytes.length === 1 && bytes[0] === 0x04) {
           stopSpinner();
           expandLast();
+          return;
+        }
+
+        // Printable text during execution becomes a live follow-up instruction
+        // instead of being discarded. Press Enter to send it to the running
+        // backend task via resume(instruction).
+        if (/^[\x20-\x7e]+$/.test(text)) {
+          appendExecutionInput(text);
           return;
         }
       };

@@ -234,7 +234,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
 test('REPL prompt keeps a small bottom cushion', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   assert.ok(replSource.includes('function printInputSeparator()'));
-  assert.ok(replSource.includes("c.brand('input')"));
+  assert.ok(replSource.includes("c.brand('message')"));
+  assert.ok(replSource.includes("return `${c.dim('│')} ${c.brand(who)} ${c.dim('›')} `;"));
   assert.ok(replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
@@ -254,6 +255,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
   assert.ok(replSource.includes('if (!input) { promptInputLine(); return; }'));
+  assert.ok(replSource.includes('function pasteFlushDelayMs()'));
+  assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
+  assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
+  assert.ok(replSource.includes('queueOrRunLine(line);'));
+  assert.ok(replSource.includes('function executionInputPrefix()'));
+  assert.ok(replSource.includes('follow-up ›'));
+  assert.ok(replSource.includes('client.resume(instruction)'));
+  assert.ok(replSource.includes("type: 'user_intervention'"));
+  assert.ok(replSource.includes('Ctrl+D'));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
