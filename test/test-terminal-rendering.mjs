@@ -293,6 +293,34 @@ test('renders Markdown pipe tables as aligned terminal tables', () => {
   assert.ok(!rendered.includes('| --- |'));
 });
 
+test('wraps long Markdown table cells instead of truncating content', () => {
+  const originalColumns = process.stderr.columns;
+  Object.defineProperty(process.stderr, 'columns', {
+    value: 92,
+    configurable: true,
+  });
+  try {
+    const rendered = stripAnsi(renderMarkdown([
+      '| Dimension | Assessment |',
+      '| --- | --- |',
+      '| Feature overlap | High. Both are terminal-based coding agents with shell execution, file editing, and repo-aware workflows. |',
+      "| Gap pi.dev doesn't fill | No prompt caching means materially higher effective inference cost for repeated repository context. |",
+    ].join('\n')));
+    const lines = rendered.split('\n');
+    assert.ok(rendered.includes('terminal-based coding agents with shell'));
+    assert.ok(rendered.includes('repo-aware workflows'));
+    assert.ok(rendered.includes('materially higher effective inference'));
+    assert.ok(rendered.includes('cost for repeated repository context'));
+    assert.ok(!rendered.includes('...'), rendered);
+    assert.ok(lines.every(line => line.length <= 92), JSON.stringify(lines));
+  } finally {
+    Object.defineProperty(process.stderr, 'columns', {
+      value: originalColumns,
+      configurable: true,
+    });
+  }
+});
+
 test('renders blockquotes and task lists with structural styling', () => {
   const rendered = renderMarkdown('> Important\n- [x] Done\n- [ ] Pending');
   assert.ok(rendered.includes('\x1b[90m  │\x1b[0m \x1b[3mImportant'));

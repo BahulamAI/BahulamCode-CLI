@@ -465,20 +465,70 @@ function isTableSeparator(line) {
 
 function renderMarkdownTable(headers, rows) {
   const columnCount = Math.max(headers.length, ...rows.map(row => row.length));
-  const widths = Array.from({ length: columnCount }, (_, index) => {
-    const values = [headers[index] || '', ...rows.map(row => row[index] || '')];
-    return Math.min(40, Math.max(...values.map(value => stripAnsi(value).length), 3));
-  });
+  const widths = markdownTableWidths(headers, rows, columnCount);
   const border = c.gray(`  ${widths.map(width => '─'.repeat(width + 2)).join('┼')}`);
-  const formatRow = (row, header = false) => {
+  const formatRow = (row, header = false) => renderMarkdownTableRow(row, widths, header);
+  return [formatRow(headers, true), border, ...rows.map(row => formatRow(row))];
+}
+
+function markdownTableWidths(headers, rows, columnCount) {
+  const columns = markdownColumns();
+  const contentBudget = Math.max(columnCount * 8, columns - (3 * columnCount) - 1);
+  const desired = Array.from({ length: columnCount }, (_, index) => {
+    const values = [headers[index] || '', ...rows.map(row => row[index] || '')];
+    return Math.max(...values.map(value => stripAnsi(value).length), 3);
+  });
+
+  if (columnCount === 1) return [Math.min(desired[0], contentBudget)];
+
+  if (columnCount === 2) {
+    const firstMax = Math.max(12, Math.min(32, contentBudget - 24));
+    const first = Math.max(8, Math.min(desired[0], firstMax));
+    const second = Math.max(16, contentBudget - first);
+    return [first, second];
+  }
+
+  const minWidths = desired.map((width, index) => {
+    const headerWidth = stripAnsi(headers[index] || '').length;
+    return Math.min(width, Math.max(8, Math.min(headerWidth || 8, 16)));
+  });
+  const widths = desired.map(width => Math.min(width, 30));
+
+  while (widths.reduce((sum, width) => sum + width, 0) > contentBudget) {
+    let shrinkIndex = -1;
+    let widest = -1;
+    for (let index = 0; index < widths.length; index++) {
+      if (widths[index] > minWidths[index] && widths[index] > widest) {
+        widest = widths[index];
+        shrinkIndex = index;
+      }
+    }
+    if (shrinkIndex < 0) break;
+    widths[shrinkIndex]--;
+  }
+
+  return widths;
+}
+
+function renderMarkdownTableRow(row, widths, header = false) {
+  const wrapped = widths.map((width, index) => {
+    const value = String(row[index] || '');
+    const lines = wrapWords(value, width, width);
+    return lines.length ? lines : [''];
+  });
+  const height = Math.max(...wrapped.map(lines => lines.length), 1);
+  const rendered = [];
+
+  for (let lineIndex = 0; lineIndex < height; lineIndex++) {
     const cells = widths.map((width, index) => {
-      const value = truncate(row[index] || '', width);
+      const value = wrapped[index][lineIndex] || '';
       const padded = value + ' '.repeat(Math.max(0, width - stripAnsi(value).length));
       return header ? c.bold(padded) : inlineMarkdown(padded);
     });
-    return `  ${cells.map(cell => ` ${cell} `).join(c.gray('│'))}`;
-  };
-  return [formatRow(headers, true), border, ...rows.map(row => formatRow(row))];
+    rendered.push(`  ${cells.map(cell => ` ${cell} `).join(c.gray('│'))}`);
+  }
+
+  return rendered.join('\n');
 }
 
 /**
