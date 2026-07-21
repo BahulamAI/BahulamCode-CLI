@@ -162,6 +162,41 @@ export function moveToContent() {
   return true;
 }
 
+// One row above the bottom of the scroll region. Writes here won't trigger
+// the scroll-on-LF that happens when writing '\n' at the region's bottom row —
+// exactly what the persistent explore/spinner line needs to overwrite in place
+// without piling copies of itself into scrollback.
+export function pinnedStatusRow() {
+  if (!mounted) return null;
+  return Math.max(1, contentBottomRow() - 1);
+}
+
+// Write a single-line status at pinnedStatusRow, overwriting whatever's there.
+// Uses absolute cursor positioning + clear-line so it's immune to whatever
+// _lastLineCount inPlace() thinks it has.
+export function drawPinnedStatus(line) {
+  if (!mounted) return false;
+  const row = pinnedStatusRow();
+  if (row == null) return false;
+  saveCursor();
+  moveTo(row, 1);
+  clearLine();
+  write(String(line || ''));
+  restoreCursor();
+  return true;
+}
+
+export function clearPinnedStatus() {
+  if (!mounted) return false;
+  const row = pinnedStatusRow();
+  if (row == null) return false;
+  saveCursor();
+  moveTo(row, 1);
+  clearLine();
+  restoreCursor();
+  return true;
+}
+
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
   clearInputRow();

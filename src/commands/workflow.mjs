@@ -17,9 +17,13 @@
 
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { TarangStreamClient } from '../core/stream-client.mjs';
+import { createToolExecutor } from '../core/tool-executor.mjs';
+import { ApprovalManager } from '../core/approval.mjs';
 import { EventFormatter } from '../ui/formatter.mjs';
 import { loadWorkflowFromFile, loadWorkflowsFromDir, workflowToTemplatePayload } from '../agents/workflow_loader.mjs';
 import { loadMultiWorkflowFromFile } from '../agents/multi_workflow_loader.mjs';
+import { buildWorkScope } from '../core/work-scope.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -462,17 +466,57 @@ async function handleRunMulti(args) {
 
     const instruction = args.instruction || '';
     const pattern = args.pattern || 'sequential';
+    const workScope = buildWorkScope({
+        instruction,
+        cwd: process.cwd(),
+        projectResources: [],
+    });
 
     const baseUrl = getBaseUrl();
     const headers = getAuthHeaders();
     const url = `${baseUrl}/api/workflows/${encodeURIComponent(workflowId)}/run-multi`;
+    const approvalAllowedTools = [
+        'get_project_overview',
+        'write_file',
+        'write_project',
+        'edit_file',
+        'shell',
+        'lint_check',
+        'validate_build',
+        'run_tests',
+        'agent_create',
+        'agent_sync',
+        'workflow_create_multi',
+        'workflow_sync_multi',
+        'workflow_run_multi',
+    ];
 
     const body = JSON.stringify({
-        trigger_input: { instruction },
-        global_params: { instruction },
+        trigger_input: {
+            instruction,
+            cwd: process.cwd(),
+            project_root: process.cwd(),
+            work_scope: workScope,
+        },
+        global_params: {
+            instruction,
+            cwd: process.cwd(),
+            project_root: process.cwd(),
+            project_resources: [],
+            work_scope: workScope,
+        },
         orchestration_pattern: pattern,
         pattern,
         mode: 'stream',
+        approval_scope: {
+            approved: true,
+            source: 'cli_command',
+            scope: 'workflow_run',
+            workflow_id: workflowId,
+            allowed_tools: approvalAllowedTools,
+            allow_destructive: false,
+            reason: 'User invoked workflow run command',
+        },
     });
 
     process.stderr.write(`${DIM}Running multi-agent workflow '${workflowId}' (${pattern})...${RESET}\n`);
@@ -482,7 +526,7 @@ async function handleRunMulti(args) {
     try {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { ...headers, Accept: 'text/event-stream' },
+            headers: { ...headers, Accept: 'text/event-stream', 'Content-Type': 'application/json' },
             body,
         });
 
@@ -496,54 +540,28 @@ async function handleRunMulti(args) {
             process.exit(1);
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let currentEvent = 'message';
-        let currentData = [];
+        const client = new TarangStreamClient({
+            baseUrl,
+            token: headers.Authorization.replace(/^Bearer\s+/i, ''),
+            toolExecutor: createToolExecutor(),
+            verbose: args.verbose,
+            approvalManager: new ApprovalManager({ autoApprove: args.yes }),
+        });
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        for await (const event of client.consumeEventStream(response)) {
+            formatter.render(event);
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-
-            for (const line of lines) {
-                const raw = line.endsWith('\r') ? line.slice(0, -1) : line;
-                const trimmed = raw.trim();
-
-                if (!trimmed) {
-                    if (currentData.length > 0) {
-                        const rawData = currentData.join('\n');
-                        let parsed;
-                        try {
-                            parsed = JSON.parse(rawData);
-                        } catch {
-                            parsed = { message: rawData };
-                        }
-                        const event = { type: currentEvent, data: parsed };
-                        formatter.render(event);
-
-                        // Print orchestration events inline
-                        if (currentEvent === 'agent_complete') {
-                            const s = parsed.status || 'completed';
-                            const icon = s === 'completed' ? GREEN : RED;
-                            process.stderr.write(`  ${icon}${s === 'completed' ? '✓' : '✗'}${RESET} ${parsed.agent_slug} (${parsed.duration_s || '?'}s, ${parsed.tokens || 0} tok)\n`);
-                        } else if (currentEvent === 'orchestration_complete') {
-                            process.stderr.write(`\n${GREEN}✓ Multi-agent run complete${RESET} (${parsed.duration_s}s, ${parsed.total_tokens} tok, ${parsed.total_cost || '0'})\n`);
-                        } else if (currentEvent === 'run_error') {
-                            process.stderr.write(`\n${RED}✗ ${parsed.error || 'Run failed'}${RESET}\n`);
-                        }
-                    }
-                    currentEvent = 'message';
-                    currentData = [];
-                } else if (trimmed.startsWith('event:')) {
-                    currentEvent = trimmed.slice(6).trim();
-                } else if (trimmed.startsWith('data:')) {
-                    currentData.push(trimmed.slice(5).trim());
-                }
+            if (event.type === 'agent_complete') {
+                const parsed = event.data || {};
+                const s = parsed.status || 'completed';
+                const icon = s === 'completed' ? GREEN : RED;
+                process.stderr.write(`  ${icon}${s === 'completed' ? '✓' : '✗'}${RESET} ${parsed.agent_slug} (${parsed.duration_s || '?'}s, ${parsed.tokens || 0} tok)\n`);
+            } else if (event.type === 'orchestration_complete') {
+                const parsed = event.data || {};
+                process.stderr.write(`\n${GREEN}✓ Multi-agent run complete${RESET} (${parsed.duration_s}s, ${parsed.total_tokens} tok, ${parsed.total_cost || '0'})\n`);
+            } else if (event.type === 'run_error') {
+                const parsed = event.data || {};
+                process.stderr.write(`\n${RED}✗ ${parsed.error || 'Run failed'}${RESET}\n`);
             }
         }
 

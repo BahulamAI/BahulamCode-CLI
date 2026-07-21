@@ -59,6 +59,30 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Full jitter around the scheduled delay: pick a value in [delay*0.5, delay*1.5].
+// Spreads out reconnect storms so N clients dropping simultaneously don't
+// synchronize their retries. Clamped to the same 30s ceiling as the base delay.
+function jitteredDelay(delayMs) {
+    const min = Math.floor(delayMs * 0.5);
+    const max = Math.floor(delayMs * 1.5);
+    const jittered = min + Math.floor(Math.random() * (max - min + 1));
+    return Math.max(200, Math.min(30_000, jittered));
+}
+
+// Categorize a fetch error. "offline-class" means DNS/routing failures that
+// almost never recover within a few seconds — we bail after 2 in a row rather
+// than burn the full 5-min budget when the user's network is truly down.
+function isOfflineLikelyError(err) {
+    const code = err?.cause?.code || err?.code || '';
+    return (
+        code === 'ENOTFOUND' ||        // DNS lookup failed
+        code === 'EAI_AGAIN' ||        // DNS temporary failure
+        code === 'ENETUNREACH' ||      // no route to host
+        code === 'EHOSTUNREACH' ||     // host unreachable
+        code === 'UND_ERR_CONNECT_TIMEOUT' // undici connect timeout
+    );
+}
+
 export class TarangStreamClient {
     /**
      * @param {Object} opts
@@ -241,6 +265,10 @@ export class TarangStreamClient {
         }
     }
 
+    async *consumeEventStream(response) {
+        yield* this._consumeResponse(response);
+    }
+
     async *_handleStreamEvent({ event, data, id = null, retry = null }) {
         const rendered = { type: event, data, event_id: id, retry };
 
@@ -302,21 +330,32 @@ export class TarangStreamClient {
 
         const started = Date.now();
         let attempt = 0;
-        let delayMs = Math.max(250, Math.min(this.retryDelayMs || 1000, 30_000));
+        // Slow-start baseline: 500ms for the first retry catches most
+        // transient blips before the user notices; the ramp doubles from
+        // there. Server-hinted `retry:` from the last SSE frame overrides
+        // if present. Capped at 30s.
+        let delayMs = Math.max(200, Math.min(this.retryDelayMs || 500, 30_000));
+        let offlineStreak = 0;
 
         while (!this._cancelled && Date.now() - started < this.reconnectMaxElapsedMs) {
             attempt++;
             const after = this.lastEventId;
+            // Apply jitter to the scheduled delay so N clients dropping at
+            // the same time don't lockstep-retry against the server. The
+            // event surfaces the ACTUAL wait so the CLI can show it.
+            const waitMs = jitteredDelay(delayMs);
             telemetry.track('stream.reconnect.attempt', {
                 task_id: taskId,
                 after,
                 attempt,
+                base_delay_ms: delayMs,
+                delay_ms: waitMs,
             });
             yield {
                 type: EVENT_TYPES.RECONNECTING,
-                data: { task_id: taskId, after, attempt, delay_ms: delayMs },
+                data: { task_id: taskId, after, attempt, delay_ms: waitMs },
             };
-            await sleep(delayMs);
+            await sleep(waitMs);
             try {
                 const url = `${this.baseUrl}/api/execute/${encodeURIComponent(taskId)}/events?after=${encodeURIComponent(after)}`;
                 const response = await fetch(url, {
@@ -362,11 +401,42 @@ export class TarangStreamClient {
                 return;
             } catch (nextErr) {
                 if (this._cancelled) return;
+                // Offline-class errors (DNS failure, no route) rarely recover
+                // in seconds. Bail after 2 in a row so we don't burn the full
+                // 5-min budget spinning against a dead network — the user
+                // gets an actionable "network unreachable" message instead.
+                if (isOfflineLikelyError(nextErr)) {
+                    offlineStreak++;
+                    if (offlineStreak >= 2) {
+                        telemetry.track('stream.reconnect.failed', {
+                            task_id: taskId,
+                            after,
+                            attempt,
+                            code: 'network_unreachable',
+                            error_code: nextErr?.cause?.code || nextErr?.code || '',
+                            retryable: true,
+                        });
+                        yield {
+                            type: EVENT_TYPES.RECONNECT_FAILED,
+                            data: {
+                                task_id: taskId,
+                                after,
+                                code: 'network_unreachable',
+                                message: 'Network appears unreachable — DNS lookup failed twice. Check your connection, then /resume to continue.',
+                                retryable: true,
+                            },
+                        };
+                        return;
+                    }
+                } else {
+                    offlineStreak = 0;
+                }
                 telemetry.track('stream.reconnect.retry', {
                     task_id: taskId,
                     after,
                     attempt,
                     message: nextErr?.message || 'reconnect failed',
+                    error_code: nextErr?.cause?.code || nextErr?.code || '',
                 });
                 err = nextErr;
                 delayMs = Math.min(delayMs * 2, 30_000);

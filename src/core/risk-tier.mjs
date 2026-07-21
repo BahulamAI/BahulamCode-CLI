@@ -58,6 +58,7 @@ const READ_TOOLS = new Set([
   'git_status', 'git_diff',
   'analyze_code',
   'validate_file', 'validate_structure',
+  'agents_list', 'workflow_list',
 ]);
 
 const READ_PATH_KEYS = [
@@ -73,6 +74,7 @@ const LOCAL_EDIT_TOOLS = new Set([
   'edit_file', 'write_file', 'write_project',
   'skill_install', 'skill_update',
   'agent_create', 'agent_sync',
+  'workflow_create_multi', 'workflow_sync_multi',
 ]);
 
 const DESTRUCTIVE_TOOLS = new Set([
@@ -81,6 +83,7 @@ const DESTRUCTIVE_TOOLS = new Set([
 
 const NETWORK_TOOLS = new Set([
   'WebFetch', 'fetch_url',
+  'workflow_run_multi',
 ]);
 
 // ── Shell sub-classifier ────────────────────────────────────────────────

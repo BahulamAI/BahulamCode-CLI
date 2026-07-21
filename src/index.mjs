@@ -81,7 +81,11 @@ function parseArgs(argv) {
             case 'resume': args.command = 'resume'; break;
             case 'config': args.command = 'config'; break;
             case 'configure': args.command = 'configure'; break;
-            case 'sync': args.command = 'sync'; break;
+            case 'sync':
+                if (args.command === 'workflow' && !args.workflowSubcommand) args.workflowSubcommand = 'sync';
+                else if (args.command === 'agent' && !args.agentSubcommand) args.agentSubcommand = 'sync';
+                else if (!args.command) args.command = 'sync';
+                break;
             case 'workflow': args.command = 'workflow'; break;
             case 'agent': args.command = 'agent'; break;
             // Config flags

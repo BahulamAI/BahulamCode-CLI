@@ -65,6 +65,8 @@ import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
+  clearPinnedStatus,
+  drawPinnedStatus,
   focusDockInput,
   isInputDockMounted,
   mountInputDock,
@@ -1887,20 +1889,51 @@ function exploreSummary() {
 }
 
 function renderExploreRun() {
-  // Use the existing animated spinner so the summary line pulses while
-  // background exploration is still in flight. updateSpinner just swaps the
-  // text; the 80ms interval keeps the frame rotating.
-  const text = exploreSummary();
-  if (_spinInterval) updateSpinner(text);
-  else startSpinner(text);
+  // Set the lock BEFORE touching the spinner so the interval's next tick
+  // picks up exploreSummary() text instead of any stale label.
   _exploreRun.lineActive = true;
+
+  // Paint the pinned line immediately so the user sees the update from
+  // the very first tool call, not after the 80 ms interval delay.
+  if (isInputDockMounted()) {
+    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+    drawPinnedStatus(`  ${c.brand(frame)} ${c.dim(exploreSummary())}`);
+  }
+
+  if (!_spinInterval) {
+    // Bypass the lockout in startSpinner by seeding _spinText directly.
+    _spinText = exploreSummary();
+    _spinFrame = 0;
+    _spinInterval = setInterval(() => {
+      const isExploreActive = _exploreRun && _exploreRun.lineActive;
+      const label = isExploreActive ? exploreSummary() : _spinText;
+      if (!label) return;
+      const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+      _spinFrame++;
+      const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
+      if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
+        return;
+      }
+      if (isInputDockMounted()) moveToContent();
+      inPlace(rendered);
+    }, 80);
+  }
   _lastRenderedBlock = 'tool';
 }
 
 function flushExploreRun() {
   const total = Object.values(_exploreRun.counts).reduce((a, b) => a + b, 0);
+  // Release the lock first so the real spinner teardown can run.
+  const wasActive = _exploreRun.lineActive;
+  _exploreRun.lineActive = false;
   if (total > 0) {
-    if (_exploreRun.lineActive) stopSpinner();
+    if (wasActive) {
+      if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
+      _spinText = '';
+      // Clear the pinned status row instead of using inPlace (which is
+      // unreliable near the bottom of the scroll region).
+      if (isInputDockMounted()) clearPinnedStatus();
+    }
     const cols = process.stderr.columns || 120;
     const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
     process.stderr.write(`${line}\n`);
@@ -2150,11 +2183,24 @@ function startSpinner(text) {
   _spinFrame = 0;
   if (_spinInterval) return; // already running
   _spinInterval = setInterval(() => {
-    if (!_spinText) return;
+    // While an explore run is active, its live counts own the spinner
+    // line — re-fetch on every tick so the text stays current no matter
+    // which handler happened to call startSpinner/updateSpinner last.
+    const isExploreActive = _exploreRun && _exploreRun.lineActive;
+    const label = isExploreActive ? exploreSummary() : _spinText;
+    if (!label) return;
     const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
     _spinFrame++;
+    const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
+    // Explore uses ABSOLUTE cursor positioning to a pinned row inside the
+    // content region. inPlace()'s _lastLineCount-based approach stacks copies
+    // of the line into scrollback whenever a '\n' at the region's bottom row
+    // triggers a scroll — absolute positioning + clear-line is immune.
+    if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
+      return;
+    }
     if (isInputDockMounted()) moveToContent();
-    inPlace(`  ${c.brand(frame)} ${c.dim(_spinText)}`);
+    inPlace(rendered);
   }, 80);
 }
 
@@ -2163,6 +2209,10 @@ function updateSpinner(text) {
 }
 
 function stopSpinner() {
+  // Explore owns the line while active — a stray stopSpinner from a
+  // transient handler must not blank the progress feedback.
+  // flushExploreRun() releases the lock and does the real teardown.
+  if (_exploreRun && _exploreRun.lineActive) return;
   if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
   _spinText = '';
   if (isInputDockMounted()) moveToContent();
@@ -2253,15 +2303,29 @@ function renderEvent(event) {
   if (_orbit) _orbit.onEvent(event);
 
   // If we've been collapsing explore tools into a summary spinner, an
-  // incoming non-explore event ends the run. Convert the spinner to a
-  // static one-line summary so the transcript keeps a record of what was
-  // explored, even after the spinner stops.
+  // incoming event that will actually WRITE to the screen ends the run
+  // and freezes the spinner into a static one-line summary. Transient
+  // metadata events (thinking, spinner-only status, sub_agent_tool,
+  // worker/phase updates, session_info) don't write and must NOT flush —
+  // otherwise every sub-agent tool call fires a `sub_agent_tool` event
+  // right before its `tool_call`, splitting each burst into a fresh line.
   if (_exploreRun.lineActive) {
     const isExploreEvent =
       (type === 'tool_call' || type === 'tool_request' ||
        type === 'tool_result' || type === 'tool_done') &&
       isExploreTool(data?.tool);
-    if (!isExploreEvent) flushExploreRun();
+    const isTransientEvent =
+      type === 'thinking' ||        // may or may not render text
+      type === 'status' ||           // usually just updates the spinner
+      type === 'sub_agent_tool' ||   // metadata for the tool_call to follow
+      type === 'worker_update' ||
+      type === 'phase_update' ||
+      type === 'phase_summary' ||
+      type === 'phase_start' ||
+      type === 'worker_start' ||
+      type === 'worker_done' ||
+      type === 'session_info';
+    if (!isExploreEvent && !isTransientEvent) flushExploreRun();
   }
 
   switch (type) {
@@ -2333,8 +2397,12 @@ function renderEvent(event) {
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
       const attempt = data?.attempt ? `attempt ${data.attempt}` : 'reconnecting';
+      const delayMs = Number(data?.delay_ms || 0);
+      const wait = delayMs > 0
+        ? ` · retrying in ${delayMs < 1000 ? `${delayMs}ms` : `${(delayMs / 1000).toFixed(delayMs < 10_000 ? 1 : 0)}s`}`
+        : '';
       const after = data?.after != null ? ` from event ${data.after}` : '';
-      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${after}`)}\n`);
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${wait}${after}`)}\n`);
       _lastRenderedBlock = 'status';
       break;
     }
@@ -2543,7 +2611,13 @@ function renderEvent(event) {
       // sub-agent stack depth. Just update the spinner text here.
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
-      if (tool) updateSpinner(`${agentType} → ${tool}`);
+      if (!tool) break;
+      // Don't clobber an active explore-run spinner. "exploring · 5 read ·
+      // 2 searched" is more informative than "explore → search_code", and
+      // sub_agent_tool fires on every step of a sub-agent — otherwise the
+      // spinner would flip-flop between the two texts and read as blank.
+      if (_exploreRun.lineActive && isExploreTool(tool)) break;
+      updateSpinner(`${agentType} → ${tool}`);
       break;
     }
 
