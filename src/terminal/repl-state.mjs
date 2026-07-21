@@ -9,6 +9,12 @@
  * REPL relied on when everything lived in one file.
  */
 
+// Ref holder for the Mission Control orbit state machine. The REPL loop
+// creates the orbit at startup and assigns `orbitRef.current = createOrbit()`.
+// Other modules read via orbitRef.current and can null it out during flows
+// like previewResumeSession() that need to temporarily suppress state updates.
+export const orbitRef = { current: null };
+
 // Full session state for the current CLI process. Set by the REPL loop
 // as backend events (session_info, complete, etc.) arrive. Fields that
 // look "server-authoritative" (subscriptionTier, credits*) come from

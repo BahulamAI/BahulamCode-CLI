@@ -63,7 +63,8 @@ import {
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
-import { session } from './repl-state.mjs';
+import { session, orbitRef } from './repl-state.mjs';
+import { safeCwd } from './repl-utils.mjs';
 import {
   endStatusMarker,
   filterResumeReplayEvents,
@@ -133,25 +134,7 @@ const VERSION = __require('../../package.json').version;
 // If the working directory gets deleted (by a rogue tool call),
 // process.cwd() throws ENOENT. Detect and recover.
 
-let _cachedCwd = null;
-
-function safeCwd() {
-  try {
-    _cachedCwd = process.cwd();
-    return _cachedCwd;
-  } catch {
-    // CWD deleted — try to recover
-    const fallback = _cachedCwd || process.env.HOME || '/tmp';
-    try {
-      process.chdir(fallback);
-      process.stderr.write(`  ${c.yellow('Working directory was deleted. Recovered to: ' + fallback)}\n`);
-      _cachedCwd = fallback;
-      return fallback;
-    } catch {
-      return process.env.HOME || '/tmp';
-    }
-  }
-}
+// safeCwd() moved to ./repl-utils.mjs.
 
 // messageCountLabel, sessionListTimestamp, oneLineInstruction, fitAnsiLine
 // moved to ./repl-format.mjs. Imported at the top of this file.
@@ -563,9 +546,9 @@ function renderResumePreview(resumed) {
     process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
     const sessionSnapshot = JSON.parse(JSON.stringify(session));
-    const savedOrbit = _orbit;
+    const savedOrbit = orbitRef.current;
     const savedSessionMgr = _sessionMgr;
-    _orbit = null;
+    orbitRef.current = null;
     _sessionMgr = null;
     try {
       startContentStream();
@@ -582,7 +565,7 @@ function renderResumePreview(resumed) {
       flushContent();
       stopSpinner();
     } finally {
-      _orbit = savedOrbit;
+      orbitRef.current = savedOrbit;
       _sessionMgr = savedSessionMgr;
       for (const key of Object.keys(session)) delete session[key];
       Object.assign(session, sessionSnapshot);
@@ -759,7 +742,7 @@ async function compactCurrentSession(ctx, rest = '') {
 // ── Session State ──
 
 let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
-let _orbit = null;      // Mission Control orbit state machine; set in startTerminalRepl
+// orbitRef.current lives in ./repl-state.mjs; assigned below at startup.
 
 // The `session` object lives in repl-state.mjs so other repl-* modules
 // (resume helpers, tool renderers, streaming, etc.) can import it during
@@ -1857,7 +1840,7 @@ function renderEvent(event) {
 
   // Push every event into the orbit state machine before rendering so phase
   // and cost state stay current for prompt/context surfaces.
-  if (_orbit) _orbit.onEvent(event);
+  if (orbitRef.current) orbitRef.current.onEvent(event);
 
   // If we've been collapsing explore tools into a summary spinner, an
   // incoming event that will actually WRITE to the screen ends the run
@@ -2359,7 +2342,7 @@ function renderEvent(event) {
       }
 
       // Sync cumulative session cost into the orbit (status bar shows it).
-      if (_orbit) _orbit.onCost(session.totalCost);
+      if (orbitRef.current) orbitRef.current.onCost(session.totalCost);
 
       // Compact turn summary. Backend's tool_calls is authoritative and
       // includes primary + sub-agent internals for billing/credit rollups.
@@ -3833,7 +3816,7 @@ export async function startTerminalRepl() {
   // Keep one bottom-reserved UI surface: the fixed input dock. The older
   // status bar used the same terminal scroll-region primitive, so mounting
   // both would make prompt placement unpredictable.
-  _orbit = createOrbit();
+  orbitRef.current = createOrbit();
   const inputDockActive = mountInputDock();
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
@@ -4320,7 +4303,7 @@ export async function startTerminalRepl() {
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.
-    if (_orbit) _orbit.onUserInput(originalInput);
+    if (orbitRef.current) orbitRef.current.onUserInput(originalInput);
 
     // Start session tracking on first turn
     if (session.turns === 1) {
@@ -4566,14 +4549,14 @@ export async function startTerminalRepl() {
             if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
             client.resume();
-            if (_orbit) _orbit.onResume();
+            if (orbitRef.current) orbitRef.current.onResume();
           } else {
             executionPaused = true;
             stopSpinner();
             if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Ctrl+P to resume, Esc to cancel')}\n`);
             client.pause();
-            if (_orbit) _orbit.onPause();
+            if (orbitRef.current) orbitRef.current.onPause();
           }
           return;
         }
