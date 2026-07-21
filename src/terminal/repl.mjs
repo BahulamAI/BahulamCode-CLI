@@ -53,6 +53,14 @@ import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessi
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
+import {
+  appendVisionAnalysisToInstruction,
+  attachmentSummaryLine,
+  prepareImageAttachments,
+  publicAttachmentMetadata,
+  resolveAttachmentPath,
+  writeClipboardImageToTemp,
+} from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
@@ -989,6 +997,8 @@ const COMMANDS = {
   '/diff':     'Git diff',
   '/cost':     'Show session cost',
   '/model':    'Show or set session model overrides',
+  '/attach':   'Attach image path or clipboard image to next prompt',
+  '/attachments':'List or clear pending image attachments',
   '/history':  'Show conversation',
   '/settings': 'Show policy/settings',
   '/last':     'Expand last tool output',
@@ -1041,6 +1051,10 @@ const HELP_GROUPS = [
       ['/status metrics', 'Progress bars and runtime metrics'],
       ['/status cost', 'Credits and message window'],
       ['/model [role] [model]', 'Show or set session model override'],
+      ['/attach <image>', 'Attach image to the next prompt'],
+      ['/attach clipboard', 'Attach image currently copied to macOS/Windows clipboard'],
+      ['/attachments', 'List pending image attachments'],
+      ['/attachments clear', 'Clear pending image attachments'],
       ['/status budget <amount|clear>', 'Set or clear session budget'],
     ],
   },
@@ -1376,6 +1390,82 @@ function handleModelCommand(rest = '') {
   if (role === 'reasoning') session.model = model;
   process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
   process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
+}
+
+function stripPathQuotes(value) {
+  const text = String(value || '').trim();
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function pendingVisionPaths(ctx) {
+  if (!Array.isArray(ctx.pendingVisionPaths)) ctx.pendingVisionPaths = [];
+  return ctx.pendingVisionPaths;
+}
+
+function printPendingAttachments(ctx) {
+  const pending = pendingVisionPaths(ctx);
+  if (!pending.length) {
+    process.stderr.write(`  ${c.gray('No pending image attachments.')}\n`);
+    return;
+  }
+  process.stderr.write(`\n  ${c.bold('Pending Attachments')}\n`);
+  for (const filePath of pending) {
+    process.stderr.write(`  ${c.brand('◇')} ${filePath}\n`);
+  }
+  process.stderr.write(`  ${c.dim('They will be sent for vision analysis with your next prompt.')}\n`);
+}
+
+function handleAttachCommand(rest = '', ctx) {
+  const pending = pendingVisionPaths(ctx);
+  const value = stripPathQuotes(rest);
+  if (!value) {
+    process.stderr.write(`  ${c.yellow('Usage:')} /attach <image-path> ${c.dim('or')} /attach clipboard\n`);
+    return;
+  }
+  if (value === 'clear') {
+    pending.length = 0;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared pending image attachments.')}\n`);
+    return;
+  }
+  if (['clipboard', '--clipboard', 'paste', '--paste'].includes(value.toLowerCase())) {
+    try {
+      const filePath = writeClipboardImageToTemp();
+      pending.push(filePath);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('attached clipboard image for next prompt:')} ${c.brand(path.basename(filePath))}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message || String(err))}\n`);
+    }
+    return;
+  }
+  const resolved = resolveAttachmentPath(value, safeCwd());
+  pending.push(resolved);
+  process.stderr.write(`  ${c.green('✓')} ${c.dim('attached for next prompt:')} ${c.brand(path.basename(resolved))}\n`);
+}
+
+function handleAttachmentsCommand(rest = '', ctx) {
+  const action = String(rest || '').trim().toLowerCase();
+  if (action === 'clear') {
+    pendingVisionPaths(ctx).length = 0;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared pending image attachments.')}\n`);
+    return;
+  }
+  printPendingAttachments(ctx);
+}
+
+async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
+  if (skip || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
+    return true;
+  }
+  if (!ctx?._rl || !process.stdin.isTTY) return false;
+  const names = attachments.map(a => a.name).join(', ');
+  return await new Promise(resolve => {
+    ctx._rl.question(`  ${c.yellow('Upload image for Kepler vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
+      resolve(/^y(?:es)?$/i.test(String(answer || '').trim()));
+    });
+  });
 }
 
 function parseSimpleFlags(parts) {
@@ -2893,6 +2983,14 @@ async function handleCommand(input, ctx) {
       handleTasksCommand(rest, ctx);
       return;
 
+    case '/attach':
+      handleAttachCommand(rest, ctx);
+      return;
+
+    case '/attachments':
+      handleAttachmentsCommand(rest, ctx);
+      return;
+
     case '/history': {
       if (rest.trim() === 'fold') {
         process.stderr.write(`  ${c.gray('Output is folded by default — there is nothing to hide. Use /history last or d to expand.')}\n`);
@@ -3692,7 +3790,7 @@ export async function startTerminalRepl() {
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
 
   async function startNewSession({ announce = true } = {}) {
     stopSpinner();
@@ -3788,6 +3886,7 @@ export async function startTerminalRepl() {
       effectivePolicy,
       latestProjectContext,
       latestEnvelope,
+      pendingVisionPaths: ctx.pendingVisionPaths || [],
     });
 
     if (announce) process.stderr.write(`  ${c.green('✓')} ${c.dim('New session started.')}\n`);
@@ -3983,6 +4082,7 @@ export async function startTerminalRepl() {
       effectivePolicy,
       latestProjectContext,
       latestEnvelope,
+      pendingVisionPaths: ctx.pendingVisionPaths || [],
     });
 
     return {
@@ -4066,6 +4166,57 @@ export async function startTerminalRepl() {
     process.on('exit',       unmountInputDock);
   }
 
+  // ── Bracketed paste (DEC private mode 2004) ──────────────────────────────
+  // Ask the terminal to wrap pasted content in ESC[200~ … ESC[201~ markers so
+  // we can merge a multi-line paste into a single input regardless of how
+  // slowly the bytes arrive. Falls back to the legacy 35 ms debounce for
+  // terminals that ignore the request.
+  const PASTE_BEGIN = '\x1b[200~';
+  const PASTE_END   = '\x1b[201~';
+  let _inBracketedPaste = false;
+  let _bracketedPasteBuffer = '';
+  const _pasteEndListeners = new Set();
+  function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
+  function isInBracketedPaste() { return _inBracketedPaste; }
+
+  if (process.stdin.isTTY) {
+    try { process.stderr.write('\x1b[?2004h'); } catch {}
+    const disableBracketedPaste = () => { try { process.stderr.write('\x1b[?2004l'); } catch {} };
+    process.on('exit', disableBracketedPaste);
+    process.once('SIGINT', disableBracketedPaste);
+    process.once('SIGTERM', disableBracketedPaste);
+
+    // Prepend so we see raw bytes before readline consumes them.
+    process.stdin.prependListener('data', (chunk) => {
+      const s = chunk.toString('utf8');
+      let i = 0;
+      while (i < s.length) {
+        if (!_inBracketedPaste) {
+          const start = s.indexOf(PASTE_BEGIN, i);
+          if (start === -1) return;
+          _inBracketedPaste = true;
+          _bracketedPasteBuffer = '';
+          i = start + PASTE_BEGIN.length;
+        } else {
+          const end = s.indexOf(PASTE_END, i);
+          if (end === -1) {
+            _bracketedPasteBuffer += s.slice(i);
+            return;
+          }
+          _bracketedPasteBuffer += s.slice(i, end);
+          _inBracketedPaste = false;
+          const payload = _bracketedPasteBuffer;
+          _bracketedPasteBuffer = '';
+          // Notify subscribers on next tick so readline finishes emitting its
+          // synchronous `line` events for the buffered content first.
+          const cbs = [..._pasteEndListeners];
+          setImmediate(() => { for (const cb of cbs) { try { cb(payload); } catch {} } });
+          i = end + PASTE_END.length;
+        }
+      }
+    });
+  }
+
   // The prompt label is the USER speaking, not the agent. Use the signed-in
   // GitHub handle if known, otherwise fall back to "You".
   //
@@ -4075,7 +4226,9 @@ export async function startTerminalRepl() {
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
     if (term().plain) return `${who} > `;
-    return `${paint.inverse(` ${c.brand(who)} `)} ${c.dim('›')} `;
+    // Brand magenta handle + chevron. No inverse chip, no bold — the color
+    // alone marks this row as user input.
+    return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;
   }
 
   function printInputBottomRule() {
@@ -4093,7 +4246,7 @@ export async function startTerminalRepl() {
   }
 
   function executionInputTips() {
-    return '[Esc] cancel';
+    return 'type any extra context (paths, corrections, follow-ups) · [Enter] send · [Esc] cancel · [Ctrl+P] pause';
   }
 
   const rl = readline.createInterface({
@@ -4300,9 +4453,12 @@ export async function startTerminalRepl() {
 
   // Guard against concurrent line handlers and multiline paste bursts.
   //
-  // Node readline emits one `line` event per pasted newline. Buffering for a
-  // few milliseconds lets a pasted paragraph/list land as one prompt while a
-  // normal Enter still feels immediate.
+  // Node readline emits one `line` event per pasted newline. Two mechanisms
+  // coalesce those into a single input:
+  //   1. If the terminal supports bracketed paste, we hold flushing until we
+  //      see the ESC[201~ end marker — reliable regardless of paste latency.
+  //   2. Otherwise we fall back to a short timer that merges bursts arriving
+  //      within KEPLER_PASTE_FLUSH_MS.
   let _lineInFlight = false;
   const _queuedLines = [];
   let _pasteLines = [];
@@ -4341,10 +4497,25 @@ export async function startTerminalRepl() {
     queueOrRunLine(line);
   }
 
+  // If we're mid-paste when readline fires `line`, cancel the debounce timer;
+  // the paste-end listener below will flush once the terminal closes the
+  // bracket. If we're NOT in a paste (either the terminal doesn't support it,
+  // or the user pressed Enter normally), the debounce falls back to old
+  // behavior — a single Enter flushes almost instantly.
   rl.on('line', async (line) => {
     _pasteLines.push(line);
     if (_pasteFlushTimer) clearTimeout(_pasteFlushTimer);
-    _pasteFlushTimer = setTimeout(flushPastedLines, pasteFlushDelayMs());
+    if (isInBracketedPaste()) {
+      _pasteFlushTimer = null;
+    } else {
+      _pasteFlushTimer = setTimeout(flushPastedLines, pasteFlushDelayMs());
+    }
+  });
+
+  onBracketedPasteEnd(() => {
+    // Readline has finished emitting synchronous line events for the pasted
+    // content by the time this fires (setImmediate in the pre-listener).
+    flushPastedLines();
   });
 
   async function _handleLine(line) {
@@ -4374,40 +4545,7 @@ export async function startTerminalRepl() {
       return;
     }
 
-    // Regular prompt
-    const userMessage = { role: 'user', content: input };
-    session.history.push(userMessage);
-    session.agentHistory.push(userMessage);
-    session.turns++;
-    session.toolCalls = 0;
-    session.subAgentToolCalls = 0;
-    session.lastTask = input;
-    // Reset per-turn counts so the mission report reflects this turn only.
-    session.toolCounts = {};
-    session.subAgentCounts = {};
-    session.filesRead = [];
-    session.savedUsd = 0;
-    session._lastEmittedThinking = '';
-    session.creditsLowWarned = false;
-    session.msgsLowWarned = false;
-
-    // Tell the orbit a new turn started — switches to DISCOVERY and updates
-    // task / turn counters in the status bar.
-    if (_orbit) _orbit.onUserInput(input);
-
-    // Start session tracking on first turn
-    if (session.turns === 1) {
-      sessionMgr.start(input);
-    }
-    let userTurnWritten = false;
-    const writeCurrentUserTurn = () => {
-      if (userTurnWritten) return;
-      jsonlWriter.writeUserTurn(input);
-      jsonlWriter.writeHistory(input);
-      userTurnWritten = true;
-    };
-    if (session.id) writeCurrentUserTurn();
-
+    const originalInput = input;
     const creds = auth.loadCredentials();
     if (!creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
@@ -4415,10 +4553,8 @@ export async function startTerminalRepl() {
       return;
     }
 
-    // Kepler response label
-    process.stderr.write(`\n${c.bold(c.brand('kepler'))}\n`);
-
-    // Create or reuse stream client — sessionId persists across turns
+    // Create or reuse stream client — sessionId persists across turns.
+    // The same client also owns the authenticated vision-analysis preflight.
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
       streamClient = new TarangStreamClient({
         baseUrl: creds.backendUrl,
@@ -4432,6 +4568,93 @@ export async function startTerminalRepl() {
       client.sessionId = session.id;
     }
 
+    try {
+      const pending = pendingVisionPaths(ctx);
+      const prepared = prepareImageAttachments(originalInput, {
+        cwd: safeCwd(),
+        extraPaths: pending,
+      });
+      if (prepared.attachments.length) {
+        process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
+        jsonlWriter.writeKeplerEvent({
+          type: 'attachments',
+          data: { attachments: prepared.attachments.map(publicAttachmentMetadata) },
+        });
+        const approved = await confirmVisionUpload(ctx, prepared.attachments, { skip: skipPerms });
+        pending.length = 0;
+        if (!approved) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim('Vision upload skipped; continuing without image analysis.')}\n`);
+          input = prepared.instruction || originalInput;
+        } else {
+          process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Analyzing image...')}\r`);
+          const analysis = await client.analyzeVision({
+            instruction: prepared.instruction,
+            attachments: prepared.attachments,
+          });
+          process.stderr.write(`\r${' '.repeat(80)}\r`);
+          process.stderr.write(`  ${c.green('✓')} ${c.dim(`Vision analysis completed for ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}`)}${analysis.model ? c.dim(` · ${analysis.model}`) : ''}\n`);
+          jsonlWriter.writeKeplerEvent({
+            type: 'vision_analysis',
+            data: {
+              model: analysis.model || '',
+              summary_chars: String(analysis.summary || '').length,
+              attachments: analysis.attachments || prepared.metadata,
+            },
+          });
+          input = appendVisionAnalysisToInstruction(prepared.instruction, analysis);
+        }
+      } else {
+        input = prepared.instruction || originalInput;
+      }
+    } catch (err) {
+      process.stderr.write(`  ${c.red('Vision error: ' + (err.message || String(err)))}\n`);
+      showPrompt();
+      return;
+    }
+
+    // Regular prompt
+    const userMessage = { role: 'user', content: input };
+    session.history.push(userMessage);
+    session.agentHistory.push(userMessage);
+    session.turns++;
+    session.toolCalls = 0;
+    session.subAgentToolCalls = 0;
+    session.lastTask = originalInput;
+    // Reset per-turn counts so the mission report reflects this turn only.
+    session.toolCounts = {};
+    session.subAgentCounts = {};
+    session.filesRead = [];
+    session.savedUsd = 0;
+    session._lastEmittedThinking = '';
+    session.creditsLowWarned = false;
+    session.msgsLowWarned = false;
+
+    // Tell the orbit a new turn started — switches to DISCOVERY and updates
+    // task / turn counters in the status bar.
+    if (_orbit) _orbit.onUserInput(originalInput);
+
+    // Start session tracking on first turn
+    if (session.turns === 1) {
+      sessionMgr.start(originalInput);
+    }
+    let userTurnWritten = false;
+    const writeCurrentUserTurn = () => {
+      if (userTurnWritten) return;
+      jsonlWriter.writeUserTurn(input);
+      jsonlWriter.writeHistory(input);
+      userTurnWritten = true;
+    };
+    if (session.id) writeCurrentUserTurn();
+
+    // Kepler response label — full brand magenta, matches the user prompt.
+    process.stderr.write(`\n${paint.brand.primary('kepler')}\n`);
+
+    // Immediate feedback so the screen isn't blank between submit and the
+    // first backend event. The first `status`, `thinking`, or `content_*`
+    // event will replace this text; stopSpinner clears it before content
+    // renders.
+    startSpinner('thinking…');
+
     let assistantContent = '';
     const agentTurnHistory = new AgentHistoryTurnBuilder();
 
@@ -4444,7 +4667,10 @@ export async function startTerminalRepl() {
     let executionInputVisible = false;
 
     function executionInputPrefix() {
-      return `  ${c.dim('follow-up ›')} `;
+      // Inviting prompt: brand '+' + hint that this accepts any extra
+      // context (paths, corrections, more instructions). Visible even when
+      // the buffer is empty so users know they can type mid-run.
+      return `${paint.brand.data('+')} ${paint.dim('add instruction')} ${paint.dim('›')} `;
     }
 
     function redrawExecutionInput() {
@@ -4535,13 +4761,70 @@ export async function startTerminalRepl() {
       process.stdin.resume();
       execListenerActive = true;
 
+      // Bracketed-paste state for follow-up input during execution.
+      let execPasteActive = false;
+      let execPasteBuffer = '';
+
+      // Accept any character that isn't a bare C0 control (except tab) and
+      // isn't part of an ESC sequence. Unicode, emoji, and tabs all pass.
+      const isSafeFollowUpText = (s) => {
+        if (!s) return false;
+        if (s.includes('\x1b')) return false; // escape / arrow / meta keys
+        for (const ch of s) {
+          const code = ch.codePointAt(0);
+          if (code === 0x09) continue; // tab ok
+          if (code < 0x20 || code === 0x7f) return false;
+        }
+        return true;
+      };
+
       const onData = (data) => {
         if (!execListenerActive) return; // paused for approval menu
         const bytes = [...data];
         const text = data.toString('utf8');
 
+        // ── Bracketed paste passthrough ────────────────────────────────────
+        // Strip ESC[200~/ESC[201~ markers and treat the content between them
+        // as a single append. Handles pastes that straddle chunk boundaries.
+        if (execPasteActive || text.includes(PASTE_BEGIN)) {
+          let s = text;
+          while (s.length) {
+            if (!execPasteActive) {
+              const start = s.indexOf(PASTE_BEGIN);
+              if (start === -1) break;
+              // Anything before the start marker is normal keystrokes;
+              // let it fall through by re-invoking with just that slice.
+              if (start > 0) {
+                const pre = s.slice(0, start);
+                // Recurse via a synthetic buffer so normal handlers process
+                // the pre-paste characters below.
+                onData(Buffer.from(pre, 'utf8'));
+              }
+              execPasteActive = true;
+              execPasteBuffer = '';
+              s = s.slice(start + PASTE_BEGIN.length);
+              continue;
+            }
+            const end = s.indexOf(PASTE_END);
+            if (end === -1) { execPasteBuffer += s; return; }
+            execPasteBuffer += s.slice(0, end);
+            execPasteActive = false;
+            const payload = execPasteBuffer;
+            execPasteBuffer = '';
+            if (payload) appendExecutionInput(payload);
+            s = s.slice(end + PASTE_END.length);
+          }
+          if (!s.length) return;
+          // Anything after the end marker (rare) falls through as a fresh
+          // buffer for the normal handlers.
+          data = Buffer.from(s, 'utf8');
+        }
+
+        const bytes2 = [...data];
+        const text2 = data.toString('utf8');
+
         // Esc key (single byte 0x1b, not part of arrow sequence)
-        if (bytes.length === 1 && bytes[0] === 0x1b) {
+        if (bytes2.length === 1 && bytes2[0] === 0x1b) {
           if (executionInputVisible || executionInputBuffer) {
             executionInputBuffer = '';
             if (isInputDockMounted()) {
@@ -4568,23 +4851,27 @@ export async function startTerminalRepl() {
           return;
         }
 
-        if (bytes.length === 1 && (bytes[0] === 0x7f || bytes[0] === 0x08)) {
+        if (bytes2.length === 1 && (bytes2[0] === 0x7f || bytes2[0] === 0x08)) {
           backspaceExecutionInput();
           return;
         }
 
-        if (text.includes('\r') || text.includes('\n')) {
-          const parts = text.split(/\r?\n|\r/);
+        if (text2.includes('\r') || text2.includes('\n')) {
+          const parts = text2.split(/\r?\n|\r/);
           if (parts[0]) appendExecutionInput(parts[0]);
           submitExecutionInstruction();
-          for (const extra of parts.slice(1).filter(Boolean)) {
-            _queuedLines.push(extra);
+          // Extra lines from a raw (non-bracketed) paste get concatenated
+          // into the current follow-up buffer instead of firing multiple
+          // resume() calls. If the user presses Enter again, they send.
+          for (const extra of parts.slice(1)) {
+            if (extra) appendExecutionInput('\n' + extra);
           }
           return;
         }
 
-        // Space — toggle pause/resume
-        if (bytes.length === 1 && bytes[0] === 0x20 && !executionInputBuffer && !executionInputVisible) {
+        // Ctrl+P — pause/resume (moved off Space so follow-up input can start
+        // with a space without triggering pause).
+        if (bytes2.length === 1 && bytes2[0] === 0x10) {
           if (executionPaused) {
             executionPaused = false;
             if (isInputDockMounted()) moveToContent();
@@ -4595,7 +4882,7 @@ export async function startTerminalRepl() {
             executionPaused = true;
             stopSpinner();
             if (isInputDockMounted()) moveToContent();
-            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
+            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Ctrl+P to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
           }
@@ -4605,7 +4892,7 @@ export async function startTerminalRepl() {
         // Ctrl+C during execution — PRD-055 §8.4 two-step semantics:
         //   first press → cancel current backend run, stay in REPL
         //   second press within 2s → exit the CLI
-        if (bytes[0] === 0x03) {
+        if (bytes2[0] === 0x03) {
           stopSpinner();
           const now = Date.now();
           if (lastCtrlCAt && (now - lastCtrlCAt) < 2000) {
@@ -4621,20 +4908,19 @@ export async function startTerminalRepl() {
           return;
         }
 
-        // Ctrl+D — expand last tool card (Mission Control §6.2). Plain
-        // letters are reserved for live follow-up instructions while running.
-        if (!executionInputBuffer && bytes.length === 1 && bytes[0] === 0x04) {
+        // Ctrl+D — expand last tool card (Mission Control §6.2). Only when
+        // there's no in-progress follow-up input.
+        if (!executionInputBuffer && bytes2.length === 1 && bytes2[0] === 0x04) {
           stopSpinner();
           if (isInputDockMounted()) moveToContent();
           expandLast();
           return;
         }
 
-        // Printable text during execution becomes a live follow-up instruction
-        // instead of being discarded. Press Enter to send it to the running
-        // backend task via resume(instruction).
-        if (/^[\x20-\x7e]+$/.test(text)) {
-          appendExecutionInput(text);
+        // Any safe text (unicode, tabs, spaces, symbols) becomes a live
+        // follow-up instruction. Enter sends it via resume(instruction).
+        if (isSafeFollowUpText(text2)) {
+          appendExecutionInput(text2);
           return;
         }
       };

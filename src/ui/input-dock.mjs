@@ -3,6 +3,13 @@
  *
  * Reserves a few rows at the bottom of the terminal so agent/tool output
  * scrolls above the prompt. The readline prompt itself owns the input row.
+ *
+ * Layout (double-rule sandwich):
+ *   ══════════════════ context ══════════   ← top rule (brand)
+ *      You › build a login page             ← input row (indented)
+ *   ══════════════════════════════════════   ← bottom rule (dim)
+ *      [Enter] send · [/] commands …        ← tips row
+ *   (one blank row at very bottom for cursor safety)
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
@@ -10,7 +17,8 @@ import { term, onResize } from './term.mjs';
 
 const ESC = '\x1b[';
 const OUT = process.stderr;
-const DEFAULT_ROWS = 4;
+const DEFAULT_ROWS = 5;
+const INPUT_INDENT = 3;
 
 let mounted = false;
 let reservedRows = DEFAULT_ROWS;
@@ -27,7 +35,7 @@ function moveTo(row, col) { write(`${ESC}${row};${col}H`); }
 function clearLine() { write(`${ESC}2K`); }
 
 function rows() {
-  return Math.max(8, term().rows || 24);
+  return Math.max(10, term().rows || 24);
 }
 
 function cols() {
@@ -38,17 +46,10 @@ function contentBottomRow() {
   return Math.max(1, rows() - reservedRows);
 }
 
-function boundaryRow() {
-  return contentBottomRow() + 1;
-}
-
-function inputRow() {
-  return contentBottomRow() + 2;
-}
-
-function tipsRow() {
-  return contentBottomRow() + 3;
-}
+function topRuleRow()    { return contentBottomRow() + 1; }
+function inputRow()      { return contentBottomRow() + 2; }
+function bottomRuleRow() { return contentBottomRow() + 3; }
+function tipsRow()       { return contentBottomRow() + 4; }
 
 function padLine(text) {
   const value = String(text || '');
@@ -63,13 +64,25 @@ function fitText(text, maxWidth) {
   return plain.slice(0, Math.max(0, maxWidth - 1)) + '…';
 }
 
-function boundaryLine(context = '') {
-  const w = cols();
+// Both rules use the same character, color, and treatment so the sandwich
+// reads as a single enclosing frame. Leave 1 col of margin to dodge the
+// right-edge autowrap most terminals inflict on full-width writes.
+function ruleChars(count) {
+  return '═'.repeat(Math.max(0, count));
+}
+
+function topRuleLine(context = '') {
+  const w = Math.max(0, cols() - 1);
   const ctx = fitText(context, Math.max(0, Math.floor(w / 2)));
-  if (!ctx) return paint.text.dim('─'.repeat(w));
+  if (!ctx) return paint.text.dim(ruleChars(w));
   const ctxWidth = visibleWidth(ctx);
-  const left = Math.max(8, w - ctxWidth - 4);
-  return paint.text.dim('─'.repeat(left)) + ' ' + paint.text.dim(ctx) + ' ' + paint.text.dim('─'.repeat(Math.max(0, w - left - ctxWidth - 2)));
+  const left  = Math.max(8, w - ctxWidth - 4);
+  const right = Math.max(0, w - left - ctxWidth - 2);
+  return paint.text.dim(ruleChars(left)) + ' ' + paint.text.dim(ctx) + ' ' + paint.text.dim(ruleChars(right));
+}
+
+function bottomRuleLine() {
+  return paint.text.dim(ruleChars(Math.max(0, cols() - 1)));
 }
 
 function applyLayout() {
@@ -84,23 +97,29 @@ function renderFrame(frame = {}) {
   if (!mounted) return;
   lastFrame = { ...lastFrame, ...frame };
   saveCursor();
-  moveTo(boundaryRow(), 1);
+
+  moveTo(topRuleRow(), 1);
   clearLine();
-  write(padLine(boundaryLine(lastFrame.context)));
+  write(padLine(topRuleLine(lastFrame.context)));
+
+  moveTo(bottomRuleRow(), 1);
+  clearLine();
+  write(padLine(bottomRuleLine()));
+
   moveTo(tipsRow(), 1);
   clearLine();
-  write(padLine(`  ${paint.text.dim(fitText(lastFrame.tips, cols() - 4))}`));
+  const indent = ' '.repeat(INPUT_INDENT);
+  write(padLine(`${indent}${paint.text.dim(fitText(lastFrame.tips, cols() - INPUT_INDENT - 1))}`));
+
   moveTo(rows(), 1);
   clearLine();
   restoreCursor();
 }
 
-function clearInputRows() {
+function clearInputRow() {
   saveCursor();
-  for (let row = inputRow(); row <= rows(); row++) {
-    moveTo(row, 1);
-    clearLine();
-  }
+  moveTo(inputRow(), 1);
+  clearLine();
   restoreCursor();
 }
 
@@ -113,7 +132,7 @@ export function mountInputDock({ rows: requestedRows = DEFAULT_ROWS } = {}) {
   if (!t.isTTY || t.plain || process.env.KEPLER_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 
-  reservedRows = Math.max(3, Math.min(6, Number.parseInt(String(requestedRows), 10) || DEFAULT_ROWS));
+  reservedRows = Math.max(4, Math.min(7, Number.parseInt(String(requestedRows), 10) || DEFAULT_ROWS));
   mounted = true;
   applyLayout();
 
@@ -145,24 +164,24 @@ export function moveToContent() {
 
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
-  clearInputRows();
+  clearInputRow();
   renderFrame({ context, tips });
-  moveTo(inputRow(), 1);
+  moveTo(inputRow(), INPUT_INDENT + 1);
   return true;
 }
 
 export function clearInputPrompt() {
   if (!mounted) return false;
-  clearInputRows();
+  clearInputRow();
   renderFrame(lastFrame);
   return true;
 }
 
 export function renderDockInput(prefix, value, { context = '', tips = '' } = {}) {
   if (!mounted) return false;
-  clearInputRows();
+  clearInputRow();
   renderFrame({ context, tips });
-  moveTo(inputRow(), 1);
+  moveTo(inputRow(), INPUT_INDENT + 1);
   write(`${prefix}${value || ''}`);
   return true;
 }
@@ -170,9 +189,13 @@ export function renderDockInput(prefix, value, { context = '', tips = '' } = {})
 export function focusDockInput(prefix, value = '') {
   if (!mounted) return false;
   const w = cols();
-  const pos = visibleWidth(`${prefix || ''}${value || ''}`);
-  const row = Math.min(rows(), inputRow() + Math.floor(pos / w));
-  const col = Math.min(w, (pos % w) + 1);
-  moveTo(row, col);
+  const pos = INPUT_INDENT + visibleWidth(`${prefix || ''}${value || ''}`);
+  // Input never wraps within the dock — clamp to the input row.
+  const col = Math.min(w, pos + 1);
+  moveTo(inputRow(), col);
   return true;
+}
+
+export function inputRowColumn() {
+  return INPUT_INDENT + 1;
 }
