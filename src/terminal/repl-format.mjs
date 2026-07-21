@@ -7,7 +7,8 @@
  * themselves just wrap strings in ANSI codes).
  */
 
-import { c, stripAnsi } from './ansi.mjs';
+import * as path from 'node:path';
+import { c, stripAnsi, formatElapsed, inPlace } from './ansi.mjs';
 
 // ── One-liners ───────────────────────────────────────────────────────
 
@@ -162,4 +163,95 @@ export function resumeProgressBar(percent, width = 12) {
   const p = Math.max(0, Math.min(100, Math.round(percent)));
   const filled = Math.round((p / 100) * width);
   return `${c.brand('█'.repeat(filled))}${c.gray('░'.repeat(width - filled))} ${String(p).padStart(3)}%`;
+}
+
+/**
+ * Start an animated "resuming…" progress line. Returns { update, stop }.
+ * The caller updates the label + percent as the resume flow advances and
+ * calls stop() when done. inPlace-based render, so it lives on one line.
+ */
+export function startResumeProgress(mode = 'full') {
+  let percent = 8;
+  let label = `resuming as ${resumeModeLabel(mode)}`;
+  let active = true;
+  const started = Date.now();
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let frame = 0;
+
+  const render = () => {
+    if (!active) return;
+    const glyph = frames[frame % frames.length];
+    frame++;
+    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
+  };
+
+  render();
+  const timer = setInterval(render, 100);
+  return {
+    update(nextLabel, nextPercent) {
+      if (!active) return;
+      if (nextLabel) label = nextLabel;
+      if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
+      render();
+    },
+    stop() {
+      if (!active) return;
+      active = false;
+      clearInterval(timer);
+      inPlace('');
+    },
+  };
+}
+
+/**
+ * Normalize a raw session record (from getRecentSessions or persistence)
+ * into the shape the resume picker expects. Pure data transform.
+ */
+export function normalizeResumableSession(s) {
+  return {
+    sessionId: s.sessionId,
+    instruction: s.firstPrompt || s.instruction || '(no instruction)',
+    startedAt: s.startTime || s.startedAt || '',
+    updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
+    project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
+    projectPath: s.project || s.projectPath || '',
+    transcriptPath: s.filePath || s.transcriptPath || '',
+    messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
+    // PRD-068 §5.14.11 derived fields for the picker
+    endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
+    contextTokens: s.contextTokens || 0,       // projected transcript token count
+    contextTokenSource: s.contextTokenSource || 'jsonl_bytes',
+    resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
+    models: Array.isArray(s.models) ? s.models : [],
+    modelLimits: s.modelLimits && typeof s.modelLimits === 'object' ? s.modelLimits : {},
+    costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
+    partial: !!s.partial,                      // true if the transcript file was partially malformed
+    source: 'transcript',
+  };
+}
+
+/**
+ * Speaker prefix label for a transcript entry.
+ */
+export function historyRoleLabel(role) {
+  return role === 'user'
+    ? c.white('You')
+    : role === 'tool'
+      ? c.dim('Tool')
+      : c.brand('Kepler');
+}
+
+/**
+ * Render the tail of a conversation transcript to stderr. Used by
+ * /history and /resume preview flows.
+ */
+export function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
+  const shown = limit === Infinity ? entries : entries.slice(-limit);
+  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+  for (const msg of shown) {
+    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
+    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
+  }
+  process.stderr.write('\n');
 }

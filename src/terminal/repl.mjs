@@ -70,14 +70,18 @@ import {
   fitAnsiLine,
   formatRelativeTime,
   formatSessionCost,
+  historyRoleLabel,
   mergeResumeReplayItems,
   messageCountLabel,
+  normalizeResumableSession,
   oneLineInstruction,
+  renderHistoryEntries,
   replayStartOrderForMode,
   resumeModeLabel,
   resumeProgressBar,
   resumeTailTurnCount,
   sessionListTimestamp,
+  startResumeProgress,
 } from './repl-format.mjs';
 import {
   COMMANDS,
@@ -152,28 +156,7 @@ function safeCwd() {
 // messageCountLabel, sessionListTimestamp, oneLineInstruction, fitAnsiLine
 // moved to ./repl-format.mjs. Imported at the top of this file.
 
-function normalizeResumableSession(s) {
-  return {
-    sessionId: s.sessionId,
-    instruction: s.firstPrompt || s.instruction || '(no instruction)',
-    startedAt: s.startTime || s.startedAt || '',
-    updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
-    project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
-    projectPath: s.project || s.projectPath || '',
-    transcriptPath: s.filePath || s.transcriptPath || '',
-    messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
-    // PRD-068 §5.14.11 derived fields for the picker
-    endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
-    contextTokens: s.contextTokens || 0,       // projected transcript token count
-    contextTokenSource: s.contextTokenSource || 'jsonl_bytes',
-    resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
-    models: Array.isArray(s.models) ? s.models : [],
-    modelLimits: s.modelLimits && typeof s.modelLimits === 'object' ? s.modelLimits : {},
-    costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
-    partial: !!s.partial,                      // true if the transcript file was partially malformed
-    source: 'transcript',
-  };
-}
+// normalizeResumableSession moved to ./repl-format.mjs.
 
 async function listResumableSessions() {
   // PRD-068 §5.14.6: JSONL is the single source of truth. The legacy
@@ -544,24 +527,7 @@ async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
   });
 }
 
-function historyRoleLabel(role) {
-  return role === 'user'
-    ? c.white('You')
-    : role === 'tool'
-      ? c.dim('Tool')
-      : c.brand('Kepler');
-}
-
-function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
-  const shown = limit === Infinity ? entries : entries.slice(-limit);
-  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-  for (const msg of shown) {
-    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
-    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
-  }
-  process.stderr.write('\n');
-}
+// historyRoleLabel, renderHistoryEntries moved to ./repl-format.mjs.
 
 function renderResumePreview(resumed) {
   const tailTurns = resumeTailTurnCount(resumed.historyMode);
@@ -788,38 +754,7 @@ async function compactCurrentSession(ctx, rest = '') {
 // resumeTailTurnCount, replayStartOrderForMode, filterResumeReplayEvents,
 // mergeResumeReplayItems, resumeProgressBar moved to ./repl-format.mjs.
 
-function startResumeProgress(mode = 'full') {
-  let percent = 8;
-  let label = `resuming as ${resumeModeLabel(mode)}`;
-  let active = true;
-  const started = Date.now();
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let frame = 0;
-
-  const render = () => {
-    if (!active) return;
-    const glyph = frames[frame % frames.length];
-    frame++;
-    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
-  };
-
-  render();
-  const timer = setInterval(render, 100);
-  return {
-    update(nextLabel, nextPercent) {
-      if (!active) return;
-      if (nextLabel) label = nextLabel;
-      if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
-      render();
-    },
-    stop() {
-      if (!active) return;
-      active = false;
-      clearInterval(timer);
-      inPlace('');
-    },
-  };
-}
+// startResumeProgress moved to ./repl-format.mjs.
 
 // ── Session State ──
 
