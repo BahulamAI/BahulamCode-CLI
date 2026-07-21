@@ -95,6 +95,15 @@ function renderFrame(frame = {}) {
   restoreCursor();
 }
 
+function clearInputRows() {
+  saveCursor();
+  for (let row = inputRow(); row <= rows(); row++) {
+    moveTo(row, 1);
+    clearLine();
+  }
+  restoreCursor();
+}
+
 export function isInputDockMounted() {
   return mounted;
 }
@@ -136,26 +145,34 @@ export function moveToContent() {
 
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
+  clearInputRows();
   renderFrame({ context, tips });
   moveTo(inputRow(), 1);
-  clearLine();
   return true;
 }
 
 export function clearInputPrompt() {
   if (!mounted) return false;
-  saveCursor();
-  moveTo(inputRow(), 1);
-  clearLine();
-  restoreCursor();
+  clearInputRows();
+  renderFrame(lastFrame);
   return true;
 }
 
 export function renderDockInput(prefix, value, { context = '', tips = '' } = {}) {
   if (!mounted) return false;
+  clearInputRows();
   renderFrame({ context, tips });
   moveTo(inputRow(), 1);
-  clearLine();
   write(`${prefix}${value || ''}`);
+  return true;
+}
+
+export function focusDockInput(prefix, value = '') {
+  if (!mounted) return false;
+  const w = cols();
+  const pos = visibleWidth(`${prefix || ''}${value || ''}`);
+  const row = Math.min(rows(), inputRow() + Math.floor(pos / w));
+  const col = Math.min(w, (pos % w) + 1);
+  moveTo(row, col);
   return true;
 }

@@ -57,6 +57,7 @@ import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
+  focusDockInput,
   isInputDockMounted,
   mountInputDock,
   moveToContent,
@@ -2031,6 +2032,7 @@ function startSpinner(text) {
     if (!_spinText) return;
     const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
     _spinFrame++;
+    if (isInputDockMounted()) moveToContent();
     inPlace(`  ${c.brand(frame)} ${c.dim(_spinText)}`);
   }, 80);
 }
@@ -2042,6 +2044,7 @@ function updateSpinner(text) {
 function stopSpinner() {
   if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
   _spinText = '';
+  if (isInputDockMounted()) moveToContent();
   inPlace('');
 }
 
@@ -2051,6 +2054,7 @@ let _streamBuffer = '';
 let _streamedPartialText = '';
 let _streamTimer = null;
 let _renderedContentThisTurn = false;
+let _afterContentFlush = null;
 
 function startContentStream() {
   _streamBuffer = '';
@@ -2079,6 +2083,7 @@ function flushContent() {
   if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
   if (!_streamBuffer) return;
 
+  if (isInputDockMounted()) moveToContent();
   stopSpinner();
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
@@ -2092,6 +2097,7 @@ function flushContent() {
   _streamBuffer = '';
   _renderedContentThisTurn = true;
   _lastRenderedBlock = 'content';
+  if (typeof _afterContentFlush === 'function') _afterContentFlush();
 }
 
 function renderStagnation(data = {}) {
@@ -4087,7 +4093,7 @@ export async function startTerminalRepl() {
   }
 
   function executionInputTips() {
-    return '[Enter] send follow-up  [Space] pause/resume  [Esc] cancel  [Ctrl+D] details';
+    return '[Esc] cancel';
   }
 
   const rl = readline.createInterface({
@@ -4460,6 +4466,12 @@ export async function startTerminalRepl() {
       process.stderr.write(`${executionInputPrefix()}${executionInputBuffer}`);
     }
 
+    function focusExecutionInput() {
+      if (!isInputDockMounted()) return;
+      focusDockInput(executionInputPrefix(), executionInputBuffer);
+    }
+    _afterContentFlush = focusExecutionInput;
+
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
       executionInputBuffer = '';
@@ -4726,6 +4738,7 @@ export async function startTerminalRepl() {
         }
         if (isInputDockMounted()) moveToContent();
         renderEvent(event);
+        focusExecutionInput();
 
         if (event.type === 'content_partial') {
           const text = event.data?.text || '';
@@ -4783,6 +4796,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
       // Clean up execution keypress listener
+      _afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
     }
 

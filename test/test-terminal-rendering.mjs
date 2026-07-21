@@ -272,11 +272,25 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('queueOrRunLine(line);'));
   assert.ok(replSource.includes('function executionInputPrefix()'));
   assert.ok(replSource.includes('follow-up ›'));
+  assert.ok(replSource.includes("return '[Esc] cancel';"));
+  assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
+  assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
+  assert.ok(replSource.includes('_afterContentFlush = focusExecutionInput;'));
+  assert.ok(replSource.includes('_afterContentFlush = null;'));
+  assert.ok(replSource.includes("if (typeof _afterContentFlush === 'function') _afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
   assert.ok(replSource.includes('client.resume(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('Ctrl+D'));
+});
+
+test('fixed input dock clears wrapped input rows before repainting', () => {
+  const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
+  assert.ok(dockSource.includes('function clearInputRows()'));
+  assert.ok(dockSource.includes('for (let row = inputRow(); row <= rows(); row++)'));
+  assert.ok(dockSource.includes('clearInputRows();\n  renderFrame({ context, tips });'));
+  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
