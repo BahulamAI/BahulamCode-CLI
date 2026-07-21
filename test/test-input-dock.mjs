@@ -10,6 +10,7 @@ import {
   tailWithEllipsis,
   cursorPositionInLines,
 } from '../src/ui/text-layout.mjs';
+import * as dock from '../src/ui/input-dock.mjs';
 import { strip as stripAnsi, width as visibleWidth } from '../src/ui/palette.mjs';
 
 let passed = 0;
@@ -155,6 +156,28 @@ test('long path in a 40-col terminal: chunks safely within budget', () => {
   for (const line of wrapped) {
     assert.ok(visibleWidth(line) <= 40, `chunk width ${visibleWidth(line)} > 40: ${line}`);
   }
+});
+
+// ── dock module surface: dynamic growth entry points exist ──────────────
+
+test('input-dock exports the dynamic-growth API surface', () => {
+  // Consumers of the dock (repl.mjs execution input) call renderDockInput
+  // with a prefix + value; the dock internally grows/shrinks the input
+  // area to fit the wrapped content up to KEPLER_INPUT_ROWS_MAX.
+  for (const fn of ['renderDockInput', 'focusDockInput', 'prepareInputPrompt',
+                    'clearInputPrompt', 'mountInputDock', 'unmountInputDock',
+                    'moveToContent', 'isInputDockMounted']) {
+    assert.strictEqual(typeof dock[fn], 'function', `missing export: ${fn}`);
+  }
+});
+
+test('mountInputDock signature accepts { inputRowsMax }', () => {
+  // Non-TTY environment (npm test) → mount is a no-op returning false.
+  // We only care that the call shape doesn't throw and that the export
+  // exists with the right arg name (guards against silent rename).
+  const source = dock.mountInputDock.toString();
+  assert.ok(source.includes('inputRowsMax'),
+    'mountInputDock should accept inputRowsMax option');
 });
 
 console.log(`\n\x1b[32m${passed} passed\x1b[0m\n`);

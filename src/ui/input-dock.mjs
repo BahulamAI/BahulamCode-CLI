@@ -2,24 +2,31 @@
  * Fixed input dock.
  *
  * Reserves rows at the bottom of the terminal so agent/tool output scrolls
- * above the prompt. The dock has a fixed max height (top rule + N input
- * rows + bottom rule + tips + safety row); when the input buffer wraps
- * beyond N visible rows, only the last N render with a leading '…' marker.
- * Growing the dock dynamically would resize the scroll region on every
- * paste — that's disruptive to the content above, so the reservation is
- * fixed at max.
+ * above the prompt. The input area GROWS DYNAMICALLY as the user types or
+ * pastes multi-line content: starts at 1 row, expands up to `MAX_INPUT_ROWS`
+ * (default 6) to fit the wrapped buffer, shrinks back when the buffer is
+ * cleared. On resize, the scroll region moves so content above reflows
+ * smoothly.
  *
- * Layout (double-rule sandwich, with input rows = 2 by default):
+ * When the wrapped buffer still exceeds the max, only the LAST max rows
+ * render with a leading '…' marker (per PRD-081 §5.1 explicit truncation).
+ *
+ * Multi-line paste — including bracketed paste bursts — renders as one
+ * visible block in the dock and submits as a single message. The dock
+ * itself doesn't parse newlines; wrapToLines treats them as hard breaks.
+ *
+ * Layout (double-rule sandwich, height varies with input):
  *   ══════════════════ context ══════════   ← top rule
  *      + add instruction › foo bar          ← input row 1
- *      baz quux                             ← input row 2 (empty if 1-line)
+ *      baz quux                             ← input row 2 (added as needed)
+ *      ...                                  ← up to MAX_INPUT_ROWS
  *   ══════════════════════════════════════   ← bottom rule
  *      [Enter] send · [/] commands …        ← tips row
  *   (one blank row at very bottom for cursor safety)
  *
  * Config:
- *   KEPLER_INPUT_ROWS    1..5   input row count (default 2)
- *   KEPLER_FIXED_INPUT=0        disable dock entirely (fallback readline)
+ *   KEPLER_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
+ *   KEPLER_FIXED_INPUT=0           disable dock entirely (fallback readline)
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
@@ -29,13 +36,14 @@ import { wrapToLines, tailWithEllipsis, cursorPositionInLines } from './text-lay
 const ESC = '\x1b[';
 const OUT = process.stderr;
 const INPUT_INDENT = 3;
-const DEFAULT_INPUT_ROWS = 2;
+const DEFAULT_MAX_INPUT_ROWS = 6;
 const MIN_INPUT_ROWS = 1;
-const MAX_INPUT_ROWS = 5;
+const MAX_INPUT_ROWS_CAP = 12;
 
 let mounted = false;
-let inputRows = DEFAULT_INPUT_ROWS;
-let reservedRows = 4 + DEFAULT_INPUT_ROWS; // top + input(N) + bottom + tips + safety
+let inputRowsMax = DEFAULT_MAX_INPUT_ROWS;
+let inputRows = MIN_INPUT_ROWS;
+let reservedRows = 4 + MIN_INPUT_ROWS; // top + input(N) + bottom + tips + safety
 let unsubResize = null;
 let lastFrame = { context: '', tips: '' };
 let resetting = false;
@@ -70,13 +78,40 @@ function inputTextBudget() {
   return Math.max(8, cols() - INPUT_INDENT - 1);
 }
 
-function resolveInputRows(requested) {
+function resolveMaxInputRows(requested) {
   const raw = requested != null
     ? requested
-    : process.env.KEPLER_INPUT_ROWS;
+    : process.env.KEPLER_INPUT_ROWS_MAX;
   const n = Number.parseInt(String(raw), 10);
-  if (!Number.isFinite(n)) return DEFAULT_INPUT_ROWS;
-  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS, n));
+  if (!Number.isFinite(n)) return DEFAULT_MAX_INPUT_ROWS;
+  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
+}
+
+// How many input rows does this (prefix + value) buffer need? Wrapped line
+// count clamped to [1, inputRowsMax]. Beyond the cap, tail-with-ellipsis
+// takes over inside drawInputLines so at most inputRowsMax rows render.
+function computeInputRowsForBuffer(prefix, value) {
+  const budget = inputTextBudget();
+  const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget);
+  const wanted = Math.max(MIN_INPUT_ROWS, wrapped.length);
+  return Math.min(inputRowsMax, wanted);
+}
+
+// Resize the input area to a new row count. Moves the scroll region so
+// content above shifts accordingly; the dock frame is redrawn at the
+// new position. No-op if the count didn't change.
+function setInputRowsTo(nextRows) {
+  const clamped = Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(nextRows)));
+  if (clamped === inputRows) return false;
+  inputRows = clamped;
+  reservedRows = 4 + inputRows;
+  if (mounted) {
+    // Reapply the scroll region and repaint the frame at the new boundary.
+    const bottom = contentBottomRow();
+    setScrollRegion(1, bottom);
+    renderFrame(lastFrame);
+  }
+  return true;
 }
 
 function padLine(text) {
@@ -190,13 +225,14 @@ export function isInputDockMounted() {
   return mounted;
 }
 
-export function mountInputDock({ inputRows: requestedInputRows } = {}) {
+export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
   const t = term();
   if (!t.isTTY || t.plain || process.env.KEPLER_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 
-  inputRows = resolveInputRows(requestedInputRows);
-  reservedRows = 4 + inputRows; // top + input(N) + bottom + tips + safety
+  inputRowsMax = resolveMaxInputRows(requestedMax);
+  inputRows = MIN_INPUT_ROWS; // start collapsed; grow as content lands
+  reservedRows = 4 + inputRows; // top + input(1) + bottom + tips + safety
   mounted = true;
   applyLayout();
 
@@ -263,6 +299,10 @@ export function clearPinnedStatus() {
 
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
+  // Idle prompt has no buffer yet — collapse the dock back to a single
+  // input row so the terminal reclaims the space taken by the previous
+  // turn's multi-line input.
+  setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
   renderFrame({ context, tips });
   moveTo(inputRowStart(), INPUT_INDENT + 1);
@@ -278,6 +318,9 @@ export function clearInputPrompt() {
 
 export function renderDockInput(prefix, value, { context = '', tips = '' } = {}) {
   if (!mounted) return false;
+  // Grow / shrink the dock to fit the wrapped buffer before painting so
+  // multi-line paste and long typed lines expand the input area in place.
+  setInputRowsTo(computeInputRowsForBuffer(prefix, value));
   renderFrame({ context, tips });
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
