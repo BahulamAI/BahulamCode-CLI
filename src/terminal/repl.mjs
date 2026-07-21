@@ -2252,6 +2252,18 @@ function renderEvent(event) {
   // and cost state stay current for prompt/context surfaces.
   if (_orbit) _orbit.onEvent(event);
 
+  // If we've been collapsing explore tools into a summary spinner, an
+  // incoming non-explore event ends the run. Convert the spinner to a
+  // static one-line summary so the transcript keeps a record of what was
+  // explored, even after the spinner stops.
+  if (_exploreRun.lineActive) {
+    const isExploreEvent =
+      (type === 'tool_call' || type === 'tool_request' ||
+       type === 'tool_result' || type === 'tool_done') &&
+      isExploreTool(data?.tool);
+    if (!isExploreEvent) flushExploreRun();
+  }
+
   switch (type) {
     case 'status': {
       const msg = data?.message || '';
@@ -4555,7 +4567,22 @@ export async function startTerminalRepl() {
     inputActive = false;
     clearSlashHint();
     if (selectedSlashCommand) input = selectedSlashCommand;
-    if (!input) { showPrompt(); return; }
+    if (!input) {
+      // Empty Enter leaves readline's phantom prompt line ("ravia.sapbpc ›")
+      // committed above the cursor. Wipe it so repeated blank Enters don't
+      // stack into a ladder of empty prompts in the transcript.
+      if (process.stderr.isTTY && !term().plain) {
+        // The paste debounce may have batched N Enters into one flush. The
+        // joined `line` string has one '\n' per additional Enter, so
+        // split('\n').length gives the phantom count.
+        const phantoms = Math.max(1, String(line).split('\n').length);
+        for (let i = 0; i < phantoms; i++) {
+          process.stderr.write('\x1b[A\x1b[2K\r');
+        }
+      }
+      showPrompt();
+      return;
+    }
     printSubmittedInput(input);
 
     // Save to input history
