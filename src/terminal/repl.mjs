@@ -55,7 +55,15 @@ import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskC
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
-import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
+import {
+  clearInputPrompt,
+  isInputDockMounted,
+  mountInputDock,
+  moveToContent,
+  prepareInputPrompt,
+  renderDockInput,
+  unmountInputDock,
+} from '../ui/input-dock.mjs';
 import { term } from '../ui/term.mjs';
 import {
   formatCardHead,
@@ -2113,9 +2121,8 @@ function renderStagnation(data = {}) {
 function renderEvent(event) {
   const { type, data } = event;
 
-  // Push every event into the orbit state machine before rendering so the
-  // bottom status bar reflects what is happening this very moment. The orbit
-  // module is a no-op when status-bar is not mounted (non-TTY, --headless).
+  // Push every event into the orbit state machine before rendering so phase
+  // and cost state stay current for prompt/context surfaces.
   if (_orbit) _orbit.onEvent(event);
 
   switch (type) {
@@ -4043,20 +4050,14 @@ export async function startTerminalRepl() {
 
   process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
-  // Mission Control status bar is OPT-IN as of v2.0.1.
-  // Set KEPLER_STATUS_BAR=1 (or KEPLER_MISSION=1) to enable the persistent
-  // bottom-anchored ORBIT bar. Default off because the DECSTBM scroll
-  // region was eating the prompt visibility on some terminals (issue
-  // observed during v2.0.0 testing). The orbit state machine and tool
-  // cards still work without the bar — the bar is just the rendering.
-  const statusBarEnabled = (
-    process.env.KEPLER_STATUS_BAR === '1' || process.env.KEPLER_MISSION === '1'
-  ) && term().isTTY && !term().plain;
-  if (statusBarEnabled) {
-    _orbit = createOrbit();
-    attachOrbit(_orbit);
-    process.on('beforeExit', unmountStatusBar);
-    process.on('exit',       unmountStatusBar);
+  // Keep one bottom-reserved UI surface: the fixed input dock. The older
+  // status bar used the same terminal scroll-region primitive, so mounting
+  // both would make prompt placement unpredictable.
+  _orbit = createOrbit();
+  const inputDockActive = mountInputDock();
+  if (inputDockActive) {
+    process.on('beforeExit', unmountInputDock);
+    process.on('exit',       unmountInputDock);
   }
 
   // The prompt label is the USER speaking, not the agent. Use the signed-in
@@ -4072,8 +4073,21 @@ export async function startTerminalRepl() {
   }
 
   function printInputBottomRule() {
+    if (isInputDockMounted()) {
+      clearInputPrompt();
+      moveToContent();
+      return;
+    }
     if (term().plain) return;
     process.stderr.write('\n');
+  }
+
+  function idleInputTips() {
+    return '[Enter] send  [/] commands  [Tab] complete  [Ctrl+D] details';
+  }
+
+  function executionInputTips() {
+    return '[Enter] send follow-up  [Space] pause/resume  [Esc] cancel  [Ctrl+D] details';
   }
 
   const rl = readline.createInterface({
@@ -4100,6 +4114,7 @@ export async function startTerminalRepl() {
   let slashHintLine = '';
 
   function promptBottomPaddingLines() {
+    if (isInputDockMounted()) return 0;
     if (!process.stderr.isTTY || term().plain) return 0;
     const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
@@ -4228,8 +4243,30 @@ export async function startTerminalRepl() {
     rl.prompt();
   }
 
+  function printSubmittedInput(input) {
+    if (!isInputDockMounted()) {
+      printInputBottomRule();
+      return;
+    }
+    const prompt = userPrompt();
+    const lines = String(input || '').split('\n');
+    printInputBottomRule();
+    process.stderr.write(`${prompt}${lines[0] || ''}\n`);
+    if (lines.length > 1) {
+      const indent = ' '.repeat(stripAnsi(prompt).length);
+      for (const line of lines.slice(1)) {
+        process.stderr.write(`${indent}${line}\n`);
+      }
+    }
+  }
+
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
+    if (isInputDockMounted()) {
+      prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() });
+      promptInputLine();
+      return;
+    }
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
     promptInputLine();
@@ -4310,8 +4347,8 @@ export async function startTerminalRepl() {
     inputActive = false;
     clearSlashHint();
     if (selectedSlashCommand) input = selectedSlashCommand;
-    if (!input) { promptInputLine(); return; }
-    printInputBottomRule();
+    if (!input) { showPrompt(); return; }
+    printSubmittedInput(input);
 
     // Save to input history
     session.inputHistory.push(input);
@@ -4405,6 +4442,14 @@ export async function startTerminalRepl() {
     }
 
     function redrawExecutionInput() {
+      if (isInputDockMounted()) {
+        renderDockInput(executionInputPrefix(), executionInputBuffer, {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        executionInputVisible = true;
+        return;
+      }
       if (!executionInputVisible) {
         stopSpinner();
         process.stderr.write(`\n${executionInputPrefix()}`);
@@ -4419,11 +4464,31 @@ export async function startTerminalRepl() {
       const instruction = executionInputBuffer.trim();
       executionInputBuffer = '';
       if (!instruction) {
-        if (executionInputVisible) process.stderr.write('\n');
+        if (isInputDockMounted()) {
+          clearInputPrompt();
+          renderDockInput(executionInputPrefix(), '', {
+            context: buildContextStrip(),
+            tips: executionInputTips(),
+          });
+          moveToContent();
+        } else if (executionInputVisible) {
+          process.stderr.write('\n');
+        }
         executionInputVisible = false;
         return;
       }
-      if (executionInputVisible) process.stderr.write('\n');
+      if (isInputDockMounted()) {
+        clearInputPrompt();
+        moveToContent();
+        process.stderr.write(`${executionInputPrefix()}${instruction}\n`);
+        renderDockInput(executionInputPrefix(), '', {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        moveToContent();
+      } else if (executionInputVisible) {
+        process.stderr.write('\n');
+      }
       executionInputVisible = false;
       try {
         await client.resume(instruction);
@@ -4467,7 +4532,14 @@ export async function startTerminalRepl() {
         if (bytes.length === 1 && bytes[0] === 0x1b) {
           if (executionInputVisible || executionInputBuffer) {
             executionInputBuffer = '';
-            if (executionInputVisible) {
+            if (isInputDockMounted()) {
+              clearInputPrompt();
+              renderDockInput(executionInputPrefix(), '', {
+                context: buildContextStrip(),
+                tips: executionInputTips(),
+              });
+              moveToContent();
+            } else if (executionInputVisible) {
               readline.clearLine(process.stderr, 0);
               readline.cursorTo(process.stderr, 0);
             }
@@ -4475,6 +4547,7 @@ export async function startTerminalRepl() {
             return;
           }
           stopSpinner();
+          if (isInputDockMounted()) moveToContent();
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
           // cancel() now aborts the in-flight SSE reader; the for-await loop
           // wakes up immediately and the prompt returns. No more "stuck"
@@ -4502,12 +4575,14 @@ export async function startTerminalRepl() {
         if (bytes.length === 1 && bytes[0] === 0x20 && !executionInputBuffer && !executionInputVisible) {
           if (executionPaused) {
             executionPaused = false;
+            if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
             client.resume();
             if (_orbit) _orbit.onResume();
           } else {
             executionPaused = true;
             stopSpinner();
+            if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
@@ -4522,11 +4597,13 @@ export async function startTerminalRepl() {
           stopSpinner();
           const now = Date.now();
           if (lastCtrlCAt && (now - lastCtrlCAt) < 2000) {
+            if (isInputDockMounted()) unmountInputDock();
             process.stderr.write(`\n  ${c.dim('exiting…')}\n`);
             try { client.cancel(); } catch {}
             process.exit(0);
           }
           lastCtrlCAt = now;
+          if (isInputDockMounted()) moveToContent();
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
           return;
@@ -4536,6 +4613,7 @@ export async function startTerminalRepl() {
         // letters are reserved for live follow-up instructions while running.
         if (!executionInputBuffer && bytes.length === 1 && bytes[0] === 0x04) {
           stopSpinner();
+          if (isInputDockMounted()) moveToContent();
           expandLast();
           return;
         }
@@ -4567,6 +4645,13 @@ export async function startTerminalRepl() {
     }
 
     try {
+      if (isInputDockMounted()) {
+        renderDockInput(executionInputPrefix(), '', {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        moveToContent();
+      }
       startContentStream();
 
       const execContext = { cwd: safeCwd() };
@@ -4639,6 +4724,7 @@ export async function startTerminalRepl() {
             message => process.stderr.write(`  ${c.dim(message)}\n`),
           );
         }
+        if (isInputDockMounted()) moveToContent();
         renderEvent(event);
 
         if (event.type === 'content_partial') {
