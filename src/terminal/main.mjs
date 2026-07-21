@@ -17,6 +17,72 @@ import { parseArgs } from '../config/cli-args.mjs';
 const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
 
+function parseKeplerSubcommandArgs(command, argv) {
+  const parsed = {
+    command,
+    workflowSubcommand: null,
+    workflowSlug: null,
+    workflowFile: null,
+    workflowDir: null,
+    agentSubcommand: null,
+    agentSlug: null,
+    agentDir: null,
+    instruction: null,
+    pattern: null,
+    yes: false,
+    verbose: false,
+    debug: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--file':
+      case '-f':
+        parsed.workflowFile = argv[++i];
+        break;
+      case '--dir':
+        if (command === 'agent') parsed.agentDir = argv[++i];
+        else parsed.workflowDir = argv[++i];
+        break;
+      case '--instruction':
+      case '--input':
+      case '--print':
+      case '-p':
+        parsed.instruction = argv[++i];
+        break;
+      case '--pattern':
+        parsed.pattern = argv[++i];
+        break;
+      case '--yes':
+      case '-y':
+        parsed.yes = true;
+        break;
+      case '--verbose':
+      case '-v':
+        parsed.verbose = true;
+        break;
+      case '--debug':
+      case '-d':
+        parsed.debug = true;
+        parsed.verbose = true;
+        break;
+      default:
+        if (arg.startsWith('-')) break;
+        if (command === 'workflow') {
+          if (!parsed.workflowSubcommand) parsed.workflowSubcommand = arg;
+          else if (!parsed.workflowSlug) parsed.workflowSlug = arg;
+        } else if (command === 'agent') {
+          if (!parsed.agentSubcommand) parsed.agentSubcommand = arg;
+          else if (!parsed.agentSlug) parsed.agentSlug = arg;
+        }
+        break;
+    }
+  }
+
+  return parsed;
+}
+
 async function main() {
   if (subcommand === 'dashboard') {
     // Launch Kepler Pulse Next.js dashboard
@@ -86,6 +152,18 @@ async function main() {
     } else {
       process.stderr.write('\x1b[33m! No credentials to clear.\x1b[0m\n');
     }
+    return;
+  }
+
+  if (subcommand === 'workflow') {
+    const { handleWorkflowCommand } = await import('../commands/workflow.mjs');
+    await handleWorkflowCommand(parseKeplerSubcommandArgs('workflow', subcommandArgs));
+    return;
+  }
+
+  if (subcommand === 'agent') {
+    const { handleAgentCommand } = await import('../commands/agent.mjs');
+    await handleAgentCommand(parseKeplerSubcommandArgs('agent', subcommandArgs));
     return;
   }
 

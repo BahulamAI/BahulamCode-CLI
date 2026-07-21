@@ -82,6 +82,8 @@ function parseArgs(argv) {
             case 'config': args.command = 'config'; break;
             case 'configure': args.command = 'configure'; break;
             case 'sync': args.command = 'sync'; break;
+            case 'workflow': args.command = 'workflow'; break;
+            case 'agent': args.command = 'agent'; break;
             // Config flags
             case '--show': args.showConfig = true; break;
             case '--openrouter-key': case '-k': args.openRouterKey = argv[++i]; break;
@@ -93,15 +95,44 @@ function parseArgs(argv) {
             // --model removed: use tarang configure (web settings)
             // Extended flags
             case '--permission-mode': args.permissionMode = argv[++i]; break;
-            case '--print': case '-p': args.instruction = argv[++i]; break;
+            case '--print': case '-p': case '--instruction': case '--input': args.instruction = argv[++i]; break;
             case '--output-format': args.outputFormat = argv[++i]; break;
             case '--system-prompt': args.systemPrompt = argv[++i]; break;
             case '--add-dir': args.addDirs.push(argv[++i]); break;
             case '--max-turns': args.maxTurns = parseInt(argv[++i], 10); break;
             case '--allowedTools': args.allowedTools = argv[++i]?.split(',').map(s => s.trim()); break;
             case '--disallowedTools': args.disallowedTools = argv[++i]?.split(',').map(s => s.trim()); break;
+            // Workflow flags
+            case '--file': case '-f': args.workflowFile = argv[++i]; break;
+            case '--dir': args.workflowDir = argv[++i]; break;
+            case '--agent-dir': args.agentDir = argv[++i]; break;
+            case '--pattern': args.pattern = argv[++i]; break;
             default:
-                if (!arg.startsWith('-') && !args.command && !args.instruction) args.instruction = arg;
+                if (!arg.startsWith('-')) {
+                    if (args.command === 'workflow' && !args.workflowSubcommand) {
+                        // First positional after 'workflow' is the subcommand
+                        const subcommands = new Set(['create', 'create-multi', 'run', 'run-multi', 'list', 'get', 'delete', 'sync']);
+                        if (subcommands.has(arg)) {
+                            args.workflowSubcommand = arg;
+                        } else {
+                            // Second positional is the workflow name/slug
+                            args.workflowSlug = arg;
+                        }
+                    } else if (args.command === 'workflow' && args.workflowSubcommand && !args.workflowSlug) {
+                        args.workflowSlug = arg;
+                    } else if (args.command === 'agent' && !args.agentSubcommand) {
+                        const agentSubs = new Set(['list', 'get', 'sync']);
+                        if (agentSubs.has(arg)) {
+                            args.agentSubcommand = arg;
+                        } else {
+                            args.agentSlug = arg;
+                        }
+                    } else if (args.command === 'agent' && args.agentSubcommand && !args.agentSlug) {
+                        args.agentSlug = arg;
+                    } else if (!args.command && !args.instruction) {
+                        args.instruction = arg;
+                    }
+                }
                 break;
         }
         i++;
@@ -123,6 +154,15 @@ function printUsage() {
     process.stderr.write(`  ${C}kepler configure${R}             Open settings in browser\n`);
     process.stderr.write(`  ${C}kepler config --show${R}         Display local configuration\n`);
     process.stderr.write(`  ${C}kepler resume${R}                Resume a paused session\n`);
+    process.stderr.write(`  ${C}kepler workflow create --file <path>${R}  Create workflow from YAML\n`);
+    process.stderr.write(`  ${C}kepler workflow run <name>${R}           Run a workflow\n`);
+    process.stderr.write(`  ${C}kepler workflow list${R}                 List workflows\n`);
+    process.stderr.write(`  ${C}kepler workflow get <name>${R}           Show workflow details\n`);
+    process.stderr.write(`  ${C}kepler workflow delete <name>${R}        Delete a workflow\n`);
+    process.stderr.write(`  ${C}kepler workflow sync${R}                 Sync workflow YAML files\n`);
+    process.stderr.write(`  ${C}kepler agent list${R}                    List user-defined agents\n`);
+    process.stderr.write(`  ${C}kepler agent get <slug>${R}              Show agent details\n`);
+    process.stderr.write(`  ${C}kepler agent sync${R}                    Sync agent YAML files\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
@@ -253,6 +293,18 @@ async function main() {
         if (args.showConfig || !changed) {
             auth.printConfig();
         }
+        process.exit(0);
+    }
+
+    if (args.command === 'workflow') {
+        const { handleWorkflowCommand } = await import('./commands/workflow.mjs');
+        await handleWorkflowCommand(args);
+        process.exit(0);
+    }
+
+    if (args.command === 'agent') {
+        const { handleAgentCommand } = await import('./commands/agent.mjs');
+        await handleAgentCommand(args);
         process.exit(0);
     }
 
