@@ -62,6 +62,7 @@ import {
   writeClipboardImageToTemp,
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
+import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
@@ -1795,24 +1796,9 @@ let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | '
 // (12 files listed, 8 read, latest name) instead of a wall of individual
 // tool cards. Any non-explore event flushes it to a static line so the
 // summary survives when the transcript scrolls.
+// Mutable run state stays here for now — see repl-explore.mjs for the pure
+// classifier. Split TBD.
 let _exploreRun = { counts: {}, recent: [], lineActive: false };
-const EXPLORE_TOOL_CATEGORY = new Map([
-  ['read_file', 'read'], ['read', 'read'], ['read_files', 'read'],
-  ['read_batch', 'read'], ['get_file_info', 'read'],
-  ['list_files', 'list'], ['glob', 'list'], ['ls', 'list'],
-  ['search_code', 'search'], ['search_files', 'search'], ['grep', 'search'],
-  ['index_project', 'index'], ['register_project', 'index'],
-]);
-function exploreCollapseEnabled() {
-  return process.env.KEPLER_EXPLORE_COLLAPSE !== '0';
-}
-function isExploreTool(tool) {
-  if (!exploreCollapseEnabled()) return false;
-  return EXPLORE_TOOL_CATEGORY.has(String(tool || '').toLowerCase());
-}
-function exploreCategory(tool) {
-  return EXPLORE_TOOL_CATEGORY.get(String(tool || '').toLowerCase()) || 'explore';
-}
 
 function blockSeparatorMode() {
   return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();

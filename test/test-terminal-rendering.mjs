@@ -241,8 +241,11 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(replSource.includes('Thinking · ${kind}'));
   assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
   assert.ok(replSource.includes("renderBlockBoundary('content')"));
-  assert.ok(replSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
-  assert.ok(replSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  // Pure explore classifier lives in repl-explore.mjs after PRD-081 repl split.
+  const exploreSource = fs.readFileSync(new URL('../src/terminal/repl-explore.mjs', import.meta.url), 'utf-8');
+  assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
+  assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(replSource.includes("from './repl-explore.mjs'"));
   assert.ok(replSource.includes('function exploreSummary()'));
   assert.ok(replSource.includes('exploring · ${stats}${latest}'));
   assert.ok(replSource.includes('if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();'));
