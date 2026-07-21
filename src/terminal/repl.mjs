@@ -53,9 +53,28 @@ import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessi
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
+import {
+  appendVisionAnalysisToInstruction,
+  attachmentSummaryLine,
+  prepareImageAttachments,
+  publicAttachmentMetadata,
+  resolveAttachmentPath,
+  writeClipboardImageToTemp,
+} from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { createOrbit } from '../state/orbit.mjs';
-import { attachOrbit, unmount as unmountStatusBar } from '../ui/status-bar.mjs';
+import {
+  clearInputPrompt,
+  clearPinnedStatus,
+  drawPinnedStatus,
+  focusDockInput,
+  isInputDockMounted,
+  mountInputDock,
+  moveToContent,
+  prepareInputPrompt,
+  renderDockInput,
+  unmountInputDock,
+} from '../ui/input-dock.mjs';
 import { term } from '../ui/term.mjs';
 import {
   formatCardHead,
@@ -980,6 +999,8 @@ const COMMANDS = {
   '/diff':     'Git diff',
   '/cost':     'Show session cost',
   '/model':    'Show or set session model overrides',
+  '/attach':   'Attach image path or clipboard image to next prompt',
+  '/attachments':'List or clear pending image attachments',
   '/history':  'Show conversation',
   '/settings': 'Show policy/settings',
   '/last':     'Expand last tool output',
@@ -1032,6 +1053,10 @@ const HELP_GROUPS = [
       ['/status metrics', 'Progress bars and runtime metrics'],
       ['/status cost', 'Credits and message window'],
       ['/model [role] [model]', 'Show or set session model override'],
+      ['/attach <image>', 'Attach image to the next prompt'],
+      ['/attach clipboard', 'Attach image currently copied to macOS/Windows clipboard'],
+      ['/attachments', 'List pending image attachments'],
+      ['/attachments clear', 'Clear pending image attachments'],
       ['/status budget <amount|clear>', 'Set or clear session budget'],
     ],
   },
@@ -1230,7 +1255,7 @@ function renderHelp(topic = '') {
 function renderKeyboardHelp() {
   process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
   process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
-  process.stderr.write(`  ${c.gray('d')}       expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+  process.stderr.write(`  ${c.gray('Ctrl+D')}  expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
 }
 
 const MODEL_ROLE_ALIASES = new Map([
@@ -1367,6 +1392,82 @@ function handleModelCommand(rest = '') {
   if (role === 'reasoning') session.model = model;
   process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
   process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
+}
+
+function stripPathQuotes(value) {
+  const text = String(value || '').trim();
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function pendingVisionPaths(ctx) {
+  if (!Array.isArray(ctx.pendingVisionPaths)) ctx.pendingVisionPaths = [];
+  return ctx.pendingVisionPaths;
+}
+
+function printPendingAttachments(ctx) {
+  const pending = pendingVisionPaths(ctx);
+  if (!pending.length) {
+    process.stderr.write(`  ${c.gray('No pending image attachments.')}\n`);
+    return;
+  }
+  process.stderr.write(`\n  ${c.bold('Pending Attachments')}\n`);
+  for (const filePath of pending) {
+    process.stderr.write(`  ${c.brand('◇')} ${filePath}\n`);
+  }
+  process.stderr.write(`  ${c.dim('They will be sent for vision analysis with your next prompt.')}\n`);
+}
+
+function handleAttachCommand(rest = '', ctx) {
+  const pending = pendingVisionPaths(ctx);
+  const value = stripPathQuotes(rest);
+  if (!value) {
+    process.stderr.write(`  ${c.yellow('Usage:')} /attach <image-path> ${c.dim('or')} /attach clipboard\n`);
+    return;
+  }
+  if (value === 'clear') {
+    pending.length = 0;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared pending image attachments.')}\n`);
+    return;
+  }
+  if (['clipboard', '--clipboard', 'paste', '--paste'].includes(value.toLowerCase())) {
+    try {
+      const filePath = writeClipboardImageToTemp();
+      pending.push(filePath);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('attached clipboard image for next prompt:')} ${c.brand(path.basename(filePath))}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message || String(err))}\n`);
+    }
+    return;
+  }
+  const resolved = resolveAttachmentPath(value, safeCwd());
+  pending.push(resolved);
+  process.stderr.write(`  ${c.green('✓')} ${c.dim('attached for next prompt:')} ${c.brand(path.basename(resolved))}\n`);
+}
+
+function handleAttachmentsCommand(rest = '', ctx) {
+  const action = String(rest || '').trim().toLowerCase();
+  if (action === 'clear') {
+    pendingVisionPaths(ctx).length = 0;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared pending image attachments.')}\n`);
+    return;
+  }
+  printPendingAttachments(ctx);
+}
+
+async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
+  if (skip || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
+    return true;
+  }
+  if (!ctx?._rl || !process.stdin.isTTY) return false;
+  const names = attachments.map(a => a.name).join(', ');
+  return await new Promise(resolve => {
+    ctx._rl.question(`  ${c.yellow('Upload image for Kepler vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
+      resolve(/^y(?:es)?$/i.test(String(answer || '').trim()));
+    });
+  });
 }
 
 function parseSimpleFlags(parts) {
@@ -1689,7 +1790,29 @@ function updateStatusBar() {
 // content lands below it.
 let _pendingHead = null; // { callId, head, indent }
 let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
-let _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+// Explore-run collapse: reduces bursts of list/read/search/index tool calls
+// into one in-place summary line so the user sees the agent's PROGRESS
+// (12 files listed, 8 read, latest name) instead of a wall of individual
+// tool cards. Any non-explore event flushes it to a static line so the
+// summary survives when the transcript scrolls.
+let _exploreRun = { counts: {}, recent: [], lineActive: false };
+const EXPLORE_TOOL_CATEGORY = new Map([
+  ['read_file', 'read'], ['read', 'read'], ['read_files', 'read'],
+  ['read_batch', 'read'], ['get_file_info', 'read'],
+  ['list_files', 'list'], ['glob', 'list'], ['ls', 'list'],
+  ['search_code', 'search'], ['search_files', 'search'], ['grep', 'search'],
+  ['index_project', 'index'], ['register_project', 'index'],
+]);
+function exploreCollapseEnabled() {
+  return process.env.KEPLER_EXPLORE_COLLAPSE !== '0';
+}
+function isExploreTool(tool) {
+  if (!exploreCollapseEnabled()) return false;
+  return EXPLORE_TOOL_CATEGORY.has(String(tool || '').toLowerCase());
+}
+function exploreCategory(tool) {
+  return EXPLORE_TOOL_CATEGORY.get(String(tool || '').toLowerCase()) || 'explore';
+}
 
 function blockSeparatorMode() {
   return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
@@ -1723,10 +1846,6 @@ function clearPendingHead() {
   flushPendingHead();
 }
 
-function isCompactReadTool(tool) {
-  return ['read_file', 'read', 'get_file_info'].includes(String(tool || '').toLowerCase());
-}
-
 function isInlineOutcomeTool(tool) {
   return [
     'read_file', 'read_files', 'read_batch', 'get_file_info',
@@ -1742,68 +1861,90 @@ function compactHeadForOutcome(head, outcome, cols) {
 
 function readToolLabel(tool, data = {}) {
   const args = data.args || {};
-  const filePath = args.file_path || args.path || data.file_path || data.path || '';
+  const filePath = args.file_path || args.path || data.file_path || data.path
+    || args.pattern || args.query || '';
   if (filePath) return shortPath(String(filePath));
   const output = String(data.output_preview || data.output || '').split('\n').find(Boolean) || '';
   const match = output.match(/^([^:\s][^:\n]*):/);
   return match ? shortPath(match[1]) : String(tool || 'file');
 }
 
-function rememberCompactRead(label) {
-  const file = String(label || '').trim();
-  if (!file) return;
-  _compactReadRun.recent.push(file);
-  if (_compactReadRun.recent.length > 3) _compactReadRun.recent.shift();
+function rememberExplore(label) {
+  const value = String(label || '').trim();
+  if (!value) return;
+  _exploreRun.recent.push(value);
+  if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();
 }
 
-function compactReadSummary() {
-  const latest = _compactReadRun.recent.length
-    ? ` · latest: ${_compactReadRun.recent.join(', ')}`
-    : '';
-  return `Reading files · ${_compactReadRun.count} read${latest}`;
+function exploreSummary() {
+  const { counts, recent } = _exploreRun;
+  const bits = [];
+  if (counts.list)   bits.push(`${counts.list} listed`);
+  if (counts.read)   bits.push(`${counts.read} read`);
+  if (counts.search) bits.push(`${counts.search} searched`);
+  if (counts.index)  bits.push(`${counts.index} indexed`);
+  const stats = bits.length ? bits.join(' · ') : 'starting…';
+  const latest = recent.length ? ` · ${recent[recent.length - 1]}` : '';
+  return `exploring · ${stats}${latest}`;
 }
 
-function compactReadSummaryLine() {
-  const cols = process.stderr.columns || 120;
-  return `  ${paint.text.dim(fitAnsiLine(compactReadSummary(), Math.max(32, cols - 2)))}`;
-}
+function renderExploreRun() {
+  // Set the lock BEFORE touching the spinner so the interval's next tick
+  // picks up exploreSummary() text instead of any stale label.
+  _exploreRun.lineActive = true;
 
-function renderCompactReadRun() {
-  const line = compactReadSummaryLine();
-  inPlace(line);
-  _compactReadRun.lineActive = true;
+  // Paint the pinned line immediately so the user sees the update from
+  // the very first tool call, not after the 80 ms interval delay.
+  if (isInputDockMounted()) {
+    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+    drawPinnedStatus(`  ${c.brand(frame)} ${c.dim(exploreSummary())}`);
+  }
+
+  if (!_spinInterval) {
+    // Bypass the lockout in startSpinner by seeding _spinText directly.
+    _spinText = exploreSummary();
+    _spinFrame = 0;
+    _spinInterval = setInterval(() => {
+      const isExploreActive = _exploreRun && _exploreRun.lineActive;
+      const label = isExploreActive ? exploreSummary() : _spinText;
+      if (!label) return;
+      const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
+      _spinFrame++;
+      const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
+      if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
+        return;
+      }
+      if (isInputDockMounted()) moveToContent();
+      inPlace(rendered);
+    }, 80);
+  }
   _lastRenderedBlock = 'tool';
 }
 
-function maybeCollapseReadTool(tool, data, callId) {
-  if (!isCompactReadTool(tool)) {
-    flushCompactReadRun();
-    return false;
-  }
-
-  _compactReadRun.count++;
-  rememberCompactRead(readToolLabel(tool, data));
-  const threshold = Number.parseInt(process.env.KEPLER_READ_TOOL_DETAIL_LIMIT || '8', 10);
-  const limit = Number.isFinite(threshold) && threshold >= 0 ? threshold : 8;
-  if (_compactReadRun.count <= limit) return false;
-
-  _compactReadRun.hidden++;
-  if (_pendingHead && (!callId || _pendingHead.callId === callId)) {
-    _pendingHead = null;
-  }
-
-  renderCompactReadRun();
-  return true;
-}
-
-function flushCompactReadRun() {
-  if (_compactReadRun.hidden > 0) {
-    if (_compactReadRun.lineActive) inPlace('');
-    process.stderr.write(`${compactReadSummaryLine()}\n`);
+function flushExploreRun() {
+  const total = Object.values(_exploreRun.counts).reduce((a, b) => a + b, 0);
+  // Release the lock first so the real spinner teardown can run.
+  const wasActive = _exploreRun.lineActive;
+  _exploreRun.lineActive = false;
+  if (total > 0) {
+    if (wasActive) {
+      if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
+      _spinText = '';
+      // Clear the pinned status row instead of using inPlace (which is
+      // unreliable near the bottom of the scroll region).
+      if (isInputDockMounted()) clearPinnedStatus();
+    }
+    const cols = process.stderr.columns || 120;
+    const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
+    process.stderr.write(`${line}\n`);
     _lastRenderedBlock = 'tool';
   }
-  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+  _exploreRun = { counts: {}, recent: [], lineActive: false };
 }
+
+// Legacy alias — several sites (resetContentStream, older event handlers)
+// call this. Keep pointing at the new flush so nothing has to change.
+const flushCompactReadRun = flushExploreRun;
 
 function renderToolCall(data) {
   const tool = data?.tool || 'unknown';
@@ -1814,7 +1955,23 @@ function renderToolCall(data) {
   // If a previous head is still pending (no result yet), flush it as a
   // regular two-line shape before starting the next one.
   flushPendingHead();
-  if (!isCompactReadTool(tool)) flushCompactReadRun();
+
+  // ── Explore-run collapse ────────────────────────────────────────────────
+  // For list/read/search/index tools, skip the per-call head entirely and
+  // update a single animated summary spinner. The transcript stays clean;
+  // the user still sees live progress (12 read · 3 listed · latest: foo.py).
+  if (isExploreTool(tool)) {
+    _exploreRun.counts[exploreCategory(tool)] =
+      (_exploreRun.counts[exploreCategory(tool)] || 0) + 1;
+    session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
+    const label = readToolLabel(tool, { args });
+    if (label) rememberExplore(label);
+    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    renderExploreRun();
+    return;
+  }
+
+  flushExploreRun();
   renderBlockBoundary('tool', { compactSame: tool !== 'shell' });
 
   const head = formatCardHead(tool, args, {
@@ -1879,7 +2036,13 @@ function renderToolResult(data, eventType = 'tool_result') {
     columns: process.stderr.columns || 120,
   });
 
-  if (data.success !== false && maybeCollapseReadTool(tool, data, callId)) {
+  // Explore tools: the call already updated the summary spinner. Refresh
+  // the "latest" hint with the result's file if we have one, and skip the
+  // per-result render entirely.
+  if (isExploreTool(tool)) {
+    const label = readToolLabel(tool, data);
+    if (label) rememberExplore(label);
+    renderExploreRun();
     return;
   }
 
@@ -2020,10 +2183,24 @@ function startSpinner(text) {
   _spinFrame = 0;
   if (_spinInterval) return; // already running
   _spinInterval = setInterval(() => {
-    if (!_spinText) return;
+    // While an explore run is active, its live counts own the spinner
+    // line — re-fetch on every tick so the text stays current no matter
+    // which handler happened to call startSpinner/updateSpinner last.
+    const isExploreActive = _exploreRun && _exploreRun.lineActive;
+    const label = isExploreActive ? exploreSummary() : _spinText;
+    if (!label) return;
     const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
     _spinFrame++;
-    inPlace(`  ${c.brand(frame)} ${c.dim(_spinText)}`);
+    const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
+    // Explore uses ABSOLUTE cursor positioning to a pinned row inside the
+    // content region. inPlace()'s _lastLineCount-based approach stacks copies
+    // of the line into scrollback whenever a '\n' at the region's bottom row
+    // triggers a scroll — absolute positioning + clear-line is immune.
+    if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
+      return;
+    }
+    if (isInputDockMounted()) moveToContent();
+    inPlace(rendered);
   }, 80);
 }
 
@@ -2032,8 +2209,13 @@ function updateSpinner(text) {
 }
 
 function stopSpinner() {
+  // Explore owns the line while active — a stray stopSpinner from a
+  // transient handler must not blank the progress feedback.
+  // flushExploreRun() releases the lock and does the real teardown.
+  if (_exploreRun && _exploreRun.lineActive) return;
   if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
   _spinText = '';
+  if (isInputDockMounted()) moveToContent();
   inPlace('');
 }
 
@@ -2043,12 +2225,13 @@ let _streamBuffer = '';
 let _streamedPartialText = '';
 let _streamTimer = null;
 let _renderedContentThisTurn = false;
+let _afterContentFlush = null;
 
 function startContentStream() {
   _streamBuffer = '';
   _streamedPartialText = '';
   _renderedToolResults.clear();
-  _compactReadRun = { count: 0, hidden: 0, recent: [], lineActive: false };
+  _exploreRun = { counts: {}, recent: [], lineActive: false };
   _renderedContentThisTurn = false;
   _lastRenderedBlock = null;
   stopSpinner();
@@ -2071,6 +2254,7 @@ function flushContent() {
   if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
   if (!_streamBuffer) return;
 
+  if (isInputDockMounted()) moveToContent();
   stopSpinner();
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
@@ -2084,6 +2268,7 @@ function flushContent() {
   _streamBuffer = '';
   _renderedContentThisTurn = true;
   _lastRenderedBlock = 'content';
+  if (typeof _afterContentFlush === 'function') _afterContentFlush();
 }
 
 function renderStagnation(data = {}) {
@@ -2113,10 +2298,35 @@ function renderStagnation(data = {}) {
 function renderEvent(event) {
   const { type, data } = event;
 
-  // Push every event into the orbit state machine before rendering so the
-  // bottom status bar reflects what is happening this very moment. The orbit
-  // module is a no-op when status-bar is not mounted (non-TTY, --headless).
+  // Push every event into the orbit state machine before rendering so phase
+  // and cost state stay current for prompt/context surfaces.
   if (_orbit) _orbit.onEvent(event);
+
+  // If we've been collapsing explore tools into a summary spinner, an
+  // incoming event that will actually WRITE to the screen ends the run
+  // and freezes the spinner into a static one-line summary. Transient
+  // metadata events (thinking, spinner-only status, sub_agent_tool,
+  // worker/phase updates, session_info) don't write and must NOT flush —
+  // otherwise every sub-agent tool call fires a `sub_agent_tool` event
+  // right before its `tool_call`, splitting each burst into a fresh line.
+  if (_exploreRun.lineActive) {
+    const isExploreEvent =
+      (type === 'tool_call' || type === 'tool_request' ||
+       type === 'tool_result' || type === 'tool_done') &&
+      isExploreTool(data?.tool);
+    const isTransientEvent =
+      type === 'thinking' ||        // may or may not render text
+      type === 'status' ||           // usually just updates the spinner
+      type === 'sub_agent_tool' ||   // metadata for the tool_call to follow
+      type === 'worker_update' ||
+      type === 'phase_update' ||
+      type === 'phase_summary' ||
+      type === 'phase_start' ||
+      type === 'worker_start' ||
+      type === 'worker_done' ||
+      type === 'session_info';
+    if (!isExploreEvent && !isTransientEvent) flushExploreRun();
+  }
 
   switch (type) {
     case 'status': {
@@ -2187,8 +2397,12 @@ function renderEvent(event) {
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
       const attempt = data?.attempt ? `attempt ${data.attempt}` : 'reconnecting';
+      const delayMs = Number(data?.delay_ms || 0);
+      const wait = delayMs > 0
+        ? ` · retrying in ${delayMs < 1000 ? `${delayMs}ms` : `${(delayMs / 1000).toFixed(delayMs < 10_000 ? 1 : 0)}s`}`
+        : '';
       const after = data?.after != null ? ` from event ${data.after}` : '';
-      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${after}`)}\n`);
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${wait}${after}`)}\n`);
       _lastRenderedBlock = 'status';
       break;
     }
@@ -2397,7 +2611,13 @@ function renderEvent(event) {
       // sub-agent stack depth. Just update the spinner text here.
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
-      if (tool) updateSpinner(`${agentType} → ${tool}`);
+      if (!tool) break;
+      // Don't clobber an active explore-run spinner. "exploring · 5 read ·
+      // 2 searched" is more informative than "explore → search_code", and
+      // sub_agent_tool fires on every step of a sub-agent — otherwise the
+      // spinner would flip-flop between the two texts and read as blank.
+      if (_exploreRun.lineActive && isExploreTool(tool)) break;
+      updateSpinner(`${agentType} → ${tool}`);
       break;
     }
 
@@ -2626,9 +2846,7 @@ function renderEvent(event) {
             ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
             : null,
           blockers: !successOverall ? (data?.blockers || extractBlockers(data)) : null,
-          nextActions: successOverall
-            ? ['/commit', '/pr', '/undo', '/report']
-            : ['/why', '/undo', '/re-plan'],
+          nextActions: [],
           cwd: safeCwd(),
         });
         renderBlockBoundary('status', { compactSame: true });
@@ -2880,6 +3098,14 @@ async function handleCommand(input, ctx) {
 
     case '/tasks':
       handleTasksCommand(rest, ctx);
+      return;
+
+    case '/attach':
+      handleAttachCommand(rest, ctx);
+      return;
+
+    case '/attachments':
+      handleAttachmentsCommand(rest, ctx);
       return;
 
     case '/history': {
@@ -3276,7 +3502,7 @@ async function handleCommand(input, ctx) {
         subAgents: { ...session.subAgentCounts, savedUsd: session.isByok ? 0 : session.savedUsd },
         costUsd: session.isByok ? null : session.totalCost,
         durationS: (Date.now() - session.startTime) / 1000,
-        nextActions: ['/commit', '/pr', '/undo'],
+        nextActions: [],
         cwd: safeCwd(),
       };
       const out = saveReport(state, { cwd: safeCwd() });
@@ -3681,7 +3907,7 @@ export async function startTerminalRepl() {
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope };
+  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
 
   async function startNewSession({ announce = true } = {}) {
     stopSpinner();
@@ -3777,6 +4003,7 @@ export async function startTerminalRepl() {
       effectivePolicy,
       latestProjectContext,
       latestEnvelope,
+      pendingVisionPaths: ctx.pendingVisionPaths || [],
     });
 
     if (announce) process.stderr.write(`  ${c.green('✓')} ${c.dim('New session started.')}\n`);
@@ -3972,6 +4199,7 @@ export async function startTerminalRepl() {
       effectivePolicy,
       latestProjectContext,
       latestEnvelope,
+      pendingVisionPaths: ctx.pendingVisionPaths || [],
     });
 
     return {
@@ -4045,20 +4273,65 @@ export async function startTerminalRepl() {
 
   process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
 
-  // Mission Control status bar is OPT-IN as of v2.0.1.
-  // Set KEPLER_STATUS_BAR=1 (or KEPLER_MISSION=1) to enable the persistent
-  // bottom-anchored ORBIT bar. Default off because the DECSTBM scroll
-  // region was eating the prompt visibility on some terminals (issue
-  // observed during v2.0.0 testing). The orbit state machine and tool
-  // cards still work without the bar — the bar is just the rendering.
-  const statusBarEnabled = (
-    process.env.KEPLER_STATUS_BAR === '1' || process.env.KEPLER_MISSION === '1'
-  ) && term().isTTY && !term().plain;
-  if (statusBarEnabled) {
-    _orbit = createOrbit();
-    attachOrbit(_orbit);
-    process.on('beforeExit', unmountStatusBar);
-    process.on('exit',       unmountStatusBar);
+  // Keep one bottom-reserved UI surface: the fixed input dock. The older
+  // status bar used the same terminal scroll-region primitive, so mounting
+  // both would make prompt placement unpredictable.
+  _orbit = createOrbit();
+  const inputDockActive = mountInputDock();
+  if (inputDockActive) {
+    process.on('beforeExit', unmountInputDock);
+    process.on('exit',       unmountInputDock);
+  }
+
+  // ── Bracketed paste (DEC private mode 2004) ──────────────────────────────
+  // Ask the terminal to wrap pasted content in ESC[200~ … ESC[201~ markers so
+  // we can merge a multi-line paste into a single input regardless of how
+  // slowly the bytes arrive. Falls back to the legacy 35 ms debounce for
+  // terminals that ignore the request.
+  const PASTE_BEGIN = '\x1b[200~';
+  const PASTE_END   = '\x1b[201~';
+  let _inBracketedPaste = false;
+  let _bracketedPasteBuffer = '';
+  const _pasteEndListeners = new Set();
+  function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
+  function isInBracketedPaste() { return _inBracketedPaste; }
+
+  if (process.stdin.isTTY) {
+    try { process.stderr.write('\x1b[?2004h'); } catch {}
+    const disableBracketedPaste = () => { try { process.stderr.write('\x1b[?2004l'); } catch {} };
+    process.on('exit', disableBracketedPaste);
+    process.once('SIGINT', disableBracketedPaste);
+    process.once('SIGTERM', disableBracketedPaste);
+
+    // Prepend so we see raw bytes before readline consumes them.
+    process.stdin.prependListener('data', (chunk) => {
+      const s = chunk.toString('utf8');
+      let i = 0;
+      while (i < s.length) {
+        if (!_inBracketedPaste) {
+          const start = s.indexOf(PASTE_BEGIN, i);
+          if (start === -1) return;
+          _inBracketedPaste = true;
+          _bracketedPasteBuffer = '';
+          i = start + PASTE_BEGIN.length;
+        } else {
+          const end = s.indexOf(PASTE_END, i);
+          if (end === -1) {
+            _bracketedPasteBuffer += s.slice(i);
+            return;
+          }
+          _bracketedPasteBuffer += s.slice(i, end);
+          _inBracketedPaste = false;
+          const payload = _bracketedPasteBuffer;
+          _bracketedPasteBuffer = '';
+          // Notify subscribers on next tick so readline finishes emitting its
+          // synchronous `line` events for the buffered content first.
+          const cbs = [..._pasteEndListeners];
+          setImmediate(() => { for (const cb of cbs) { try { cb(payload); } catch {} } });
+          i = end + PASTE_END.length;
+        }
+      }
+    });
   }
 
   // The prompt label is the USER speaking, not the agent. Use the signed-in
@@ -4069,16 +4342,28 @@ export async function startTerminalRepl() {
   // and can make the first prompt line appear duplicated.
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
-    return `${c.brand(who)} ${c.dim('›')} `;
+    if (term().plain) return `${who} > `;
+    // Brand magenta handle + chevron. No inverse chip, no bold — the color
+    // alone marks this row as user input.
+    return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;
   }
 
-  function printInputSeparator() {
+  function printInputBottomRule() {
+    if (isInputDockMounted()) {
+      clearInputPrompt();
+      moveToContent();
+      return;
+    }
     if (term().plain) return;
-    const w = process.stdout.columns || 80;
-    const label = ` ${c.brand('input')} `;
-    const labelPlain = stripAnsi(label);
-    const lineLen = Math.max(0, w - labelPlain.length - 4);
-    process.stderr.write(`${c.dim('╭─')}${label}${c.dim('─'.repeat(lineLen))}\n`);
+    process.stderr.write('\n');
+  }
+
+  function idleInputTips() {
+    return '[Enter] send  [/] commands  [Tab] complete  [Ctrl+D] details';
+  }
+
+  function executionInputTips() {
+    return 'type any extra context (paths, corrections, follow-ups) · [Enter] send · [Esc] cancel · [Ctrl+P] pause';
   }
 
   const rl = readline.createInterface({
@@ -4105,6 +4390,7 @@ export async function startTerminalRepl() {
   let slashHintLine = '';
 
   function promptBottomPaddingLines() {
+    if (isInputDockMounted()) return 0;
     if (!process.stderr.isTTY || term().plain) return 0;
     const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
@@ -4233,11 +4519,32 @@ export async function startTerminalRepl() {
     rl.prompt();
   }
 
+  function printSubmittedInput(input) {
+    if (!isInputDockMounted()) {
+      printInputBottomRule();
+      return;
+    }
+    const prompt = userPrompt();
+    const lines = String(input || '').split('\n');
+    printInputBottomRule();
+    process.stderr.write(`${prompt}${lines[0] || ''}\n`);
+    if (lines.length > 1) {
+      const indent = ' '.repeat(stripAnsi(prompt).length);
+      for (const line of lines.slice(1)) {
+        process.stderr.write(`${indent}${line}\n`);
+      }
+    }
+  }
+
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
+    if (isInputDockMounted()) {
+      prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() });
+      promptInputLine();
+      return;
+    }
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
-    printInputSeparator();
     promptInputLine();
   }
 
@@ -4261,41 +4568,71 @@ export async function startTerminalRepl() {
     });
   }
 
-  // Guard against concurrent line handlers.
+  // Guard against concurrent line handlers and multiline paste bursts.
   //
-  // rl.on('line', async ...) does NOT wait for the previous async handler to
-  // complete before firing again. So a stray '\n' (from readline processing
-  // '\r\n' as two events after an interactive picker resumes it, or from a
-  // paste) can spawn a second handleCommand run while the first is still
-  // awaiting inside /resume, /login, etc. Symptom: the picker or overlay
-  // appears to render twice.
-  //
-  // Rules:
-  //   - Only one command runs at a time.
-  //   - Empty lines that arrive while a command is in flight are dropped
-  //     (they are almost always stray '\n's from raw-mode key handling).
-  //   - Non-empty lines are queued and replayed after the current command
-  //     finishes, so the user can queue up work while a long-running command
-  //     is still executing.
+  // Node readline emits one `line` event per pasted newline. Two mechanisms
+  // coalesce those into a single input:
+  //   1. If the terminal supports bracketed paste, we hold flushing until we
+  //      see the ESC[201~ end marker — reliable regardless of paste latency.
+  //   2. Otherwise we fall back to a short timer that merges bursts arriving
+  //      within KEPLER_PASTE_FLUSH_MS.
   let _lineInFlight = false;
   const _queuedLines = [];
-  rl.on('line', async (line) => {
+  let _pasteLines = [];
+  let _pasteFlushTimer = null;
+
+  function pasteFlushDelayMs() {
+    const raw = Number.parseInt(process.env.KEPLER_PASTE_FLUSH_MS || '35', 10);
+    return Number.isFinite(raw) && raw >= 0 ? Math.min(250, raw) : 35;
+  }
+
+  function queueOrRunLine(line) {
     if (_lineInFlight) {
       if (line && line.trim()) _queuedLines.push(line);
       return;
     }
     _lineInFlight = true;
-    try {
-      await _handleLine(line);
-    } finally {
-      _lineInFlight = false;
-      if (_queuedLines.length) {
-        const next = _queuedLines.shift();
-        // Fire the next queued line asynchronously so we don't hold this
-        // finally block open while the next command runs.
-        setImmediate(() => rl.emit('line', next));
-      }
+    Promise.resolve()
+      .then(() => _handleLine(line))
+      .finally(() => {
+        _lineInFlight = false;
+        if (_queuedLines.length) {
+          const next = _queuedLines.shift();
+          setImmediate(() => queueOrRunLine(next));
+        }
+      });
+  }
+
+  function flushPastedLines() {
+    if (_pasteFlushTimer) {
+      clearTimeout(_pasteFlushTimer);
+      _pasteFlushTimer = null;
     }
+    if (!_pasteLines.length) return;
+    const line = _pasteLines.join('\n');
+    _pasteLines = [];
+    queueOrRunLine(line);
+  }
+
+  // If we're mid-paste when readline fires `line`, cancel the debounce timer;
+  // the paste-end listener below will flush once the terminal closes the
+  // bracket. If we're NOT in a paste (either the terminal doesn't support it,
+  // or the user pressed Enter normally), the debounce falls back to old
+  // behavior — a single Enter flushes almost instantly.
+  rl.on('line', async (line) => {
+    _pasteLines.push(line);
+    if (_pasteFlushTimer) clearTimeout(_pasteFlushTimer);
+    if (isInBracketedPaste()) {
+      _pasteFlushTimer = null;
+    } else {
+      _pasteFlushTimer = setTimeout(flushPastedLines, pasteFlushDelayMs());
+    }
+  });
+
+  onBracketedPasteEnd(() => {
+    // Readline has finished emitting synchronous line events for the pasted
+    // content by the time this fires (setImmediate in the pre-listener).
+    flushPastedLines();
   });
 
   async function _handleLine(line) {
@@ -4304,7 +4641,23 @@ export async function startTerminalRepl() {
     inputActive = false;
     clearSlashHint();
     if (selectedSlashCommand) input = selectedSlashCommand;
-    if (!input) { promptInputLine(); return; }
+    if (!input) {
+      // Empty Enter leaves readline's phantom prompt line ("ravia.sapbpc ›")
+      // committed above the cursor. Wipe it so repeated blank Enters don't
+      // stack into a ladder of empty prompts in the transcript.
+      if (process.stderr.isTTY && !term().plain) {
+        // The paste debounce may have batched N Enters into one flush. The
+        // joined `line` string has one '\n' per additional Enter, so
+        // split('\n').length gives the phantom count.
+        const phantoms = Math.max(1, String(line).split('\n').length);
+        for (let i = 0; i < phantoms; i++) {
+          process.stderr.write('\x1b[A\x1b[2K\r');
+        }
+      }
+      showPrompt();
+      return;
+    }
+    printSubmittedInput(input);
 
     // Save to input history
     session.inputHistory.push(input);
@@ -4324,40 +4677,7 @@ export async function startTerminalRepl() {
       return;
     }
 
-    // Regular prompt
-    const userMessage = { role: 'user', content: input };
-    session.history.push(userMessage);
-    session.agentHistory.push(userMessage);
-    session.turns++;
-    session.toolCalls = 0;
-    session.subAgentToolCalls = 0;
-    session.lastTask = input;
-    // Reset per-turn counts so the mission report reflects this turn only.
-    session.toolCounts = {};
-    session.subAgentCounts = {};
-    session.filesRead = [];
-    session.savedUsd = 0;
-    session._lastEmittedThinking = '';
-    session.creditsLowWarned = false;
-    session.msgsLowWarned = false;
-
-    // Tell the orbit a new turn started — switches to DISCOVERY and updates
-    // task / turn counters in the status bar.
-    if (_orbit) _orbit.onUserInput(input);
-
-    // Start session tracking on first turn
-    if (session.turns === 1) {
-      sessionMgr.start(input);
-    }
-    let userTurnWritten = false;
-    const writeCurrentUserTurn = () => {
-      if (userTurnWritten) return;
-      jsonlWriter.writeUserTurn(input);
-      jsonlWriter.writeHistory(input);
-      userTurnWritten = true;
-    };
-    if (session.id) writeCurrentUserTurn();
-
+    const originalInput = input;
     const creds = auth.loadCredentials();
     if (!creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
@@ -4365,10 +4685,8 @@ export async function startTerminalRepl() {
       return;
     }
 
-    // Kepler response label
-    process.stderr.write(`\n${c.bold(c.brand('kepler'))}\n`);
-
-    // Create or reuse stream client — sessionId persists across turns
+    // Create or reuse stream client — sessionId persists across turns.
+    // The same client also owns the authenticated vision-analysis preflight.
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
       streamClient = new TarangStreamClient({
         baseUrl: creds.backendUrl,
@@ -4382,6 +4700,93 @@ export async function startTerminalRepl() {
       client.sessionId = session.id;
     }
 
+    try {
+      const pending = pendingVisionPaths(ctx);
+      const prepared = prepareImageAttachments(originalInput, {
+        cwd: safeCwd(),
+        extraPaths: pending,
+      });
+      if (prepared.attachments.length) {
+        process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
+        jsonlWriter.writeKeplerEvent({
+          type: 'attachments',
+          data: { attachments: prepared.attachments.map(publicAttachmentMetadata) },
+        });
+        const approved = await confirmVisionUpload(ctx, prepared.attachments, { skip: skipPerms });
+        pending.length = 0;
+        if (!approved) {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim('Vision upload skipped; continuing without image analysis.')}\n`);
+          input = prepared.instruction || originalInput;
+        } else {
+          process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Analyzing image...')}\r`);
+          const analysis = await client.analyzeVision({
+            instruction: prepared.instruction,
+            attachments: prepared.attachments,
+          });
+          process.stderr.write(`\r${' '.repeat(80)}\r`);
+          process.stderr.write(`  ${c.green('✓')} ${c.dim(`Vision analysis completed for ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}`)}${analysis.model ? c.dim(` · ${analysis.model}`) : ''}\n`);
+          jsonlWriter.writeKeplerEvent({
+            type: 'vision_analysis',
+            data: {
+              model: analysis.model || '',
+              summary_chars: String(analysis.summary || '').length,
+              attachments: analysis.attachments || prepared.metadata,
+            },
+          });
+          input = appendVisionAnalysisToInstruction(prepared.instruction, analysis);
+        }
+      } else {
+        input = prepared.instruction || originalInput;
+      }
+    } catch (err) {
+      process.stderr.write(`  ${c.red('Vision error: ' + (err.message || String(err)))}\n`);
+      showPrompt();
+      return;
+    }
+
+    // Regular prompt
+    const userMessage = { role: 'user', content: input };
+    session.history.push(userMessage);
+    session.agentHistory.push(userMessage);
+    session.turns++;
+    session.toolCalls = 0;
+    session.subAgentToolCalls = 0;
+    session.lastTask = originalInput;
+    // Reset per-turn counts so the mission report reflects this turn only.
+    session.toolCounts = {};
+    session.subAgentCounts = {};
+    session.filesRead = [];
+    session.savedUsd = 0;
+    session._lastEmittedThinking = '';
+    session.creditsLowWarned = false;
+    session.msgsLowWarned = false;
+
+    // Tell the orbit a new turn started — switches to DISCOVERY and updates
+    // task / turn counters in the status bar.
+    if (_orbit) _orbit.onUserInput(originalInput);
+
+    // Start session tracking on first turn
+    if (session.turns === 1) {
+      sessionMgr.start(originalInput);
+    }
+    let userTurnWritten = false;
+    const writeCurrentUserTurn = () => {
+      if (userTurnWritten) return;
+      jsonlWriter.writeUserTurn(input);
+      jsonlWriter.writeHistory(input);
+      userTurnWritten = true;
+    };
+    if (session.id) writeCurrentUserTurn();
+
+    // Kepler response label — full brand magenta, matches the user prompt.
+    process.stderr.write(`\n${paint.brand.primary('kepler')}\n`);
+
+    // Immediate feedback so the screen isn't blank between submit and the
+    // first backend event. The first `status`, `thinking`, or `content_*`
+    // event will replace this text; stopSpinner clears it before content
+    // renders.
+    startSpinner('thinking…');
+
     let assistantContent = '';
     const agentTurnHistory = new AgentHistoryTurnBuilder();
 
@@ -4390,8 +4795,96 @@ export async function startTerminalRepl() {
     let keypressCleanup = null;
     let execListenerActive = false;
     let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
-    let lastPrintableInputAt = 0;
-    let textInputWarningShown = false;
+    let executionInputBuffer = '';
+    let executionInputVisible = false;
+
+    function executionInputPrefix() {
+      // Inviting prompt: brand '+' + hint that this accepts any extra
+      // context (paths, corrections, more instructions). Visible even when
+      // the buffer is empty so users know they can type mid-run.
+      return `${paint.brand.data('+')} ${paint.dim('add instruction')} ${paint.dim('›')} `;
+    }
+
+    function redrawExecutionInput() {
+      if (isInputDockMounted()) {
+        renderDockInput(executionInputPrefix(), executionInputBuffer, {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        executionInputVisible = true;
+        return;
+      }
+      if (!executionInputVisible) {
+        stopSpinner();
+        process.stderr.write(`\n${executionInputPrefix()}`);
+        executionInputVisible = true;
+      }
+      readline.clearLine(process.stderr, 0);
+      readline.cursorTo(process.stderr, 0);
+      process.stderr.write(`${executionInputPrefix()}${executionInputBuffer}`);
+    }
+
+    function focusExecutionInput() {
+      if (!isInputDockMounted()) return;
+      focusDockInput(executionInputPrefix(), executionInputBuffer);
+    }
+    _afterContentFlush = focusExecutionInput;
+
+    async function submitExecutionInstruction() {
+      const instruction = executionInputBuffer.trim();
+      executionInputBuffer = '';
+      if (!instruction) {
+        if (isInputDockMounted()) {
+          clearInputPrompt();
+          renderDockInput(executionInputPrefix(), '', {
+            context: buildContextStrip(),
+            tips: executionInputTips(),
+          });
+          moveToContent();
+        } else if (executionInputVisible) {
+          process.stderr.write('\n');
+        }
+        executionInputVisible = false;
+        return;
+      }
+      if (isInputDockMounted()) {
+        clearInputPrompt();
+        moveToContent();
+        process.stderr.write(`${executionInputPrefix()}${instruction}\n`);
+        renderDockInput(executionInputPrefix(), '', {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        moveToContent();
+      } else if (executionInputVisible) {
+        process.stderr.write('\n');
+      }
+      executionInputVisible = false;
+      try {
+        await client.resume(instruction);
+        jsonlWriter.writeKeplerEvent({
+          type: 'user_intervention',
+          data: { instruction, task_id: client.currentTaskId || null },
+        });
+        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent follow-up to running agent')}\n`);
+      } catch {
+        _queuedLines.push(instruction);
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued follow-up for the next turn')}\n`);
+      }
+    }
+
+    function appendExecutionInput(text) {
+      if (!text) return;
+      executionInputBuffer += text;
+      redrawExecutionInput();
+    }
+
+    function backspaceExecutionInput() {
+      if (!executionInputBuffer) return false;
+      executionInputBuffer = executionInputBuffer.slice(0, -1);
+      redrawExecutionInput();
+      return true;
+    }
 
     if (process.stdin.isTTY) {
       rl.pause();
@@ -4400,14 +4893,88 @@ export async function startTerminalRepl() {
       process.stdin.resume();
       execListenerActive = true;
 
+      // Bracketed-paste state for follow-up input during execution.
+      let execPasteActive = false;
+      let execPasteBuffer = '';
+
+      // Accept any character that isn't a bare C0 control (except tab) and
+      // isn't part of an ESC sequence. Unicode, emoji, and tabs all pass.
+      const isSafeFollowUpText = (s) => {
+        if (!s) return false;
+        if (s.includes('\x1b')) return false; // escape / arrow / meta keys
+        for (const ch of s) {
+          const code = ch.codePointAt(0);
+          if (code === 0x09) continue; // tab ok
+          if (code < 0x20 || code === 0x7f) return false;
+        }
+        return true;
+      };
+
       const onData = (data) => {
         if (!execListenerActive) return; // paused for approval menu
         const bytes = [...data];
-        const now = Date.now();
+        const text = data.toString('utf8');
+
+        // ── Bracketed paste passthrough ────────────────────────────────────
+        // Strip ESC[200~/ESC[201~ markers and treat the content between them
+        // as a single append. Handles pastes that straddle chunk boundaries.
+        if (execPasteActive || text.includes(PASTE_BEGIN)) {
+          let s = text;
+          while (s.length) {
+            if (!execPasteActive) {
+              const start = s.indexOf(PASTE_BEGIN);
+              if (start === -1) break;
+              // Anything before the start marker is normal keystrokes;
+              // let it fall through by re-invoking with just that slice.
+              if (start > 0) {
+                const pre = s.slice(0, start);
+                // Recurse via a synthetic buffer so normal handlers process
+                // the pre-paste characters below.
+                onData(Buffer.from(pre, 'utf8'));
+              }
+              execPasteActive = true;
+              execPasteBuffer = '';
+              s = s.slice(start + PASTE_BEGIN.length);
+              continue;
+            }
+            const end = s.indexOf(PASTE_END);
+            if (end === -1) { execPasteBuffer += s; return; }
+            execPasteBuffer += s.slice(0, end);
+            execPasteActive = false;
+            const payload = execPasteBuffer;
+            execPasteBuffer = '';
+            if (payload) appendExecutionInput(payload);
+            s = s.slice(end + PASTE_END.length);
+          }
+          if (!s.length) return;
+          // Anything after the end marker (rare) falls through as a fresh
+          // buffer for the normal handlers.
+          data = Buffer.from(s, 'utf8');
+        }
+
+        const bytes2 = [...data];
+        const text2 = data.toString('utf8');
 
         // Esc key (single byte 0x1b, not part of arrow sequence)
-        if (bytes.length === 1 && bytes[0] === 0x1b) {
+        if (bytes2.length === 1 && bytes2[0] === 0x1b) {
+          if (executionInputVisible || executionInputBuffer) {
+            executionInputBuffer = '';
+            if (isInputDockMounted()) {
+              clearInputPrompt();
+              renderDockInput(executionInputPrefix(), '', {
+                context: buildContextStrip(),
+                tips: executionInputTips(),
+              });
+              moveToContent();
+            } else if (executionInputVisible) {
+              readline.clearLine(process.stderr, 0);
+              readline.cursorTo(process.stderr, 0);
+            }
+            executionInputVisible = false;
+            return;
+          }
           stopSpinner();
+          if (isInputDockMounted()) moveToContent();
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
           // cancel() now aborts the in-flight SSE reader; the for-await loop
           // wakes up immediately and the prompt returns. No more "stuck"
@@ -4416,38 +4983,40 @@ export async function startTerminalRepl() {
           return;
         }
 
-        // Space — toggle pause/resume
-        if (bytes.length === 1 && bytes[0] === 0x20) {
-          if (now - lastPrintableInputAt < 750) {
-            if (!textInputWarningShown) {
-              process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
-              textInputWarningShown = true;
-            }
-            return;
+        if (bytes2.length === 1 && (bytes2[0] === 0x7f || bytes2[0] === 0x08)) {
+          backspaceExecutionInput();
+          return;
+        }
+
+        if (text2.includes('\r') || text2.includes('\n')) {
+          const parts = text2.split(/\r?\n|\r/);
+          if (parts[0]) appendExecutionInput(parts[0]);
+          submitExecutionInstruction();
+          // Extra lines from a raw (non-bracketed) paste get concatenated
+          // into the current follow-up buffer instead of firing multiple
+          // resume() calls. If the user presses Enter again, they send.
+          for (const extra of parts.slice(1)) {
+            if (extra) appendExecutionInput('\n' + extra);
           }
+          return;
+        }
+
+        // Ctrl+P — pause/resume (moved off Space so follow-up input can start
+        // with a space without triggering pause).
+        if (bytes2.length === 1 && bytes2[0] === 0x10) {
           if (executionPaused) {
             executionPaused = false;
+            if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
             client.resume();
             if (_orbit) _orbit.onResume();
           } else {
             executionPaused = true;
             stopSpinner();
-            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Space to resume, Esc to cancel')}\n`);
+            if (isInputDockMounted()) moveToContent();
+            process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Ctrl+P to resume, Esc to cancel')}\n`);
             client.pause();
             if (_orbit) _orbit.onPause();
-          }
-          return;
-        }
-
-        // Ignore ordinary typing during execution. Without this guard, spaces
-        // inside a typed sentence become pause/resume toggles because stdin is
-        // in raw mode while the agent is running.
-        if (bytes.length === 1 && bytes[0] >= 0x20 && bytes[0] <= 0x7e && bytes[0] !== 0x64 && bytes[0] !== 0x44) {
-          lastPrintableInputAt = now;
-          if (!textInputWarningShown) {
-            process.stderr.write(`  ${c.dim('Agent is running — use Esc to cancel, Space alone to pause.')}\n`);
-            textInputWarningShown = true;
           }
           return;
         }
@@ -4455,24 +5024,35 @@ export async function startTerminalRepl() {
         // Ctrl+C during execution — PRD-055 §8.4 two-step semantics:
         //   first press → cancel current backend run, stay in REPL
         //   second press within 2s → exit the CLI
-        if (bytes[0] === 0x03) {
+        if (bytes2[0] === 0x03) {
           stopSpinner();
           const now = Date.now();
           if (lastCtrlCAt && (now - lastCtrlCAt) < 2000) {
+            if (isInputDockMounted()) unmountInputDock();
             process.stderr.write(`\n  ${c.dim('exiting…')}\n`);
             try { client.cancel(); } catch {}
             process.exit(0);
           }
           lastCtrlCAt = now;
+          if (isInputDockMounted()) moveToContent();
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
           return;
         }
 
-        // `d` — expand last tool card (Mission Control §6.2)
-        if (bytes.length === 1 && (bytes[0] === 0x64 || bytes[0] === 0x44)) {
+        // Ctrl+D — expand last tool card (Mission Control §6.2). Only when
+        // there's no in-progress follow-up input.
+        if (!executionInputBuffer && bytes2.length === 1 && bytes2[0] === 0x04) {
           stopSpinner();
+          if (isInputDockMounted()) moveToContent();
           expandLast();
+          return;
+        }
+
+        // Any safe text (unicode, tabs, spaces, symbols) becomes a live
+        // follow-up instruction. Enter sends it via resume(instruction).
+        if (isSafeFollowUpText(text2)) {
+          appendExecutionInput(text2);
           return;
         }
       };
@@ -4495,6 +5075,13 @@ export async function startTerminalRepl() {
     }
 
     try {
+      if (isInputDockMounted()) {
+        renderDockInput(executionInputPrefix(), '', {
+          context: buildContextStrip(),
+          tips: executionInputTips(),
+        });
+        moveToContent();
+      }
       startContentStream();
 
       const execContext = { cwd: safeCwd() };
@@ -4567,7 +5154,9 @@ export async function startTerminalRepl() {
             message => process.stderr.write(`  ${c.dim(message)}\n`),
           );
         }
+        if (isInputDockMounted()) moveToContent();
         renderEvent(event);
+        focusExecutionInput();
 
         if (event.type === 'content_partial') {
           const text = event.data?.text || '';
@@ -4625,6 +5214,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
       // Clean up execution keypress listener
+      _afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
     }
 

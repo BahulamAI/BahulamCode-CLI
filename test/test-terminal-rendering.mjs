@@ -49,6 +49,24 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
   assert.ok(rendered.includes('Documentation'));
 });
 
+test('markdown tables align after inline markdown is normalized', () => {
+  const rendered = stripAnsi(renderMarkdown([
+    '| Item | Value |',
+    '|---|---|',
+    '| **Mode** | `compact` |',
+    '| [Docs](https://example.com/docs) | Avoid tables unless asked |',
+  ].join('\n')));
+  const lines = rendered.split('\n').filter(Boolean);
+  const widths = new Set(lines.map(line => line.length));
+
+  assert.strictEqual(widths.size, 1, rendered);
+  assert.ok(rendered.includes('Mode'));
+  assert.ok(rendered.includes('compact'));
+  assert.ok(rendered.includes('Docs'));
+  assert.ok(!rendered.includes('**Mode**'));
+  assert.ok(!rendered.includes('https://example.com/docs'));
+});
+
 test('uses present-progressive action verbs for conversational tone', () => {
   // v2.0.2: labels read like the agent narrating ("Reading foo.py — 47 lines")
   // instead of a structured log ("Read file foo.py · 47 lines"). See PRD-055.
@@ -223,19 +241,31 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(replSource.includes('Thinking · ${kind}'));
   assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
   assert.ok(replSource.includes("renderBlockBoundary('content')"));
-  assert.ok(replSource.includes('function maybeCollapseReadTool(tool, data, callId)'));
-  assert.ok(replSource.includes("process.env.KEPLER_READ_TOOL_DETAIL_LIMIT || '8'"));
-  assert.ok(replSource.includes('Reading files ·'));
-  assert.ok(replSource.includes('latest: ${_compactReadRun.recent.join'));
-  assert.ok(replSource.includes('if (_compactReadRun.recent.length > 3) _compactReadRun.recent.shift();'));
+  assert.ok(replSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
+  assert.ok(replSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(replSource.includes('function exploreSummary()'));
+  assert.ok(replSource.includes('exploring · ${stats}${latest}'));
+  assert.ok(replSource.includes('if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();'));
   assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  assert.ok(replSource.includes('function printInputSeparator()'));
-  assert.ok(replSource.includes("c.brand('input')"));
-  assert.ok(replSource.includes('printInputSeparator();'));
+  assert.ok(!replSource.includes('function printInputSeparator()'));
+  assert.ok(!replSource.includes('function inputRule()'));
+  assert.ok(!replSource.includes("c.dim('─'.repeat(Math.max(24, w - 4)))"));
+  assert.ok(!replSource.includes("inputRule({ label: 'message' });"));
+  assert.ok(!replSource.includes('paint.inverse(c.brand(` ${label} `))'));
+  assert.ok(replSource.includes("from '../ui/input-dock.mjs'"));
+  assert.ok(replSource.includes('mountInputDock()'));
+  assert.ok(!replSource.includes("from '../ui/status-bar.mjs'"));
+  assert.ok(!replSource.includes('attachOrbit('));
+  assert.ok(replSource.includes("return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;"));
+  assert.ok(!replSource.includes('printInputSeparator();'));
+  assert.ok(replSource.includes('function printInputBottomRule()'));
+  assert.ok(replSource.includes('printInputBottomRule();'));
+  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
+  assert.ok(replSource.includes('function printSubmittedInput(input)'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
@@ -253,7 +283,32 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
-  assert.ok(replSource.includes('if (!input) { promptInputLine(); return; }'));
+  assert.ok(replSource.includes('if (!input) { showPrompt(); return; }'));
+  assert.ok(replSource.includes('function pasteFlushDelayMs()'));
+  assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
+  assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
+  assert.ok(replSource.includes('queueOrRunLine(line);'));
+  assert.ok(replSource.includes('function executionInputPrefix()'));
+  assert.ok(replSource.includes('add instruction'));
+  assert.ok(replSource.includes('type any extra context (paths, corrections, follow-ups)'));
+  assert.ok(!replSource.includes('[Space] pause/resume'));
+  assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
+  assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
+  assert.ok(replSource.includes('_afterContentFlush = focusExecutionInput;'));
+  assert.ok(replSource.includes('_afterContentFlush = null;'));
+  assert.ok(replSource.includes("if (typeof _afterContentFlush === 'function') _afterContentFlush();"));
+  assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
+  assert.ok(replSource.includes('client.resume(instruction)'));
+  assert.ok(replSource.includes("type: 'user_intervention'"));
+  assert.ok(replSource.includes('Ctrl+D'));
+});
+
+test('fixed input dock clears input row before repainting', () => {
+  const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
+  assert.ok(dockSource.includes('function clearInputRow()'));
+  assert.ok(dockSource.includes('moveTo(inputRow(), 1);'));
+  assert.ok(dockSource.includes('clearInputRow();\n  renderFrame({ context, tips });'));
+  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
@@ -291,6 +346,35 @@ test('renders Markdown pipe tables as aligned terminal tables', () => {
   assert.ok(rendered.includes('API'));
   assert.ok(rendered.includes('│'));
   assert.ok(!rendered.includes('| --- |'));
+});
+
+test('wraps long Markdown table cells instead of truncating content', () => {
+  const originalColumns = process.stderr.columns;
+  Object.defineProperty(process.stderr, 'columns', {
+    value: 92,
+    configurable: true,
+  });
+  try {
+    const rendered = stripAnsi(renderMarkdown([
+      '| Dimension | Assessment |',
+      '| --- | --- |',
+      '| Feature overlap | High. Both are terminal-based coding agents with shell execution, file editing, and repo-aware workflows. |',
+      "| Gap pi.dev doesn't fill | No prompt caching means materially higher effective inference cost for repeated repository context. |",
+    ].join('\n')));
+    const lines = rendered.split('\n');
+    assert.ok(rendered.includes('terminal-based coding agents with shell'));
+    assert.ok(rendered.includes('repo-aware workflows'));
+    assert.ok(rendered.includes('materially higher effective'));
+    assert.ok(rendered.includes('inference cost for repeated repository context'));
+    assert.ok(rendered.includes('cost for repeated repository context'));
+    assert.ok(!rendered.includes('...'), rendered);
+    assert.ok(lines.every(line => line.length <= 92), JSON.stringify(lines));
+  } finally {
+    Object.defineProperty(process.stderr, 'columns', {
+      value: originalColumns,
+      configurable: true,
+    });
+  }
 });
 
 test('renders blockquotes and task lists with structural styling', () => {

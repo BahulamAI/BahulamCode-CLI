@@ -13,7 +13,6 @@
  *   ✅ Health      24/24 tests pass
  *   ───────────────────────────────────────────────────
  *
- *   Next:  /commit   /pr   /undo   /report
  *
  * Failure variant uses "held" and lists blockers.
  *

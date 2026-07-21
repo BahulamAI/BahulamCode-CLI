@@ -17,6 +17,72 @@ import { parseArgs } from '../config/cli-args.mjs';
 const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
 
+function parseKeplerSubcommandArgs(command, argv) {
+  const parsed = {
+    command,
+    workflowSubcommand: null,
+    workflowSlug: null,
+    workflowFile: null,
+    workflowDir: null,
+    agentSubcommand: null,
+    agentSlug: null,
+    agentDir: null,
+    instruction: null,
+    pattern: null,
+    yes: false,
+    verbose: false,
+    debug: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--file':
+      case '-f':
+        parsed.workflowFile = argv[++i];
+        break;
+      case '--dir':
+        if (command === 'agent') parsed.agentDir = argv[++i];
+        else parsed.workflowDir = argv[++i];
+        break;
+      case '--instruction':
+      case '--input':
+      case '--print':
+      case '-p':
+        parsed.instruction = argv[++i];
+        break;
+      case '--pattern':
+        parsed.pattern = argv[++i];
+        break;
+      case '--yes':
+      case '-y':
+        parsed.yes = true;
+        break;
+      case '--verbose':
+      case '-v':
+        parsed.verbose = true;
+        break;
+      case '--debug':
+      case '-d':
+        parsed.debug = true;
+        parsed.verbose = true;
+        break;
+      default:
+        if (arg.startsWith('-')) break;
+        if (command === 'workflow') {
+          if (!parsed.workflowSubcommand) parsed.workflowSubcommand = arg;
+          else if (!parsed.workflowSlug) parsed.workflowSlug = arg;
+        } else if (command === 'agent') {
+          if (!parsed.agentSubcommand) parsed.agentSubcommand = arg;
+          else if (!parsed.agentSlug) parsed.agentSlug = arg;
+        }
+        break;
+    }
+  }
+
+  return parsed;
+}
+
 async function main() {
   if (subcommand === 'dashboard') {
     // Launch Kepler Pulse Next.js dashboard
@@ -89,6 +155,18 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'workflow') {
+    const { handleWorkflowCommand } = await import('../commands/workflow.mjs');
+    await handleWorkflowCommand(parseKeplerSubcommandArgs('workflow', subcommandArgs));
+    return;
+  }
+
+  if (subcommand === 'agent') {
+    const { handleAgentCommand } = await import('../commands/agent.mjs');
+    await handleAgentCommand(parseKeplerSubcommandArgs('agent', subcommandArgs));
+    return;
+  }
+
   if (subcommand === 'version' || subcommand === '--version' || subcommand === '-v') {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
@@ -105,6 +183,8 @@ async function main() {
     kepler                    Start interactive REPL
     kepler "instruction"      Run a single instruction
     kepler --headless -p "x"  Non-interactive: auto-approve, JSONL output
+    kepler --headless -p "x" --vision screenshot.png
+                              Attach an image via the vision analysis pipeline
     kepler --resume            Resume last conversation
     kepler dashboard          Open Kepler Pulse analytics dashboard
     kepler login              Sign in via browser
@@ -140,6 +220,8 @@ async function main() {
     /agents create <name>   Create project-local user-defined agent YAML
     /agents edit <name>     Open a local agent YAML in your editor
     /agents sync [name]     Sync all or one local agent to Supabase
+    /attach <image-path>    Attach an image to next prompt
+    /attach clipboard       Attach image copied to macOS/Windows clipboard
     /exit                   Exit the REPL
 
   \x1b[1mKeyboard:\x1b[0m
@@ -172,6 +254,7 @@ async function main() {
       verbose: args.verbose,
       cacheReport: args.cacheReport,
       local: args.local,
+      vision: args.vision,
     });
     return;
   }

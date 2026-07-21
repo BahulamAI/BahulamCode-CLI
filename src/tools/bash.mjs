@@ -40,9 +40,14 @@ export const BashTool = {
     },
     async call(input) {
         const timeout = Math.min(input.timeout || 120000, 600000);
+        const abortSignal = input.signal || input._signal || null;
 
         if (input.run_in_background) {
             return runBackground(input.command, input.cwd);
+        }
+
+        if (abortSignal?.aborted) {
+            return 'Error: Command cancelled by user';
         }
 
         return new Promise((resolve) => {
@@ -51,7 +56,10 @@ export const BashTool = {
             let stdoutTail = '';
             let stderrTail = '';
             let killed = false;
+            let cancelled = false;
             let exitCode = null;
+            let killTimer = null;
+            let settled = false;
 
             const proc = spawn('bash', ['-c', input.command], {
                 cwd: input.cwd,
@@ -60,6 +68,33 @@ export const BashTool = {
                 detached: process.platform !== 'win32',
                 timeout: 0, // we handle timeout ourselves
             });
+
+            function finish(value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (killTimer) clearTimeout(killTimer);
+                abortSignal?.removeEventListener?.('abort', onAbort);
+                resolve(value);
+            }
+
+            function terminate(reason) {
+                killed = true;
+                cancelled = reason === 'cancelled';
+                killProcess(proc, 'SIGTERM');
+                killTimer = setTimeout(() => {
+                    killProcess(proc, 'SIGKILL');
+                }, 5000);
+            }
+
+            function onAbort() {
+                terminate('cancelled');
+            }
+
+            abortSignal?.addEventListener?.('abort', onAbort, { once: true });
+            if (abortSignal?.aborted) {
+                terminate('cancelled');
+            }
 
             proc.stdout.on('data', (chunk) => {
                 const text = chunk.toString();
@@ -75,15 +110,10 @@ export const BashTool = {
 
             // Timeout: SIGTERM first, then SIGKILL after 5s
             const timer = setTimeout(() => {
-                killed = true;
-                killProcess(proc, 'SIGTERM');
-                setTimeout(() => {
-                    killProcess(proc, 'SIGKILL');
-                }, 5000);
+                terminate('timeout');
             }, timeout);
 
             proc.on('close', (code) => {
-                clearTimeout(timer);
                 exitCode = code;
 
                 // Truncate if over limit
@@ -100,21 +130,23 @@ export const BashTool = {
 
                 if (killed) {
                     const tail = formatTimeoutTail(stdoutTail, stderrTail);
-                    resolve(`Error: Command timed out after ${timeout}ms\n${tail}`.trim());
+                    const message = cancelled
+                        ? `Error: Command cancelled by user\n${tail}`.trim()
+                        : `Error: Command timed out after ${timeout}ms\n${tail}`.trim();
+                    finish(message);
                     return;
                 }
 
                 const output = (stdout + (stderr ? '\n' + stderr : '')).trim();
                 if (code !== 0) {
-                    resolve(`Exit code: ${code}\n${output}`.trim());
+                    finish(`Exit code: ${code}\n${output}`.trim());
                 } else {
-                    resolve(output || '(no output)');
+                    finish(output || '(no output)');
                 }
             });
 
             proc.on('error', (err) => {
-                clearTimeout(timer);
-                resolve(`Error: ${err.message}`);
+                finish(`Error: ${err.message}`);
             });
 
             // Close stdin

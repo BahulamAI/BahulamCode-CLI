@@ -17,6 +17,11 @@ import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
+import {
+    appendVisionAnalysisToInstruction,
+    prepareImageAttachments,
+    publicAttachmentMetadata,
+} from './attachments.mjs';
 
 /**
  * Run a single instruction in headless mode.
@@ -27,7 +32,7 @@ import { ApprovalManager } from './approval.mjs';
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, vision = [] }) {
     const startTime = Date.now();
 
     const log = (msg) => {
@@ -95,6 +100,41 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         log(`Timeout after ${timeout}s`);
         process.exit(2);
     }, timeoutMs);
+
+    // ── Vision analysis preflight ──
+    if (!local) {
+        try {
+            const prepared = prepareImageAttachments(instruction, {
+                cwd: process.cwd(),
+                extraPaths: Array.isArray(vision) ? vision : [],
+            });
+            if (prepared.attachments.length) {
+                emit({
+                    type: 'attachments',
+                    attachments: prepared.attachments.map(publicAttachmentMetadata),
+                });
+                const analysis = await client.analyzeVision({
+                    instruction: prepared.instruction,
+                    attachments: prepared.attachments,
+                });
+                instruction = appendVisionAnalysisToInstruction(prepared.instruction, analysis);
+                emit({
+                    type: 'vision_analysis',
+                    model: analysis.model,
+                    attachments: analysis.attachments || prepared.metadata,
+                    summary_chars: String(analysis.summary || '').length,
+                });
+            } else {
+                instruction = prepared.instruction || instruction;
+            }
+        } catch (err) {
+            emit({ type: 'error', error: err.message || String(err), code: 'vision_analysis_failed' });
+            process.exit(1);
+        }
+    } else if (Array.isArray(vision) && vision.length) {
+        emit({ type: 'error', error: '--vision is not supported with --local yet', code: 'vision_local_unsupported' });
+        process.exit(1);
+    }
 
     // ── Execute ──
     emit({ type: 'start', timestamp: Date.now(), instruction, model: model || 'default', cwd: process.cwd() });

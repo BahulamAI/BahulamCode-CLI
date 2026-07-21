@@ -28,6 +28,7 @@ export const COMMANDS = {
     '/refresh':  { description: 'Reload credentials from disk', handler: cmdRefresh },
     '/sync':     { description: 'Sync settings from web', handler: cmdSync },
     '/whoami':   { description: 'Show logged-in user', handler: cmdWhoami },
+    '/create':   { description: 'Create workflow from YAML file', handler: cmdCreate },
 };
 
 const COMMAND_GROUPS = [
@@ -277,6 +278,27 @@ function cmdSync(ctx) {
             process.stderr.write(`\x1b[31m✗ Sync failed: ${err.message}\x1b[0m\n`);
         });
     }
+}
+
+function cmdCreate(ctx, args) {
+    const filePath = args[0];
+    if (!filePath) {
+        process.stderr.write('\x1b[31mUsage: /create <path-to-workflow.yaml>\x1b[0m\n');
+        return;
+    }
+    // Lazy-import to avoid circular deps at module load time
+    import('../commands/workflow.mjs').then(({ handleWorkflowCommand }) => {
+        const cliArgs = {
+            workflowSubcommand: 'create',
+            workflowFile: filePath,
+            command: 'workflow',
+            // Pass through auth context
+            ...(ctx.auth ? {} : {}),
+        };
+        handleWorkflowCommand(cliArgs).catch(err => {
+            process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
+        });
+    });
 }
 
 function cmdWhoami(ctx) {

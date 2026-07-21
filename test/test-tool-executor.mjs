@@ -331,6 +331,23 @@ await test('shell observes likely long-running commands and returns tail', async
     }
 });
 
+await test('shell cancels active process when abort signal fires', async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    setTimeout(() => ac.abort(), 250);
+
+    const result = await executor.execute('shell', {
+        command: 'node -e "setTimeout(() => console.log(\'done\'), 5000)"',
+        timeout: 10000,
+    }, { signal: ac.signal });
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result._cancelled, true);
+    assert.strictEqual(result.exit_code, 130);
+    assert.ok(/cancelled by user/i.test(result.output));
+    assert.ok(Date.now() - started < 2000, 'cancel should not wait for command timeout');
+});
+
 // Test 5: list_files returns file array
 await test('list_files returns files', async () => {
     const result = await executor.execute('list_files', { pattern: '*.json' });

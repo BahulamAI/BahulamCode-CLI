@@ -59,6 +59,30 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Full jitter around the scheduled delay: pick a value in [delay*0.5, delay*1.5].
+// Spreads out reconnect storms so N clients dropping simultaneously don't
+// synchronize their retries. Clamped to the same 30s ceiling as the base delay.
+function jitteredDelay(delayMs) {
+    const min = Math.floor(delayMs * 0.5);
+    const max = Math.floor(delayMs * 1.5);
+    const jittered = min + Math.floor(Math.random() * (max - min + 1));
+    return Math.max(200, Math.min(30_000, jittered));
+}
+
+// Categorize a fetch error. "offline-class" means DNS/routing failures that
+// almost never recover within a few seconds — we bail after 2 in a row rather
+// than burn the full 5-min budget when the user's network is truly down.
+function isOfflineLikelyError(err) {
+    const code = err?.cause?.code || err?.code || '';
+    return (
+        code === 'ENOTFOUND' ||        // DNS lookup failed
+        code === 'EAI_AGAIN' ||        // DNS temporary failure
+        code === 'ENETUNREACH' ||      // no route to host
+        code === 'EHOSTUNREACH' ||     // host unreachable
+        code === 'UND_ERR_CONNECT_TIMEOUT' // undici connect timeout
+    );
+}
+
 export class TarangStreamClient {
     /**
      * @param {Object} opts
@@ -95,6 +119,8 @@ export class TarangStreamClient {
         this._cancelled = false;
         this._paused = false;
         this._pauseWaiters = new Set();
+        this._abort = null;
+        this._toolAbort = null;
     }
 
     _headers(extra = {}) {
@@ -102,6 +128,34 @@ export class TarangStreamClient {
         if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
         if (this.product) headers['X-Product'] = this.product;
         return headers;
+    }
+
+    async analyzeVision({ instruction, attachments }) {
+        const url = `${this.baseUrl}/api/vision/analyze`;
+        const body = { instruction, attachments: attachments || [] };
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: this._headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(body),
+        });
+        const text = await response.text().catch(() => '');
+        let payload = null;
+        try {
+            payload = text ? JSON.parse(text) : null;
+        } catch {
+            payload = { detail: text };
+        }
+        if (!response.ok) {
+            const detail = payload?.detail || payload || {};
+            const message = typeof detail === 'string'
+                ? detail
+                : detail.message || detail.error || `Vision analysis failed (${response.status})`;
+            const err = new Error(message);
+            err.status = response.status;
+            err.detail = detail;
+            throw err;
+        }
+        return payload || {};
     }
 
     /**
@@ -116,6 +170,7 @@ export class TarangStreamClient {
      */
     async *execute(instruction, context = {}, messages = null) {
         this._cancelled = false;
+        this.currentTaskId = null;
 
         const url = `${this.baseUrl}/api/execute`;
         const body = { instruction, context };
@@ -130,6 +185,7 @@ export class TarangStreamClient {
         // Abort controller so cancel() can break out of a stalled reader
         // instead of waiting for the next SSE event to notice _cancelled.
         this._abort = new AbortController();
+        this._toolAbort = new AbortController();
 
         let response;
         try {
@@ -209,6 +265,10 @@ export class TarangStreamClient {
         }
     }
 
+    async *consumeEventStream(response) {
+        yield* this._consumeResponse(response);
+    }
+
     async *_handleStreamEvent({ event, data, id = null, retry = null }) {
         const rendered = { type: event, data, event_id: id, retry };
 
@@ -270,21 +330,32 @@ export class TarangStreamClient {
 
         const started = Date.now();
         let attempt = 0;
-        let delayMs = Math.max(250, Math.min(this.retryDelayMs || 1000, 30_000));
+        // Slow-start baseline: 500ms for the first retry catches most
+        // transient blips before the user notices; the ramp doubles from
+        // there. Server-hinted `retry:` from the last SSE frame overrides
+        // if present. Capped at 30s.
+        let delayMs = Math.max(200, Math.min(this.retryDelayMs || 500, 30_000));
+        let offlineStreak = 0;
 
         while (!this._cancelled && Date.now() - started < this.reconnectMaxElapsedMs) {
             attempt++;
             const after = this.lastEventId;
+            // Apply jitter to the scheduled delay so N clients dropping at
+            // the same time don't lockstep-retry against the server. The
+            // event surfaces the ACTUAL wait so the CLI can show it.
+            const waitMs = jitteredDelay(delayMs);
             telemetry.track('stream.reconnect.attempt', {
                 task_id: taskId,
                 after,
                 attempt,
+                base_delay_ms: delayMs,
+                delay_ms: waitMs,
             });
             yield {
                 type: EVENT_TYPES.RECONNECTING,
-                data: { task_id: taskId, after, attempt, delay_ms: delayMs },
+                data: { task_id: taskId, after, attempt, delay_ms: waitMs },
             };
-            await sleep(delayMs);
+            await sleep(waitMs);
             try {
                 const url = `${this.baseUrl}/api/execute/${encodeURIComponent(taskId)}/events?after=${encodeURIComponent(after)}`;
                 const response = await fetch(url, {
@@ -330,11 +401,42 @@ export class TarangStreamClient {
                 return;
             } catch (nextErr) {
                 if (this._cancelled) return;
+                // Offline-class errors (DNS failure, no route) rarely recover
+                // in seconds. Bail after 2 in a row so we don't burn the full
+                // 5-min budget spinning against a dead network — the user
+                // gets an actionable "network unreachable" message instead.
+                if (isOfflineLikelyError(nextErr)) {
+                    offlineStreak++;
+                    if (offlineStreak >= 2) {
+                        telemetry.track('stream.reconnect.failed', {
+                            task_id: taskId,
+                            after,
+                            attempt,
+                            code: 'network_unreachable',
+                            error_code: nextErr?.cause?.code || nextErr?.code || '',
+                            retryable: true,
+                        });
+                        yield {
+                            type: EVENT_TYPES.RECONNECT_FAILED,
+                            data: {
+                                task_id: taskId,
+                                after,
+                                code: 'network_unreachable',
+                                message: 'Network appears unreachable — DNS lookup failed twice. Check your connection, then /resume to continue.',
+                                retryable: true,
+                            },
+                        };
+                        return;
+                    }
+                } else {
+                    offlineStreak = 0;
+                }
                 telemetry.track('stream.reconnect.retry', {
                     task_id: taskId,
                     after,
                     attempt,
                     message: nextErr?.message || 'reconnect failed',
+                    error_code: nextErr?.cause?.code || nextErr?.code || '',
                 });
                 err = nextErr;
                 delayMs = Math.min(delayMs * 2, 30_000);
@@ -460,13 +562,36 @@ export class TarangStreamClient {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
         }
 
+        if (this._cancelled) {
+            return {
+                type: EVENT_TYPES.TOOL_RESULT,
+                data: {
+                    success: false,
+                    output: 'Cancelled by user',
+                    call_id: callId,
+                    tool: toolName,
+                    args: args || {},
+                    _cancelled: true,
+                    internal: isInternal,
+                    sub_agent: data?.sub_agent || null,
+                    local_callback: false,
+                },
+            };
+        }
+
         // Execute tool locally — framework already approved this
         const startTime = Date.now();
         let result;
         try {
-            result = await this.toolExecutor.execute(toolName, args || {});
+            result = await this.toolExecutor.execute(toolName, args || {}, {
+                signal: this._toolAbort?.signal,
+            });
         } catch (err) {
-            result = { success: false, output: `Tool execution error: ${err.message}` };
+            if (err?.name === 'AbortError' || this._cancelled) {
+                result = { success: false, output: 'Cancelled by user', _cancelled: true };
+            } else {
+                result = { success: false, output: `Tool execution error: ${err.message}` };
+            }
         }
         const durationMs = Date.now() - startTime;
 
@@ -477,7 +602,7 @@ export class TarangStreamClient {
 
         // POST callback to backend
         let callbackPosted = false;
-        if (this.currentTaskId && callId) {
+        if (!this._cancelled && !result?._cancelled && this.currentTaskId && callId) {
             callbackPosted = await sendCallback(this.baseUrl, this.token, this.currentTaskId, callId, result);
             telemetry.track(callbackPosted ? 'tool.callback.posted' : 'tool.callback.failed', {
                 task_id: this.currentTaskId,
@@ -585,19 +710,20 @@ export class TarangStreamClient {
         this._cancelled = true;
         this._paused = false;
         this._releasePauseWaiters();
-        // Best-effort backend POST — the stream may already be torn down.
-        if (this.currentTaskId) {
-            try {
-                await fetch(`${this.baseUrl}/api/cancel/${this.currentTaskId}`, {
-                    method: 'POST',
-                    headers: this._headers(),
-                });
-            } catch { /* best effort */ }
+        // Stop local work first. The backend POST below is best-effort and
+        // must not delay returning control to the terminal.
+        if (this._toolAbort) {
+            try { this._toolAbort.abort(); } catch {}
         }
-        // Force the in-flight SSE reader to abort so the REPL returns to the
-        // prompt immediately instead of waiting on a parked reader.read().
         if (this._abort) {
             try { this._abort.abort(); } catch {}
+        }
+        // Best-effort backend POST — the stream may already be torn down.
+        if (this.currentTaskId) {
+            fetch(`${this.baseUrl}/api/cancel/${this.currentTaskId}`, {
+                    method: 'POST',
+                    headers: this._headers(),
+            }).catch(() => {});
         }
     }
 

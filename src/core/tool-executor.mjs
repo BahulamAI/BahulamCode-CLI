@@ -17,9 +17,13 @@ import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { streamResponse } from './streaming.mjs';
+import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { buildFileDiff } from './file-diff.mjs';
+import { buildWorkScope } from './work-scope.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -96,6 +100,26 @@ export function createToolExecutor({
         return `... (tail truncated)\n${value.slice(value.length - maxChars)}`;
     }
 
+    function isAbortError(err) {
+        return err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+    }
+
+    function throwIfAborted(signal) {
+        if (!signal?.aborted) return;
+        const err = new Error('Cancelled by user');
+        err.name = 'AbortError';
+        throw err;
+    }
+
+    function cancelledToolResult(name) {
+        return {
+            success: false,
+            output: 'Cancelled by user',
+            _tool: name,
+            _cancelled: true,
+        };
+    }
+
     function skillScope(args = {}) {
         const scope = String(args.scope || '').trim();
         if (scope !== 'project' && scope !== 'global') {
@@ -169,6 +193,74 @@ export function createToolExecutor({
             agent.slug === target ||
             String(agent.name || '').toLowerCase() === target.toLowerCase()
         ));
+    }
+
+    function compactWorkflowMetadata(workflow) {
+        return {
+            slug: workflow.slug,
+            name: workflow.name,
+            description: workflow.description || '',
+            pattern: workflow.pattern || workflow.orchestration_pattern || 'sequential',
+            agent_count: workflow.agent_count || (workflow.graph?.nodes || []).filter(node => node.type === 'agent').length,
+            edge_count: workflow.edge_count || (workflow.graph?.edges || []).length,
+            source: workflow.filePath || workflow.source || '',
+            source_scope: workflow.source_scope || 'project',
+        };
+    }
+
+    function filterLocalWorkflows(args = {}) {
+        const query = String(args.query || args.name || args.slug || '').trim().toLowerCase();
+        return listLocalWorkflows(process.cwd())
+            .filter(workflow => {
+                if (!query) return true;
+                return [
+                    workflow.slug,
+                    workflow.name,
+                    workflow.description,
+                    workflow.pattern,
+                    ...(Array.isArray(workflow.agents) ? workflow.agents.map(a => a.slug || a.label || a.name) : []),
+                ].some(value => String(value || '').toLowerCase().includes(query));
+            });
+    }
+
+    function selectWorkflowsForSync(args = {}) {
+        const target = String(args.name || args.slug || '').trim();
+        const workflows = listLocalWorkflows(process.cwd());
+        if (!target) return workflows;
+        return workflows.filter(workflow => (
+            workflow.slug === target ||
+            String(workflow.name || '').toLowerCase() === target.toLowerCase()
+        ));
+    }
+
+    function workflowTargetMatches(workflow, target) {
+        const needle = String(target || '').trim().toLowerCase();
+        if (!needle) return false;
+        return [
+            workflow.id,
+            workflow.slug,
+            workflow.name,
+        ].some(value => String(value || '').toLowerCase() === needle);
+    }
+
+    async function resolveWorkflowId(creds, target) {
+        const trimmed = String(target || '').trim();
+        if (!trimmed) return null;
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+            return trimmed;
+        }
+        if (!creds.backendUrl || !creds.token) return null;
+        const resp = await fetch(`${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`, {
+            headers: {
+                Authorization: `Bearer ${creds.token}`,
+                Accept: 'application/json',
+            },
+        });
+        if (!resp.ok) return null;
+        const payload = await resp.json().catch(() => ({}));
+        const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+        const match = workflows.find(workflow => workflowTargetMatches(workflow, trimmed));
+        return match?.id || null;
     }
 
     function formatObservationTimeoutOutput(rawOutput, timeoutMs) {
@@ -442,11 +534,45 @@ export function createToolExecutor({
         return { output: lines.join('\n'), files, directories, truncated };
     }
 
+    async function executeToolWithHooks(name, args, options = {}) {
+        const handler = toolMap[name];
+        if (!handler) {
+            return { success: false, output: `Unknown tool: ${name}`, _tool: name };
+        }
+        const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
+        try {
+            throwIfAborted(options.signal);
+            const pre = await hooks.run('PreToolUse', { toolName: name, input: args || {} });
+            throwIfAborted(options.signal);
+            if (pre.blocked) {
+                return { success: false, output: `BLOCKED by hook: ${pre.message}`, _tool: name, _blocked: true };
+            }
+            let result = await handler(args || {}, options);
+            if (result?._cancelled) return result;
+            throwIfAborted(options.signal);
+            const post = await hooks.run('PostToolUse', { toolName: name, input: args || {}, result });
+            throwIfAborted(options.signal);
+            for (const item of post.results || []) {
+                if (item.parsed?.modifiedResult !== undefined) result = item.parsed.modifiedResult;
+                if (item.parsed?.feedback && result && typeof result === 'object') {
+                    result.output = `${result.output || ''}\n\n--- Hook Feedback ---\n${item.parsed.feedback}`.trim();
+                }
+            }
+            return result;
+        } catch (err) {
+            if (isAbortError(err) || options.signal?.aborted) {
+                return cancelledToolResult(name);
+            }
+            return { success: false, output: `Tool error (${name}): ${err.message}`, _tool: name };
+        }
+    }
+
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
         // 1. shell → Bash + classification + smart output filtering
-        shell: async (args) => {
+        shell: async (args, options = {}) => {
+            throwIfAborted(options.signal);
             // Phase 1: legacy safety check (kept for backward compat)
             const shellCheck = validateShellCommand(args.command);
             if (!shellCheck.safe) {
@@ -500,13 +626,15 @@ export function createToolExecutor({
                 timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
                 cwd,
+                signal: options.signal,
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
+            const cancelled = /^Error:\s*Command cancelled by user/i.test(rawOutput);
             const timedOut = /^Error:\s*Command timed out after \d+ms/i.test(rawOutput);
             const exitMatch = rawOutput.match(/Exit code: (\d+)/);
-            const exitCode = timedOut ? 124 : (exitMatch ? parseInt(exitMatch[1]) : 0);
+            const exitCode = cancelled ? 130 : (timedOut ? 124 : (exitMatch ? parseInt(exitMatch[1]) : 0));
             // Semantic exit code: grep returns 1 for "no matches" (not an error)
-            const success = observationTimeout && timedOut ? true : (!timedOut && !isExitCodeError(args.command, exitCode));
+            const success = cancelled ? false : (observationTimeout && timedOut ? true : (!timedOut && !isExitCodeError(args.command, exitCode)));
 
             // Apply smart filtering based on command type
             const filtered = observationTimeout && timedOut
@@ -528,6 +656,7 @@ export function createToolExecutor({
                 _commandType: filtered.commandType,
                 _filtered: filtered.truncated || filtered.originalLines !== filtered.filteredLines,
                 _timed_out: timedOut,
+                _cancelled: cancelled,
                 _observation_timeout: observationTimeout && timedOut,
                 _observation_timeout_ms: observationTimeout && timedOut ? effectiveTimeout : undefined,
             };
@@ -1101,8 +1230,9 @@ print('OK: replaced')
         },
 
         // 12. validate_build
-        validate_build: async (args) => {
+        validate_build: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 let cmd = args.command;
                 const cwd = await commandCwd(args);
                 if (!cmd) {
@@ -1111,9 +1241,24 @@ print('OK: replaced')
                     else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 120_000, cwd }).toString();
-                return { success: true, output, _tool: 'validate_build' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: Math.min(args.timeout || 120_000, 600_000),
+                    description: `Validate build: ${cmd.slice(0, 80)}`,
+                    cwd,
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', exit_code: 130, _cancelled: true, _tool: 'validate_build' };
+                }
+                const exitMatch = rawOutput.match(/Exit code: (\d+)/);
+                if (exitMatch || /^Error:\s*Command timed out/i.test(rawOutput)) {
+                    return { success: false, output: rawOutput, exit_code: exitMatch ? Number(exitMatch[1]) : 124, _tool: 'validate_build' };
+                }
+                return { success: true, output: rawOutput, _tool: 'validate_build' };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('validate_build');
                 return { success: false, output: err.stderr?.toString() || err.message, _tool: 'validate_build' };
             }
         },
@@ -1136,8 +1281,9 @@ print('OK: replaced')
         },
 
         // 14. lint_check
-        lint_check: async (args) => {
+        lint_check: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 const filePath = await resolvePath(args.file_path || args.path, args);
                 const ext = path.extname(filePath);
                 let cmd;
@@ -1145,24 +1291,51 @@ print('OK: replaced')
                 else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
                 else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
 
-                const output = execSync(cmd, { stdio: 'pipe', timeout: 30_000, cwd: projectRootFor(filePath) }).toString();
-                return { success: true, output, issues: output.split('\n').filter(Boolean), _tool: 'lint_check' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: 30_000,
+                    description: `Lint: ${path.basename(filePath)}`,
+                    cwd: projectRootFor(filePath),
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', _cancelled: true, _tool: 'lint_check' };
+                }
+                return { success: true, output: rawOutput, issues: rawOutput.split('\n').filter(Boolean), _tool: 'lint_check' };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('lint_check');
                 return { success: false, output: err.message, _tool: 'lint_check' };
             }
         },
 
         // 15. run_tests
-        run_tests: async (args) => {
+        run_tests: async (args, options = {}) => {
             try {
+                throwIfAborted(options.signal);
                 const cmd = args.command || 'npm test';
                 const cwd = await commandCwd(args);
-                const output = execSync(cmd, {
-                    stdio: 'pipe', timeout: 120_000, cwd,
-                    encoding: 'utf-8',
-                }).toString();
-                return { success: true, output: output.slice(-3000), _tool: 'run_tests' };
+                const output = await occRegistry.call('Bash', {
+                    command: cmd,
+                    timeout: Math.min(args.timeout || 120_000, 600_000),
+                    description: `Run tests: ${cmd.slice(0, 80)}`,
+                    cwd,
+                    signal: options.signal,
+                });
+                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
+                    return { success: false, output: 'Cancelled by user', exit_code: 130, _cancelled: true, _tool: 'run_tests' };
+                }
+                const exitMatch = rawOutput.match(/Exit code: (\d+)/);
+                const timedOut = /^Error:\s*Command timed out/i.test(rawOutput);
+                return {
+                    success: !exitMatch && !timedOut,
+                    output: rawOutput.slice(-3000),
+                    exit_code: exitMatch ? Number(exitMatch[1]) : (timedOut ? 124 : 0),
+                    _tool: 'run_tests',
+                };
             } catch (err) {
+                if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('run_tests');
                 const output = (err.stdout || '') + (err.stderr || '');
                 return { success: false, output: output.slice(-3000), exit_code: err.status, _tool: 'run_tests' };
             }
@@ -1377,6 +1550,324 @@ print('OK: replaced')
                 _tool: 'agent_sync',
             };
         },
+
+        workflow_list: async (args = {}) => {
+            const local = filterLocalWorkflows(args).map(compactWorkflowMetadata);
+            let backend = [];
+            try {
+                const creds = new TarangAuth().loadCredentials();
+                if (creds.backendUrl && creds.token) {
+                    const resp = await fetch(`${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`, {
+                        headers: {
+                            Authorization: `Bearer ${creds.token}`,
+                            Accept: 'application/json',
+                        },
+                    });
+                    if (resp.ok) {
+                        const payload = await resp.json().catch(() => ({}));
+                        backend = Array.isArray(payload.workflows) ? payload.workflows : [];
+                    }
+                }
+            } catch {
+                // best effort
+            }
+            const payload = {
+                local_workflows: local,
+                backend_workflows: backend,
+                count: local.length + backend.length,
+            };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'workflow_list',
+            };
+        },
+
+        workflow_create_multi: async (args = {}) => {
+            if (!args.name || !String(args.name).trim()) {
+                throw new Error('name is required');
+            }
+            const result = createWorkflowFile({
+                cwd: process.cwd(),
+                name: args.name,
+                description: args.description || '',
+                pattern: args.pattern || args.orchestration_pattern || 'sequential',
+                agents: args.agents || [],
+                edges: args.edges || [],
+                globalParams: args.global_params || args.globalParams || {},
+                force: Boolean(args.force),
+            });
+            const workflow = listLocalWorkflows(process.cwd()).find(item => item.slug === result.slug);
+            const payload = {
+                ...result,
+                workflow: workflow ? compactWorkflowMetadata(workflow) : null,
+                next_actions: [
+                    `Edit ${result.filePath}`,
+                    `Run workflow sync for ${result.slug} when ready`,
+                ],
+            };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'workflow_create_multi',
+            };
+        },
+
+        workflow_sync_multi: async (args = {}) => {
+            const selected = selectWorkflowsForSync(args);
+            if (!selected.length) {
+                const target = args.name || args.slug || '';
+                throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .kepler/workflows');
+            }
+            const creds = new TarangAuth().loadCredentials();
+            if (!creds.backendUrl || !creds.token) {
+                throw new Error('Not logged in. Run kepler login first.');
+            }
+
+            const headers = {
+                Authorization: `Bearer ${creds.token}`,
+                'Content-Type': 'application/json',
+            };
+            const listResp = await fetch(`${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`, {
+                headers: { Authorization: `Bearer ${creds.token}`, Accept: 'application/json' },
+            });
+            const backendPayload = listResp.ok ? await listResp.json().catch(() => ({})) : {};
+            const existing = Array.isArray(backendPayload.workflows) ? backendPayload.workflows : [];
+            const existingByName = new Map(existing.map(item => [String(item.name || '').toLowerCase(), item]));
+
+            const results = [];
+            for (const workflow of selected) {
+                const payload = {
+                    name: workflow.name,
+                    description: workflow.description || '',
+                    graph: workflow.graph,
+                    global_params: workflow.global_params || {},
+                    orchestration_pattern: workflow.pattern || workflow.orchestration_pattern || 'sequential',
+                    pattern: workflow.pattern || workflow.orchestration_pattern || 'sequential',
+                };
+                const existingWorkflow = existingByName.get(String(workflow.name || '').toLowerCase());
+                const endpoint = existingWorkflow
+                    ? `${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}/${encodeURIComponent(existingWorkflow.id)}`
+                    : `${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`;
+                const method = existingWorkflow ? 'PATCH' : 'POST';
+                const resp = await fetch(endpoint, {
+                    method,
+                    headers,
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const data = await resp.json();
+                        detail = data.detail || data.error || JSON.stringify(data);
+                    } catch {
+                        detail = await resp.text().catch(() => '');
+                    }
+                    throw new Error(`Workflow sync failed (${resp.status})${detail ? `: ${detail}` : ''}`);
+                }
+                const data = await resp.json().catch(() => ({}));
+                results.push({
+                    workflow: compactWorkflowMetadata(workflow),
+                    action: existingWorkflow ? 'updated' : 'created',
+                    id: data?.workflow?.id || data?.id || existingWorkflow?.id || null,
+                });
+            }
+
+            const payload = {
+                workflows: results,
+                created: results.filter(item => item.action === 'created').length,
+                updated: results.filter(item => item.action === 'updated').length,
+            };
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'workflow_sync_multi',
+            };
+        },
+
+        workflow_run_multi: async (args = {}, options = {}) => {
+            const target = String(args.workflow_id || args.workflowId || args.id || args.name || args.slug || '').trim();
+            if (!target) {
+                throw new Error('workflow_id is required');
+            }
+            const creds = new TarangAuth().loadCredentials();
+            if (!creds.backendUrl || !creds.token) {
+                throw new Error('Not logged in. Run kepler login first.');
+            }
+
+            const workflowId = await resolveWorkflowId(creds, target);
+            if (!workflowId) {
+                const localMatch = listLocalWorkflows(process.cwd()).find(workflow => workflowTargetMatches(workflow, target));
+                if (localMatch) {
+                    throw new Error(`Workflow '${target}' exists locally but is not synced yet. Run workflow_sync_multi before workflow_run_multi.`);
+                }
+                throw new Error(`Workflow not found: ${target}`);
+            }
+
+            const url = `${creds.backendUrl}/api/workflows/${encodeURIComponent(workflowId)}/run-multi`;
+            const approvalAllowedTools = [
+                'get_project_overview',
+                'write_file',
+                'write_project',
+                'edit_file',
+                'shell',
+                'lint_check',
+                'validate_build',
+                'run_tests',
+                'agents_list',
+                'agent_create',
+                'agent_sync',
+                'workflow_list',
+                'workflow_create_multi',
+                'workflow_sync_multi',
+                'workflow_run_multi',
+            ];
+            const instruction = args.instruction || '';
+            const projectResources = projectRegistry.resources();
+            const workflowScope = buildWorkScope({
+                instruction,
+                cwd: process.cwd(),
+                projectResources,
+            });
+            const suppliedGlobalParams = args.global_params || args.globalParams || {};
+            const globalParams = {
+                instruction,
+                cwd: process.cwd(),
+                project_root: process.cwd(),
+                project_resources: projectResources,
+                work_scope: workflowScope,
+                ...suppliedGlobalParams,
+            };
+            const body = {
+                trigger_input: {
+                    instruction,
+                    cwd: process.cwd(),
+                    project_root: process.cwd(),
+                    work_scope: globalParams.work_scope,
+                },
+                global_params: globalParams,
+                orchestration_pattern: args.pattern || args.orchestration_pattern || 'sequential',
+                pattern: args.pattern || args.orchestration_pattern || 'sequential',
+                // Multi-agent workflow runs are SSE-only today. Do not forward
+                // a model-supplied "sync" mode into the backend 400 path.
+                mode: 'stream',
+                approval_scope: {
+                    approved: true,
+                    source: 'cli_hitl',
+                    scope: 'workflow_run',
+                    workflow_id: workflowId,
+                    target,
+                    allowed_tools: approvalAllowedTools,
+                    allow_destructive: false,
+                    reason: 'User approved workflow execution',
+                },
+            };
+
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${creds.token}`,
+                    Accept: 'text/event-stream',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(body),
+                signal: options.signal,
+            });
+
+            if (!resp.ok) {
+                let detail = '';
+                try {
+                    const data = await resp.json();
+                    detail = data.detail || data.error || JSON.stringify(data);
+                } catch {
+                    detail = await resp.text().catch(() => '');
+                }
+                throw new Error(`Workflow run failed (${resp.status})${detail ? `: ${detail}` : ''}`);
+            }
+
+            const events = [];
+            let final = null;
+            let nestedToolCalls = 0;
+            let callbacksPosted = 0;
+            const workflowTaskId = resp.headers.get('X-Task-ID') || resp.headers.get('X-Workflow-Run-ID');
+            for await (const event of streamResponse(resp)) {
+                events.push(event.type);
+                if (event.type === 'tool_call' || event.type === 'tool_request') {
+                    if (event.server_side || event.data?.server_side) continue;
+                    const toolName = event.tool || event.name || event.data?.tool || event.data?.name;
+                    const callId = event.call_id || event.id || event.data?.call_id || event.data?.id;
+                    const toolArgs = event.args || event.input || event.data?.args || event.data?.input || {};
+                    if (!workflowTaskId || !callId || !toolName) {
+                        throw new Error(`Workflow tool call missing callback metadata: ${JSON.stringify(event).slice(0, 300)}`);
+                    }
+                    if (toolName === 'workflow_run_multi') {
+                        const nestedResult = {
+                            success: false,
+                            output: 'Nested workflow_run_multi is not allowed inside a workflow run.',
+                        };
+                        await sendCallback(creds.backendUrl, creds.token, workflowTaskId, callId, nestedResult);
+                        throw new Error(nestedResult.output);
+                    }
+                    nestedToolCalls++;
+                    const result = await executeToolWithHooks(toolName, toolArgs, {
+                        ...options,
+                        workflowRun: true,
+                        workflowId,
+                        workflowTaskId,
+                    });
+                    const posted = await sendCallback(creds.backendUrl, creds.token, workflowTaskId, callId, result);
+                    if (!posted) {
+                        throw new Error(`Workflow tool callback failed for ${toolName}`);
+                    }
+                    callbacksPosted++;
+                } else if (event.type === 'approval_required') {
+                    const toolId = event.tool_id || event.id || event.data?.tool_id || event.data?.id;
+                    const toolName = event.tool || event.data?.tool || 'tool';
+                    if (workflowTaskId && toolId) {
+                        await sendApprovalDecision(
+                            creds.backendUrl,
+                            creds.token,
+                            workflowTaskId,
+                            toolId,
+                            'deny',
+                            'once',
+                            'Workflow run approval scope did not include this operation',
+                        );
+                    }
+                    throw new Error(`Workflow requested additional approval for ${toolName}; the upfront workflow-run approval scope did not cover it.`);
+                } else if (event.type === 'orchestration_complete') {
+                    final = event;
+                } else if (event.type === 'run_error') {
+                    const detail = event.error || event.data?.error || event.message || 'Workflow run failed';
+                    throw new Error(detail);
+                }
+            }
+
+            const payload = {
+                workflow_id: workflowId,
+                target,
+                pattern: body.pattern,
+                run_id: final?.run_id || null,
+                result: final?.result || final?.data?.result || '',
+                total_tokens: final?.total_tokens || 0,
+                total_cost: final?.total_cost || 0,
+                duration_s: final?.duration_s || 0,
+                agent_count: final?.agent_count || 0,
+                events_seen: events.length,
+                nested_tool_calls: nestedToolCalls,
+                callbacks_posted: callbacksPosted,
+            };
+
+            return {
+                success: true,
+                output: JSON.stringify(payload, null, 2),
+                ...payload,
+                _tool: 'workflow_run_multi',
+            };
+        },
     };
 
     return {
@@ -1386,29 +1877,8 @@ print('OK: replaced')
          * @param {Object} args - Tool arguments
          * @returns {Promise<Object>} - { success, output, ... }
          */
-        async execute(name, args) {
-            const handler = toolMap[name];
-            if (!handler) {
-                return { success: false, output: `Unknown tool: ${name}`, _tool: name };
-            }
-            const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
-            try {
-                const pre = await hooks.run('PreToolUse', { toolName: name, input: args || {} });
-                if (pre.blocked) {
-                    return { success: false, output: `BLOCKED by hook: ${pre.message}`, _tool: name, _blocked: true };
-                }
-                let result = await handler(args);
-                const post = await hooks.run('PostToolUse', { toolName: name, input: args || {}, result });
-                for (const item of post.results || []) {
-                    if (item.parsed?.modifiedResult !== undefined) result = item.parsed.modifiedResult;
-                    if (item.parsed?.feedback && result && typeof result === 'object') {
-                        result.output = `${result.output || ''}\n\n--- Hook Feedback ---\n${item.parsed.feedback}`.trim();
-                    }
-                }
-                return result;
-            } catch (err) {
-                return { success: false, output: `Tool error (${name}): ${err.message}`, _tool: name };
-            }
+        async execute(name, args, options = {}) {
+            return executeToolWithHooks(name, args, options);
         },
 
         /** List all available tool names. */
@@ -1454,6 +1924,15 @@ print('OK: replaced')
                     domains: agent.domains,
                     source_scope: agent.source_scope,
                     spec: agent.spec,
+                })),
+                available_workflows: listLocalWorkflows(process.cwd()).map(workflow => ({
+                    slug: workflow.slug,
+                    name: workflow.name,
+                    description: workflow.description || '',
+                    pattern: workflow.pattern || workflow.orchestration_pattern || 'sequential',
+                    agent_count: workflow.agent_count || 0,
+                    edge_count: workflow.edge_count || 0,
+                    source_scope: 'project',
                 })),
                 source: 'cli',
             };

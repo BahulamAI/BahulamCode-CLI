@@ -155,7 +155,38 @@ export function statusBar(parts) {
 // ── Helpers ──
 
 export function stripAnsi(str) {
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
+  return String(str ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function visibleWidth(str) {
+  let width = 0;
+  for (const char of stripAnsi(str)) {
+    const code = char.codePointAt(0);
+    if (code === undefined) continue;
+    if (code === 0) continue;
+    if (code < 32 || (code >= 0x7f && code < 0xa0)) continue;
+    if (code >= 0x300 && code <= 0x36f) continue;
+    if (code >= 0xfe00 && code <= 0xfe0f) continue;
+    if (isWideCodePoint(code)) width += 2;
+    else width += 1;
+  }
+  return width;
+}
+
+function isWideCodePoint(code) {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    code === 0x2329 ||
+    code === 0x232a ||
+    (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1faff)
+  );
 }
 
 export function truncate(str, max) {
@@ -380,7 +411,14 @@ function normalizeMarkdownFlow(text) {
 }
 
 function markdownColumns() {
-  return Math.max(40, process.stderr.columns || process.stdout.columns || 100);
+  // Every content call site writes rendered lines with a leading "  " (2 col
+  // indent). If we wrap at the full terminal width, those two extra columns
+  // push each line past the viewport and the terminal hard-wraps at the
+  // character boundary — splitting words like "wro/ng" or "multip/le". Reserve
+  // that indent (plus one column of safety for wide-char surprises) so the
+  // renderer's soft-wrap does the whole job.
+  const raw = process.stdout.columns || process.stderr.columns || 100;
+  return Math.max(40, raw - 3);
 }
 
 function renderWrappedMarkdownLine(firstPrefix, continuationPrefix, content, columns, renderContent) {
@@ -465,20 +503,82 @@ function isTableSeparator(line) {
 
 function renderMarkdownTable(headers, rows) {
   const columnCount = Math.max(headers.length, ...rows.map(row => row.length));
-  const widths = Array.from({ length: columnCount }, (_, index) => {
-    const values = [headers[index] || '', ...rows.map(row => row[index] || '')];
-    return Math.min(40, Math.max(...values.map(value => stripAnsi(value).length), 3));
-  });
+  const widths = markdownTableWidths(headers, rows, columnCount);
   const border = c.gray(`  ${widths.map(width => '─'.repeat(width + 2)).join('┼')}`);
-  const formatRow = (row, header = false) => {
-    const cells = widths.map((width, index) => {
-      const value = truncate(row[index] || '', width);
-      const padded = value + ' '.repeat(Math.max(0, width - stripAnsi(value).length));
-      return header ? c.bold(padded) : inlineMarkdown(padded);
-    });
-    return `  ${cells.map(cell => ` ${cell} `).join(c.gray('│'))}`;
-  };
+  const formatRow = (row, header = false) => renderMarkdownTableRow(row, widths, header);
   return [formatRow(headers, true), border, ...rows.map(row => formatRow(row))];
+}
+
+function markdownTableWidths(headers, rows, columnCount) {
+  const columns = markdownColumns();
+  const contentBudget = Math.max(columnCount * 8, columns - (3 * columnCount) - 1);
+  const desired = Array.from({ length: columnCount }, (_, index) => {
+    const values = [headers[index] || '', ...rows.map(row => row[index] || '')];
+    return Math.max(...values.map(value => visibleWidth(markdownTableCellText(value))), 3);
+  });
+
+  if (columnCount === 1) return [Math.min(desired[0], contentBudget)];
+
+  if (columnCount === 2) {
+    const firstMax = Math.max(12, Math.min(32, contentBudget - 24));
+    const first = Math.max(8, Math.min(desired[0], firstMax));
+    const second = Math.max(16, contentBudget - first);
+    return [first, second];
+  }
+
+  const minWidths = desired.map((width, index) => {
+    const headerWidth = visibleWidth(markdownTableCellText(headers[index] || ''));
+    return Math.min(width, Math.max(8, Math.min(headerWidth || 8, 16)));
+  });
+  const widths = desired.map(width => Math.min(width, 30));
+
+  while (widths.reduce((sum, width) => sum + width, 0) > contentBudget) {
+    let shrinkIndex = -1;
+    let widest = -1;
+    for (let index = 0; index < widths.length; index++) {
+      if (widths[index] > minWidths[index] && widths[index] > widest) {
+        widest = widths[index];
+        shrinkIndex = index;
+      }
+    }
+    if (shrinkIndex < 0) break;
+    widths[shrinkIndex]--;
+  }
+
+  return widths;
+}
+
+function renderMarkdownTableRow(row, widths, header = false) {
+  const wrapped = widths.map((width, index) => {
+    const value = markdownTableCellText(row[index] || '');
+    const lines = wrapWords(value, width, width);
+    return lines.length ? lines : [''];
+  });
+  const height = Math.max(...wrapped.map(lines => lines.length), 1);
+  const rendered = [];
+
+  for (let lineIndex = 0; lineIndex < height; lineIndex++) {
+    const cells = widths.map((width, index) => {
+      const value = wrapped[index][lineIndex] || '';
+      const padded = value + ' '.repeat(Math.max(0, width - visibleWidth(value)));
+      return header ? c.bold(padded) : padded;
+    });
+    rendered.push(`  ${cells.map(cell => ` ${cell} `).join(c.gray('│'))}`);
+  }
+
+  return rendered.join('\n');
+}
+
+function markdownTableCellText(value) {
+  return stripAnsi(String(value || ''))
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

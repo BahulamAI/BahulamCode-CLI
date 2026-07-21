@@ -23,6 +23,7 @@ import {
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
+import { isInputDockMounted, moveToContent } from '../ui/input-dock.mjs';
 import { validateShellCommand } from './safety.mjs';
 import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
@@ -39,6 +40,7 @@ const WRITE_TOOLS = new Set([
     'validate_build', 'lint_check',
     'skill_install', 'skill_update', 'skill_remove',
     'agent_create', 'agent_sync',
+    'workflow_create_multi', 'workflow_sync_multi',
 ]);
 
 function defaultWhy(tier, tool, args) {
@@ -206,6 +208,12 @@ export class ApprovalManager {
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
 
+        // Approval must render ABOVE the fixed input dock (in the scrollable
+        // content area) so it doesn't collide with the "+ add instruction"
+        // prompt. Move cursor into content once; the in-place redraw below
+        // stays within that region because printedHeight tracks the anchor.
+        if (isInputDockMounted()) moveToContent();
+
         // For TTYs we redraw in place on every arrow key so the prompt feels
         // live. For non-TTYs / pipes we just print once and read a line.
         const isInteractive = process.stdin.isTTY;
@@ -214,10 +222,17 @@ export class ApprovalManager {
         }
 
         const drawPrompt = () => {
-            // Move up over the previous render before re-printing.
+            // Move up over the previous render before re-printing. Use a
+            // bounded per-line clear instead of \x1b[J — a full clear-to-end
+            // would wipe the input dock's bottom rule and tips row that live
+            // below this render position.
             if (printedHeight > 0) {
                 write(`\x1b[${printedHeight}F`); // cursor to start of N lines above
-                write('\x1b[J');                   // clear from cursor to end of screen
+                for (let i = 0; i < printedHeight; i++) {
+                    write('\x1b[2K');            // clear current line
+                    write('\x1b[1E');            // to start of next line
+                }
+                write(`\x1b[${printedHeight}F`); // back to the anchor row
             }
             const block = renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options });
             write(block + '\n');

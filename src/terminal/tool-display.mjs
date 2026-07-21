@@ -31,6 +31,10 @@ const TOOL_LABELS = Object.freeze({
   agents_list: 'Listing agents',
   agent_create: 'Creating agent',
   agent_sync: 'Syncing agents',
+  workflow_list: 'Listing workflows',
+  workflow_create_multi: 'Creating workflow',
+  workflow_sync_multi: 'Syncing workflows',
+  workflow_run_multi: 'Running workflow',
   explore: 'Exploring',
   plan: 'Planning',
   verify: 'Verifying',
@@ -64,6 +68,20 @@ function shortPath(filePath, cwd = currentWorkingDirectory()) {
   const value = String(filePath || '');
   if (cwd && value.startsWith(`${cwd}/`)) return value.slice(cwd.length + 1);
   return value;
+}
+
+// Sub-agent prompts (explore/plan/verify/debug/refactor) are often multi-
+// paragraph briefs with bullet lists — dumping the whole thing into a tool
+// card head made the terminal render N lines of noise per call. Show just
+// the first paragraph (up to the first blank line), whitespace-collapsed to
+// a single line, and add an ellipsis if more content was hidden.
+function firstParagraph(text) {
+  const raw = String(text || '').replace(/\r\n?/g, '\n').trim();
+  if (!raw) return '';
+  const paraEnd = raw.indexOf('\n\n');
+  const head = paraEnd === -1 ? raw : raw.slice(0, paraEnd);
+  const collapsed = head.replace(/\s+/g, ' ').trim();
+  return raw.length > head.length ? `${collapsed} …` : collapsed;
 }
 
 export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
@@ -133,12 +151,20 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
       return [args.name || '', args.role || '', args.model || ''].filter(Boolean).join(' · ');
     case 'agent_sync':
       return args.name || args.slug || 'all local agents';
+    case 'workflow_list':
+      return [args.query ? `"${args.query}"` : '', args.scope || ''].filter(Boolean).join(' · ');
+    case 'workflow_create_multi':
+      return [args.name || '', args.pattern || 'sequential', Array.isArray(args.agents) ? `${args.agents.length} agents` : ''].filter(Boolean).join(' · ');
+    case 'workflow_sync_multi':
+      return args.name || args.slug || 'all local workflows';
+    case 'workflow_run_multi':
+      return [args.workflow_id || args.workflowId || args.name || '', args.pattern || 'sequential'].filter(Boolean).join(' · ');
     case 'explore':
     case 'plan':
     case 'verify':
     case 'debug':
     case 'refactor':
-      return args.query || args.task || args.prompt || '';
+      return firstParagraph(args.query || args.task || args.prompt || '');
     case 'ask_user':
       return args.question || args.prompt || '';
     default:
