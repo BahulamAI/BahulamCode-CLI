@@ -227,32 +227,35 @@ test('search cards keep outcome inline by compacting long heads', () => {
 });
 
 test('tool activity rows only force blank spacing between shell commands', () => {
+  // Post PRD-081 repl split: rendering pipeline lives in repl-render.mjs,
+  // pure explore classifier in repl-explore.mjs. Test both files.
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  // Post PRD-081 repl split: mutable state lives in repl-state.mjs
-  // exported as `runtime.*`, so what used to be _pendingHead is now
-  // runtime.pendingHead.
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
-  assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
-  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
-  assert.ok(replSource.includes("renderBlockBoundary('thinking')"));
-  assert.ok(replSource.includes('function thinkingPrefix(text)'));
-  assert.ok(replSource.includes('Thinking · ${kind}'));
-  assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
-  assert.ok(replSource.includes("renderBlockBoundary('content')"));
-  // Pure explore classifier lives in repl-explore.mjs after PRD-081 repl split.
+  const renderSource = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
   const exploreSource = fs.readFileSync(new URL('../src/terminal/repl-explore.mjs', import.meta.url), 'utf-8');
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
+  assert.ok(renderSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
+  assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
+  // renderBlockBoundary('thinking'|'content') calls fire from the event
+  // dispatcher which still lives in repl.mjs — check both files.
+  assert.ok(replSource.includes("renderBlockBoundary('thinking')")
+         || renderSource.includes("renderBlockBoundary('thinking')"));
+  assert.ok(renderSource.includes('function thinkingPrefix(text)'));
+  assert.ok(renderSource.includes('Thinking · ${kind}'));
+  assert.ok(renderSource.includes('function clippedThinking(text, limit = 200)'));
+  assert.ok(replSource.includes("renderBlockBoundary('content')")
+         || renderSource.includes("renderBlockBoundary('content')"));
   assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
   assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
-  assert.ok(replSource.includes('function exploreSummary()'));
-  assert.ok(replSource.includes('exploring · ${stats}${latest}'));
-  assert.ok(replSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
-  assert.ok(replSource.includes("runtime.lastRenderedBlock = 'content';"));
+  assert.ok(renderSource.includes('function exploreSummary()'));
+  assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
+  assert.ok(renderSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
+  assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -304,9 +307,12 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
   // Post PRD-081 repl split: _afterContentFlush is now runtime.afterContentFlush.
+  // The assignment stays in repl.mjs (execution loop sets the callback),
+  // the invocation moved into flushContent inside repl-render.mjs.
+  const renderSourceRt = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
   assert.ok(replSource.includes('runtime.afterContentFlush = focusExecutionInput;'));
   assert.ok(replSource.includes('runtime.afterContentFlush = null;'));
-  assert.ok(replSource.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
+  assert.ok(renderSourceRt.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
   assert.ok(replSource.includes('client.resume(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
