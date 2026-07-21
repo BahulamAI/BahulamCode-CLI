@@ -4067,21 +4067,13 @@ export async function startTerminalRepl() {
   // and can make the first prompt line appear duplicated.
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
-    return `${c.brand(who)} ${c.dim('›')} `;
-  }
-
-  function inputRule() {
-    if (term().plain) return;
-    const w = process.stdout.columns || 80;
-    process.stderr.write(`${c.dim('─'.repeat(Math.max(24, w - 4)))}\n`);
-  }
-
-  function printInputSeparator() {
-    inputRule();
+    if (term().plain) return `${who} > `;
+    return `${paint.inverse(` ${c.brand(who)} `)} ${c.dim('›')} `;
   }
 
   function printInputBottomRule() {
-    inputRule();
+    if (term().plain) return;
+    process.stderr.write('\n');
   }
 
   const rl = readline.createInterface({
@@ -4240,7 +4232,6 @@ export async function startTerminalRepl() {
   function showPrompt() {
     printPromptBlock();
     process.stderr.write('\n');  // half-inch vertical gap above input line
-    printInputSeparator();
     promptInputLine();
   }
 
