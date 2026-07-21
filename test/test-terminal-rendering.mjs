@@ -234,9 +234,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
 test('REPL prompt keeps a small bottom cushion', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   assert.ok(replSource.includes('function printInputSeparator()'));
-  assert.ok(replSource.includes('function inputRule({ label = \'\' } = {})'));
-  assert.ok(replSource.includes("inputRule({ label: 'message' });"));
-  assert.ok(replSource.includes('paint.inverse'));
+  assert.ok(replSource.includes('function inputRule()'));
+  assert.ok(replSource.includes("c.dim('─'.repeat(Math.max(24, w - 4)))"));
+  assert.ok(!replSource.includes("inputRule({ label: 'message' });"));
+  assert.ok(!replSource.includes('paint.inverse(c.brand(` ${label} `))'));
   assert.ok(replSource.includes("return `${c.brand(who)} ${c.dim('›')} `;"));
   assert.ok(replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function printInputBottomRule()'));

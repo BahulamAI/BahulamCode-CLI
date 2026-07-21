@@ -4070,28 +4070,18 @@ export async function startTerminalRepl() {
     return `${c.brand(who)} ${c.dim('›')} `;
   }
 
-  function inputRule({ label = '' } = {}) {
+  function inputRule() {
     if (term().plain) return;
     const w = process.stdout.columns || 80;
-    const tag = label ? ` ${paint.inverse(c.brand(` ${label} `))} ` : '';
-    const tagWidth = stripAnsi(tag).length;
-    const lineLen = Math.max(8, w - tagWidth - 4);
-    process.stderr.write(`${c.dim('──')}${tag}${c.dim('─'.repeat(lineLen))}\n`);
+    process.stderr.write(`${c.dim('─'.repeat(Math.max(24, w - 4)))}\n`);
   }
 
   function printInputSeparator() {
-    inputRule({ label: 'message' });
+    inputRule();
   }
 
   function printInputBottomRule() {
-    if (term().plain || !process.stderr.isTTY) return;
-    const currentColumn = promptColumns() + Number(rl.cursor || 0);
-    readline.moveCursor(process.stderr, 0, 1);
-    readline.clearLine(process.stderr, 0);
-    readline.cursorTo(process.stderr, 0);
     inputRule();
-    readline.moveCursor(process.stderr, 0, -1);
-    readline.cursorTo(process.stderr, currentColumn);
   }
 
   const rl = readline.createInterface({
@@ -4244,7 +4234,6 @@ export async function startTerminalRepl() {
     reservePromptBottomPadding();
     inputActive = true;
     rl.prompt();
-    printInputBottomRule();
   }
 
   // Helper: show prompt with separator + vertical breathing room
@@ -4331,6 +4320,7 @@ export async function startTerminalRepl() {
     clearSlashHint();
     if (selectedSlashCommand) input = selectedSlashCommand;
     if (!input) { promptInputLine(); return; }
+    printInputBottomRule();
 
     // Save to input history
     session.inputHistory.push(input);
