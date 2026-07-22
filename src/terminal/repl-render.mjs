@@ -22,8 +22,6 @@ import { runtime, session } from './repl-state.mjs';
 import { fitAnsiLine } from './repl-format.mjs';
 import { exploreCategory, isExploreTool } from './repl-explore.mjs';
 import {
-  clearPinnedStatus,
-  drawPinnedStatus,
   isInputDockMounted,
   moveToContent,
 } from '../ui/input-dock.mjs';
@@ -115,16 +113,60 @@ export function exploreSummary() {
   return `exploring · ${stats}${latest}`;
 }
 
+function exploreRunTotal() {
+  return Object.values(runtime.exploreRun.counts).reduce((a, b) => a + b, 0);
+}
+
+function exploreSnapshotEvery() {
+  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_EVERY || '8', 10);
+  return Number.isFinite(n) ? Math.max(1, n) : 8;
+}
+
+function exploreSnapshotMs() {
+  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_MS || '900', 10);
+  return Number.isFinite(n) ? Math.max(100, n) : 900;
+}
+
+function writeExploreSnapshot(summary = exploreSummary()) {
+  const cols = process.stderr.columns || 120;
+  const line = `  ${paint.text.dim(fitAnsiLine(summary, Math.max(32, cols - 2)))}`;
+  process.stderr.write(`${line}\n`);
+  runtime.exploreRun.lastPrintedSummary = summary;
+  runtime.exploreRun.lastPrintedTotal = exploreRunTotal();
+  runtime.exploreRun.lastPrintedAt = Date.now();
+  runtime.lastRenderedBlock = 'tool';
+}
+
+function shouldPrintExploreSnapshot() {
+  const summary = exploreSummary();
+  const total = exploreRunTotal();
+  if (!summary || total <= 0) return false;
+  if (!runtime.exploreRun.lastPrintedSummary) return true;
+  if (summary === runtime.exploreRun.lastPrintedSummary) return false;
+
+  const sinceTotal = total - (runtime.exploreRun.lastPrintedTotal || 0);
+  const sinceMs = Date.now() - (runtime.exploreRun.lastPrintedAt || 0);
+  return sinceTotal >= exploreSnapshotEvery() || sinceMs >= exploreSnapshotMs();
+}
+
 export function renderExploreRun() {
   // Set the lock BEFORE touching the spinner so the interval's next tick
   // picks up exploreSummary() text instead of any stale label.
   runtime.exploreRun.lineActive = true;
 
-  // Paint the pinned line immediately so the user sees the update from
-  // the very first tool call, not after the 80 ms interval delay.
   if (isInputDockMounted()) {
-    const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
-    drawPinnedStatus(`  ${c.brand(frame)} ${c.dim(exploreSummary())}`);
+    // Docked terminals reserve a bottom input area. Keeping explore progress
+    // as an animated bottom overlay creates visible gaps between the sub-agent
+    // transcript and the current tool. Emit bounded snapshots into the
+    // transcript instead; every hidden call remains available through /expand.
+    if (runtime.spinInterval) {
+      clearInterval(runtime.spinInterval);
+      runtime.spinInterval = null;
+      inPlace('');
+    }
+    runtime.spinText = '';
+    if (shouldPrintExploreSnapshot()) writeExploreSnapshot();
+    return;
   }
 
   if (!runtime.spinInterval) {
@@ -138,9 +180,6 @@ export function renderExploreRun() {
       const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
       runtime.spinFrame++;
       const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-      if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
-        return;
-      }
       if (isInputDockMounted()) moveToContent();
       inPlace(rendered);
     }, 80);
@@ -149,7 +188,8 @@ export function renderExploreRun() {
 }
 
 export function flushExploreRun() {
-  const total = Object.values(runtime.exploreRun.counts).reduce((a, b) => a + b, 0);
+  const total = exploreRunTotal();
+  const summary = exploreSummary();
   // Release the lock first so the real spinner teardown can run.
   const wasActive = runtime.exploreRun.lineActive;
   runtime.exploreRun.lineActive = false;
@@ -157,16 +197,13 @@ export function flushExploreRun() {
     if (wasActive) {
       if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
       runtime.spinText = '';
-      // Clear the pinned status row instead of using inPlace (which is
-      // unreliable near the bottom of the scroll region).
-      if (isInputDockMounted()) clearPinnedStatus();
+      if (!isInputDockMounted()) inPlace('');
     }
-    const cols = process.stderr.columns || 120;
-    const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
-    process.stderr.write(`${line}\n`);
-    runtime.lastRenderedBlock = 'tool';
+    if (!isInputDockMounted() || summary !== runtime.exploreRun.lastPrintedSummary) {
+      writeExploreSnapshot(summary);
+    }
   }
-  runtime.exploreRun = { counts: {}, recent: [], lineActive: false };
+  runtime.exploreRun = { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 };
 }
 
 // Legacy alias — several sites (resetContentStream, older event handlers)
@@ -408,6 +445,7 @@ export const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 export function startSpinner(text) {
   runtime.spinText = text;
   runtime.spinFrame = 0;
+  if (runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
   if (runtime.spinInterval) return; // already running
   runtime.spinInterval = setInterval(() => {
     // While an explore run is active, its live counts own the spinner
@@ -419,11 +457,7 @@ export function startSpinner(text) {
     const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
     runtime.spinFrame++;
     const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-    // Explore uses ABSOLUTE cursor positioning to a pinned row inside the
-    // content region. inPlace()'s _lastLineCount-based approach stacks copies
-    // of the line into scrollback whenever a '\n' at the region's bottom row
-    // triggers a scroll — absolute positioning + clear-line is immune.
-    if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
+    if (isExploreActive && isInputDockMounted()) {
       return;
     }
     if (isInputDockMounted()) moveToContent();
@@ -458,7 +492,7 @@ export function startContentStream() {
   runtime.streamBuffer = '';
   runtime.streamedPartialText = '';
   runtime.renderedToolResults.clear();
-  runtime.exploreRun = { counts: {}, recent: [], lineActive: false };
+  runtime.exploreRun = { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 };
   runtime.renderedContentThisTurn = false;
   runtime.lastRenderedBlock = null;
   stopSpinner();

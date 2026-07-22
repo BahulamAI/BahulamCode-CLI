@@ -166,7 +166,7 @@ test('input-dock exports the dynamic-growth API surface', () => {
   // area to fit the wrapped content up to KEPLER_INPUT_ROWS_MAX.
   for (const fn of ['renderDockInput', 'focusDockInput', 'prepareInputPrompt',
                     'clearInputPrompt', 'mountInputDock', 'unmountInputDock',
-                    'moveToContent', 'isInputDockMounted']) {
+                    'clearDockArea', 'moveToContent', 'isInputDockMounted']) {
     assert.strictEqual(typeof dock[fn], 'function', `missing export: ${fn}`);
   }
 });
@@ -178,6 +178,14 @@ test('mountInputDock signature accepts { inputRowsMax }', () => {
   const source = dock.mountInputDock.toString();
   assert.ok(source.includes('inputRowsMax'),
     'mountInputDock should accept inputRowsMax option');
+});
+
+test('unmountInputDock clears dock rows before resetting terminal state', () => {
+  const source = dock.unmountInputDock.toString();
+  assert.ok(source.includes('clearDockArea({ restore: false })'),
+    'unmountInputDock should clear the reserved dock rows');
+  assert.ok(source.includes('clearScrollRegion()'),
+    'unmountInputDock should reset the scroll region');
 });
 
 console.log(`\n\x1b[32m${passed} passed\x1b[0m\n`);

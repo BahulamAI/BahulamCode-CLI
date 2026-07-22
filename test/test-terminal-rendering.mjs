@@ -255,6 +255,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function exploreSummary()'));
   assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
   assert.ok(renderSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
+  assert.ok(renderSource.includes('function writeExploreSnapshot(summary = exploreSummary())'));
+  assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
+  assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
+  assert.ok(!renderSource.includes('drawPinnedStatus'));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
@@ -275,6 +279,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('printInputBottomRule();'));
   assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes('function renderIdleDockInput()'));
+  assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
+  assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
+  assert.ok(replSource.includes("case '/exit':"));
+  assert.ok(replSource.includes('if (isInputDockMounted()) unmountInputDock();'));
+  assert.ok(replSource.includes("rl.on('close', async () => {"));
+  assert.ok(replSource.includes('clearSlashHint({ restoreCursor: false });'));
+  assert.ok(replSource.includes('inputActive = false;'));
+  assert.ok(replSource.includes('clearSlashHint();'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));

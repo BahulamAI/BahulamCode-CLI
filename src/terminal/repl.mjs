@@ -2356,6 +2356,7 @@ async function handleCommand(input, ctx) {
 
     case '/exit':
     case '/quit':
+      if (isInputDockMounted()) unmountInputDock();
       process.stderr.write(`\n  ${c.brand('Goodbye!')}\n\n`);
       process.exit(0);
 
@@ -2952,7 +2953,7 @@ export async function startTerminalRepl() {
     slashHintRowsVisible = rows;
   }
 
-  function clearSlashHint() {
+  function clearSlashHint({ restoreCursor: shouldRestoreCursor = true } = {}) {
     if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
       slashHintVisible = false;
       slashHintRowsVisible = 0;
@@ -2969,7 +2970,7 @@ export async function startTerminalRepl() {
     // The dock's bottom rule + tips row live in the rows we just cleared.
     // Repaint the frame (input row untouched) so they reappear.
     if (isInputDockMounted()) redrawDockFrame();
-    restoreReadlineCursor();
+    if (shouldRestoreCursor) restoreReadlineCursor();
     slashHintVisible = false;
     slashHintRowsVisible = 0;
     slashHintItems = [];
@@ -3499,7 +3500,10 @@ export async function startTerminalRepl() {
             return;
           }
           stopSpinner();
-          if (isInputDockMounted()) moveToContent();
+          if (isInputDockMounted()) {
+            clearInputPrompt();
+            moveToContent();
+          }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
           // cancel() now aborts the in-flight SSE reader; the for-await loop
           // wakes up immediately and the prompt returns. No more "stuck"
@@ -3559,7 +3563,10 @@ export async function startTerminalRepl() {
             process.exit(0);
           }
           lastCtrlCAt = now;
-          if (isInputDockMounted()) moveToContent();
+          if (isInputDockMounted()) {
+            clearInputPrompt();
+            moveToContent();
+          }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
           return;
@@ -3758,7 +3765,10 @@ export async function startTerminalRepl() {
   }
 
   rl.on('close', async () => {
+    clearSlashHint({ restoreCursor: false });
+    inputActive = false;
     stopSpinner();
+    if (isInputDockMounted()) unmountInputDock();
     await hookRunner.run('Stop', { input: { session_id: session.id || '' } });
     await jsonlWriter.close();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);

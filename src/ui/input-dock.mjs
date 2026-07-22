@@ -188,6 +188,17 @@ function clearInputRows() {
   restoreCursor();
 }
 
+export function clearDockArea({ restore = true } = {}) {
+  if (!mounted) return false;
+  if (restore) saveCursor();
+  for (let row = topRuleRow(); row <= rows(); row++) {
+    moveTo(row, 1);
+    clearLine();
+  }
+  if (restore) restoreCursor();
+  return true;
+}
+
 /**
  * Wrap `prefix + value` into visible lines, keeping only the last N rows
  * with an ellipsis marker on overflow. Returned lines are already indented
@@ -246,7 +257,10 @@ export function unmountInputDock() {
   if (!mounted || resetting) return;
   resetting = true;
   try {
+    const exitRow = topRuleRow();
+    clearDockArea({ restore: false });
     clearScrollRegion();
+    moveTo(Math.min(rows(), exitRow), 1);
     if (unsubResize) { unsubResize(); unsubResize = null; }
   } finally {
     mounted = false;
