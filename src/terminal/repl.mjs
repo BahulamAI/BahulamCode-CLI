@@ -139,6 +139,7 @@ import {
   unmountInputDock,
 } from '../ui/input-dock.mjs';
 import { term } from '../ui/term.mjs';
+import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
 import {
   formatCardHead,
   formatCompactFileDiff,
@@ -884,9 +885,13 @@ function renderEvent(event) {
       }
       if (text) {
         renderBlockBoundary('content');
+        if (!runtime.contentHeaderPrinted) {
+          process.stdout.write(`${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+          runtime.contentHeaderPrinted = true;
+        }
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
-          process.stdout.write(`  ${line}\n`);
+          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
         }
         runtime.renderedContentThisTurn = true;
         runtime.lastRenderedBlock = 'content';
@@ -1218,9 +1223,13 @@ function renderEvent(event) {
       const summary = data?.summary || '';
       if (summary && !runtime.renderedContentThisTurn) {
         renderBlockBoundary('content');
+        if (!runtime.contentHeaderPrinted) {
+          process.stdout.write(`${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+          runtime.contentHeaderPrinted = true;
+        }
         const rendered = renderMarkdown(summary);
         for (const line of rendered.split('\n')) {
-          process.stdout.write(`  ${line}\n`);
+          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
         }
         runtime.renderedContentThisTurn = true;
         runtime.lastRenderedBlock = 'content';
@@ -3048,15 +3057,11 @@ export async function startTerminalRepl() {
       printInputBottomRule();
       return;
     }
-    const prompt = userPrompt();
     const lines = String(input || '').split('\n');
     printInputBottomRule();
-    process.stderr.write(`${prompt}${lines[0] || ''}\n`);
-    if (lines.length > 1) {
-      const indent = ' '.repeat(stripAnsi(prompt).length);
-      for (const line of lines.slice(1)) {
-        process.stderr.write(`${indent}${line}\n`);
-      }
+    process.stderr.write(`${transcriptHeader('you', { tone: 'user' })}\n`);
+    for (const line of lines) {
+      process.stderr.write(`${transcriptLine(line, { tone: 'user' })}\n`);
     }
   }
 
@@ -3303,15 +3308,6 @@ export async function startTerminalRepl() {
       userTurnWritten = true;
     };
     if (session.id) writeCurrentUserTurn();
-
-    // Kepler response label — full brand magenta, matches the user prompt.
-    process.stderr.write(`\n${paint.brand.primary('kepler')}\n`);
-
-    // Immediate feedback so the screen isn't blank between submit and the
-    // first backend event. The first `status`, `thinking`, or `content_*`
-    // event will replace this text; stopSpinner clears it before content
-    // renders.
-    startSpinner('thinking…');
 
     let assistantContent = '';
     const agentTurnHistory = new AgentHistoryTurnBuilder();
@@ -3615,6 +3611,14 @@ export async function startTerminalRepl() {
         moveToContent();
       }
       startContentStream();
+      process.stderr.write(`\n${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+      runtime.contentHeaderPrinted = true;
+
+      // Immediate feedback so the screen isn't blank between submit and the
+      // first backend event. The first `status`, `thinking`, or `content_*`
+      // event will replace this text; stopSpinner clears it before content
+      // renders.
+      startSpinner('thinking…');
 
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;

@@ -38,6 +38,7 @@ import {
 import { detailFor } from '../ui/tool-details.mjs';
 import { subAgentIndent, inSubAgent as inSubAgentBlock } from '../ui/sub-agent.mjs';
 import { safeCwd } from './repl-utils.mjs';
+import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
 
 export function blockSeparatorMode() {
   return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
@@ -494,6 +495,7 @@ export function startContentStream() {
   runtime.renderedToolResults.clear();
   runtime.exploreRun = { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 };
   runtime.renderedContentThisTurn = false;
+  runtime.contentHeaderPrinted = false;
   runtime.lastRenderedBlock = null;
   stopSpinner();
 }
@@ -522,9 +524,13 @@ export function flushContent() {
   flushPendingHead();
   flushCompactReadRun();
   renderBlockBoundary('content');
+  if (!runtime.contentHeaderPrinted) {
+    process.stdout.write(`${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+    runtime.contentHeaderPrinted = true;
+  }
   const rendered = renderMarkdown(runtime.streamBuffer);
   for (const line of rendered.split('\n')) {
-    process.stdout.write(`  ${line}\n`);
+    process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
   }
   runtime.streamBuffer = '';
   runtime.renderedContentThisTurn = true;

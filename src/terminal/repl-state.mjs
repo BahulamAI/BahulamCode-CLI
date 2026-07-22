@@ -32,6 +32,7 @@ export const runtime = {
   streamedPartialText: '',
   streamTimer: null,
   renderedContentThisTurn: false,
+  contentHeaderPrinted: false,
   afterContentFlush: null,   // callback fired after each flushContent()
 
   // Tool head + block-boundary tracking (single-line vs 2-line card emit).

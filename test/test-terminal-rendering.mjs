@@ -12,6 +12,7 @@ import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
+import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs';
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
@@ -47,6 +48,13 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
   const rendered = renderMarkdown('[Documentation](https://example.com)');
   assert.ok(rendered.includes('\x1b[4m'));
   assert.ok(rendered.includes('Documentation'));
+});
+
+test('transcript blocks distinguish user and assistant turns', () => {
+  assert.strictEqual(stripAnsi(transcriptHeader('you', { tone: 'user' })), '  ╭─ you');
+  assert.strictEqual(stripAnsi(transcriptLine('hello', { tone: 'user' })), '  │ hello');
+  assert.strictEqual(stripAnsi(transcriptHeader('kepler', { tone: 'assistant' })), '  ╭─ kepler');
+  assert.strictEqual(stripAnsi(transcriptLine('Understood', { tone: 'assistant' })), '  │ Understood');
 });
 
 test('markdown tables align after inline markdown is normalized', () => {
@@ -259,6 +267,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
   assert.ok(!renderSource.includes('drawPinnedStatus'));
+  assert.ok(renderSource.includes("transcriptHeader('kepler', { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
@@ -279,6 +289,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('printInputBottomRule();'));
   assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptHeader('kepler', { tone: 'assistant' })"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
@@ -330,6 +343,16 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('client.resume(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('Ctrl+D'));
+});
+
+test('resume preview avoids circular renderEvent import during repl split', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  const resumeSource = fs.readFileSync(new URL('../src/terminal/repl-resume.mjs', import.meta.url), 'utf-8');
+  assert.ok(resumeSource.includes("import { startContentStream, flushContent, stopSpinner } from './repl-render.mjs';"));
+  assert.ok(!resumeSource.includes("from './repl.mjs'"));
+  assert.ok(resumeSource.includes('export function renderResumePreview(resumed, ctx = {})'));
+  assert.ok(resumeSource.includes('const renderEvent = ctx.renderEvent;'));
+  assert.ok(replSource.includes('renderResumePreview(resumed, { renderEvent });'));
 });
 
 test('fixed input dock clears input rows before repainting', () => {
