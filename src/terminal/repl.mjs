@@ -3082,12 +3082,13 @@ export async function startTerminalRepl() {
         if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
         if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
         if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
-        if (String(rl.line || '').trimStart().startsWith('/')) {
-          renderSlashHint(rl.line);
-        } else {
-          clearSlashHint();
-        }
+        const isSlash = String(rl.line || '').trimStart().startsWith('/');
+        if (!isSlash) clearSlashHint();
+        // Refresh the dock input FIRST so the frame (bottom rule + tips)
+        // is fresh, THEN paint the slash hint on top — otherwise the
+        // dock repaint would wipe the hint we just wrote.
         renderIdleDockInput();
+        if (isSlash) renderSlashHint(rl.line);
       });
     });
   }
