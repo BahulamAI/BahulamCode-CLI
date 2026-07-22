@@ -297,6 +297,16 @@ export function clearPinnedStatus() {
   return true;
 }
 
+// Redraw just the frame (top rule, bottom rule, tips, safety row) without
+// touching the input rows. Callers that write into the dock's non-input
+// rows (e.g. slash-hint overlays) use this to restore the frame after
+// clearing their overlay.
+export function redrawDockFrame() {
+  if (!mounted) return false;
+  renderFrame(lastFrame);
+  return true;
+}
+
 export function prepareInputPrompt({ context = '', tips = '' } = {}) {
   if (!mounted) return false;
   // Idle prompt has no buffer yet — collapse the dock back to a single

@@ -129,13 +129,12 @@ import {
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
-  clearPinnedStatus,
-  drawPinnedStatus,
   focusDockInput,
   isInputDockMounted,
   mountInputDock,
   moveToContent,
   prepareInputPrompt,
+  redrawDockFrame,
   renderDockInput,
   unmountInputDock,
 } from '../ui/input-dock.mjs';
@@ -2894,8 +2893,13 @@ export async function startTerminalRepl() {
   let slashHintLine = '';
 
   function promptBottomPaddingLines() {
-    if (isInputDockMounted()) return 0;
     if (!process.stderr.isTTY || term().plain) return 0;
+    // When the dock is mounted the hint borrows the rows below the input
+    // (bottom rule + tips + safety); prepareInputPrompt re-renders the
+    // frame when clearSlashHint() fires, so the rule/tips reappear.
+    // 3 rows fits comfortably in the dock's reservation without leaking
+    // past the safety row.
+    if (isInputDockMounted()) return 3;
     const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
@@ -2962,6 +2966,9 @@ export async function startTerminalRepl() {
       if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
     }
     readline.moveCursor(process.stderr, 0, -rows);
+    // The dock's bottom rule + tips row live in the rows we just cleared.
+    // Repaint the frame (input row untouched) so they reappear.
+    if (isInputDockMounted()) redrawDockFrame();
     restoreReadlineCursor();
     slashHintVisible = false;
     slashHintRowsVisible = 0;
@@ -3016,11 +3023,23 @@ export async function startTerminalRepl() {
     process.stderr.write(`${'\n'.repeat(lines)}\x1b[${lines}A\r`);
   }
 
+  function renderIdleDockInput() {
+    if (!isInputDockMounted()) return false;
+    return renderDockInput(userPrompt(), rl.line || '', {
+      context: buildContextStrip(),
+      tips: idleInputTips(),
+    });
+  }
+
   function promptInputLine() {
-    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
+    // When the fixed dock is active, readline should own only the input
+    // buffer, not the visual prompt. If readline paints the prompt itself,
+    // long wrapped input can leave a stale duplicate row inside the dock.
+    rl.setPrompt(isInputDockMounted() ? '' : userPrompt());
     reservePromptBottomPadding();
     inputActive = true;
     rl.prompt();
+    renderIdleDockInput();
   }
 
   function printSubmittedInput(input) {
@@ -3068,6 +3087,7 @@ export async function startTerminalRepl() {
         } else {
           clearSlashHint();
         }
+        renderIdleDockInput();
       });
     });
   }
