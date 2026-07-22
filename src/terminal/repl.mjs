@@ -2385,7 +2385,7 @@ async function fetchUser(ctx) {
 // Cache CWD at startup so safeCwd() has a fallback if the dir gets deleted
 
 export async function startTerminalRepl() {
-  _cachedCwd = process.cwd(); // Cache startup CWD for recovery
+  safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
   const auth = new TarangAuth();
@@ -2600,7 +2600,7 @@ export async function startTerminalRepl() {
         if (choice === 'switch') {
           try {
             process.chdir(savedProjectPath);
-            _cachedCwd = process.cwd();
+            safeCwd(); // re-prime the cache after chdir
             switchedProject = true;
           } catch {
             projectMissing = true;
