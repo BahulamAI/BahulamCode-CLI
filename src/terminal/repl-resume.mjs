@@ -14,6 +14,7 @@
 import { c } from './ansi.mjs';
 import { session, orbitRef, sessionMgrRef } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
+import { startContentStream, flushContent, stopSpinner } from './repl-render.mjs';
 import {
   endStatusMarker,
   filterResumeReplayEvents,
@@ -397,7 +398,11 @@ export async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } =
 
 // historyRoleLabel, renderHistoryEntries moved to ./repl-format.mjs.
 
-export function renderResumePreview(resumed) {
+// `renderResumePreview` needs to replay each transcript event through the
+// live event renderer. `renderEvent` still lives in repl.mjs (its extraction
+// is a later slice); passing it via `ctx` here avoids a circular import.
+export function renderResumePreview(resumed, ctx = {}) {
+  const renderEvent = ctx.renderEvent;
   const tailTurns = resumeTailTurnCount(resumed.historyMode);
   if (resumed.historyMode === 'compact' || resumed.historyMode === 'summary') {
     if (!resumed.summary) return;

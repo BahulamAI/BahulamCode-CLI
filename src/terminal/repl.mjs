@@ -2314,7 +2314,7 @@ async function handleCommand(input, ctx) {
         }
         process.stderr.write('\n');
       } else if (resumed.replayEvents?.length) {
-        renderResumePreview(resumed);
+        renderResumePreview(resumed, { renderEvent });
       } else if (resumed.history?.length) {
         // Full/tail modes feed real conversation to the agent — show
         // the tail so the user has visual context. Cap at 30 entries to avoid
@@ -2765,7 +2765,7 @@ export async function startTerminalRepl() {
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
         process.stderr.write('\n');
-        renderResumePreview(resumed);
+        renderResumePreview(resumed, { renderEvent });
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
