@@ -63,7 +63,7 @@ import {
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
-import { session, orbitRef, runtime } from './repl-state.mjs';
+import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import {
   appendContent,
@@ -182,8 +182,8 @@ const VERSION = __require('../../package.json').version;
 
 // ── Session State ──
 
-let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
-// orbitRef.current lives in ./repl-state.mjs; assigned below at startup.
+// sessionMgrRef.current + orbitRef.current live in ./repl-state.mjs;
+// assigned below at startup by startTerminalRepl().
 
 // The `session` object lives in repl-state.mjs so other repl-* modules
 // (resume helpers, tool renderers, streaming, etc.) can import it during
@@ -1168,7 +1168,7 @@ function renderEvent(event) {
       if (data?.session_id) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
-        if (_sessionMgr) _sessionMgr.setSessionInfo({ session_id: data.session_id });
+        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
       }
       if (data?.model) session.model = data.model;
       if (data?.models?.coder) session.model = data.models.coder;
@@ -2402,7 +2402,7 @@ export async function startTerminalRepl() {
 
   // Session manager — persists conversation messages to .kepler/conversations/
   let sessionMgr = new SessionManager(safeCwd());
-  _sessionMgr = sessionMgr; // expose to renderEvent
+  sessionMgrRef.current = sessionMgr; // expose to renderEvent
 
   // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
   let jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
@@ -2443,7 +2443,7 @@ export async function startTerminalRepl() {
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
-    _sessionMgr = sessionMgr;
+    sessionMgrRef.current = sessionMgr;
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
     streamClient = null;
     latestProjectContext = null;
@@ -2625,7 +2625,7 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || '',
       started_at: detail?.meta?.startTime || new Date().toISOString(),
     }, displayHistory.filter(m => m.role === 'user' || m.role === 'assistant'));
-    _sessionMgr = sessionMgr;
+    sessionMgrRef.current = sessionMgr;
 
     try { await jsonlWriter.close(); } catch {}
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);

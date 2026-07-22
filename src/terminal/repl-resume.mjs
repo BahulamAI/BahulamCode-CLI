@@ -7,12 +7,12 @@
  *
  * Every function takes an explicit `ctx` for the pieces that only the REPL
  * loop owns (`ctx._rl` readline, `ctx.jsonlWriter`, `ctx.auth`,
- * `ctx.toolExecutor`, `ctx._sessionMgr`). Shared state (session, orbitRef,
+ * `ctx.toolExecutor`, `ctx.sessionMgrRef.current`). Shared state (session, orbitRef,
  * safeCwd) is imported directly.
  */
 
 import { c } from './ansi.mjs';
-import { session, orbitRef } from './repl-state.mjs';
+import { session, orbitRef, sessionMgrRef } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import {
   endStatusMarker,
@@ -432,9 +432,9 @@ export function renderResumePreview(resumed) {
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
     const sessionSnapshot = JSON.parse(JSON.stringify(session));
     const savedOrbit = orbitRef.current;
-    const savedSessionMgr = _sessionMgr;
+    const savedSessionMgr = sessionMgrRef.current;
     orbitRef.current = null;
-    _sessionMgr = null;
+    sessionMgrRef.current = null;
     try {
       startContentStream();
       for (const item of replayItems) {
@@ -451,7 +451,7 @@ export function renderResumePreview(resumed) {
       stopSpinner();
     } finally {
       orbitRef.current = savedOrbit;
-      _sessionMgr = savedSessionMgr;
+      sessionMgrRef.current = savedSessionMgr;
       for (const key of Object.keys(session)) delete session[key];
       Object.assign(session, sessionSnapshot);
     }

@@ -15,6 +15,12 @@
 // like previewResumeSession() that need to temporarily suppress state updates.
 export const orbitRef = { current: null };
 
+// Ref holder for the SessionManager. The REPL loop instantiates it and
+// assigns `sessionMgrRef.current = new SessionManager(...)`. Resume/preview
+// flows null it out temporarily to suppress transcript writes during the
+// preview overlay, then restore it.
+export const sessionMgrRef = { current: null };
+
 // Per-turn runtime state — content streaming buffers, spinner interval,
 // pending tool-head, explore-run counters, block-boundary tracker. All
 // mutated in place by tool renderers, event handlers, and the streaming
@@ -33,8 +39,8 @@ export const runtime = {
   lastRenderedBlock: null,    // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
   renderedToolResults: new Set(),
 
-  // Explore-run collapse (read/list/search/index bursts as one animated line).
-  exploreRun: { counts: {}, recent: [], lineActive: false },
+  // Explore-run collapse (read/list/search/index bursts as concise progress).
+  exploreRun: { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 },
 
   // Animated spinner state (single shared interval; text/frame drive inPlace).
   spinInterval: null,
