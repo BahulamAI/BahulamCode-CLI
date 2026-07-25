@@ -5,12 +5,12 @@
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
 
-// Load .env file from cwd or ~/.kepler/.env
+// Load .env file from cwd or ~/.bahulam/.env
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.kepler', '.env')]) {
+for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.bahulam', '.env')]) {
     if (existsSync(envPath)) {
         for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
             const match = line.match(/^\s*([\w]+)\s*=\s*(.+?)\s*$/);
@@ -263,7 +263,7 @@ async function main() {
             if (remote.models?.reasoning)    process.stderr.write(`\x1b[32m✓ Coding:\x1b[0m       ${remote.models.reasoning}\n`);
             if (remote.models?.local)        process.stderr.write(`\x1b[32m✓ Local:\x1b[0m        ${remote.models.local}\n`);
             if (remote.configured_providers?.length) process.stderr.write(`\x1b[32m✓ Providers:\x1b[0m   ${remote.configured_providers.join(', ')}\n`);
-            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.kepler/config.json\x1b[0m\n');
+            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.bahulam/config.json\x1b[0m\n');
         } catch (err) {
             process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
         }

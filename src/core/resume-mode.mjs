@@ -5,7 +5,7 @@
  * fits comfortably in the current model's window, resume with `full` silently.
  * Only ask the user when we're above the highWatermark.
  *
- * Config lives in .kepler/settings.json:
+ * Config lives in .bahulam/settings.json:
  *   {
  *     "resume": {
  *       "highWatermark": 0.50,   // prompt above this (default 50%)
@@ -14,7 +14,7 @@
  *   }
  */
 
-// System overhead — tools, memory, .kepler/ context, kepler.md, skills index.
+// System overhead — tools, memory, .bahulam/ context, kepler.md, skills index.
 // Rough constant; individual runs vary. Tuned toward "assume ~4k of overhead".
 const DEFAULT_SYSTEM_OVERHEAD_TOKENS = 4000;
 
@@ -69,7 +69,7 @@ export function modelContextWindow(model, contextWindowHint = null) {
  * @param {number} args.transcriptTokens  — projected transcript size when serialized
  * @param {string} [args.model]           — current agent model id
  * @param {object|number} [args.contextWindow] — backend/catalog context-window hint
- * @param {object} [args.settings]        — .kepler/settings.json contents (optional)
+ * @param {object} [args.settings]        — .bahulam/settings.json contents (optional)
  * @param {number} [args.systemOverhead]  — override system overhead (defaults to 4k)
  * @returns {{
  *   mode:          'full' | 'ask' | 'no-full-allowed',

@@ -12,7 +12,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.kepler', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache', 'coverage', '.tox']);
+const IGNORED_DIRS = new Set(['.git', 'node_modules', '.bahulam', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache', 'coverage', '.tox']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.ts', '.tsx', '.py', '.go', '.rs', '.java', '.rb', '.c', '.cpp', '.h']);
 const MAX_FILE_SIZE = 200_000;
 

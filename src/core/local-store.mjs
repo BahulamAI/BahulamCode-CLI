@@ -1,5 +1,5 @@
 /**
- * Local Store Reader — scans ~/.kepler/ JSONL files for historical stats.
+ * Local Store Reader — scans ~/.bahulam/ JSONL files for historical stats.
  *
  * Provides read helpers for CLI commands (/stats, /history, /tokens, /tools, /sessions).
  * All data comes from local JSONL files — no cloud dependency.
@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as readline from 'node:readline';
 
-const KEPLER_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
+const KEPLER_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.bahulam');
 const PROJECTS_DIR = path.join(KEPLER_DIR, 'projects');
 
 function normalizeBlock(block) {

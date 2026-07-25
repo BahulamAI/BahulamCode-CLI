@@ -189,7 +189,7 @@ async function main() {
     b0 dashboard              Open analytics dashboard
     b0 login                  Sign in via browser
     b0 logout                 Sign out and clear credentials
-    b0 init                   Scaffold .kepler config, memory, hooks, tasks
+    b0 init                   Scaffold .bahulam config, memory, hooks, tasks
     b0 version                Show version
 
   \x1b[1mAnalytics:\x1b[0m
@@ -233,7 +233,7 @@ async function main() {
     TARANG_ENV              Set backend (local, treetop, production)
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
-    KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)
+    KEPLER_CONFIG_DIR         Override config directory (default: ~/.bahulam)
     KEPLER_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off

@@ -1,8 +1,8 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadKeplerMemory } from '../config/memory-loader.mjs';
+import { bahulamHome, projectConfigDir } from './paths.mjs';
 
 function sha(content) {
   return crypto.createHash('sha256').update(content || '').digest('hex').slice(0, 12);
@@ -66,10 +66,10 @@ function scanSkills(dir, scope) {
 }
 
 export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}) {
-  const keplerDir = path.join(cwd, '.kepler');
+  const keplerDir = projectConfigDir(cwd);
   const files = [];
   for (const file of loadKeplerMemory({ cwd })) {
-    const label = file.path.endsWith(path.join('.kepler', 'KEPLER.md'))
+    const label = file.path.endsWith(path.join('.bahulam', 'KEPLER.md'))
       ? 'KEPLER.md'
       : path.basename(file.path);
     files.push({
@@ -101,7 +101,7 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
   }));
 
   const skills = [
-    ...scanSkills(path.join(os.homedir(), '.kepler'), 'global'),
+    ...scanSkills(bahulamHome(), 'global'),
     ...scanSkills(keplerDir, 'project'),
   ];
   const byName = new Map();
@@ -126,8 +126,8 @@ export function contextToPromptBlock(context) {
   if (context?.root) {
     parts.push([
       '--- task workflow ---',
-      'Keep .kepler/tasks/active.md current for the work in progress.',
-      'Use .kepler/tasks/backlog.md for deferred work, .kepler/tasks/blocked.md for items waiting on input, and .kepler/tasks/done.md for completed work.',
+      'Keep .bahulam/tasks/active.md current for the work in progress.',
+      'Use .bahulam/tasks/backlog.md for deferred work, .bahulam/tasks/blocked.md for items waiting on input, and .bahulam/tasks/done.md for completed work.',
       'When the task state changes materially, update the appropriate task markdown file before the turn finishes.',
     ].join('\n'));
   }

@@ -69,8 +69,8 @@ export function listLocalAgents(cwd = process.cwd()) {
       slug: spec.slug,
       spec,
       content_hash: agentContentHash(agent),
-      source_scope: String(agent.source || '').includes(`${path.sep}.kepler${path.sep}agents${path.sep}`)
-        ? (String(agent.source).startsWith(path.join(cwd, '.kepler')) ? 'project' : 'global')
+      source_scope: String(agent.source || '').includes(`${path.sep}.bahulam${path.sep}agents${path.sep}`)
+        ? (String(agent.source).startsWith(path.join(cwd, '.bahulam')) ? 'project' : 'global')
         : 'unknown',
     };
   });
@@ -151,7 +151,7 @@ export function createAgentFile({
   force = false,
 } = {}) {
   const slug = slugifyAgentName(name);
-  const dir = path.join(cwd, '.kepler', 'agents');
+  const dir = path.join(cwd, '.bahulam', 'agents');
   const filePath = path.join(dir, `${slug}.yaml`);
   if (fs.existsSync(filePath) && !force) {
     throw new Error(`Agent already exists: ${filePath}`);

@@ -503,7 +503,7 @@ function printAgentsList() {
     process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
   }
 
-  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.kepler/agents + ~/.kepler/agents')}\n`);
+  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.bahulam/agents + ~/.bahulam/agents')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   if (!local.length) {
     process.stderr.write(`  ${c.dim('(none)')}\n`);
@@ -1691,7 +1691,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
         const loaded = current.loaded || [];
         if (!loaded.length) {
-          process.stderr.write(`  ${c.dim('No .kepler context files loaded yet.')}\n`);
+          process.stderr.write(`  ${c.dim('No .bahulam context files loaded yet.')}\n`);
         } else {
           for (const file of loaded) {
             const changed = file.changed ? ` ${c.yellow('updated')}` : '';
@@ -2354,7 +2354,7 @@ async function handleCommand(input, ctx) {
     case '/logout': {
       const success = ctx.auth.logout();
       if (success) {
-        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.kepler/config.json')}\n`);
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.bahulam/config.json')}\n`);
         process.stderr.write(`  ${c.dim('Run /login to sign in again.')}\n`);
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim('No credentials to clear.')}\n`);
@@ -2409,11 +2409,11 @@ export async function startTerminalRepl() {
   const skipPerms = cliArgs.freeswim;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
-  // Session manager — persists conversation messages to .kepler/conversations/
+  // Session manager — persists conversation messages to .bahulam/conversations/
   let sessionMgr = new SessionManager(safeCwd());
   sessionMgrRef.current = sessionMgr; // expose to renderEvent
 
-  // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
+  // Local JSONL writer — writes cc-lens compatible session data to ~/.bahulam/
   let jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn

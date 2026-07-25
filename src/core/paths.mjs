@@ -1,8 +1,8 @@
 /**
- * Kepler Paths — centralized path resolution for all Kepler data.
+ * b0 Paths — centralized path resolution for all CLI data.
  *
- * Everything lives under ~/.kepler/:
- *   ~/.kepler/
+ * Everything lives under ~/.bahulam/:
+ *   ~/.bahulam/
  *     config.json              — auth credentials + settings
  *     history.jsonl            — prompt history
  *     hooks.json               — global hooks
@@ -15,6 +15,16 @@
  *         sessions/            — session metadata archive
  *         hooks.json           — project-specific hooks
  *     projects.json            — slug → project path mapping
+ *
+ * ── Legacy fallback ─────────────────────────────────────────────────────
+ * Pre-b0 installs stored everything under ~/.kepler/. The resolver below
+ * prefers the new path but falls back to the legacy directory when it
+ * exists and the new one doesn't, so existing users keep their config,
+ * agents, workflows, and history until they explicitly migrate.
+ *
+ * Env vars:
+ *   BAHULAM_HOME  preferred; explicit override for ~/.bahulam
+ *   KEPLER_HOME   legacy; still honored for backward compat
  */
 
 import * as fs from 'node:fs';
@@ -22,7 +32,59 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
-const KEPLER_HOME = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
+const NEW_HOME_NAME = '.bahulam';
+const LEGACY_HOME_NAME = '.kepler';
+
+let _legacyNoticeShown = false;
+
+/**
+ * Resolve the CLI home directory. Priority:
+ *   1. $BAHULAM_HOME (explicit new)
+ *   2. $KEPLER_HOME  (explicit legacy — prints a one-time deprecation notice)
+ *   3. ~/.bahulam    (if it exists)
+ *   4. ~/.kepler     (if it exists — prints a one-time migration hint)
+ *   5. ~/.bahulam    (fresh install, will be created on first write)
+ */
+function resolveHome() {
+  if (process.env.BAHULAM_HOME) return process.env.BAHULAM_HOME;
+  if (process.env.KEPLER_HOME) {
+    maybeNoticeLegacyEnv();
+    return process.env.KEPLER_HOME;
+  }
+  const home = os.homedir();
+  const newPath = path.join(home, NEW_HOME_NAME);
+  const legacyPath = path.join(home, LEGACY_HOME_NAME);
+  try {
+    if (fs.existsSync(newPath)) return newPath;
+  } catch {}
+  try {
+    if (fs.existsSync(legacyPath)) {
+      maybeNoticeLegacyDir(legacyPath, newPath);
+      return legacyPath;
+    }
+  } catch {}
+  return newPath;
+}
+
+function maybeNoticeLegacyEnv() {
+  if (_legacyNoticeShown || process.env.B0_QUIET_MIGRATION === '1') return;
+  _legacyNoticeShown = true;
+  try {
+    process.stderr.write(
+      '  \x1b[2mnote: KEPLER_HOME is deprecated; set BAHULAM_HOME instead.\x1b[0m\n'
+    );
+  } catch {}
+}
+
+function maybeNoticeLegacyDir(legacyPath, newPath) {
+  if (_legacyNoticeShown || process.env.B0_QUIET_MIGRATION === '1') return;
+  _legacyNoticeShown = true;
+  try {
+    process.stderr.write(
+      `  \x1b[2mnote: reading legacy ${legacyPath}. Move to ${newPath} when convenient (silence with B0_QUIET_MIGRATION=1).\x1b[0m\n`
+    );
+  } catch {}
+}
 
 /**
  * Hash a project path to a short directory name.
@@ -42,58 +104,87 @@ export function projectHash(projectDir) {
         .slice(0, 16);
 }
 
-/** Root ~/.kepler/ directory. */
-export function keplerHome() {
-    return KEPLER_HOME;
+/** Root ~/.bahulam/ directory (or legacy ~/.kepler/ if that's what's present). */
+export function bahulamHome() {
+    return resolveHome();
 }
 
+/** Backward-compat alias. Prefer `bahulamHome()` in new code. */
+export const keplerHome = bahulamHome;
 
-/** ~/.kepler/projects/{hash}/ for a given project path. */
+/** ~/.bahulam/projects/{hash}/ for a given project path. */
 export function projectDir(projectPath) {
-    return path.join(KEPLER_HOME, 'projects', projectHash(projectPath));
+    return path.join(bahulamHome(), 'projects', projectHash(projectPath));
 }
 
-/** ~/.kepler/projects/{hash}/index/ — BM25 search index. */
+/** ~/.bahulam/projects/{hash}/index/ — BM25 search index. */
 export function indexDir(projectPath) {
     return path.join(projectDir(projectPath), 'index');
 }
 
-/** ~/.kepler/projects/{hash}/checkpoints/ — file undo. */
+/** ~/.bahulam/projects/{hash}/checkpoints/ — file undo. */
 export function checkpointsDir(projectPath) {
     return path.join(projectDir(projectPath), 'checkpoints');
 }
 
-/** ~/.kepler/projects/{hash}/state.json — current session. */
+/** ~/.bahulam/projects/{hash}/state.json — current session. */
 export function statePath(projectPath) {
     return path.join(projectDir(projectPath), 'state.json');
 }
 
-/** ~/.kepler/projects/{hash}/sessions/ — session archive. */
+/** ~/.bahulam/projects/{hash}/sessions/ — session archive. */
 export function sessionsDir(projectPath) {
     return path.join(projectDir(projectPath), 'sessions');
 }
 
-/** ~/.kepler/projects/{hash}/hooks.json — project hooks. */
+/** ~/.bahulam/projects/{hash}/hooks.json — project hooks. */
 export function projectHooksPath(projectPath) {
     return path.join(projectDir(projectPath), 'hooks.json');
 }
 
-/** ~/.kepler/conversations/ — central conversation storage. */
+/** ~/.bahulam/conversations/ — central conversation storage. */
 export function conversationsDir() {
-    return path.join(KEPLER_HOME, 'conversations');
+    return path.join(bahulamHome(), 'conversations');
 }
 
-/** ~/.kepler/conversations/{sessionId}.jsonl */
+/** ~/.bahulam/conversations/{sessionId}.jsonl */
 export function conversationPath(sessionId) {
     return path.join(conversationsDir(), `${sessionId}.jsonl`);
 }
 
-/** ~/.kepler/hooks.json — global hooks. */
+/** ~/.bahulam/hooks.json — global hooks. */
 export function globalHooksPath() {
-    return path.join(KEPLER_HOME, 'hooks.json');
+    return path.join(bahulamHome(), 'hooks.json');
 }
 
-/** ~/.kepler/history.jsonl — prompt history. */
+/** ~/.bahulam/history.jsonl — prompt history. */
 export function historyPath() {
-    return path.join(KEPLER_HOME, 'history.jsonl');
+    return path.join(bahulamHome(), 'history.jsonl');
+}
+
+// ── Project-local config directory (.bahulam/ next to CLAUDE.md/etc) ────
+//
+// Project-scoped stuff (agents/*.yaml, memory/*.md, hooks/, settings.json,
+// tasks/) used to live in .kepler/ inside the project. Same resolver logic
+// applies — prefer .bahulam/, fall back to .kepler/ when only the legacy
+// dir exists.
+
+const PROJECT_NEW_NAME = '.bahulam';
+const PROJECT_LEGACY_NAME = '.kepler';
+
+/**
+ * Resolve the project-local config directory for `cwd`. Same priority as
+ * the home resolver. Returns an absolute path; the directory may not
+ * exist yet (callers that write should mkdir -p first).
+ */
+export function projectConfigDir(cwd = process.cwd()) {
+    const newPath = path.join(cwd, PROJECT_NEW_NAME);
+    const legacyPath = path.join(cwd, PROJECT_LEGACY_NAME);
+    try {
+        if (fs.existsSync(newPath)) return newPath;
+    } catch {}
+    try {
+        if (fs.existsSync(legacyPath)) return legacyPath;
+    } catch {}
+    return newPath;
 }

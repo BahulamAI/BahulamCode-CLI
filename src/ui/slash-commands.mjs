@@ -78,7 +78,7 @@ export const HELP_GROUPS = [
     summary: 'session, usage, budget',
     commands: [
       ['/status', 'Session snapshot'],
-      ['/status context', 'Loaded .kepler context'],
+      ['/status context', 'Loaded .bahulam context'],
       ['/status metrics', 'Progress bars and runtime metrics'],
       ['/status cost', 'Credits and message window'],
       ['/model [role] [model]', 'Show or set session model override'],
@@ -134,7 +134,7 @@ export const HELP_GROUPS = [
     summary: 'specialist modes',
     commands: [
       ['/agents', 'List built-in and local agents'],
-      ['/agents create <name>', 'Create .kepler/agents/<name>.yaml'],
+      ['/agents create <name>', 'Create .bahulam/agents/<name>.yaml'],
       ['/agents edit <name>', 'Open local agent YAML'],
       ['/agents sync [name]', 'Sync all or one local agent to cloud'],
       ['/explore <instruction>', 'Explore code'],

@@ -1531,7 +1531,7 @@ print('OK: replaced')
             const selected = selectAgentsForSync(args);
             if (!selected.length) {
                 const target = args.name || args.slug || '';
-                throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .kepler/agents');
+                throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .bahulam/agents');
             }
             const creds = new TarangAuth().loadCredentials();
             const result = await syncAgentsToBackend({
@@ -1619,7 +1619,7 @@ print('OK: replaced')
             const selected = selectWorkflowsForSync(args);
             if (!selected.length) {
                 const target = args.name || args.slug || '';
-                throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .kepler/workflows');
+                throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .bahulam/workflows');
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {

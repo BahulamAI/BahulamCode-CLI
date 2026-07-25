@@ -134,9 +134,9 @@ export class SkillsLoader {
         this.versions.clear();
         const project = path.resolve(cwd);
         this.searchPaths = [
-            { dir: path.join(project, '.kepler', 'skills'), source: 'kepler-project', scope: 'project', priority: 500 },
+            { dir: path.join(project, '.bahulam', 'skills'), source: 'kepler-project', scope: 'project', priority: 500 },
             { dir: path.join(project, '.claude', 'skills'), source: 'claude-project', scope: 'project', priority: 400 },
-            { dir: path.join(this.homeDir, '.kepler', 'skills'), source: 'kepler-global', scope: 'global', priority: 300 },
+            { dir: path.join(this.homeDir, '.bahulam', 'skills'), source: 'kepler-global', scope: 'global', priority: 300 },
             { dir: path.join(this.homeDir, '.claude', 'skills'), source: 'claude-global', scope: 'global', priority: 200 },
         ];
 

@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { buildProjectSkeleton } from '../context/skeleton.mjs';
-import { indexDir as getIndexDir } from '../core/paths.mjs';
+import { indexDir as getIndexDir, projectConfigDir, bahulamHome } from '../core/paths.mjs';
 
 const RESOURCE_FILE = 'project-resource.json';
 
@@ -51,7 +51,7 @@ const LANGUAGE_EXTENSIONS = new Map([
     ['.cpp', 'C++'],
 ]);
 const IGNORED_DIRS = new Set([
-    '.git', '.kepler', '.next', '.venv', '__pycache__',
+    '.git', '.bahulam', '.next', '.venv', '__pycache__',
     'build', 'dist', 'node_modules', 'venv',
 ]);
 
@@ -325,11 +325,12 @@ export class ProjectRegistry {
     }
 
     /**
-     * Load global context from ~/.kepler/ (once per session).
+     * Load global context from ~/.bahulam/ (once per session).
      */
     loadGlobalContext() {
         if (this._globalIdentity !== null) return;
-        const globalDir = path.join(os.homedir(), '.kepler');
+        // Resolver — prefers ~/.bahulam, falls back to ~/.kepler for legacy installs.
+        const globalDir = bahulamHome();
         this._globalIdentity = _readIfExists(globalDir, 'identity.md', 4000);
         this._globalPreferences = _readIfExists(globalDir, 'preferences.md', 2000);
         this._globalSkills = _scanSkills(globalDir);
@@ -349,9 +350,10 @@ export class ProjectRegistry {
 
     // PRD-69 project context is live metadata, not index cache. Re-read it on
     // every registration attempt so repeated get_project_overview calls pick up
-    // .kepler/KEPLER.md, goal/plan/style, skills, AGENTS.md, etc. changes.
+    // .bahulam/KEPLER.md, goal/plan/style, skills, AGENTS.md, etc. changes.
     _attachLiveContext(resource, root) {
-        const keplerDir = path.join(root, '.kepler');
+        // Resolver — prefers .bahulam/, falls back to .kepler/ for legacy projects.
+        const keplerDir = projectConfigDir(root);
         resource.environment = detectEnvironment();
         resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
             _readIfExists(root, 'KEPLER.md', 10000) ||
@@ -362,7 +364,7 @@ export class ProjectRegistry {
         resource.skills_index = _scanSkills(keplerDir);
 
         if (!resource.project_context) {
-            for (const name of ['.kepler.md', 'AGENTS.md', 'CLAUDE.md']) {
+            for (const name of ['.bahulam.md', 'AGENTS.md', 'CLAUDE.md']) {
                 const content = _readIfExists(root, name, 8000);
                 if (content) { resource.project_context = content; break; }
             }
@@ -472,7 +474,7 @@ export class ProjectRegistry {
     }
 
     projectScratchRoots() {
-        return this.resources().map(resource => path.join(resource.root, '.kepler', 'tmp'));
+        return this.resources().map(resource => path.join(projectConfigDir(resource.root), 'tmp'));
     }
 
     allowedScratchRoots() {

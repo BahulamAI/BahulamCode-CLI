@@ -277,7 +277,7 @@ function topLanguages(byExt, n) {
 
 function quickFileCount(cwd, { max = 5000 } = {}) {
   // Shallow walk: skip node_modules, .git, dist, build, .venv, __pycache__.
-  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', 'venv', '__pycache__', '.kepler', '.terraform']);
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', 'venv', '__pycache__', '.bahulam', '.terraform']);
   const byExt = {};
   let total = 0;
   const stack = [cwd];
@@ -287,7 +287,7 @@ function quickFileCount(cwd, { max = 5000 } = {}) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { continue; }
     for (const e of entries) {
-      if (e.name.startsWith('.') && e.name !== '.kepler') continue;
+      if (e.name.startsWith('.') && e.name !== '.bahulam') continue;
       if (SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) stack.push(full);

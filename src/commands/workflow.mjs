@@ -310,7 +310,7 @@ async function handleRun(args) {
 // ── Sync ───────────────────────────────────────────────────────
 
 async function handleSync(args) {
-    const dir = args.workflowDir || '.kepler/workflows';
+    const dir = args.workflowDir || '.bahulam/workflows';
 
     process.stderr.write(`${DIM}Scanning ${dir} for workflow YAML files...${RESET}\n`);
     const workflows = loadWorkflowsFromDir(dir);

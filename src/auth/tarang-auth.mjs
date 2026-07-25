@@ -1,35 +1,62 @@
 /**
- * Kepler Authentication — GitHub OAuth + config management.
- * Reads/writes ~/.kepler/config.json.
+ * b0 Authentication — GitHub OAuth + config management.
+ * Reads/writes ~/.bahulam/config.json (fallback: ~/.kepler/config.json for
+ * legacy installs — see src/core/paths.mjs for the resolver).
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as http from 'node:http';
 import { getLoginSuccessHTML } from '../ui/banner.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
-const CONFIG_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
-const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+// Note: computed via a function (not a constant) so that BAHULAM_HOME /
+// KEPLER_HOME env-var swaps mid-process still work.
+function configDir() { return bahulamHome(); }
+function configPath() { return path.join(configDir(), 'config.json'); }
+
+// Legacy exports kept for backwards compat with any tests/scripts that
+// still import CONFIG_DIR / CONFIG_PATH by name.
+const CONFIG_DIR = configDir();
+const CONFIG_PATH = configPath();
+
+let _tokenEnvNoticeShown = false;
+function readTokenFromEnv() {
+    if (process.env.B0_TOKEN) return process.env.B0_TOKEN;
+    if (process.env.KEPLER_TOKEN) {
+        if (!_tokenEnvNoticeShown && process.env.B0_QUIET_MIGRATION !== '1') {
+            _tokenEnvNoticeShown = true;
+            try {
+                process.stderr.write(
+                    '  \x1b[2mnote: KEPLER_TOKEN is deprecated; set B0_TOKEN instead.\x1b[0m\n'
+                );
+            } catch {}
+        }
+        return process.env.KEPLER_TOKEN;
+    }
+    return null;
+}
 
 export class TarangAuth {
     constructor() {
         this._config = null;
     }
 
-    /** Ensure ~/.kepler/ directory exists with secure permissions. */
+    /** Ensure ~/.bahulam/ (or legacy ~/.kepler/) exists with secure permissions. */
     _ensureConfigDir() {
-        if (!fs.existsSync(CONFIG_DIR)) {
-            fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+        const dir = configDir();
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
         }
     }
 
     /** Load credentials and settings from config.json. */
     loadCredentials() {
+        const cfgPath = configPath();
         try {
-            if (fs.existsSync(CONFIG_PATH)) {
-                const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+            if (fs.existsSync(cfgPath)) {
+                const raw = fs.readFileSync(cfgPath, 'utf-8');
                 this._config = JSON.parse(raw);
             } else {
                 this._config = {};
@@ -38,7 +65,7 @@ export class TarangAuth {
             this._config = {};
         }
         return {
-            token: process.env.KEPLER_TOKEN || this._config.token || null,
+            token: readTokenFromEnv() || this._config.token || null,
             openRouterKey: this._config.openrouter_key || process.env.OPENROUTER_API_KEY || null,
             anthropicKey: this._config.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null,
             openaiKey: this._config.openai_api_key || process.env.OPENAI_API_KEY || null,
@@ -61,8 +88,9 @@ export class TarangAuth {
     /** Clear credentials — remove token and keys from config. */
     logout() {
         try {
-            if (fs.existsSync(CONFIG_PATH)) {
-                fs.unlinkSync(CONFIG_PATH);
+            const cfgPath = configPath();
+            if (fs.existsSync(cfgPath)) {
+                fs.unlinkSync(cfgPath);
             }
             this._config = null;
             return true;
@@ -76,9 +104,10 @@ export class TarangAuth {
         this._ensureConfigDir();
         const current = this._config || {};
         const merged = { ...current, ...updates };
-        const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}`;
+        const cfgPath = configPath();
+        const tmpPath = `${cfgPath}.tmp.${process.pid}`;
         fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
-        fs.renameSync(tmpPath, CONFIG_PATH);
+        fs.renameSync(tmpPath, cfgPath);
         this._config = merged;
     }
 
@@ -134,7 +163,7 @@ export class TarangAuth {
     async syncSettings() {
         const { fetchRemoteSettings, mergeRemoteSettings } = await import('../core/settings-sync.mjs');
         const creds = this.loadCredentials();
-        if (!creds.token) throw new Error('Not logged in. Run `kepler login` first.');
+        if (!creds.token) throw new Error('Not logged in. Run `b0 login` first.');
 
         const remote = await fetchRemoteSettings(creds.token);
         if (!remote) throw new Error('Failed to fetch settings from server.');
@@ -202,7 +231,7 @@ export class TarangAuth {
      *   3. Web checks Supabase session (if none → GitHub OAuth → Supabase)
      *   4. Web generates CLI token via /api/cli/token
      *   5. Web redirects browser to CLI callback with token
-     *   6. CLI receives token, saves to ~/.kepler/config.json
+     *   6. CLI receives token, saves to ~/.bahulam/config.json
      */
     async login() {
         const { resolveWebUrl } = await import('../core/backend-url.mjs');

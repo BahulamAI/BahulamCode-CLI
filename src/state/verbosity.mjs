@@ -6,7 +6,7 @@
  *   verbose   Folded summary. Sub-agent inner tools shown.
  *   surgical  Expanded tool details + raw model reasoning.
  *
- * Persisted to `~/.kepler/config.json` under the `verbosity` key so the
+ * Persisted to `~/.bahulam/config.json` under the `verbosity` key so the
  * choice survives across sessions.
  *
  *   import { getVerbosity, setVerbosity, showSubAgentTools, showReasoning } from './verbosity.mjs';
@@ -27,7 +27,7 @@ export const MODES = Object.freeze({
 
 const VALID = new Set(Object.values(MODES));
 
-const CONFIG_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
+const CONFIG_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.bahulam');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 let _cached = null;

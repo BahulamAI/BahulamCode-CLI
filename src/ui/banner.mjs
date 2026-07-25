@@ -142,7 +142,7 @@ export function printStyledConfig(creds) {
 
   const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-  write(`\n${paint.bold('b0 Configuration')} ${dim('(~/.kepler/config.json)')}\n`);
+  write(`\n${paint.bold('b0 Configuration')} ${dim('(~/.bahulam/config.json)')}\n`);
   write(`${dim('─'.repeat(50))}\n`);
   write(`  Token:          ${mask(creds.token)}\n`);
   write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -206,7 +206,7 @@ export function getLoginSuccessHTML() {
             margin-bottom: 8px;
         }
         .dev { color: #3fb950; }
-        .kepler { color: #58a6ff; }
+        .bahulam { color: #58a6ff; }
         .bahulam { color: #7c3aed; letter-spacing: 4px; }
         .check {
             font-size: 64px;
