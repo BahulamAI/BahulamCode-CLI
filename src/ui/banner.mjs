@@ -17,46 +17,58 @@ const write = (s) => { try { out.write(s); } catch {} };
 
 // ── Brand banner ─────────────────────────────────────────────────────────
 
-// BAHULAM = flagship platform, b0 = the coding agent under Bahulam.
-// Visual banner leads with the platform name; tagline anchors the CLI product.
-const BAHULAM_LETTERS = ['B', 'A', 'H', 'U', 'L', 'A', 'M'];
+// b0 is the visual anchor (CLI product); BAHULAM is the platform underneath;
+// 0xB0 is the developer-culture motif from the technical docs hub.
+
+// Renders a gradient purple → magenta → cyan across the given string, one
+// codepoint at a time. Falls back to a plain (no-color) string when the
+// terminal doesn't support color at all.
+function gradientText(text) {
+  if (!term().color) return text;
+  const chars = [...text];
+  const painters = [paint.brand.primary, paint.brand.accent, paint.brand.data];
+  return chars.map((ch, i) => painters[Math.floor((i / Math.max(1, chars.length)) * painters.length)](ch)).join('');
+}
 
 /**
- * Render `BAHULAM` letter-by-letter as a purple→magenta→cyan gradient.
- * Each letter picks the appropriate brand token; the palette handles tier
- * fallbacks transparently.
- *
- * Falls back to a single solid color in monochrome / ascii mode so we
- * still see something distinctive on hostile terminals.
+ * Render the framed `b0` glyph — the CLI product's visual anchor.
+ * Uses heavy box-drawing chars for a compact, dev-forward look; the box is
+ * ~18 cols wide and 3 rows tall, so it fits any terminal ≥40 cols.
  */
-function gradientBahulam() {
-  if (!term().color) return BAHULAM_LETTERS.join(' · ');
-
-  // Three-stop gradient mapped onto seven letters. Stop selection:
-  //   0,1,2 → primary  3,4 → accent  5,6 → data
-  const painters = [
-    paint.brand.primary, paint.brand.primary, paint.brand.primary,
-    paint.brand.accent,  paint.brand.accent,
-    paint.brand.data,    paint.brand.data,
-  ];
-  return BAHULAM_LETTERS.map((ch, i) => painters[i](ch)).join(paint.text.dim(' · '));
+function b0Frame(version) {
+  const dim = paint.text.dim;
+  const top    = dim('╔══════════════════╗');
+  const bottom = dim('╚══════════════════╝');
+  const inner  = dim('║');
+  const glyph  = paint.bold(gradientText('b0'));
+  //         │║      b0        ║│  — 8 spaces before + 8 after, 2-char glyph
+  //         padding tuned so `b0` sits visually centered inside 18-wide box
+  const bodyPad = ' '.repeat(8);
+  const tailPad = ' '.repeat(8);
+  return [
+    `       ${top}`,
+    `       ${inner}${bodyPad}${glyph}${tailPad}${inner}`,
+    `       ${bottom}`,
+  ].join('\n');
 }
 
 /**
  * Print the branded orbital banner.
  */
-export function printBanner() {
+export function printBanner(version = '') {
   const dim = paint.text.dim;
-  const brandMark = paint.brand.primary(icons.brand);
   const orbit = paint.brand.accent(icons.orbit);
+  const bahulam = paint.brand.primary('BAHULAM');
+  const dev = paint.brand.data('0xB0');
+  const vTag = version ? `${dim(' — ')}${dim('v' + version)}` : '';
 
   write('\n');
-  write(`         ${brandMark}\n`);
-  write(`      ${dim('╭──────────────────────────────╮')}\n`);
-  write(`      ${dim('│')}   ${gradientBahulam()}   ${dim('│')}\n`);
-  write(`      ${dim('╰────── ')}${orbit}${dim(' ────────────────────╯')}\n`);
-  write(`            ${dim('╱ ╲')}\n`);
-  write(`       ${dim('b0 — the coding agent')}\n`);
+  write(`         ${orbit} ${dim('· orbit')}\n`);
+  write('\n');
+  write(`${b0Frame(version)}\n`);
+  write('\n');
+  write(`       ${bahulam} ${dim('·')} ${dim('the coding agent')}\n`);
+  write(`              ${dev}${vTag}\n`);
   write('\n');
 }
 

@@ -644,15 +644,14 @@ function slashCommandSuggestions(line, limit = 5) {
 // ── Banner ──
 
 function printBanner(auth) {
-  // Delegate the visual block to the branded banner module (PRD-055 §4.3,
-  // gradient KEPLER letters in Deep Space Purple → Stellar Magenta → Neon
-  // Cyan). The trailing status line stays here because it needs `auth`.
-  printBrandedBanner();
+  // The visual block itself lives in the branded banner module. The trailing
+  // status line stays here because it needs `auth`.
+  printBrandedBanner(VERSION);
 
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
-  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n\n`);
+  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n\n`);
 }
 
 // ── Prompt Chrome ──

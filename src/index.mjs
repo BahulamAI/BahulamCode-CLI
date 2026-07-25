@@ -147,7 +147,7 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-    printBanner();
+    printBanner(VERSION);
 
     const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
@@ -237,7 +237,7 @@ async function main() {
     const auth = new TarangAuth();
 
     if (args.command === 'login') {
-        printBanner();
+        printBanner(VERSION);
         process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
         await auth.login();
         process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
@@ -254,7 +254,7 @@ async function main() {
     }
 
     if (args.command === 'sync') {
-        printBanner();
+        printBanner(VERSION);
         process.stderr.write('\x1b[1mSyncing settings...\x1b[0m\n\n');
         try {
             const remote = await auth.syncSettings();
@@ -271,7 +271,7 @@ async function main() {
     }
 
     if (args.command === 'configure') {
-        printBanner();
+        printBanner(VERSION);
         const { resolveWebUrl } = await import('./core/backend-url.mjs');
         const webUrl = resolveWebUrl();
         const settingsUrl = `${webUrl}/dashboard/settings?tab=providers&source=cli`;
