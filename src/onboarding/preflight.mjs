@@ -1,10 +1,10 @@
 /**
- * Preflight diagnostic — Mission Control (PRD-055 §9).
+ * Preflight diagnostic.
  *
  * Prints a non-blocking summary of the runtime environment before the REPL
  * starts so the user can see what is and is not aligned:
  *
- *   🔭 Kepler v1.0.4 · initializing orbit
+ *   🔭 b0 v1.0.4 · initializing orbit
  *
  *     [✓] Auth token
  *     [✓] OpenRouter key
@@ -115,7 +115,7 @@ export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
         return { status: 'fail', label: windowLabel, hint: 'message window exhausted — try again after reset' };
       }
       if (status === 'low') {
-        return { status: 'warn', label: windowLabel, hint: 'low message window — codekepler.ai/pricing' };
+        return { status: 'warn', label: windowLabel, hint: 'low message window — bahulam.ai/pricing' };
       }
       return { status: 'ok', label: windowLabel };
     }
@@ -128,10 +128,10 @@ export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
       return { status: 'ok', label: `Plan: ${tier}` };
     }
     if (remaining <= 0) {
-      return { status: 'fail', label: `Plan: ${tier} · 0 credits remaining`, hint: 'codekepler.ai/pricing to purchase or upgrade' };
+      return { status: 'fail', label: `Plan: ${tier} · 0 credits remaining`, hint: 'bahulam.ai/pricing to purchase or upgrade' };
     }
     if (remaining < 25) {
-      return { status: 'warn', label: `Plan: ${tier} · ${remaining} credits remaining`, hint: 'low balance — codekepler.ai/pricing' };
+      return { status: 'warn', label: `Plan: ${tier} · ${remaining} credits remaining`, hint: 'low balance — bahulam.ai/pricing' };
     }
     return { status: 'ok', label: `Plan: ${tier} · ${remaining} credits remaining` };
   } catch {
@@ -329,7 +329,7 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   const t = term();
   const write = (s) => { if (!silent) process.stderr.write(s); };
 
-  const header = `${icons.search} ${paint.bold(paint.brand.primary('Kepler v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
+  const header = `${icons.search} ${paint.bold(paint.brand.primary('b0 v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
   write('\n' + header + '\n\n');
 
   const checks = [];

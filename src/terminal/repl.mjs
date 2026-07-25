@@ -461,7 +461,7 @@ async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
   if (!ctx?._rl || !process.stdin.isTTY) return false;
   const names = attachments.map(a => a.name).join(', ');
   return await new Promise(resolve => {
-    ctx._rl.question(`  ${c.yellow('Upload image for Kepler vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
+    ctx._rl.question(`  ${c.yellow('Upload image for vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
       resolve(/^y(?:es)?$/i.test(String(answer || '').trim()));
     });
   });
@@ -886,7 +886,7 @@ function renderEvent(event) {
       if (text) {
         renderBlockBoundary('content');
         if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+          process.stdout.write(`${transcriptHeader('b0', { tone: 'assistant' })}\n`);
           runtime.contentHeaderPrinted = true;
         }
         const rendered = renderMarkdown(text);
@@ -1224,7 +1224,7 @@ function renderEvent(event) {
       if (summary && !runtime.renderedContentThisTurn) {
         renderBlockBoundary('content');
         if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+          process.stdout.write(`${transcriptHeader('b0', { tone: 'assistant' })}\n`);
           runtime.contentHeaderPrinted = true;
         }
         const rendered = renderMarkdown(summary);
@@ -1278,7 +1278,7 @@ function renderEvent(event) {
           const windowLine = formatMessageWindow(session.rateLimit);
           renderBlockBoundary('status', { compactSame: true });
           if (msgStatus === 'exhausted') {
-            process.stderr.write(`  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at codekepler.ai/pricing.`)}\n`);
+            process.stderr.write(`  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at bahulam.ai/pricing.`)}\n`);
           } else {
             process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
           }
@@ -1301,12 +1301,12 @@ function renderEvent(event) {
           const threshold = Math.max(10, Math.floor(session.creditsLimit * 0.2));
           if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
             renderBlockBoundary('status', { compactSame: true });
-            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
+            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at bahulam.ai/pricing.`)}\n`);
             runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
             renderBlockBoundary('status', { compactSame: true });
-            process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
+            process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at bahulam.ai/pricing or switch to BYOK.`)}\n`);
             runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           }
@@ -3611,7 +3611,7 @@ export async function startTerminalRepl() {
         moveToContent();
       }
       startContentStream();
-      process.stderr.write(`\n${transcriptHeader('kepler', { tone: 'assistant' })}\n`);
+      process.stderr.write(`\n${transcriptHeader('b0', { tone: 'assistant' })}\n`);
       runtime.contentHeaderPrinted = true;
 
       // Immediate feedback so the screen isn't blank between submit and the

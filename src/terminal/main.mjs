@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kepler CLI — ANSI Terminal UI.
+ * b0 CLI — ANSI Terminal UI. Bahulam's coding agent.
  * Zero React. Zero Ink. Zero flickering.
  */
 
@@ -171,38 +171,38 @@ async function main() {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
     const { version } = require('../../package.json');
-    process.stdout.write(`kepler v${version}\n`);
+    process.stdout.write(`b0 v${version}\n`);
     return;
   }
 
   if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
     process.stderr.write(`
-  \x1b[1m\x1b[36mkepler\x1b[0m — AI Coding Agent — codekepler.ai
+  \x1b[1m\x1b[36mb0\x1b[0m — Bahulam's coding agent — getb0.ai
 
   \x1b[1mUsage:\x1b[0m
-    kepler                    Start interactive REPL
-    kepler "instruction"      Run a single instruction
-    kepler --headless -p "x"  Non-interactive: auto-approve, JSONL output
-    kepler --headless -p "x" --vision screenshot.png
+    b0                        Start interactive REPL
+    b0 "instruction"          Run a single instruction
+    b0 --headless -p "x"      Non-interactive: auto-approve, JSONL output
+    b0 --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
-    kepler --resume            Resume last conversation
-    kepler dashboard          Open Kepler Pulse analytics dashboard
-    kepler login              Sign in via browser
-    kepler logout             Sign out and clear credentials
-    kepler init               Scaffold .kepler config, memory, hooks, tasks
-    kepler version            Show version
+    b0 --resume               Resume last conversation
+    b0 dashboard              Open analytics dashboard
+    b0 login                  Sign in via browser
+    b0 logout                 Sign out and clear credentials
+    b0 init                   Scaffold .kepler config, memory, hooks, tasks
+    b0 version                Show version
 
   \x1b[1mAnalytics:\x1b[0m
-    kepler sessions           List recent local sessions
-    kepler stats              Show aggregate local session stats
-    kepler history            Show recent prompt history
+    b0 sessions               List recent local sessions
+    b0 stats                  Show aggregate local session stats
+    b0 history                Show recent prompt history
 
   \x1b[1mSkills:\x1b[0m
-    kepler skills list [--all|--project]
-    kepler skills view <name> [resource]
-    kepler skills install <path-or-git-url> [--project] [--force]
-    kepler skills update <name> [--project]
-    kepler skills remove <name> [--project]
+    b0 skills list [--all|--project]
+    b0 skills view <name> [resource]
+    b0 skills install <path-or-git-url> [--project] [--force]
+    b0 skills update <name> [--project]
+    b0 skills remove <name> [--project]
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands
@@ -238,7 +238,7 @@ async function main() {
                             Max reconnect window for dropped streams
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
 
-  \x1b[2mDocs: https://docs.codekepler.ai\x1b[0m
+  \x1b[2mDocs: https://0xb0.ai\x1b[0m
 `);
     return;
   }

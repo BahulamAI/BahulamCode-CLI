@@ -1,7 +1,7 @@
 /**
  * Explore-run classifier — pure category lookup for the read/list/search/index
  * tool bursts that get collapsed into one animated summary line during a
- * sub-agent run (PRD-081 §5.4).
+ * sub-agent run.
  *
  * These functions are stateless. The mutable run state (counts, recent
  * paths, lineActive flag) still lives in repl.mjs during the split.

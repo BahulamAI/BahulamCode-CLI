@@ -1,9 +1,8 @@
 /**
- * Banner & Branding — Kepler CLI startup display.
+ * Banner & Branding — b0 CLI startup display.
  *
- * Refreshed for Mission Control (PRD-055 §4.3). Uses the semantic palette
- * (`paint.brand.*`) so the same banner renders correctly across truecolor,
- * 256-color, ansi16, and monochrome terminals.
+ * Uses the semantic palette (`paint.brand.*`) so the same banner renders
+ * correctly across truecolor, 256-color, ansi16, and monochrome terminals.
  */
 
 import { execSync } from 'node:child_process';
@@ -18,27 +17,29 @@ const write = (s) => { try { out.write(s); } catch {} };
 
 // ── Brand banner ─────────────────────────────────────────────────────────
 
-const KEPLER_LETTERS = ['K', 'E', 'P', 'L', 'E', 'R'];
+// BAHULAM = flagship platform, b0 = the coding agent under Bahulam.
+// Visual banner leads with the platform name; tagline anchors the CLI product.
+const BAHULAM_LETTERS = ['B', 'A', 'H', 'U', 'L', 'A', 'M'];
 
 /**
- * Render `KEPLER` letter-by-letter as a purple→magenta→cyan gradient.
+ * Render `BAHULAM` letter-by-letter as a purple→magenta→cyan gradient.
  * Each letter picks the appropriate brand token; the palette handles tier
  * fallbacks transparently.
  *
  * Falls back to a single solid color in monochrome / ascii mode so we
  * still see something distinctive on hostile terminals.
  */
-function gradientKepler() {
-  if (!term().color) return KEPLER_LETTERS.join(' · ');
+function gradientBahulam() {
+  if (!term().color) return BAHULAM_LETTERS.join(' · ');
 
-  // Three-stop gradient mapped onto six letters. Stop selection:
-  //   0,1 → primary  2,3 → accent  4,5 → data
+  // Three-stop gradient mapped onto seven letters. Stop selection:
+  //   0,1,2 → primary  3,4 → accent  5,6 → data
   const painters = [
-    paint.brand.primary, paint.brand.primary,
+    paint.brand.primary, paint.brand.primary, paint.brand.primary,
     paint.brand.accent,  paint.brand.accent,
     paint.brand.data,    paint.brand.data,
   ];
-  return KEPLER_LETTERS.map((ch, i) => painters[i](ch)).join(paint.text.dim(' · '));
+  return BAHULAM_LETTERS.map((ch, i) => painters[i](ch)).join(paint.text.dim(' · '));
 }
 
 /**
@@ -51,11 +52,11 @@ export function printBanner() {
 
   write('\n');
   write(`         ${brandMark}\n`);
-  write(`      ${dim('╭───────────────────────────╮')}\n`);
-  write(`      ${dim('│')}   ${gradientKepler()}   ${dim('│')}\n`);
-  write(`      ${dim('╰────── ')}${orbit}${dim(' ─────────────────╯')}\n`);
+  write(`      ${dim('╭──────────────────────────────╮')}\n`);
+  write(`      ${dim('│')}   ${gradientBahulam()}   ${dim('│')}\n`);
+  write(`      ${dim('╰────── ')}${orbit}${dim(' ────────────────────╯')}\n`);
   write(`            ${dim('╱ ╲')}\n`);
-  write(`       ${dim('the agentic os')}\n`);
+  write(`       ${dim('b0 — the coding agent')}\n`);
   write('\n');
 }
 
@@ -129,7 +130,7 @@ export function printStyledConfig(creds) {
 
   const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-  write(`\n${paint.bold('Kepler Configuration')} ${dim('(~/.kepler/config.json)')}\n`);
+  write(`\n${paint.bold('b0 Configuration')} ${dim('(~/.kepler/config.json)')}\n`);
   write(`${dim('─'.repeat(50))}\n`);
   write(`  Token:          ${mask(creds.token)}\n`);
   write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -171,7 +172,7 @@ export function getLoginSuccessHTML() {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Kepler - Login Successful</title>
+    <title>b0 - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -194,6 +195,7 @@ export function getLoginSuccessHTML() {
         }
         .dev { color: #3fb950; }
         .kepler { color: #58a6ff; }
+        .bahulam { color: #7c3aed; letter-spacing: 4px; }
         .check {
             font-size: 64px;
             color: #3fb950;
@@ -213,7 +215,7 @@ export function getLoginSuccessHTML() {
 <body>
     <div class="container">
         <div class="logo">
-            <span class="kepler">KEPLER</span>
+            <span class="bahulam">BAHULAM</span>
         </div>
         <div class="check">&#10003;</div>
         <h1>Login Successful!</h1>

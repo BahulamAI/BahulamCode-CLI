@@ -9,7 +9,7 @@
  * smoothly.
  *
  * When the wrapped buffer still exceeds the max, only the LAST max rows
- * render with a leading '…' marker (per PRD-081 §5.1 explicit truncation).
+ * render with a leading '…' marker (explicit truncation).
  *
  * Multi-line paste — including bracketed paste bursts — renders as one
  * visible block in the dock and submits as a single message. The dock

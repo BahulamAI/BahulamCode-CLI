@@ -238,7 +238,7 @@ export function historyRoleLabel(role) {
     ? c.white('You')
     : role === 'tool'
       ? c.dim('Tool')
-      : c.brand('Kepler');
+      : c.brand('b0');
 }
 
 /**
