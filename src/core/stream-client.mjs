@@ -11,7 +11,7 @@
 
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
-import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
+import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
 export const EVENT_TYPES = Object.freeze({
@@ -224,7 +224,7 @@ export class TarangStreamClient {
                     retry_after: detail?.retry_after ?? detail?.rate_limit?.retry_after,
                     rate_limit: detail?.rate_limit || null,
                     action: detail?.action || null,
-                    pricing_url: detail?.pricing_url || null,
+                    pricing_url: normalizeBillingBrandCopy(detail?.pricing_url || null),
                     fatal: true,
                 },
             };

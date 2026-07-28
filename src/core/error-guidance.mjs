@@ -1,3 +1,5 @@
+import { normalizeBillingBrandCopy } from './rate-limit-display.mjs';
+
 function compact(value) {
   return String(value || '').trim();
 }
@@ -214,7 +216,7 @@ export function normalizeGatewayProvider(data = {}) {
 }
 
 export function formatAgentErrorGuidance(data = {}) {
-  const message = compact(data.message || data.error || 'Agent execution failed.');
+  const message = normalizeBillingBrandCopy(compact(data.message || data.error || 'Agent execution failed.'));
   const code = compact(data.code);
   const phase = compact(data.phase);
   const provider = normalizeGatewayProvider(data);
@@ -223,13 +225,14 @@ export function formatAgentErrorGuidance(data = {}) {
   const retryAfter = data.retry_after != null ? compact(data.retry_after) : '';
   const retryLabel = retryAfter ? formatRetryAfterLabel(retryAfter) : '';
   const retryable = data.retryable === true;
+  const pricingUrl = normalizeBillingBrandCopy(compact(data.pricing_url));
 
   if (isBedrockMissingCredentials(data)) {
     return {
       title: 'AWS Bedrock credentials are missing.',
       lines: [
-        'Kepler reached the Bedrock gateway, but the backend did not receive AWS Access Key ID and Secret Access Key.',
-        'Open Kepler/AppStak model settings, re-save the AWS Bedrock provider with Access Key ID, Secret Access Key, and Region, then retry.',
+        'b0 reached the Bedrock gateway, but the backend did not receive AWS Access Key ID and Secret Access Key.',
+        'Open Bahulam model settings, re-save the AWS Bedrock provider with Access Key ID, Secret Access Key, and Region, then retry.',
         'If settings were just updated, run /login or restart the CLI so provider settings sync again.',
       ],
       meta: buildMeta({ code, phase, provider: provider || 'bedrock', taskId, retryAfter, retryable }),
@@ -240,13 +243,13 @@ export function formatAgentErrorGuidance(data = {}) {
   const providerGuidance = PROVIDER_GUIDANCE[provider];
   if (code === 'credit_balance_exhausted') {
     lines.push('Add credits or upgrade your plan to continue using platform-hosted models.');
-    lines.push('If you have your own provider key, switch to BYOK in Settings to keep working without Kepler credit charges.');
-    if (data.pricing_url) lines.push(`Open ${data.pricing_url} to top up or compare plans.`);
+    lines.push('If you have your own provider key, switch to BYOK in Settings to keep working without Bahulam credit charges.');
+    if (pricingUrl) lines.push(`Open ${pricingUrl} to top up or compare plans.`);
   } else if (code === 'message_limit_reached') {
     const retry = retryLabel ? ` Wait ${retryLabel} for the rolling window to recover.` : ' Wait for the rolling message window to reset.';
     lines.push(`You reached the message limit for this plan.${retry}`);
     lines.push('Upgrade your plan for a larger 5-hour message window, or switch to BYOK if available.');
-    if (data.pricing_url) lines.push(`Open ${data.pricing_url} to upgrade.`);
+    if (pricingUrl) lines.push(`Open ${pricingUrl} to upgrade.`);
   } else if (phase === 'gateway' || code.includes('gateway')) {
     const label = providerGuidance?.label || 'provider';
     lines.push(`The ${label} gateway failed before the agent could respond.`);

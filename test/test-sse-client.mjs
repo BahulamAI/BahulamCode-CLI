@@ -679,7 +679,7 @@ await test('429 credit exhaustion preserves billing guidance', async () => {
     assert.strictEqual(events[0].data.code, 'credit_balance_exhausted');
     assert.ok(events[0].data.message.includes('Credit balance exhausted'));
     assert.strictEqual(events[0].data.action, 'buy_credits_or_byok');
-    assert.strictEqual(events[0].data.pricing_url, 'codekepler.ai/pricing');
+    assert.strictEqual(events[0].data.pricing_url, 'bahulam.ai/pricing');
 });
 
 // Test 5: Plan event with milestones
