@@ -267,7 +267,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
   assert.ok(!renderSource.includes('drawPinnedStatus'));
-  assert.ok(renderSource.includes("transcriptHeader('kepler', { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("transcriptHeader('b0', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
@@ -291,7 +291,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
   assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
-  assert.ok(replSource.includes("transcriptHeader('kepler', { tone: 'assistant' })"));
+  assert.ok(replSource.includes("transcriptHeader('b0', { tone: 'assistant' })"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
