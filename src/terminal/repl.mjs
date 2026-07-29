@@ -201,7 +201,7 @@ const VERSION = __require('../../package.json').version;
 function renderHelp(topic = '') {
   const key = String(topic || '').trim().toLowerCase();
   if (!key) {
-    process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
+    process.stderr.write(`\n  ${c.bold('b0 Commands')}\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
     const top = [
       ['/help', 'Grouped command help'],
@@ -1889,7 +1889,7 @@ async function handleCommand(input, ctx) {
 
     case '/cost': {
       if (session.isByok) {
-        process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Kepler does not charge credits for BYOK usage.')}\n\n`);
+        process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Bahulam does not charge credits for BYOK usage.')}\n\n`);
         return;
       }
       // Prefer server-authoritative numbers when available.
@@ -2171,7 +2171,7 @@ async function handleCommand(input, ctx) {
         const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
         process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
-      process.stderr.write(`\n  ${c.dim('Resume with:')} kepler --resume <sessionId>\n`);
+      process.stderr.write(`\n  ${c.dim('Resume with:')} b0 --resume <sessionId>\n`);
       return;
     }
 

@@ -9,7 +9,7 @@ export const TASK_FILES = Object.freeze({
 });
 
 const DEFAULT_CONTENT = Object.freeze({
-  'README.md': '# Kepler Tasks\n\nChecklist files are read every turn.\n',
+  'README.md': '# Bahulam Tasks\n\nChecklist files are read every turn.\n',
   'active.md': '# Active\n\n',
   'backlog.md': '# Backlog\n\n',
   'blocked.md': '# Blocked\n\n',

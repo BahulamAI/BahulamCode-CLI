@@ -2,14 +2,14 @@ import { TopBar } from '@/components/layout/top-bar'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const CLI_COMMANDS = [
-  { cmd: 'kepler', desc: 'Start interactive REPL' },
-  { cmd: 'kepler "instruction"', desc: 'Run a single instruction and exit' },
-  { cmd: 'kepler dashboard', desc: 'Open Kepler Pulse analytics dashboard' },
-  { cmd: 'kepler sessions', desc: 'List recent local sessions' },
-  { cmd: 'kepler stats', desc: 'Show aggregate local session stats' },
-  { cmd: 'kepler history', desc: 'Show recent prompt history' },
-  { cmd: 'kepler login', desc: 'Sign in via browser' },
-  { cmd: 'kepler version', desc: 'Show version' },
+  { cmd: 'b0', desc: 'Start interactive REPL' },
+  { cmd: 'b0 "instruction"', desc: 'Run a single instruction and exit' },
+  { cmd: 'b0 dashboard', desc: 'Open b0 Pulse analytics dashboard' },
+  { cmd: 'b0 sessions', desc: 'List recent local sessions' },
+  { cmd: 'b0 stats', desc: 'Show aggregate local session stats' },
+  { cmd: 'b0 history', desc: 'Show recent prompt history' },
+  { cmd: 'b0 login', desc: 'Sign in via browser' },
+  { cmd: 'b0 version', desc: 'Show version' },
 ]
 
 const REPL_COMMANDS = [
@@ -38,7 +38,8 @@ const ENV_VARS = [
   { name: 'TARANG_ENV', desc: 'Set backend environment (local, development, production)' },
   { name: 'ANTHROPIC_API_KEY', desc: 'Direct Anthropic API key for local mode' },
   { name: 'OPENROUTER_API_KEY', desc: 'OpenRouter API key' },
-  { name: 'KEPLER_CONFIG_DIR', desc: 'Override config directory (default: ~/.kepler)' },
+  { name: 'BAHULAM_CONFIG_DIR', desc: 'Override config directory (default: ~/.bahulam)' },
+  { name: 'KEPLER_CONFIG_DIR', desc: 'Legacy config directory override' },
   { name: 'TARANG_BACKEND_URL', desc: 'Override backend URL explicitly' },
 ]
 
@@ -46,7 +47,7 @@ const FEATURES = [
   { title: 'Multi-Agent Orchestration', desc: 'Primary agent spawns explore, plan, and review sub-agents for complex tasks.' },
   { title: 'Smart Tool Routing', desc: 'Write operations routed to CLI for local execution. Read tools run server-side.' },
   { title: 'Safety Guardrails', desc: 'Destructive commands (rm, delete) always require approval. Path validation on all file operations.' },
-  { title: 'Local JSONL Analytics', desc: 'Every session is recorded to ~/.kepler/ for offline analytics via Kepler Pulse.' },
+  { title: 'Local JSONL Analytics', desc: 'Every session is recorded to ~/.bahulam/ for offline analytics via b0 Pulse.' },
   { title: 'Conversation History', desc: 'Multi-turn conversations within a REPL session. Context preserved across turns.' },
   { title: 'BM25 Code Index', desc: 'Project files indexed on startup for fast semantic code search.' },
 ]
@@ -67,7 +68,7 @@ function CommandTable({ commands }: { commands: { cmd: string; desc: string }[] 
 export default function HelpPage() {
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="Help" subtitle="Kepler CLI commands, shortcuts, and configuration" />
+      <TopBar title="Help" subtitle="b0 CLI commands, shortcuts, and configuration" />
       <div className="px-6 py-6 space-y-6">
 
         <Card>

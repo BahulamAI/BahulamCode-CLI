@@ -290,7 +290,7 @@ export async function previewResumeSession(session, ctx) {
       if (mode !== 'summary') {
         contentLines.push('', c.dim('── conversation tail ──'));
         for (const msg of history.agentHistory.slice(1)) {
-          contentLines.push(`${msg.role === 'user' ? c.dim('You:') : c.brand('Kepler:')} ${String(msg.content).slice(0, 300)}`);
+          contentLines.push(`${msg.role === 'user' ? c.dim('You:') : c.brand('b0:')} ${String(msg.content).slice(0, 300)}`);
         }
       }
       const totalLines = contentLines.length;

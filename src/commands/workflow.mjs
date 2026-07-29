@@ -5,14 +5,14 @@
  * templates (POST /api/templates, table "templates").
  *
  * Commands:
- *   kepler workflow create --file <path>
- *   kepler workflow create-multi --file <path>
- *   kepler workflow run <name> [--instruction "..."] [--config key=val]
- *   kepler workflow run-multi <id> [--instruction "..."] [--pattern sequential|parallel]
- *   kepler workflow sync [--dir <path>]
- *   kepler workflow list
- *   kepler workflow get <name>
- *   kepler workflow delete <name>
+ *   b0 workflow create --file <path>
+ *   b0 workflow create-multi --file <path>
+ *   b0 workflow run <name> [--instruction "..."] [--config key=val]
+ *   b0 workflow run-multi <id> [--instruction "..."] [--pattern sequential|parallel]
+ *   b0 workflow sync [--dir <path>]
+ *   b0 workflow list
+ *   b0 workflow get <name>
+ *   b0 workflow delete <name>
  */
 
 import { resolveBackendUrl } from '../core/backend-url.mjs';
@@ -34,7 +34,7 @@ const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 
 /**
- * Main entry point for all `kepler workflow` subcommands.
+ * Main entry point for all `b0 workflow` subcommands.
  * @param {object} args - parsed CLI args
  */
 export async function handleWorkflowCommand(args) {
@@ -73,14 +73,14 @@ export async function handleWorkflowCommand(args) {
 
 function printWorkflowUsage() {
     process.stderr.write(`${BOLD}WORKFLOW COMMANDS${RESET}\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow create --file <path>${RESET}           Create single-agent workflow from YAML\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow create-multi --file <path>${RESET}      Create multi-agent workflow from YAML\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow run <name> [opts]${RESET}              Run a workflow adhoc\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow run-multi <id> [opts]${RESET}          Run a multi-agent workflow\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow sync [--dir <path>]${RESET}            Sync single-agent workflow YAML files\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow list${RESET}                           List all workflows\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow get <name>${RESET}                     Show workflow details\n`);
-    process.stderr.write(`  ${CYAN}kepler workflow delete <name>${RESET}                  Delete a workflow\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow create --file <path>${RESET}               Create single-agent workflow from YAML\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow create-multi --file <path>${RESET}         Create multi-agent workflow from YAML\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow run <name> [opts]${RESET}                  Run a workflow adhoc\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow run-multi <id> [opts]${RESET}              Run a multi-agent workflow\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow sync [--dir <path>]${RESET}                Sync single-agent workflow YAML files\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow list${RESET}                               List all workflows\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow get <name>${RESET}                         Show workflow details\n`);
+    process.stderr.write(`  ${CYAN}b0 workflow delete <name>${RESET}                      Delete a workflow\n`);
     process.stderr.write('\n');
 }
 
@@ -90,7 +90,7 @@ function getAuthHeaders() {
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        process.stderr.write(`${RED}✗ Not authenticated. Run 'kepler login' first.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Not authenticated. Run 'b0 login' first.${RESET}\n`);
         process.exit(1);
     }
     return {
@@ -111,7 +111,7 @@ async function apiFetch(path, options = {}) {
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-        process.stderr.write(`${RED}✗ Authentication failed. Run 'kepler login' to re-authenticate.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Authentication failed. Run 'b0 login' to re-authenticate.${RESET}\n`);
         process.exit(1);
     }
 
@@ -136,7 +136,7 @@ async function apiFetch(path, options = {}) {
 async function handleCreate(args) {
     const filePath = args.workflowFile;
     if (!filePath) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow create --file <path>${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow create --file <path>${RESET}\n`);
         process.exit(1);
     }
 
@@ -164,7 +164,7 @@ async function handleCreate(args) {
 async function handleCreateMulti(args) {
     const filePath = args.workflowFile;
     if (!filePath) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow create-multi --file <path>${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow create-multi --file <path>${RESET}\n`);
         process.exit(1);
     }
 
@@ -190,13 +190,13 @@ async function handleCreateMulti(args) {
 async function handleRun(args) {
     const slug = args.workflowSlug;
     if (!slug) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow run <name> [--instruction \"...\"]${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow run <name> [--instruction \"...\"]${RESET}\n`);
         process.exit(1);
     }
 
     const instruction = args.instruction || '';
     if (!instruction) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow run <name> --instruction \"...\"${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow run <name> --instruction \"...\"${RESET}\n`);
         process.exit(1);
     }
 
@@ -223,7 +223,7 @@ async function handleRun(args) {
         });
 
         if (response.status === 401) {
-            process.stderr.write(`${RED}✗ Authentication failed. Run 'kepler login' to re-authenticate.${RESET}\n`);
+            process.stderr.write(`${RED}✗ Authentication failed. Run 'b0 login' to re-authenticate.${RESET}\n`);
             process.exit(1);
         }
         if (response.status === 404) {
@@ -396,7 +396,7 @@ async function handleList(args) {
 async function handleGet(args) {
     const slug = args.workflowSlug;
     if (!slug) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow get <name>${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow get <name>${RESET}\n`);
         process.exit(1);
     }
 
@@ -434,7 +434,7 @@ async function handleGet(args) {
 async function handleDelete(args) {
     const slug = args.workflowSlug;
     if (!slug) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow delete <name>${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow delete <name>${RESET}\n`);
         process.exit(1);
     }
 
@@ -460,7 +460,7 @@ async function handleDelete(args) {
 async function handleRunMulti(args) {
     const workflowId = args.workflowSlug;
     if (!workflowId) {
-        process.stderr.write(`${RED}✗ Usage: kepler workflow run-multi <id> [--instruction "..."] [--pattern sequential|parallel]${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: b0 workflow run-multi <id> [--instruction "..."] [--pattern sequential|parallel]${RESET}\n`);
         process.exit(1);
     }
 
@@ -531,7 +531,7 @@ async function handleRunMulti(args) {
         });
 
         if (response.status === 401) {
-            process.stderr.write(`${RED}✗ Authentication failed. Run 'kepler login' to re-authenticate.${RESET}\n`);
+            process.stderr.write(`${RED}✗ Authentication failed. Run 'b0 login' to re-authenticate.${RESET}\n`);
             process.exit(1);
         }
         if (!response.ok) {

@@ -34,18 +34,18 @@ console.log('\n\x1b[1mtest-kepler-contract.mjs\x1b[0m\n');
 await test('kepler init scaffolds project contract', async () => {
   const cwd = tempProject();
   const result = scaffoldKeplerProject({ cwd });
-  assert.ok(fs.existsSync(path.join(cwd, '.kepler', 'README.md')));
-  assert.ok(fs.existsSync(path.join(cwd, '.kepler', 'config.json')));
-  assert.ok(fs.existsSync(path.join(cwd, '.kepler', 'settings.json')));
-  assert.ok(fs.existsSync(path.join(cwd, '.kepler', 'KEPLER.md')));
-  assert.ok(fs.existsSync(path.join(cwd, '.kepler', 'tasks', 'backlog.md')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'README.md')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'config.json')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'settings.json')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'KEPLER.md')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'tasks', 'backlog.md')));
   assert.ok(result.written.length > 8);
 });
 
 await test('policy resolver merges project config and tracks source', async () => {
   const cwd = tempProject();
   scaffoldKeplerProject({ cwd });
-  fs.writeFileSync(path.join(cwd, '.kepler', 'config.json'), JSON.stringify({
+  fs.writeFileSync(path.join(cwd, '.bahulam', 'config.json'), JSON.stringify({
     version: 1,
     planning: { owner: 'manual' },
     hitl: { reaskAfterMinutes: 7 },
@@ -59,9 +59,9 @@ await test('policy resolver merges project config and tracks source', async () =
 await test('project context loader reads hand-editable files and detects changes', async () => {
   const cwd = tempProject();
   scaffoldKeplerProject({ cwd });
-  fs.writeFileSync(path.join(cwd, '.kepler', 'plan.md'), '1. Old plan\n');
+  fs.writeFileSync(path.join(cwd, '.bahulam', 'plan.md'), '1. Old plan\n');
   const first = loadProjectContext({ cwd });
-  fs.writeFileSync(path.join(cwd, '.kepler', 'plan.md'), '1. New plan\n');
+  fs.writeFileSync(path.join(cwd, '.bahulam', 'plan.md'), '1. New plan\n');
   const second = loadProjectContext({ cwd, previous: first });
   assert.ok(second.loaded.some(f => f.label === 'plan.md'));
   assert.ok(second.changed.some(f => f.label === 'plan.md'));
@@ -137,7 +137,7 @@ await test('project context injects task workflow guidance', async () => {
   appendTask({ cwd, list: 'active', text: 'Keep tasks current' });
   const context = loadProjectContext({ cwd });
   const prompt = contextToPromptBlock(context);
-  assert.ok(prompt.includes('Keep .kepler/tasks/active.md current'));
+  assert.ok(prompt.includes('Keep .bahulam/tasks/active.md current'));
   assert.ok(prompt.includes('Keep tasks current'));
 });
 
@@ -177,7 +177,7 @@ await test('/compact helper summarizes prefix and preserves recent tail', async 
 await test('hook runner blocks tools and captures feedback', async () => {
   const cwd = tempProject();
   scaffoldKeplerProject({ cwd });
-  fs.writeFileSync(path.join(cwd, '.kepler', 'settings.json'), JSON.stringify({
+  fs.writeFileSync(path.join(cwd, '.bahulam', 'settings.json'), JSON.stringify({
     hooks: {
       PreToolUse: [{ matcher: 'shell', command: 'printf \'{"block":true,"message":"no shell"}\'; exit 2', timeout: 1 }],
       UserPromptSubmit: [{ command: 'printf \'{"feedback":"load testing skill"}\'', timeout: 1 }],
@@ -215,7 +215,7 @@ await test('approval manager honors saved session trust and approval log', async
   } finally {
     process.stderr.write = originalWrite;
   }
-  const log = fs.readFileSync(path.join(cwd, '.kepler', 'approvals.log'), 'utf-8');
+  const log = fs.readFileSync(path.join(cwd, '.bahulam', 'approvals.log'), 'utf-8');
   assert.ok(log.includes('auto_trusted'));
 });
 

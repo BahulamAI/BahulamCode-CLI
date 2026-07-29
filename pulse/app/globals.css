@@ -86,7 +86,7 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* Kepler accent colors */
+  /* b0 accent colors */
   --color-kepler-cyan: #06b6d4;
   --color-kepler-cyan-light: #22d3ee;
   --color-terminal-cyan: #06b6d4;

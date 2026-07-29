@@ -85,7 +85,7 @@ function parseKeplerSubcommandArgs(command, argv) {
 
 async function main() {
   if (subcommand === 'dashboard') {
-    // Launch Kepler Pulse Next.js dashboard
+    // Launch b0 Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const path = await import('node:path');
@@ -233,7 +233,8 @@ async function main() {
     TARANG_ENV              Set backend (local, treetop, production)
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
-    KEPLER_CONFIG_DIR         Override config directory (default: ~/.bahulam)
+    BAHULAM_CONFIG_DIR        Override config directory (default: ~/.bahulam)
+    KEPLER_CONFIG_DIR         Legacy config directory override
     KEPLER_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off

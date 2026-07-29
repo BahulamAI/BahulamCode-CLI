@@ -1,6 +1,5 @@
 import fs from 'fs/promises'
 import path from 'path'
-import os from 'os'
 import type {
   StatsCache,
   SessionMeta,
@@ -8,6 +7,7 @@ import type {
   HistoryEntry,
 } from '@/types/claude'
 import { slugToPath } from '@/lib/decode'
+import { bahulamPath } from '@/lib/bahulam-paths'
 
 function stripXmlTags(text: string): string {
   return text.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').replace(/<[^>]+\/>/g, '').replace(/<[^>]+>/g, '').trim()
@@ -32,10 +32,8 @@ export async function resolveProjectPath(slug: string): Promise<string> {
   return slugToPath(slug)
 }
 
-const CLAUDE_DIR = process.env.KEPLER_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.kepler')
-
 export function claudePath(...segments: string[]): string {
-  return path.join(CLAUDE_DIR, ...segments)
+  return bahulamPath(...segments)
 }
 
 // ─── Stats Cache ─────────────────────────────────────────────────────────────

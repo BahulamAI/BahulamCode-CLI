@@ -6,9 +6,9 @@
  * stderr gets minimal progress (optional with --verbose).
  *
  * Usage:
- *   kepler --headless "Fix the bug in auth.py"
- *   kepler --headless --timeout 300 --max-cost 2.00 "Refactor the login flow"
- *   kepler --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
+ *   b0 --headless "Fix the bug in auth.py"
+ *   b0 --headless --timeout 300 --max-cost 2.00 "Refactor the login flow"
+ *   b0 --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
  */
 
 import { TarangStreamClient } from './stream-client.mjs';
@@ -47,7 +47,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        emit({ type: 'error', error: 'Not logged in. Run: kepler login' });
+        emit({ type: 'error', error: 'Not logged in. Run: b0 login' });
         process.exit(1);
     }
 

@@ -31,7 +31,8 @@ function cleanup() {
 
 cleanup(); // clean before
 fs.mkdirSync(testDir, { recursive: true });
-process.env.KEPLER_HOME = path.join(testDir, '.kepler');
+const previousBahulamHome = process.env.BAHULAM_HOME;
+process.env.BAHULAM_HOME = path.join(testDir, '.bahulam');
 const { SessionManager } = await import('../src/core/session-manager.mjs');
 
 test('start creates state.json', () => {
@@ -198,7 +199,8 @@ test('listResumable defaults to all sessions sorted by latest activity', () => {
 
 // Cleanup
 cleanup();
-delete process.env.KEPLER_HOME;
+if (previousBahulamHome === undefined) delete process.env.BAHULAM_HOME;
+else process.env.BAHULAM_HOME = previousBahulamHome;
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

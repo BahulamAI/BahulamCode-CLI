@@ -94,7 +94,7 @@ export class SkillInstaller {
 
     install(source, { scope = 'global', force = false, onlyNames = null } = {}) {
         if (!source) throw new Error('A local directory or Git repository is required');
-        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-skill-'));
+        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-skill-'));
         let resolvedSource;
         let commit = null;
         try {

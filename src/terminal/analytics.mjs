@@ -76,7 +76,7 @@ export function formatSessionsReport(sessions, limit) {
   }
 
   const lines = [];
-  lines.push(`KEPLER SESSIONS  ${sessions.length} shown`);
+  lines.push(`B0 SESSIONS  ${sessions.length} shown`);
   lines.push(`Recent local transcripts from ~/.bahulam/projects  (limit ${limit})`);
   lines.push('');
 
@@ -96,7 +96,7 @@ export function formatSessionsReport(sessions, limit) {
 
 export function formatStatsReport(stats, tools, models, days, paths) {
   const lines = [];
-  lines.push(`KEPLER STATS  ${relativeDaysLabel(days)}`);
+  lines.push(`B0 STATS  ${relativeDaysLabel(days)}`);
   lines.push(`Store: ${paths.bahulamDir}`);
   lines.push('');
   lines.push(`Sessions        ${formatNumber(stats.totalSessions)}`);
@@ -135,7 +135,7 @@ export function formatHistoryReport(entries, limit) {
   }
 
   const lines = [];
-  lines.push(`KEPLER HISTORY  ${entries.length} shown`);
+  lines.push(`B0 HISTORY  ${entries.length} shown`);
   lines.push(`Recent prompts from ~/.bahulam/history.jsonl  (limit ${limit})`);
   lines.push('');
 
@@ -202,7 +202,7 @@ export async function runHistoryCommand(args = []) {
   process.stdout.write(formatHistoryReport(history, limit));
 }
 
-// Dashboard removed — now using Kepler Pulse (pulse/cli.js)
+// Dashboard removed — now using b0 Pulse (pulse/cli.js)
 
 export async function _runDashboardCommand_REMOVED() { /* see pulse/cli.js */ }
 
@@ -272,7 +272,7 @@ export async function _OLD_runDashboardCommand(args = []) {
   const actualPort = typeof address === 'object' && address ? address.port : requestedPort;
   const url = `http://${host}:${actualPort}`;
 
-  process.stderr.write(`\x1b[36mKepler dashboard\x1b[0m ${url}\n`);
+  process.stderr.write(`\x1b[36mb0 dashboard\x1b[0m ${url}\n`);
   process.stderr.write(`\x1b[2mReading local analytics from ${getStorePaths().bahulamDir}\x1b[0m\n`);
   process.stderr.write(`\x1b[2mPress Ctrl+C to stop the dashboard server.\x1b[0m\n`);
 

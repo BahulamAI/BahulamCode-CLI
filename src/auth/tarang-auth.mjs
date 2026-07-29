@@ -191,7 +191,7 @@ export class TarangAuth {
 
         const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-        process.stderr.write(`\n${BOLD}Kepler Configuration${RESET}\n`);
+        process.stderr.write(`\n${BOLD}b0 Configuration${RESET}\n`);
         process.stderr.write(`${'─'.repeat(50)}\n`);
         process.stderr.write(`  Auth:           ${creds.token ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
         process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
@@ -217,8 +217,8 @@ export class TarangAuth {
             process.stderr.write(`  Last synced:    ${DIM}${new Date(raw.last_synced_at).toLocaleString()}${RESET}\n`);
         }
 
-        process.stderr.write(`\n  ${DIM}Run ${RESET}${CYAN}kepler sync${RESET}${DIM} to sync settings from web.${RESET}\n`);
-        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}kepler configure${RESET}${DIM} to open settings in browser.${RESET}\n`);
+        process.stderr.write(`\n  ${DIM}Run ${RESET}${CYAN}b0 sync${RESET}${DIM} to sync settings from web.${RESET}\n`);
+        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}b0 configure${RESET}${DIM} to open settings in browser.${RESET}\n`);
         process.stderr.write('\n');
     }
 

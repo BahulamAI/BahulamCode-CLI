@@ -23,7 +23,7 @@ export default function CostsPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="Costs" subtitle="Estimated spend from ~/.kepler/" />
+      <TopBar title="Costs" subtitle="Estimated spend from ~/.bahulam/" />
       <div className="p-6 space-y-6">
 
         {error && (

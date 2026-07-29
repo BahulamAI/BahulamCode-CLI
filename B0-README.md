@@ -1,26 +1,26 @@
-# @axplusb/kepler
+# @bahulamai/b0
 
-Kepler is an AI coding agent for terminal-first software work. It can inspect a
+b0 is Bahulam's AI coding agent for terminal-first software work. It can inspect a
 repo, plan changes, run tools, ask for human approval, resume prior sessions, and
-keep local project context in `.kepler/`.
+keep local project context in `.bahulam/`.
 
 ## Install
 
 ```bash
-npm install -g @axplusb/kepler@latest
+npm install -g @bahulamai/b0@latest
 ```
 
 Run without global install:
 
 ```bash
-npx @axplusb/kepler@latest
+npx @bahulamai/b0@latest
 ```
 
 Update an existing global install:
 
 ```bash
-npm update -g @axplusb/kepler
-kepler version
+npm update -g @bahulamai/b0
+b0 version
 ```
 
 Requires Node.js 18 or newer.
@@ -28,25 +28,25 @@ Requires Node.js 18 or newer.
 ## Quick Start
 
 ```bash
-kepler login
-kepler
-kepler "fix the failing auth test"
+b0 login
+b0
+b0 "fix the failing auth test"
 ```
 
 Common startup commands:
 
 ```bash
-kepler                    Start interactive REPL
-kepler "instruction"      Run a single instruction and exit
-kepler login              Sign in through the browser
-kepler dashboard          Open Kepler Pulse analytics dashboard
-kepler sessions           List recent local sessions
-kepler stats              Aggregate local session stats
-kepler history            Show recent prompt history
-kepler version            Show installed version
+b0                    Start interactive REPL
+b0 "instruction"      Run a single instruction and exit
+b0 login              Sign in through the browser
+b0 dashboard          Open local analytics dashboard
+b0 sessions           List recent local sessions
+b0 stats              Aggregate local session stats
+b0 history            Show recent prompt history
+b0 version            Show installed version
 ```
 
-## What's New In 2.2.0
+## What's New
 
 - Resume sessions with summary-only, summary plus last 10 turns, or summary plus
   last 20 turns.
@@ -56,7 +56,7 @@ kepler version            Show installed version
   destructive actions, and backend/framework HITL approvals.
 - Reject/stop is a single action. Use re-plan with note when you want to steer
   the agent.
-- Approval logs redact secrets before writing to `.kepler/approvals.log`.
+- Approval logs redact secrets before writing to `.bahulam/approvals.log`.
 - Long shell commands wrap instead of being truncated.
 - Long-running shell commands return an observed output tail instead of hanging
   silently.
@@ -92,10 +92,10 @@ Ctrl+C                  Exit
 
 ## Resume Behavior
 
-`/resume` reads local JSONL transcripts from `~/.kepler/projects/**`. The
+`/resume` reads local JSONL transcripts from `~/.bahulam/projects/**`. The
 selected session is the source of truth.
 
-For large sessions, Kepler shows mode choices:
+For large sessions, b0 shows mode choices:
 
 ```text
 full transcript
@@ -119,7 +119,7 @@ The agent receives:
 
 ## Resilient Streaming
 
-Kepler keeps a per-task SSE event cursor while a turn is running. If the network
+b0 keeps a per-task SSE event cursor while a turn is running. If the network
 connection drops mid-turn, the CLI reconnects to the same backend task and asks
 for events after the last rendered event id. This protects long-running tool
 sessions from transient connection drops.
@@ -136,7 +136,7 @@ completed local tool results.
 
 ## Approvals And HITL
 
-Kepler auto-approves low-risk reads and safe shell inspection commands. It asks
+b0 auto-approves low-risk reads and safe shell inspection commands. It asks
 for confirmation for sensitive reads, mutating shell commands, destructive
 actions, network actions, and framework-level HITL requests.
 
@@ -154,16 +154,16 @@ n / Esc        stop without running
 
 Sensitive reads include files such as `.env`, `*.pem`, and `secrets/**`.
 
-Approval decisions are logged locally in `.kepler/approvals.log`. Secret-like
+Approval decisions are logged locally in `.bahulam/approvals.log`. Secret-like
 values in commands, nested args, query strings, authorization headers, and
 rejection notes are redacted before the log is written.
 
 ## Project Context
 
-Kepler uses a project-local `.kepler/` folder for hand-editable context:
+b0 uses a project-local `.bahulam/` folder for hand-editable context:
 
 ```text
-.kepler/
+.bahulam/
   KEPLER.md          Project operating brief
   settings.json      Project settings and policy
   hooks.json         Tool/user hook configuration
@@ -179,40 +179,40 @@ Use `/plan` and `/tasks` in the REPL to inspect and update task files.
 
 ## Skills
 
-Kepler supports portable `SKILL.md` bundles and Claude-compatible skill
+b0 supports portable `SKILL.md` bundles and Claude-compatible skill
 directories. Skill metadata is included in cached context; full instructions and
 references are loaded only when needed.
 
 Discovery precedence:
 
-1. `<project>/.kepler/skills`
+1. `<project>/.bahulam/skills`
 2. `<project>/.claude/skills`
-3. `~/.kepler/skills`
+3. `~/.bahulam/skills`
 4. `~/.claude/skills`
 
 Install skills:
 
 ```bash
-kepler skills install ./my-skill
-kepler skills install github:owner/skills-repository
-kepler skills install https://github.com/owner/skills.git
-kepler skills install ./team-skills --project
+b0 skills install ./my-skill
+b0 skills install github:owner/skills-repository
+b0 skills install https://github.com/owner/skills.git
+b0 skills install ./team-skills --project
 ```
 
 ## Configuration
 
 Settings are managed in the web dashboard and synced to the CLI:
 
-https://codekepler.ai/dashboard/settings
+https://bahulam.ai/dashboard/settings
 
 Common local paths:
 
 ```text
-~/.kepler/                         Global CLI state
-~/.kepler/projects/**              Local JSONL transcripts
-~/.kepler/history.jsonl            Prompt history
-<project>/.kepler/                 Project context and policy
-<project>/.kepler/approvals.log    Project approval audit log
+~/.bahulam/                        Global CLI state
+~/.bahulam/projects/**             Local JSONL transcripts
+~/.bahulam/history.jsonl           Prompt history
+<project>/.bahulam/                Project context and policy
+<project>/.bahulam/approvals.log   Project approval audit log
 ```
 
 Provider API keys can be configured in the dashboard or through environment
@@ -231,20 +231,20 @@ KEPLER_BLOCK_SEPARATOR             space, dotted, or off
 Check installed package:
 
 ```bash
-npm list -g @axplusb/kepler --depth=0
-kepler version
+npm list -g @bahulamai/b0 --depth=0
+b0 version
 ```
 
 Use a clean one-off run:
 
 ```bash
-npx @axplusb/kepler@latest --version
+npx @bahulamai/b0@latest --version
 ```
 
 If npm cache permissions are broken, use a temporary cache:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm pack --dry-run
+env NPM_CONFIG_CACHE=/private/tmp/b0-npm-cache npm pack --dry-run
 ```
 
 If a resume session shows a large context number, check whether the row also
@@ -253,7 +253,7 @@ tail modes usually send much less.
 
 ## Links
 
-- Website: https://codekepler.ai
+- Website: https://getb0.ai
 - Company: https://axplusb.tech
 - Repository: https://github.com/raviakasapu/codekepler-npm
 

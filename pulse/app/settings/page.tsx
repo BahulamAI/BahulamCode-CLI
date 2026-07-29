@@ -83,7 +83,7 @@ export default function SettingsPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="kepler-pulse · settings" subtitle="~/.kepler/settings.json" />
+      <TopBar title="b0-pulse · settings" subtitle="~/.bahulam/settings.json" />
       <div className="p-4 md:p-6 space-y-6">
         {error && <p className="text-[#f87171] text-sm font-mono">Error: {String(error)}</p>}
         {isLoading && (
@@ -100,13 +100,13 @@ export default function SettingsPage() {
                 <span className="text-primary text-2xl font-mono font-bold">
                   {formatBytes(data.storageBytes)}
                 </span>
-                <span className="text-muted-foreground text-sm font-mono">used by ~/.kepler/</span>
+                <span className="text-muted-foreground text-sm font-mono">used by ~/.bahulam/</span>
               </div>
             </Section>
 
             <Section title="Settings">
               {Object.keys(data.settings).length === 0 ? (
-                <p className="text-muted-foreground/60 text-sm font-mono">No settings found in ~/.kepler/settings.json</p>
+                <p className="text-muted-foreground/60 text-sm font-mono">No settings found in ~/.bahulam/settings.json</p>
               ) : (
                 <div className="font-mono text-sm leading-relaxed overflow-x-auto">
                   <JsonValue value={data.settings} />
@@ -139,7 +139,7 @@ export default function SettingsPage() {
 
             <Section title={`Skills (${data.skills.length})`}>
               {data.skills.length === 0 ? (
-                <p className="text-muted-foreground/60 text-sm font-mono">No skills found in ~/.kepler/skills/</p>
+                <p className="text-muted-foreground/60 text-sm font-mono">No skills found in ~/.bahulam/skills/</p>
               ) : (
                 <div className="grid gap-2">
                   {data.skills.map(skill => (

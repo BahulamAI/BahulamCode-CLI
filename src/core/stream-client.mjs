@@ -204,7 +204,7 @@ export class TarangStreamClient {
         }
 
         if (response.status === 401) {
-            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `kepler login` to re-authenticate.', fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `b0 login` to re-authenticate.', fatal: true } };
             return;
         }
         if (response.status === 429) {

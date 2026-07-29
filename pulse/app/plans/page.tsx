@@ -251,7 +251,7 @@ export default function PlansPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="kepler-pulse · plans" subtitle="~/.kepler/plans/" />
+      <TopBar title="b0-pulse · plans" subtitle="~/.bahulam/plans/" />
       <div className="p-4 md:p-6 space-y-5">
 
         {error && <p className="text-[#f87171] text-sm font-mono">Error: {String(error)}</p>}
@@ -289,7 +289,7 @@ export default function PlansPage() {
                 <p className="text-[#d97706] text-2xl mb-3">📋</p>
                 <p className="text-muted-foreground/60 text-sm font-mono">
                   {plans.length === 0
-                    ? 'No plans found in ~/.kepler/plans/'
+                    ? 'No plans found in ~/.bahulam/plans/'
                     : 'No plans match your search.'}
                 </p>
               </div>

@@ -55,7 +55,7 @@ export default function HistoryPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="History" subtitle="~/.kepler/history.jsonl" />
+      <TopBar title="History" subtitle="~/.bahulam/history.jsonl" />
       <div className="p-4 md:p-6 space-y-4">
 
         {error && (
@@ -92,7 +92,7 @@ export default function HistoryPage() {
             {pageEntries.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground text-sm">
                 {(data.history?.length ?? 0) === 0
-                  ? 'No history found in ~/.kepler/history.jsonl'
+                  ? 'No history found in ~/.bahulam/history.jsonl'
                   : 'No entries match your search.'}
               </div>
             ) : (

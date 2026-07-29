@@ -4,9 +4,9 @@ import * as path from 'node:path';
 const FILES = {
   'README.md': `# .bahulam/ - project agent context
 
-Kepler reads and writes here to keep state between sessions.
+b0 reads and writes here to keep state between sessions.
 
-## Files Kepler writes
+## Files b0 writes
 - \`plan.md\` - current agent plan
 - \`goal.md\` - durable session goal
 - \`tasks/\` - task list
@@ -75,7 +75,7 @@ Format v1. Markdown files are intentionally hand-editable.
   'style.md': '# Style\n\nAdd code and communication conventions here.\n',
   'hitl.md': '# HITL Guidance\n\nAdd project-specific approval guidance here.\n',
   'trust.json': JSON.stringify({ version: 1, rules: [] }, null, 2) + '\n',
-  'tasks/README.md': `# Kepler Tasks
+  'tasks/README.md': `# Bahulam Tasks
 
 Checklist files are read every turn.
 

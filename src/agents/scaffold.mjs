@@ -158,7 +158,7 @@ export function createAgentFile({
   }
   fs.mkdirSync(dir, { recursive: true });
   const toolList = Array.isArray(tools) ? tools : String(tools || '').split(',').map(s => s.trim()).filter(Boolean);
-  const body = prompt || `You are ${name}, a project-local Kepler sub-agent.\n\nFocus on the assigned task and return a concise handoff with evidence.`;
+  const body = prompt || `You are ${name}, a project-local b0 sub-agent.\n\nFocus on the assigned task and return a concise handoff with evidence.`;
   const indentedPrompt = body.trim().split('\n').map(line => `    ${line}`).join('\n');
   const lines = [
     'apiVersion: agent.framework/v1',

@@ -15,8 +15,8 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { bahulamHome } from '../core/paths.mjs';
 
 export const MODES = Object.freeze({
   QUIET:    'quiet',
@@ -27,7 +27,7 @@ export const MODES = Object.freeze({
 
 const VALID = new Set(Object.values(MODES));
 
-const CONFIG_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.bahulam');
+const CONFIG_DIR = bahulamHome();
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 let _cached = null;
