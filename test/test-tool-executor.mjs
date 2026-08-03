@@ -203,7 +203,13 @@ await test('search_code routes through the registered project index', async () =
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
-    assert.ok(result.content.includes('@bahulamai/code'));
+    // Package is dual-published under @bahulamai/code and @bahulam/code;
+    // publish flow swaps the `name` field in-place. Accept either scope
+    // so a mid-publish package.json doesn't break the test suite.
+    assert.ok(
+        result.content.includes('@bahulamai/code') || result.content.includes('@bahulam/code'),
+        'package.json name should be @bahulamai/code or @bahulam/code',
+    );
 });
 
 await test('read_file reuses unchanged repeated reads and read_batch reads line ranges', async () => {

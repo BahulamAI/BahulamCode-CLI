@@ -1259,6 +1259,29 @@ function renderEvent(event) {
       }
       break;
 
+    // Live steering ack events (PRD-081 §5.2). The endpoint returns a
+    // sync "accepted" HTTP response; these SSE events confirm the same
+    // fact on the stream (needed for reconnect replay) and, on delivery,
+    // tell the user their follow-up made it into the model's context.
+    case 'user_intervention_accepted': {
+      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_accepted', data });
+      break;
+    }
+    case 'user_intervention_delivered': {
+      renderBlockBoundary('status', { compactSame: true });
+      const tool = data?.delivered_at_tool ? ` ${c.dim(`(via ${data.delivered_at_tool})`)}` : '';
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('follow-up delivered to agent')}${tool}\n`);
+      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_delivered', data });
+      runtime.lastRenderedBlock = 'status';
+      break;
+    }
+    case 'user_intervention_queued': {
+      // Task ended before delivery; backend already returned queued_next_turn
+      // to the submission call. We just persist for the transcript.
+      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_queued', data });
+      break;
+    }
+
     case 'complete': {
       stopSpinner();
       flushContent();
@@ -3431,16 +3454,41 @@ export async function startTerminalRepl() {
         process.stderr.write('\n');
       }
       executionInputVisible = false;
-      try {
-        await client.resume(instruction);
-        jsonlWriter.writeKeplerEvent({
-          type: 'user_intervention',
-          data: { instruction, task_id: client.currentTaskId || null },
-        });
-        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent follow-up to running agent')}\n`);
-      } catch {
+      // Live steering (PRD-081 §5.2): submit through the dedicated
+      // /api/intervention/{task_id} path, not /resume. The stream client
+      // returns a status object so we render the true backend decision
+      // (accepted vs queued-for-next-turn vs duplicate) instead of guessing.
+      const result = await client.sendIntervention(instruction);
+      const taskId = client.currentTaskId || null;
+      const status = result && result.status;
+      const interventionId = result && result.interventionId;
+
+      // Persist the local record regardless of outcome so the transcript
+      // reflects what the user typed. Delivered/queued follow-ups will
+      // get their SSE ack events written separately by the event handler.
+      jsonlWriter.writeKeplerEvent({
+        type: 'user_intervention',
+        data: {
+          instruction,
+          task_id: taskId,
+          intervention_id: interventionId || null,
+          status: status || 'unknown',
+        },
+      });
+
+      if (status === 'accepted') {
+        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent to running agent')}\n`);
+      } else if (status === 'duplicate') {
+        process.stderr.write(`  ${c.dim('↳ already sent (idempotent)')}\n`);
+      } else if (status === 'queued_next_turn') {
         _queuedLines.push(instruction);
-        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued follow-up for the next turn')}\n`);
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('task ended — queued for next turn')}\n`);
+      } else {
+        // no_task, error, or unknown — fall back to next-turn queue so the
+        // user's text is never silently lost.
+        _queuedLines.push(instruction);
+        const errBits = result && result.error ? ` ${c.dim(`(${String(result.error).slice(0, 80)})`)}` : '';
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued for next turn')}${errBits}\n`);
       }
     }
 

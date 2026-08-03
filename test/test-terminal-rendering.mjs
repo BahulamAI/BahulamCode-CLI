@@ -340,7 +340,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('runtime.afterContentFlush = null;'));
   assert.ok(renderSourceRt.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
-  assert.ok(replSource.includes('client.resume(instruction)'));
+  // PRD-081 Phase 3: active-run follow-ups now go through the dedicated
+  // /api/intervention/{task_id} path (client.sendIntervention), not /resume.
+  assert.ok(replSource.includes('client.sendIntervention(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('Ctrl+D'));
 });
