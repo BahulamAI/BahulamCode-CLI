@@ -141,7 +141,7 @@ export function createWorkflowFile({
   const normalizedEdges = normalizeWorkflowEdges(edges, agentSlugs);
 
   const lines = [
-    'apiVersion: kepler.workflow/v1',
+    'apiVersion: bahulam.workflow/v1',
     'kind: MultiWorkflow',
     'metadata:',
     `  name: ${yamlQuote(name)}`,

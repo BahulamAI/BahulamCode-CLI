@@ -9,6 +9,13 @@ prior sessions, and keeps local project context in `~/.bahulam/`.
 - Sub-agents, skills, workflows, and MCP support
 - Bring your own model (40+ supported)
 
+## About the name
+
+**Bahulam** (बहुलम्) is Sanskrit for *abundance*. The name reflects a
+philosophy: tokens are not rationed, model choice is not gated, and
+intelligence is not metered per feature. The restrictions most agents
+ship with are design decisions — ones we chose not to make.
+
 ## Install
 
 ```bash
@@ -56,7 +63,7 @@ skills, workflows, session tools).
 
 - Published under both `@bahulam/code` and `@bahulamai/code` scopes.
 - Full removal of legacy `b0` references from CLI help, error messages,
-  analytics headers, and internal comments.
+  analytics headers, internal comments, and Pulse dashboard.
 
 ## 2.6.0 Highlights
 

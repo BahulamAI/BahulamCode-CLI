@@ -2,14 +2,14 @@ import { TopBar } from '@/components/layout/top-bar'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const CLI_COMMANDS = [
-  { cmd: 'b0', desc: 'Start interactive REPL' },
-  { cmd: 'b0 "instruction"', desc: 'Run a single instruction and exit' },
-  { cmd: 'b0 dashboard', desc: 'Open b0 Pulse analytics dashboard' },
-  { cmd: 'b0 sessions', desc: 'List recent local sessions' },
-  { cmd: 'b0 stats', desc: 'Show aggregate local session stats' },
-  { cmd: 'b0 history', desc: 'Show recent prompt history' },
-  { cmd: 'b0 login', desc: 'Sign in via browser' },
-  { cmd: 'b0 version', desc: 'Show version' },
+  { cmd: 'bahulam-code', desc: 'Start interactive REPL' },
+  { cmd: 'bahulam-code "instruction"', desc: 'Run a single instruction and exit' },
+  { cmd: 'bahulam-code dashboard', desc: 'Open Bahulam Pulse analytics dashboard' },
+  { cmd: 'bahulam-code sessions', desc: 'List recent local sessions' },
+  { cmd: 'bahulam-code stats', desc: 'Show aggregate local session stats' },
+  { cmd: 'bahulam-code history', desc: 'Show recent prompt history' },
+  { cmd: 'bahulam-code login', desc: 'Sign in via browser' },
+  { cmd: 'bahulam-code version', desc: 'Show version' },
 ]
 
 const REPL_COMMANDS = [
@@ -47,7 +47,7 @@ const FEATURES = [
   { title: 'Multi-Agent Orchestration', desc: 'Primary agent spawns explore, plan, and review sub-agents for complex tasks.' },
   { title: 'Smart Tool Routing', desc: 'Write operations routed to CLI for local execution. Read tools run server-side.' },
   { title: 'Safety Guardrails', desc: 'Destructive commands (rm, delete) always require approval. Path validation on all file operations.' },
-  { title: 'Local JSONL Analytics', desc: 'Every session is recorded to ~/.bahulam/ for offline analytics via b0 Pulse.' },
+  { title: 'Local JSONL Analytics', desc: 'Every session is recorded to ~/.bahulam/ for offline analytics via Bahulam Pulse.' },
   { title: 'Conversation History', desc: 'Multi-turn conversations within a REPL session. Context preserved across turns.' },
   { title: 'BM25 Code Index', desc: 'Project files indexed on startup for fast semantic code search.' },
 ]
@@ -68,7 +68,7 @@ function CommandTable({ commands }: { commands: { cmd: string; desc: string }[] 
 export default function HelpPage() {
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="Help" subtitle="b0 CLI commands, shortcuts, and configuration" />
+      <TopBar title="Help" subtitle="Bahulam Code CLI commands, shortcuts, and configuration" />
       <div className="px-6 py-6 space-y-6">
 
         <Card>

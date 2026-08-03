@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * b0 Pulse — local analytics dashboard launcher.
+ * Bahulam Pulse — local analytics dashboard launcher.
  * Launches a Next.js dev server from ~/.bahulam-pulse/ cache directory.
  */
 
@@ -13,7 +13,7 @@ const fs   = require('fs')
 const PKG_DIR   = __dirname
 const CACHE_DIR = path.join(os.homedir(), '.bahulam-pulse')
 
-// ANSI helpers — b0 cyan palette
+// ANSI helpers — Bahulam cyan palette
 const C   = '\x1b[36m'     // cyan
 const C2  = '\x1b[96m'     // bright cyan
 const DIM = '\x1b[2m'
@@ -25,7 +25,7 @@ function printBanner() {
   console.log()
   const configDir = resolveConfigDir()
   console.log(`  ${B}${C}B · 0${R}`)
-  console.log(`  ${B}${C2}b0 Pulse${R}   ${DIM}real-time agent analytics${R}`)
+  console.log(`  ${B}${C2}Bahulam Pulse${R}   ${DIM}real-time agent analytics${R}`)
   console.log()
   console.log(`  ${DIM}Data dir:${R}    ${C2}${configDir}${R}`)
   console.log()
@@ -82,7 +82,7 @@ function syncSource(pkg) {
   }
   // Write a minimal package.json with only runtime dependencies
   fs.writeFileSync(path.join(CACHE_DIR, 'package.json'), JSON.stringify({
-    name: 'b0-pulse-runtime',
+    name: 'bahulam-pulse-runtime',
     version: pkg.version,
     dependencies: pkg.dependencies,
   }, null, 2))
@@ -125,13 +125,13 @@ async function main() {
   const url  = `http://localhost:${port}`
 
   // Pass config vars to the Next.js process so it reads from ~/.bahulam.
-  const keplerDir = resolveConfigDir()
+  const configDir = resolveConfigDir()
   const env = {
     ...process.env,
     PORT: String(port),
-    BAHULAM_CONFIG_DIR: keplerDir,
-    KEPLER_CONFIG_DIR: keplerDir,
-    CLAUDE_CONFIG_DIR: keplerDir,
+    BAHULAM_CONFIG_DIR: configDir,
+    KEPLER_CONFIG_DIR: configDir,
+    CLAUDE_CONFIG_DIR: configDir,
   }
 
   console.log(`  ${DIM}Starting server on${R} ${C2}${B}${url}${R}\n`)

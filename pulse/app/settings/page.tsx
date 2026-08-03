@@ -83,7 +83,7 @@ export default function SettingsPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="b0-pulse · settings" subtitle="~/.bahulam/settings.json" />
+      <TopBar title="Bahulam Pulse · settings" subtitle="~/.bahulam/settings.json" />
       <div className="p-4 md:p-6 space-y-6">
         {error && <p className="text-[#f87171] text-sm font-mono">Error: {String(error)}</p>}
         {isLoading && (

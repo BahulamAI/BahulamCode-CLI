@@ -260,7 +260,7 @@ export default function MemoryPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="b0-pulse · memory" subtitle="~/.bahulam/projects/*/memory/" />
+      <TopBar title="Bahulam Pulse · memory" subtitle="~/.bahulam/projects/*/memory/" />
       <div className="p-4 md:p-6 space-y-5">
 
         {error && <p className="text-[#f87171] text-sm font-mono">Error loading memories.</p>}

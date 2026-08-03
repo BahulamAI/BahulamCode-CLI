@@ -60,11 +60,11 @@ export function printBanner(version = '') {
   const vTag = version ? `${dim(' — ')}${dim('v' + version)}` : '';
 
   write('\n');
-  write(`         ${orbit} ${dim('· orbit')}\n`);
+  write(`         ${orbit} ${dim('· bahulam — abundance')}\n`);
   write('\n');
   write(`${wordmarkFrame()}\n`);
   write('\n');
-  write(`              ${dim('the coding agent')}\n`);
+  write(`              ${dim('abundance, in your terminal')}\n`);
   write(`              ${dev}${vTag}\n`);
   write('\n');
 }
@@ -139,7 +139,7 @@ export function printStyledConfig(creds) {
 
   const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-  write(`\n${paint.bold('Bahulam Code Configuration')} ${dim('(~/.bahulam/config.json)')}\n`);
+  write(`\n${paint.bold('Bahulam Code · Abundance')} ${dim('(~/.bahulam/config.json)')}\n`);
   write(`${dim('─'.repeat(50))}\n`);
   write(`  Token:          ${mask(creds.token)}\n`);
   write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -151,7 +151,7 @@ export function printStyledConfig(creds) {
 }
 
 export function printGoodbye() {
-  write(`\n${paint.bold(paint.brand.primary('Goodbye!'))}\n\n`);
+  write(`\n${paint.bold(paint.brand.primary('until next time — abundance awaits'))}\n\n`);
 }
 
 // ── Git probe ────────────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ export function getLoginSuccessHTML() {
         }
         .dev { color: #3fb950; }
         .bahulam { color: #58a6ff; }
-        .bahulam { color: #7c3aed; letter-spacing: 4px; }
+        .bahulam { color: #06b6d4; letter-spacing: 4px; }
         .check {
             font-size: 64px;
             color: #3fb950;

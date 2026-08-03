@@ -1,8 +1,8 @@
 {
-  "name": "b0-pulse",
+  "name": "bahulam-pulse",
   "version": "1.0.1",
   "private": true,
-  "description": "b0 Pulse — real-time analytics dashboard for b0 agent sessions",
+  "description": "Bahulam Pulse — real-time analytics dashboard for Bahulam Code agent sessions",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

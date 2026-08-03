@@ -251,7 +251,7 @@ export default function PlansPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="b0-pulse · plans" subtitle="~/.bahulam/plans/" />
+      <TopBar title="Bahulam Pulse · plans" subtitle="~/.bahulam/plans/" />
       <div className="p-4 md:p-6 space-y-5">
 
         {error && <p className="text-[#f87171] text-sm font-mono">Error: {String(error)}</p>}

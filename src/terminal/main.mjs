@@ -239,7 +239,7 @@ async function main() {
                             Max reconnect window for dropped streams
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
 
-  \x1b[2mDocs: https://0xb0.ai\x1b[0m
+  \x1b[2mDocs: https://bahulam.ai\x1b[0m
 `);
     return;
   }

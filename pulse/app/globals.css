@@ -86,9 +86,9 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* b0 accent colors */
-  --color-kepler-cyan: #06b6d4;
-  --color-kepler-cyan-light: #22d3ee;
+  /* Bahulam accent colors */
+  --color-bahulam-cyan: #06b6d4;
+  --color-bahulam-cyan-light: #22d3ee;
   --color-terminal-cyan: #06b6d4;
   --color-terminal-green: #34d399;
   --color-terminal-amber: #f59e0b;
