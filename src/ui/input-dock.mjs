@@ -64,7 +64,12 @@ let inputRowsMax = DEFAULT_MAX_INPUT_ROWS;
 let inputRows = MIN_INPUT_ROWS;
 let reservedRows = FIXED_ROWS + MIN_INPUT_ROWS;
 let unsubResize = null;
-let lastFrame = { context: '', meta: '', tips: '' };
+// prefix + value are tracked here so any code path that redraws the dock
+// (renderFrame, applyLayout, redrawDockFrame, resize) can end by parking
+// the cursor at the correct input position. Without this, readline echoes
+// land on rows the dock briefly moved through mid-render and characters
+// appear above/below the input row.
+let lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null };
 let resetting = false;
 
 function write(s) { try { OUT.write(s); } catch {} }
@@ -123,9 +128,26 @@ function computeInputRowsForBuffer(prefix, value) {
 // Resize the input area to a new row count. Moves the scroll region so
 // content above shifts accordingly; the dock frame is redrawn at the
 // new position. No-op if the count didn't change.
+//
+// CRITICAL: when the dock SHRINKS (inputRows decreases), the frame moves
+// down and previously-dock rows become part of the scroll region. Those
+// rows still hold their old dock content (rule chars, prior input text,
+// meta line) which then leaks into the transcript as streamed content
+// scrolls past them. We clear the old dock region BEFORE moving the frame
+// so the freed rows are blank when they enter the scroll region.
 function setInputRowsTo(nextRows) {
   const clamped = Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(nextRows)));
   if (clamped === inputRows) return false;
+  const shrinking = clamped < inputRows;
+  if (mounted && shrinking) {
+    // Clear the entire old reserved region — top rule through safety row —
+    // so nothing that lived here leaks into the scroll region after we
+    // move the frame down.
+    for (let row = topRuleRow(); row <= rows(); row++) {
+      moveTo(row, 1);
+      clearLine();
+    }
+  }
   inputRows = clamped;
   reservedRows = FIXED_ROWS + inputRows;
   if (mounted) {
@@ -189,18 +211,40 @@ function bottomRuleLine() {
   return paint.brand.primary(ruleChars(Math.max(0, cols() - 1)));
 }
 
+// Always park the cursor at the tracked (prefix, value) input position.
+// Called at the END of every dock render path so readline echoes land in
+// the input row, not on whichever row a mid-render moveTo left them on.
+// When there is no tracked input (nothing to focus yet), park at the
+// scroll-region bottom so writes at least stay above the dock frame.
+function parkCursorAtInput() {
+  if (!mounted) return;
+  const prefix = lastFrame.prefix || '';
+  const value = lastFrame.value || '';
+  if (!prefix && !value) {
+    moveTo(inputRowStart(), INPUT_INDENT + 1);
+    return;
+  }
+  focusDockInput(prefix, value, lastFrame.cursor);
+}
+
 function applyLayout() {
   if (!mounted) return;
   const bottom = contentBottomRow();
   setScrollRegion(1, bottom);
   renderFrame(lastFrame);
-  moveTo(bottom, 1);
+  // On (re)mount and resize, park at input if we have one; otherwise sit at
+  // the bottom of the content region so any pending content writes flush
+  // above the dock rather than into a stale mid-frame position.
+  if (lastFrame.prefix || lastFrame.value) {
+    parkCursorAtInput();
+  } else {
+    moveTo(bottom, 1);
+  }
 }
 
 function renderFrame(frame = {}) {
   if (!mounted) return;
   lastFrame = { ...lastFrame, ...frame };
-  saveCursor();
 
   moveTo(topRuleRow(), 1);
   clearLine();
@@ -220,7 +264,7 @@ function renderFrame(frame = {}) {
   clearLine();
   write(padLine(bottomRuleLine()));
 
-  // Meta row: model · cwd ⎇ branch · turn N · tokens · elapsed
+  // Meta row: cwd ⎇ branch · turn N · tokens
   moveTo(metaRow(), 1);
   clearLine();
   const metaIndent = ' '.repeat(META_INDENT);
@@ -238,16 +282,19 @@ function renderFrame(frame = {}) {
   // Safety row.
   moveTo(rows(), 1);
   clearLine();
-  restoreCursor();
+
+  // Deliberately NOT using saveCursor/restoreCursor. VT100 has a single
+  // cursor-save slot per terminal; nested calls in drawInputLines /
+  // pinned-status writers clobber the outer save and restore to the wrong
+  // place. Instead, callers that need the cursor parked at the input row
+  // invoke parkCursorAtInput() after renderFrame returns.
 }
 
 function clearInputRows() {
-  saveCursor();
   for (let row = inputRowStart(); row <= inputRowEnd(); row++) {
     moveTo(row, 1);
     clearLine();
   }
-  restoreCursor();
 }
 
 export function clearDockArea({ restore = true } = {}) {
@@ -281,7 +328,6 @@ function layoutInput(prefix, value) {
 }
 
 function drawInputLines(lines) {
-  saveCursor();
   const indent = ' '.repeat(INPUT_INDENT);
   for (let i = 0; i < inputRows; i++) {
     const row = inputRowStart() + i;
@@ -291,7 +337,7 @@ function drawInputLines(lines) {
       write(`${indent}${lines[i]}`);
     }
   }
-  restoreCursor();
+  // No save/restore — caller parks cursor via focusDockInput.
 }
 
 export function isInputDockMounted() {
@@ -378,6 +424,7 @@ export function clearPinnedStatus() {
 export function redrawDockFrame() {
   if (!mounted) return false;
   renderFrame(lastFrame);
+  parkCursorAtInput();
   return true;
 }
 
@@ -385,7 +432,7 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
   if (!mounted) return false;
   setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
-  renderFrame({ context, tips, meta });
+  renderFrame({ context, tips, meta, prefix: '', value: '' });
   moveTo(inputRowStart(), INPUT_INDENT + 1);
   return true;
 }
@@ -393,29 +440,40 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
 export function clearInputPrompt() {
   if (!mounted) return false;
   clearInputRows();
+  lastFrame.value = '';
   renderFrame(lastFrame);
+  parkCursorAtInput();
   return true;
 }
 
-export function renderDockInput(prefix, value, { context = '', tips = '', meta = '' } = {}) {
+export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null } = {}) {
   if (!mounted) return false;
   setInputRowsTo(computeInputRowsForBuffer(prefix, value));
-  renderFrame({ context, tips, meta });
+  renderFrame({ context, tips, meta, prefix, value, cursor });
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
-  focusDockInput(prefix, value);
+  focusDockInput(prefix, value, cursor);
   return true;
 }
 
 /**
- * Move the terminal cursor to the position that corresponds to the logical
- * end of `prefix + value` within the (possibly wrapped and truncated) input
- * area. If the buffer overflowed, the cursor lands on the last visible row.
+ * Move the terminal cursor to the position that corresponds to
+ * `prefix + value[0..cursorInValue]` within the (possibly wrapped and
+ * truncated) input area. When `cursorInValue` is null/undefined, the cursor
+ * lands at the logical end of `value` (append-mode default).
+ *
+ * `cursorInValue` is a char index into the RAW value string (matching
+ * readline's `rl.cursor`), not into the wrapped/rendered output.
  */
-export function focusDockInput(prefix, value = '') {
+export function focusDockInput(prefix, value = '', cursorInValue = null) {
   if (!mounted) return false;
   const layout = layoutInput(prefix, value);
-  const offset = visibleWidth(`${prefix || ''}${value || ''}`);
+  const valueStr = String(value || '');
+  const rawCursor = cursorInValue == null
+    ? valueStr.length
+    : Math.max(0, Math.min(valueStr.length, Math.floor(cursorInValue)));
+  const cursorSlice = valueStr.slice(0, rawCursor);
+  const offset = visibleWidth(`${prefix || ''}${cursorSlice}`);
   const pos = cursorPositionInLines(layout.wrapped, offset);
   const visibleRowIdx = Math.max(
     0,

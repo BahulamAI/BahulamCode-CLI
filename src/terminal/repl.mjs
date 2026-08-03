@@ -19,6 +19,7 @@ import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync as _execSync } from 'node:child_process';
+import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -1259,26 +1260,27 @@ function renderEvent(event) {
       }
       break;
 
-    // Live steering ack events (PRD-081 §5.2). The endpoint returns a
-    // sync "accepted" HTTP response; these SSE events confirm the same
-    // fact on the stream (needed for reconnect replay) and, on delivery,
-    // tell the user their follow-up made it into the model's context.
+    // Live steering ack events (PRD-081 §5.2). renderEvent is called from
+    // the SSE loop (see `for await ... jsonlWriter.writeKeplerEvent(event)`
+    // in the /execute path) so every event already lands in the transcript.
+    // Here we only render the user-visible surface — no direct jsonlWriter
+    // calls (it's out of scope in this top-level dispatcher anyway).
     case 'user_intervention_accepted': {
-      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_accepted', data });
+      // Endpoint response already told the CLI "sent to running agent".
+      // The SSE echo here is durable-replay backup; nothing to render.
       break;
     }
     case 'user_intervention_delivered': {
       renderBlockBoundary('status', { compactSame: true });
       const tool = data?.delivered_at_tool ? ` ${c.dim(`(via ${data.delivered_at_tool})`)}` : '';
       process.stderr.write(`  ${c.green('✓')} ${c.dim('follow-up delivered to agent')}${tool}\n`);
-      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_delivered', data });
       runtime.lastRenderedBlock = 'status';
       break;
     }
     case 'user_intervention_queued': {
-      // Task ended before delivery; backend already returned queued_next_turn
-      // to the submission call. We just persist for the transcript.
-      jsonlWriter.writeKeplerEvent({ type: 'user_intervention_queued', data });
+      // Task ended before delivery; endpoint returned queued_next_turn to
+      // the submission call and the CLI already rendered that ack. Nothing
+      // more to show; the outer SSE loop persists this event to JSONL.
       break;
     }
 
@@ -2947,9 +2949,28 @@ export async function startTerminalRepl() {
     return 'type any extra context (paths, corrections, follow-ups) · [Enter] send · [Esc] cancel · [Ctrl+P] pause';
   }
 
+  // Proxy stream: swallows writes when the dock owns the input row so
+  // readline's echoes and _refreshLine cursor moves can't fight the dock's
+  // absolute cursor placement (PRD-081 §5.1 — cursor race). When the dock
+  // is not mounted (plain-mode fallback, KEPLER_FIXED_INPUT=0, non-TTY),
+  // writes pass through so history navigation / backspace still redraw.
+  const readlineOutputProxy = new _WritableStream({
+    write(chunk, _enc, cb) {
+      if (!isInputDockMounted()) {
+        try { process.stderr.write(chunk); } catch {}
+      }
+      cb();
+    },
+  });
+  // Preserve enough of stderr's TTY surface so readline still treats us as
+  // a terminal (raw mode, keypress events, history navigation).
+  readlineOutputProxy.isTTY = process.stderr.isTTY;
+  readlineOutputProxy.columns = process.stderr.columns;
+  readlineOutputProxy.rows = process.stderr.rows;
+
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stderr,
+    output: readlineOutputProxy,
     prompt: userPrompt(),
     completer: (line) => {
       if (line.startsWith('/')) {
@@ -2996,6 +3017,14 @@ export async function startTerminalRepl() {
   }
 
   function restoreReadlineCursor() {
+    // When the dock owns the input row, delegate to it so INPUT_INDENT +
+    // meta/tips row math stays authoritative. Falling back to
+    // readline.cursorTo(col) here lands INPUT_INDENT chars too far left
+    // and yields the "/-shifts-cursor" bug (PRD-081 §5.1 cursor race).
+    if (isInputDockMounted()) {
+      focusDockInput(userPrompt(), rl.line || '', typeof rl.cursor === 'number' ? rl.cursor : null);
+      return;
+    }
     const col = Math.max(0, promptColumns() + Number(rl.cursor || 0));
     readline.cursorTo(process.stderr, col);
   }
@@ -3103,10 +3132,15 @@ export async function startTerminalRepl() {
 
   function renderIdleDockInput() {
     if (!isInputDockMounted()) return false;
+    // rl.cursor is readline's byte offset within rl.line. Threading it
+    // through to focusDockInput makes arrow-key navigation visually move
+    // the terminal cursor within the buffer instead of always landing at
+    // the end of the string.
     return renderDockInput(userPrompt(), rl.line || '', {
       context: buildContextStrip(),
       meta: buildDockMeta(),
       tips: idleInputTips(),
+      cursor: typeof rl.cursor === 'number' ? rl.cursor : null,
     });
   }
 

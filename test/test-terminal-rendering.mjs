@@ -363,8 +363,14 @@ test('fixed input dock clears input rows before repainting', () => {
   const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
   assert.ok(dockSource.includes('function clearInputRows()'));
   assert.ok(dockSource.includes('moveTo(row, 1);'));
-  assert.ok(dockSource.includes('clearInputRows();\n  renderFrame(lastFrame);'));
-  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
+  // Post cursor-race fix: clearInputPrompt clears the input rows, resets
+  // the tracked value, redraws the frame, and parks the cursor at the input.
+  assert.ok(dockSource.includes('clearInputRows();'));
+  assert.ok(dockSource.includes('renderFrame(lastFrame);'));
+  assert.ok(dockSource.includes('function parkCursorAtInput()'));
+  // Signature accepts an optional cursorInValue for readline rl.cursor tracking.
+  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\''));
+  assert.ok(dockSource.includes('cursorInValue'));
   assert.ok(dockSource.includes("from './text-layout.mjs'"));
 });
 
