@@ -333,7 +333,7 @@ export function createToolExecutor({
         const result = clonePlain(cached.result);
         const output = String(result.output || result.content || result.message || '').trim();
         const excerpt = output.length > 1200 ? `${output.slice(0, 1200)}\n[... cached output truncated ...]` : output;
-        result.output = `[b0 reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
+        result.output = `[Bahulam Code reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
         if (typeof result.content === 'string') {
             result.content = result.content.length > 1200
                 ? `${result.content.slice(0, 1200)}\n[... cached content truncated ...]`
@@ -1623,7 +1623,7 @@ print('OK: replaced')
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run b0 login first.');
+                throw new Error('Not logged in. Run bahulam-code login first.');
             }
 
             const headers = {
@@ -1695,7 +1695,7 @@ print('OK: replaced')
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run b0 login first.');
+                throw new Error('Not logged in. Run bahulam-code login first.');
             }
 
             const workflowId = await resolveWorkflowId(creds, target);

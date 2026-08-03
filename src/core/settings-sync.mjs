@@ -29,7 +29,7 @@ export async function fetchRemoteSettings(token) {
 
         if (!resp.ok) {
             if (resp.status === 401) {
-                process.stderr.write('\x1b[33mSettings sync: token expired or invalid. Run `b0 login` to re-authenticate.\x1b[0m\n');
+                process.stderr.write('\x1b[33mSettings sync: token expired or invalid. Run `bahulam-code login` to re-authenticate.\x1b[0m\n');
             }
             return null;
         }

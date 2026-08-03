@@ -525,7 +525,7 @@ export function flushContent() {
   flushCompactReadRun();
   renderBlockBoundary('content');
   if (!runtime.contentHeaderPrinted) {
-    process.stdout.write(`${transcriptHeader('b0', { tone: 'assistant' })}\n`);
+    process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
     runtime.contentHeaderPrinted = true;
   }
   const rendered = renderMarkdown(runtime.streamBuffer);

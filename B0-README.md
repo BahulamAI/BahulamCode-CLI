@@ -1,26 +1,26 @@
-# @bahulamai/b0
+# @bahulamai/code
 
-b0 is Bahulam's AI coding agent for terminal-first software work. It can inspect a
+Bahulam Code is Bahulam's AI coding agent for terminal-first software work. It can inspect a
 repo, plan changes, run tools, ask for human approval, resume prior sessions, and
 keep local project context in `.bahulam/`.
 
 ## Install
 
 ```bash
-npm install -g @bahulamai/b0@latest
+npm install -g @bahulamai/code@latest
 ```
 
 Run without global install:
 
 ```bash
-npx @bahulamai/b0@latest
+npx @bahulamai/code@latest
 ```
 
 Update an existing global install:
 
 ```bash
-npm update -g @bahulamai/b0
-b0 version
+npm update -g @bahulamai/code
+bahulam-code --version
 ```
 
 Requires Node.js 18 or newer.
@@ -28,22 +28,22 @@ Requires Node.js 18 or newer.
 ## Quick Start
 
 ```bash
-b0 login
-b0
-b0 "fix the failing auth test"
+bahulam-code login
+bahulam-code
+bahulam-code "fix the failing auth test"
 ```
 
 Common startup commands:
 
 ```bash
-b0                    Start interactive REPL
-b0 "instruction"      Run a single instruction and exit
-b0 login              Sign in through the browser
-b0 dashboard          Open local analytics dashboard
-b0 sessions           List recent local sessions
-b0 stats              Aggregate local session stats
-b0 history            Show recent prompt history
-b0 version            Show installed version
+bahulam-code                    Start interactive REPL
+bahulam-code "instruction"      Run a single instruction and exit
+bahulam-code login              Sign in through the browser
+bahulam-code dashboard          Open local analytics dashboard
+bahulam-code sessions           List recent local sessions
+bahulam-code stats              Aggregate local session stats
+bahulam-code history            Show recent prompt history
+bahulam-code --version            Show installed version
 ```
 
 ## What's New
@@ -95,7 +95,7 @@ Ctrl+C                  Exit
 `/resume` reads local JSONL transcripts from `~/.bahulam/projects/**`. The
 selected session is the source of truth.
 
-For large sessions, b0 shows mode choices:
+For large sessions, Bahulam Code shows mode choices:
 
 ```text
 full transcript
@@ -119,7 +119,7 @@ The agent receives:
 
 ## Resilient Streaming
 
-b0 keeps a per-task SSE event cursor while a turn is running. If the network
+Bahulam Code keeps a per-task SSE event cursor while a turn is running. If the network
 connection drops mid-turn, the CLI reconnects to the same backend task and asks
 for events after the last rendered event id. This protects long-running tool
 sessions from transient connection drops.
@@ -136,7 +136,7 @@ completed local tool results.
 
 ## Approvals And HITL
 
-b0 auto-approves low-risk reads and safe shell inspection commands. It asks
+Bahulam Code auto-approves low-risk reads and safe shell inspection commands. It asks
 for confirmation for sensitive reads, mutating shell commands, destructive
 actions, network actions, and framework-level HITL requests.
 
@@ -160,7 +160,7 @@ rejection notes are redacted before the log is written.
 
 ## Project Context
 
-b0 uses a project-local `.bahulam/` folder for hand-editable context:
+Bahulam Code uses a project-local `.bahulam/` folder for hand-editable context:
 
 ```text
 .bahulam/
@@ -179,7 +179,7 @@ Use `/plan` and `/tasks` in the REPL to inspect and update task files.
 
 ## Skills
 
-b0 supports portable `SKILL.md` bundles and Claude-compatible skill
+Bahulam Code supports portable `SKILL.md` bundles and Claude-compatible skill
 directories. Skill metadata is included in cached context; full instructions and
 references are loaded only when needed.
 
@@ -193,10 +193,10 @@ Discovery precedence:
 Install skills:
 
 ```bash
-b0 skills install ./my-skill
-b0 skills install github:owner/skills-repository
-b0 skills install https://github.com/owner/skills.git
-b0 skills install ./team-skills --project
+bahulam-code skills install ./my-skill
+bahulam-code skills install github:owner/skills-repository
+bahulam-code skills install https://github.com/owner/skills.git
+bahulam-code skills install ./team-skills --project
 ```
 
 ## Configuration
@@ -231,20 +231,20 @@ KEPLER_BLOCK_SEPARATOR             space, dotted, or off
 Check installed package:
 
 ```bash
-npm list -g @bahulamai/b0 --depth=0
-b0 version
+npm list -g @bahulamai/code --depth=0
+bahulam-code --version
 ```
 
 Use a clean one-off run:
 
 ```bash
-npx @bahulamai/b0@latest --version
+npx @bahulamai/code@latest --version
 ```
 
 If npm cache permissions are broken, use a temporary cache:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/b0-npm-cache npm pack --dry-run
+env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm pack --dry-run
 ```
 
 If a resume session shows a large context number, check whether the row also
@@ -253,7 +253,7 @@ tail modes usually send much less.
 
 ## Links
 
-- Website: https://getb0.ai
+- Website: https://bahulam.ai
 - Company: https://axplusb.tech
 - Repository: https://github.com/raviakasapu/codekepler-npm
 

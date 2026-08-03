@@ -188,4 +188,30 @@ test('unmountInputDock clears dock rows before resetting terminal state', () => 
     'unmountInputDock should reset the scroll region');
 });
 
+// ── frame identity + layout constants ───────────────────────────────────
+
+test('dock brands the frame with "Bahulam Code"', () => {
+  const { BRAND_LABEL } = dock._internals();
+  assert.strictEqual(BRAND_LABEL, 'Bahulam Code');
+});
+
+test('dock reserves 7 fixed rows around the input area', () => {
+  // top rule + spacer + input(N) + spacer + bottom rule + meta + tips + safety
+  // = 7 fixed + N input rows
+  const { FIXED_ROWS } = dock._internals();
+  assert.strictEqual(FIXED_ROWS, 7);
+});
+
+test('renderDockInput accepts a meta option alongside context and tips', () => {
+  const source = dock.renderDockInput.toString();
+  assert.ok(source.includes('meta'),
+    'renderDockInput should destructure meta from its options');
+});
+
+test('prepareInputPrompt accepts a meta option alongside context and tips', () => {
+  const source = dock.prepareInputPrompt.toString();
+  assert.ok(source.includes('meta'),
+    'prepareInputPrompt should destructure meta from its options');
+});
+
 console.log(`\n\x1b[32m${passed} passed\x1b[0m\n`);

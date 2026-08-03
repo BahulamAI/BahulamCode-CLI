@@ -4,7 +4,7 @@
  * Prints a non-blocking summary of the runtime environment before the REPL
  * starts so the user can see what is and is not aligned:
  *
- *   🔭 b0 v1.0.4 · initializing orbit
+ *   🔭 Bahulam Code v1.0.4 · initializing orbit
  *
  *     [✓] Auth token
  *     [✓] OpenRouter key
@@ -329,7 +329,7 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   const t = term();
   const write = (s) => { if (!silent) process.stderr.write(s); };
 
-  const header = `${icons.search} ${paint.bold(paint.brand.primary('b0 v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
+  const header = `${icons.search} ${paint.bold(paint.brand.primary('Bahulam Code v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
   write('\n' + header + '\n\n');
 
   const checks = [];

@@ -76,7 +76,7 @@ export function formatSessionsReport(sessions, limit) {
   }
 
   const lines = [];
-  lines.push(`B0 SESSIONS  ${sessions.length} shown`);
+  lines.push(`BAHULAM SESSIONS  ${sessions.length} shown`);
   lines.push(`Recent local transcripts from ~/.bahulam/projects  (limit ${limit})`);
   lines.push('');
 
@@ -96,7 +96,7 @@ export function formatSessionsReport(sessions, limit) {
 
 export function formatStatsReport(stats, tools, models, days, paths) {
   const lines = [];
-  lines.push(`B0 STATS  ${relativeDaysLabel(days)}`);
+  lines.push(`BAHULAM STATS  ${relativeDaysLabel(days)}`);
   lines.push(`Store: ${paths.bahulamDir}`);
   lines.push('');
   lines.push(`Sessions        ${formatNumber(stats.totalSessions)}`);
@@ -135,7 +135,7 @@ export function formatHistoryReport(entries, limit) {
   }
 
   const lines = [];
-  lines.push(`B0 HISTORY  ${entries.length} shown`);
+  lines.push(`BAHULAM HISTORY  ${entries.length} shown`);
   lines.push(`Recent prompts from ~/.bahulam/history.jsonl  (limit ${limit})`);
   lines.push('');
 
@@ -202,7 +202,7 @@ export async function runHistoryCommand(args = []) {
   process.stdout.write(formatHistoryReport(history, limit));
 }
 
-// Dashboard removed — now using b0 Pulse (pulse/cli.js)
+// Dashboard removed — now using Bahulam Pulse (pulse/cli.js)
 
 export async function _runDashboardCommand_REMOVED() { /* see pulse/cli.js */ }
 

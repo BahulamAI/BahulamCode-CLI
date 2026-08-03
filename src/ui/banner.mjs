@@ -1,5 +1,5 @@
 /**
- * Banner & Branding — b0 CLI startup display.
+ * Banner & Branding — Bahulam Code CLI startup display.
  *
  * Uses the semantic palette (`paint.brand.*`) so the same banner renders
  * correctly across truecolor, 256-color, ansi16, and monochrome terminals.
@@ -17,8 +17,8 @@ const write = (s) => { try { out.write(s); } catch {} };
 
 // ── Brand banner ─────────────────────────────────────────────────────────
 
-// b0 is the visual anchor (CLI product); BAHULAM is the platform underneath;
-// 0xB0 is the developer-culture motif from the technical docs hub.
+// BAHULAM CODE is the product wordmark; the 0xB0 motif is preserved as a
+// dev-culture callback beneath it.
 
 // Renders a gradient purple → magenta → cyan across the given string, one
 // codepoint at a time. Falls back to a plain (no-color) string when the
@@ -31,20 +31,18 @@ function gradientText(text) {
 }
 
 /**
- * Render the framed `b0` glyph — the CLI product's visual anchor.
- * Uses heavy box-drawing chars for a compact, dev-forward look; the box is
- * ~18 cols wide and 3 rows tall, so it fits any terminal ≥40 cols.
+ * Render the framed BAHULAM CODE wordmark. Box is 24 cols wide, 3 rows
+ * tall, and fits any terminal ≥40 cols.
  */
-function b0Frame(version) {
+function wordmarkFrame() {
   const dim = paint.text.dim;
-  const top    = dim('╔══════════════════╗');
-  const bottom = dim('╚══════════════════╝');
+  const top    = dim('╔════════════════════════╗');
+  const bottom = dim('╚════════════════════════╝');
   const inner  = dim('║');
-  const glyph  = paint.bold(gradientText('b0'));
-  //         │║      b0        ║│  — 8 spaces before + 8 after, 2-char glyph
-  //         padding tuned so `b0` sits visually centered inside 18-wide box
-  const bodyPad = ' '.repeat(8);
-  const tailPad = ' '.repeat(8);
+  //   ║   BAHULAM  CODE   ║  — 3-space pad each side around a 18-char wordmark
+  const glyph  = paint.bold(gradientText('BAHULAM  CODE'));
+  const bodyPad = ' '.repeat(5);
+  const tailPad = ' '.repeat(6);
   return [
     `       ${top}`,
     `       ${inner}${bodyPad}${glyph}${tailPad}${inner}`,
@@ -58,16 +56,15 @@ function b0Frame(version) {
 export function printBanner(version = '') {
   const dim = paint.text.dim;
   const orbit = paint.brand.accent(icons.orbit);
-  const bahulam = paint.brand.primary('BAHULAM');
   const dev = paint.brand.data('0xB0');
   const vTag = version ? `${dim(' — ')}${dim('v' + version)}` : '';
 
   write('\n');
   write(`         ${orbit} ${dim('· orbit')}\n`);
   write('\n');
-  write(`${b0Frame(version)}\n`);
+  write(`${wordmarkFrame()}\n`);
   write('\n');
-  write(`       ${bahulam} ${dim('·')} ${dim('the coding agent')}\n`);
+  write(`              ${dim('the coding agent')}\n`);
   write(`              ${dev}${vTag}\n`);
   write('\n');
 }
@@ -142,7 +139,7 @@ export function printStyledConfig(creds) {
 
   const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-  write(`\n${paint.bold('b0 Configuration')} ${dim('(~/.bahulam/config.json)')}\n`);
+  write(`\n${paint.bold('Bahulam Code Configuration')} ${dim('(~/.bahulam/config.json)')}\n`);
   write(`${dim('─'.repeat(50))}\n`);
   write(`  Token:          ${mask(creds.token)}\n`);
   write(`  OpenRouter:     ${mask(creds.openRouterKey)}\n`);
@@ -184,7 +181,7 @@ export function getLoginSuccessHTML() {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>b0 - Login Successful</title>
+    <title>Bahulam Code - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -227,7 +224,7 @@ export function getLoginSuccessHTML() {
 <body>
     <div class="container">
         <div class="logo">
-            <span class="bahulam">BAHULAM</span>
+            <span class="bahulam">BAHULAM CODE</span>
         </div>
         <div class="check">&#10003;</div>
         <h1>Login Successful!</h1>

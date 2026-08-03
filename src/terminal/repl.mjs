@@ -18,6 +18,7 @@
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execSync as _execSync } from 'node:child_process';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -201,7 +202,7 @@ const VERSION = __require('../../package.json').version;
 function renderHelp(topic = '') {
   const key = String(topic || '').trim().toLowerCase();
   if (!key) {
-    process.stderr.write(`\n  ${c.bold('b0 Commands')}\n`);
+    process.stderr.write(`\n  ${c.bold('Bahulam Code Commands')}\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
     const top = [
       ['/help', 'Grouped command help'],
@@ -707,6 +708,51 @@ function buildContextStrip() {
   return right;
 }
 
+// ── Dock meta line (model · cwd ⎇ branch · turn N) ─────────────────────
+//
+// The dock's meta row shows durable session context. Git branch is cached
+// so we don't shell out on every keystroke; refreshed at most every 5s.
+
+const _dockGitCache = { branch: null, at: 0, cwd: null };
+
+function _probeGitBranch(cwd) {
+  const now = Date.now();
+  if (_dockGitCache.cwd === cwd && (now - _dockGitCache.at) < 5000) {
+    return _dockGitCache.branch;
+  }
+  let branch = null;
+  try {
+    // Synchronous but bounded: git head lookup is a single file read.
+    branch = _execSync('git branch --show-current', {
+      cwd, encoding: 'utf-8', timeout: 500, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || null;
+  } catch { branch = null; }
+  _dockGitCache.cwd = cwd;
+  _dockGitCache.at = now;
+  _dockGitCache.branch = branch;
+  return branch;
+}
+
+function buildDockMeta() {
+  const parts = [];
+
+  const cwd = process.cwd();
+  const projectName = path.basename(cwd);
+  const branch = _probeGitBranch(cwd);
+  parts.push(branch ? `${projectName} ⎇ ${branch}` : projectName);
+
+  if (session.turns > 0) {
+    parts.push(`turn ${session.turns}`);
+  }
+
+  const totalTokens = session.inputTokens + session.outputTokens;
+  if (totalTokens > 0) {
+    parts.push(`${formatTokens(totalTokens)} tok`);
+  }
+
+  return parts.join(' · ');
+}
+
 /**
  * Print the prompt separator + prompt label.
  * Minimal horizontal rule with contextual info.
@@ -885,7 +931,7 @@ function renderEvent(event) {
       if (text) {
         renderBlockBoundary('content');
         if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('b0', { tone: 'assistant' })}\n`);
+          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
           runtime.contentHeaderPrinted = true;
         }
         const rendered = renderMarkdown(text);
@@ -1223,7 +1269,7 @@ function renderEvent(event) {
       if (summary && !runtime.renderedContentThisTurn) {
         renderBlockBoundary('content');
         if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('b0', { tone: 'assistant' })}\n`);
+          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
           runtime.contentHeaderPrinted = true;
         }
         const rendered = renderMarkdown(summary);
@@ -2171,7 +2217,7 @@ async function handleCommand(input, ctx) {
         const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
         process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
-      process.stderr.write(`\n  ${c.dim('Resume with:')} b0 --resume <sessionId>\n`);
+      process.stderr.write(`\n  ${c.dim('Resume with:')} bahulam-code --resume <sessionId>\n`);
       return;
     }
 
@@ -3036,6 +3082,7 @@ export async function startTerminalRepl() {
     if (!isInputDockMounted()) return false;
     return renderDockInput(userPrompt(), rl.line || '', {
       context: buildContextStrip(),
+      meta: buildDockMeta(),
       tips: idleInputTips(),
     });
   }
@@ -3067,7 +3114,7 @@ export async function startTerminalRepl() {
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
     if (isInputDockMounted()) {
-      prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() });
+      prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() });
       promptInputLine();
       return;
     }
@@ -3330,6 +3377,7 @@ export async function startTerminalRepl() {
       if (isInputDockMounted()) {
         renderDockInput(executionInputPrefix(), executionInputBuffer, {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         executionInputVisible = true;
@@ -3359,6 +3407,7 @@ export async function startTerminalRepl() {
           clearInputPrompt();
           renderDockInput(executionInputPrefix(), '', {
             context: buildContextStrip(),
+            meta: buildDockMeta(),
             tips: executionInputTips(),
           });
           moveToContent();
@@ -3374,6 +3423,7 @@ export async function startTerminalRepl() {
         process.stderr.write(`${executionInputPrefix()}${instruction}\n`);
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         moveToContent();
@@ -3484,6 +3534,7 @@ export async function startTerminalRepl() {
               clearInputPrompt();
               renderDockInput(executionInputPrefix(), '', {
                 context: buildContextStrip(),
+                meta: buildDockMeta(),
                 tips: executionInputTips(),
               });
               moveToContent();
@@ -3605,12 +3656,13 @@ export async function startTerminalRepl() {
       if (isInputDockMounted()) {
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         moveToContent();
       }
       startContentStream();
-      process.stderr.write(`\n${transcriptHeader('b0', { tone: 'assistant' })}\n`);
+      process.stderr.write(`\n${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
       runtime.contentHeaderPrinted = true;
 
       // Immediate feedback so the screen isn't blank between submit and the

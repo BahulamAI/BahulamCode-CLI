@@ -5,7 +5,7 @@
  * Consumers:
  *   - src/terminal/repl.mjs imports COMMANDS, HELP_GROUPS, etc. for its
  *     runtime dispatch and slash-hint suggestions.
- *   - src/index.mjs iterates COMMANDS for `b0 --help` output.
+ *   - src/index.mjs iterates COMMANDS for `bahulam-code --help` output.
  *
  * The runtime *handlers* live in repl.mjs (they need session/ctx access
  * that only the REPL has). This module is data-only + pure normalization.

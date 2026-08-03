@@ -231,7 +231,7 @@ export function formatAgentErrorGuidance(data = {}) {
     return {
       title: 'AWS Bedrock credentials are missing.',
       lines: [
-        'b0 reached the Bedrock gateway, but the backend did not receive AWS Access Key ID and Secret Access Key.',
+        'Bahulam Code reached the Bedrock gateway, but the backend did not receive AWS Access Key ID and Secret Access Key.',
         'Open Bahulam model settings, re-save the AWS Bedrock provider with Access Key ID, Secret Access Key, and Region, then retry.',
         'If settings were just updated, run /login or restart the CLI so provider settings sync again.',
       ],

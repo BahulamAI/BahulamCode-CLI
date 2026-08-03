@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * b0 CLI — ANSI Terminal UI. Bahulam's coding agent.
+ * Bahulam Code CLI — ANSI Terminal UI. Bahulam's coding agent.
  * Zero React. Zero Ink. Zero flickering.
  */
 
@@ -85,7 +85,7 @@ function parseKeplerSubcommandArgs(command, argv) {
 
 async function main() {
   if (subcommand === 'dashboard') {
-    // Launch b0 Pulse Next.js dashboard
+    // Launch Bahulam Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const path = await import('node:path');
@@ -171,38 +171,38 @@ async function main() {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
     const { version } = require('../../package.json');
-    process.stdout.write(`b0 v${version}\n`);
+    process.stdout.write(`Bahulam Code v${version}\n`);
     return;
   }
 
   if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
     process.stderr.write(`
-  \x1b[1m\x1b[36mb0\x1b[0m — Bahulam's coding agent — getb0.ai
+  \x1b[1m\x1b[36mBahulam Code\x1b[0m — Bahulam's coding agent — bahulam.ai
 
   \x1b[1mUsage:\x1b[0m
-    b0                        Start interactive REPL
-    b0 "instruction"          Run a single instruction
-    b0 --headless -p "x"      Non-interactive: auto-approve, JSONL output
-    b0 --headless -p "x" --vision screenshot.png
+    bahulam-code                        Start interactive REPL
+    bahulam-code "instruction"          Run a single instruction
+    bahulam-code --headless -p "x"      Non-interactive: auto-approve, JSONL output
+    bahulam-code --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
-    b0 --resume               Resume last conversation
-    b0 dashboard              Open analytics dashboard
-    b0 login                  Sign in via browser
-    b0 logout                 Sign out and clear credentials
-    b0 init                   Scaffold .bahulam config, memory, hooks, tasks
-    b0 version                Show version
+    bahulam-code --resume               Resume last conversation
+    bahulam-code dashboard              Open analytics dashboard
+    bahulam-code login                  Sign in via browser
+    bahulam-code logout                 Sign out and clear credentials
+    bahulam-code init                   Scaffold .bahulam config, memory, hooks, tasks
+    bahulam-code version                Show version
 
   \x1b[1mAnalytics:\x1b[0m
-    b0 sessions               List recent local sessions
-    b0 stats                  Show aggregate local session stats
-    b0 history                Show recent prompt history
+    bahulam-code sessions               List recent local sessions
+    bahulam-code stats                  Show aggregate local session stats
+    bahulam-code history                Show recent prompt history
 
   \x1b[1mSkills:\x1b[0m
-    b0 skills list [--all|--project]
-    b0 skills view <name> [resource]
-    b0 skills install <path-or-git-url> [--project] [--force]
-    b0 skills update <name> [--project]
-    b0 skills remove <name> [--project]
+    bahulam-code skills list [--all|--project]
+    bahulam-code skills view <name> [resource]
+    bahulam-code skills install <path-or-git-url> [--project] [--force]
+    bahulam-code skills update <name> [--project]
+    bahulam-code skills remove <name> [--project]
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands

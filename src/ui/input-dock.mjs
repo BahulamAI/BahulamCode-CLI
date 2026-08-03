@@ -1,5 +1,5 @@
 /**
- * Fixed input dock.
+ * Fixed input dock — Bahulam Code identity + meta + tips.
  *
  * Reserves rows at the bottom of the terminal so agent/tool output scrolls
  * above the prompt. The input area GROWS DYNAMICALLY as the user types or
@@ -15,18 +15,21 @@
  * visible block in the dock and submits as a single message. The dock
  * itself doesn't parse newlines; wrapToLines treats them as hard breaks.
  *
- * Layout (double-rule sandwich, height varies with input):
- *   ══════════════════ context ══════════   ← top rule
- *      + add instruction › foo bar          ← input row 1
- *      baz quux                             ← input row 2 (added as needed)
- *      ...                                  ← up to MAX_INPUT_ROWS
- *   ══════════════════════════════════════   ← bottom rule
- *      [Enter] send · [/] commands …        ← tips row
+ * Layout (fixed 8 rows + N input rows):
+ *   ── ▎Bahulam Code ══════════════ 12.3k tok · 2m 41s ═══   ← top rule (colored)
+ *                                                              ← spacer
+ *        + add instruction › foo bar                          ← input row 1
+ *        baz quux                                             ← input row 2 (added as needed)
+ *        ...                                                  ← up to MAX_INPUT_ROWS
+ *                                                              ← spacer
+ *   ══════════════════════════════════════════════════════   ← bottom rule (colored)
+ *      deepseek-chat-v3 · Tarang-Orca ⎇ main · turn 4         ← meta row
+ *      [Enter] send · [/] commands …                          ← tips row
  *   (one blank row at very bottom for cursor safety)
  *
  * Config:
- *   KEPLER_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
- *   KEPLER_FIXED_INPUT=0           disable dock entirely (fallback readline)
+ *   BAHULAM_INPUT_ROWS_MAX / KEPLER_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
+ *   BAHULAM_FIXED_INPUT=0 / KEPLER_FIXED_INPUT=0             disable dock entirely (fallback readline)
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
@@ -35,17 +38,33 @@ import { wrapToLines, tailWithEllipsis, cursorPositionInLines } from './text-lay
 
 const ESC = '\x1b[';
 const OUT = process.stderr;
-const INPUT_INDENT = 3;
+
+const BRAND_LABEL = 'Bahulam Code';
+const LABEL_ACCENT = '▎'; // left-edge accent bar
+
+// Horizontal margin: text starts INPUT_INDENT cols from the left edge and
+// leaves INPUT_RIGHT_PAD cols of clear space on the right so wrapped lines
+// don't kiss the terminal edge.
+const INPUT_INDENT = 5;
+const INPUT_RIGHT_PAD = 2;
+const META_INDENT = 4;
+
 const DEFAULT_MAX_INPUT_ROWS = 6;
 const MIN_INPUT_ROWS = 1;
 const MAX_INPUT_ROWS_CAP = 12;
 
+// Fixed rows around the input area:
+//   1 top rule + 1 spacer above + input(N) + 1 spacer below + 1 bottom rule
+//   + 1 meta row + 1 tips row + 1 safety row
+// = 7 + N
+const FIXED_ROWS = 7;
+
 let mounted = false;
 let inputRowsMax = DEFAULT_MAX_INPUT_ROWS;
 let inputRows = MIN_INPUT_ROWS;
-let reservedRows = 4 + MIN_INPUT_ROWS; // top + input(N) + bottom + tips + safety
+let reservedRows = FIXED_ROWS + MIN_INPUT_ROWS;
 let unsubResize = null;
-let lastFrame = { context: '', tips: '' };
+let lastFrame = { context: '', meta: '', tips: '' };
 let resetting = false;
 
 function write(s) { try { OUT.write(s); } catch {} }
@@ -68,20 +87,24 @@ function contentBottomRow() {
   return Math.max(1, rows() - reservedRows);
 }
 
+// Row map (top → bottom of the reserved region).
 function topRuleRow()       { return contentBottomRow() + 1; }
-function inputRowStart()    { return contentBottomRow() + 2; }
+function spacerAboveRow()   { return topRuleRow() + 1; }
+function inputRowStart()    { return spacerAboveRow() + 1; }
 function inputRowEnd()      { return inputRowStart() + inputRows - 1; }
-function bottomRuleRow()    { return inputRowEnd() + 1; }
-function tipsRow()          { return bottomRuleRow() + 1; }
+function spacerBelowRow()   { return inputRowEnd() + 1; }
+function bottomRuleRow()    { return spacerBelowRow() + 1; }
+function metaRow()          { return bottomRuleRow() + 1; }
+function tipsRow()          { return metaRow() + 1; }
 
 function inputTextBudget() {
-  return Math.max(8, cols() - INPUT_INDENT - 1);
+  return Math.max(8, cols() - INPUT_INDENT - INPUT_RIGHT_PAD - 1);
 }
 
 function resolveMaxInputRows(requested) {
   const raw = requested != null
     ? requested
-    : process.env.KEPLER_INPUT_ROWS_MAX;
+    : (process.env.BAHULAM_INPUT_ROWS_MAX || process.env.KEPLER_INPUT_ROWS_MAX);
   const n = Number.parseInt(String(raw), 10);
   if (!Number.isFinite(n)) return DEFAULT_MAX_INPUT_ROWS;
   return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
@@ -104,9 +127,8 @@ function setInputRowsTo(nextRows) {
   const clamped = Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(nextRows)));
   if (clamped === inputRows) return false;
   inputRows = clamped;
-  reservedRows = 4 + inputRows;
+  reservedRows = FIXED_ROWS + inputRows;
   if (mounted) {
-    // Reapply the scroll region and repaint the frame at the new boundary.
     const bottom = contentBottomRow();
     setScrollRegion(1, bottom);
     renderFrame(lastFrame);
@@ -127,25 +149,44 @@ function fitText(text, maxWidth) {
   return plain.slice(0, Math.max(0, maxWidth - 1)) + '…';
 }
 
-// Both rules use the same character, color, and treatment so the sandwich
-// reads as a single enclosing frame. Leave 1 col of margin to dodge the
-// right-edge autowrap most terminals inflict on full-width writes.
 function ruleChars(count) {
   return '═'.repeat(Math.max(0, count));
 }
 
+// Top rule: `── ▎Bahulam Code ═════════════ [context] ═══`
+// - Leading two rule chars for a clean edge
+// - Colored accent bar + brand label on the left
+// - Optional right-aligned context strip (session tokens/elapsed) with rule
+//   fill between label and context
 function topRuleLine(context = '') {
   const w = Math.max(0, cols() - 1);
+  const brand = paint.brand.primary;
+  const bold = paint.bold;
+
+  const leadRule = brand(ruleChars(2));
+  const accent = brand(LABEL_ACCENT);
+  const label = bold(brand(BRAND_LABEL));
+  const leftBlock = `${leadRule} ${accent}${label}`;
+  const leftWidth = visibleWidth(leftBlock);
+
   const ctx = fitText(context, Math.max(0, Math.floor(w / 2)));
-  if (!ctx) return paint.text.dim(ruleChars(w));
-  const ctxWidth = visibleWidth(ctx);
-  const left  = Math.max(8, w - ctxWidth - 4);
-  const right = Math.max(0, w - left - ctxWidth - 2);
-  return paint.text.dim(ruleChars(left)) + ' ' + paint.text.dim(ctx) + ' ' + paint.text.dim(ruleChars(right));
+  const ctxWidth = ctx ? visibleWidth(ctx) : 0;
+
+  // Rule fill in the middle. Reserve 1 space around ctx when present.
+  const gap = 1;
+  const rightPadRule = 2;
+  const middleWidth = Math.max(1, w - leftWidth - gap - ctxWidth - (ctx ? gap + rightPadRule : 0));
+  const middleRule = brand(ruleChars(middleWidth));
+
+  if (!ctx) {
+    return `${leftBlock} ${middleRule}`;
+  }
+  const tailRule = brand(ruleChars(rightPadRule));
+  return `${leftBlock} ${middleRule} ${paint.text.dim(ctx)} ${tailRule}`;
 }
 
 function bottomRuleLine() {
-  return paint.text.dim(ruleChars(Math.max(0, cols() - 1)));
+  return paint.brand.primary(ruleChars(Math.max(0, cols() - 1)));
 }
 
 function applyLayout() {
@@ -165,15 +206,36 @@ function renderFrame(frame = {}) {
   clearLine();
   write(padLine(topRuleLine(lastFrame.context)));
 
+  // Spacer above input.
+  moveTo(spacerAboveRow(), 1);
+  clearLine();
+
+  // (input rows are written by drawInputLines / clearInputRows)
+
+  // Spacer below input.
+  moveTo(spacerBelowRow(), 1);
+  clearLine();
+
   moveTo(bottomRuleRow(), 1);
   clearLine();
   write(padLine(bottomRuleLine()));
 
+  // Meta row: model · cwd ⎇ branch · turn N · tokens · elapsed
+  moveTo(metaRow(), 1);
+  clearLine();
+  const metaIndent = ' '.repeat(META_INDENT);
+  const metaBudget = Math.max(0, cols() - META_INDENT - 1);
+  const metaText = lastFrame.meta ? paint.text.muted(fitText(lastFrame.meta, metaBudget)) : '';
+  write(padLine(`${metaIndent}${metaText}`));
+
+  // Tips row.
   moveTo(tipsRow(), 1);
   clearLine();
-  const indent = ' '.repeat(INPUT_INDENT);
-  write(padLine(`${indent}${paint.text.dim(fitText(lastFrame.tips, cols() - INPUT_INDENT - 1))}`));
+  const tipsIndent = ' '.repeat(META_INDENT);
+  const tipsBudget = Math.max(0, cols() - META_INDENT - 1);
+  write(padLine(`${tipsIndent}${paint.text.dim(fitText(lastFrame.tips, tipsBudget))}`));
 
+  // Safety row.
   moveTo(rows(), 1);
   clearLine();
   restoreCursor();
@@ -213,7 +275,7 @@ function layoutInput(prefix, value) {
     lines: tail.visible,
     truncated: tail.truncated,
     dropped: tail.dropped,
-    wrapped, // full wrap for cursor math
+    wrapped,
     prefix: prefix || '',
   };
 }
@@ -238,12 +300,13 @@ export function isInputDockMounted() {
 
 export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
   const t = term();
-  if (!t.isTTY || t.plain || process.env.KEPLER_FIXED_INPUT === '0') return false;
+  if (!t.isTTY || t.plain) return false;
+  if (process.env.BAHULAM_FIXED_INPUT === '0' || process.env.KEPLER_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 
   inputRowsMax = resolveMaxInputRows(requestedMax);
-  inputRows = MIN_INPUT_ROWS; // start collapsed; grow as content lands
-  reservedRows = 4 + inputRows; // top + input(1) + bottom + tips + safety
+  inputRows = MIN_INPUT_ROWS;
+  reservedRows = FIXED_ROWS + inputRows;
   mounted = true;
   applyLayout();
 
@@ -285,9 +348,6 @@ export function pinnedStatusRow() {
   return Math.max(1, contentBottomRow() - 1);
 }
 
-// Write a single-line status at pinnedStatusRow, overwriting whatever's there.
-// Uses absolute cursor positioning + clear-line so it's immune to whatever
-// _lastLineCount inPlace() thinks it has.
 export function drawPinnedStatus(line) {
   if (!mounted) return false;
   const row = pinnedStatusRow();
@@ -311,7 +371,7 @@ export function clearPinnedStatus() {
   return true;
 }
 
-// Redraw just the frame (top rule, bottom rule, tips, safety row) without
+// Redraw just the frame (rules, spacers, meta, tips, safety row) without
 // touching the input rows. Callers that write into the dock's non-input
 // rows (e.g. slash-hint overlays) use this to restore the frame after
 // clearing their overlay.
@@ -321,14 +381,11 @@ export function redrawDockFrame() {
   return true;
 }
 
-export function prepareInputPrompt({ context = '', tips = '' } = {}) {
+export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) {
   if (!mounted) return false;
-  // Idle prompt has no buffer yet — collapse the dock back to a single
-  // input row so the terminal reclaims the space taken by the previous
-  // turn's multi-line input.
   setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
-  renderFrame({ context, tips });
+  renderFrame({ context, tips, meta });
   moveTo(inputRowStart(), INPUT_INDENT + 1);
   return true;
 }
@@ -340,15 +397,12 @@ export function clearInputPrompt() {
   return true;
 }
 
-export function renderDockInput(prefix, value, { context = '', tips = '' } = {}) {
+export function renderDockInput(prefix, value, { context = '', tips = '', meta = '' } = {}) {
   if (!mounted) return false;
-  // Grow / shrink the dock to fit the wrapped buffer before painting so
-  // multi-line paste and long typed lines expand the input area in place.
   setInputRowsTo(computeInputRowsForBuffer(prefix, value));
-  renderFrame({ context, tips });
+  renderFrame({ context, tips, meta });
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
-  // Position cursor at the logical end of the buffer.
   focusDockInput(prefix, value);
   return true;
 }
@@ -363,8 +417,6 @@ export function focusDockInput(prefix, value = '') {
   const layout = layoutInput(prefix, value);
   const offset = visibleWidth(`${prefix || ''}${value || ''}`);
   const pos = cursorPositionInLines(layout.wrapped, offset);
-  // Clamp the row into the visible input area — offscreen rows map to the
-  // last visible row (mirroring the tail-with-ellipsis behavior).
   const visibleRowIdx = Math.max(
     0,
     Math.min(inputRows - 1, pos.row - Math.max(0, layout.wrapped.length - inputRows)),
@@ -386,5 +438,7 @@ export function _internals() {
     reservedRows: () => reservedRows,
     layoutInput,
     inputTextBudget,
+    FIXED_ROWS,
+    BRAND_LABEL,
   };
 }

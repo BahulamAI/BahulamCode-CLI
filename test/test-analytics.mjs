@@ -25,7 +25,7 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-analytics.mjs\x1b[0m\n');
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-analytics-'));
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-code-analytics-'));
 const previousBahulamHome = process.env.BAHULAM_HOME;
 process.env.BAHULAM_HOME = tempRoot;
 
@@ -48,7 +48,7 @@ const sessionALines = [
     cwd: demoProject,
     sessionId: 'sess-A',
     gitBranch: 'main',
-    message: { role: 'user', content: `Build the b0 dashboard in ${demoProject}` },
+    message: { role: 'user', content: `Build the Bahulam Code dashboard in ${demoProject}` },
   },
   {
     type: 'assistant',
@@ -135,7 +135,7 @@ const sessionBMtime = new Date(now - 60_000);
 fs.utimesSync(sessionAPath, sessionAMtime, sessionAMtime);
 fs.utimesSync(sessionBPath, sessionBMtime, sessionBMtime);
 fs.writeFileSync(historyPath, [
-  JSON.stringify({ display: 'Build the b0 dashboard', timestamp: Date.parse('2026-04-26T10:00:00.000Z'), project: demoProject, sessionId: 'sess-A' }),
+  JSON.stringify({ display: 'Build the Bahulam Code dashboard', timestamp: Date.parse('2026-04-26T10:00:00.000Z'), project: demoProject, sessionId: 'sess-A' }),
   JSON.stringify({ display: 'Show usage history', timestamp: Date.parse('2026-04-27T08:30:00.000Z'), project: demoProject, sessionId: 'sess-B' }),
 ].join('\n') + '\n');
 
@@ -335,11 +335,11 @@ await test('report formatters include expected analytics sections', async () => 
   const statsReport = analytics.formatStatsReport(stats, tools, models, 30, localStore.getStorePaths());
   const historyReport = analytics.formatHistoryReport(history, 10);
 
-  assert.ok(sessionsReport.includes('B0 SESSIONS'));
-  assert.ok(sessionsReport.includes('Build the b0 dashboard'));
+  assert.ok(sessionsReport.includes('BAHULAM SESSIONS'));
+  assert.ok(sessionsReport.includes('Build the Bahulam Code dashboard'));
   assert.ok(statsReport.includes('Top Tools'));
   assert.ok(statsReport.includes('read_file'));
-  assert.ok(historyReport.includes('B0 HISTORY'));
+  assert.ok(historyReport.includes('BAHULAM HISTORY'));
   assert.ok(historyReport.includes('Show usage history'));
 });
 

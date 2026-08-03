@@ -203,7 +203,7 @@ await test('search_code routes through the registered project index', async () =
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
-    assert.ok(result.content.includes('@bahulamai/b0'));
+    assert.ok(result.content.includes('@bahulamai/code'));
 });
 
 await test('read_file reuses unchanged repeated reads and read_batch reads line ranges', async () => {

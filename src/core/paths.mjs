@@ -1,5 +1,5 @@
 /**
- * b0 Paths — centralized path resolution for all CLI data.
+ * Bahulam Code Paths — centralized path resolution for all CLI data.
  *
  * Everything lives under ~/.bahulam/:
  *   ~/.bahulam/
@@ -17,7 +17,7 @@
  *     projects.json            — slug → project path mapping
  *
  * ── Legacy fallback ─────────────────────────────────────────────────────
- * Pre-b0 installs stored everything under ~/.kepler/. The resolver below
+ * Pre-rename installs stored everything under ~/.kepler/. The resolver below
  * prefers the new path but falls back to the legacy directory when it
  * exists and the new one doesn't, so existing users keep their config,
  * agents, workflows, and history until they explicitly migrate.

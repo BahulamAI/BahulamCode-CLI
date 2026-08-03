@@ -267,7 +267,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
   assert.ok(!renderSource.includes('drawPinnedStatus'));
-  assert.ok(renderSource.includes("transcriptHeader('b0', { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
@@ -287,11 +287,11 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function printInputBottomRule()'));
   assert.ok(replSource.includes('printInputBottomRule();'));
-  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
+  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
   assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
-  assert.ok(replSource.includes("transcriptHeader('b0', { tone: 'assistant' })"));
+  assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
@@ -361,7 +361,7 @@ test('fixed input dock clears input rows before repainting', () => {
   const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
   assert.ok(dockSource.includes('function clearInputRows()'));
   assert.ok(dockSource.includes('moveTo(row, 1);'));
-  assert.ok(dockSource.includes('clearInputRows();\n  renderFrame({ context, tips });'));
+  assert.ok(dockSource.includes('clearInputRows();\n  renderFrame(lastFrame);'));
   assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
   assert.ok(dockSource.includes("from './text-layout.mjs'"));
 });

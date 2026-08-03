@@ -1,5 +1,5 @@
 /**
- * b0 Authentication — GitHub OAuth + config management.
+ * Bahulam Code Authentication — GitHub OAuth + config management.
  * Reads/writes ~/.bahulam/config.json (fallback: ~/.kepler/config.json for
  * legacy installs — see src/core/paths.mjs for the resolver).
  */
@@ -163,7 +163,7 @@ export class TarangAuth {
     async syncSettings() {
         const { fetchRemoteSettings, mergeRemoteSettings } = await import('../core/settings-sync.mjs');
         const creds = this.loadCredentials();
-        if (!creds.token) throw new Error('Not logged in. Run `b0 login` first.');
+        if (!creds.token) throw new Error('Not logged in. Run `bahulam-code login` first.');
 
         const remote = await fetchRemoteSettings(creds.token);
         if (!remote) throw new Error('Failed to fetch settings from server.');
@@ -191,7 +191,7 @@ export class TarangAuth {
 
         const env = process.env.TARANG_ENV || process.env.NODE_ENV || 'production';
 
-        process.stderr.write(`\n${BOLD}b0 Configuration${RESET}\n`);
+        process.stderr.write(`\n${BOLD}Bahulam Code Configuration${RESET}\n`);
         process.stderr.write(`${'─'.repeat(50)}\n`);
         process.stderr.write(`  Auth:           ${creds.token ? `${check} logged in` : `${cross} not logged in ${DIM}(/login)${RESET}`}\n`);
         process.stderr.write(`  Environment:    ${DIM}${env}${RESET}\n`);
@@ -217,8 +217,8 @@ export class TarangAuth {
             process.stderr.write(`  Last synced:    ${DIM}${new Date(raw.last_synced_at).toLocaleString()}${RESET}\n`);
         }
 
-        process.stderr.write(`\n  ${DIM}Run ${RESET}${CYAN}b0 sync${RESET}${DIM} to sync settings from web.${RESET}\n`);
-        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}b0 configure${RESET}${DIM} to open settings in browser.${RESET}\n`);
+        process.stderr.write(`\n  ${DIM}Run ${RESET}${CYAN}bahulam-code sync${RESET}${DIM} to sync settings from web.${RESET}\n`);
+        process.stderr.write(`  ${DIM}Run ${RESET}${CYAN}bahulam-code configure${RESET}${DIM} to open settings in browser.${RESET}\n`);
         process.stderr.write('\n');
     }
 

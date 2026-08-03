@@ -1,66 +1,83 @@
-# @bahulamai/b0
+# @bahulamai/code
 
-b0 is Bahulam's AI coding agent for terminal-first software work. It can inspect a
-repo, plan changes, run tools, ask for human approval, resume prior sessions, and
-keep local project context in `.bahulam/`.
+**Bahulam Code** is Bahulam's AI coding agent for terminal-first software work.
+It inspects a repo, plans changes, runs tools, asks for human approval, resumes
+prior sessions, and keeps local project context in `~/.bahulam/`.
 
-The npm package uses [B0-README.md](./B0-README.md) as the published
-README. Keep that file as the canonical npm-facing documentation.
+- 65.6% SWE-bench Verified
+- CLI-first, reliability-first
+- Sub-agents, skills, workflows, and MCP support
+- Bring your own model (40+ supported)
 
 ## Install
 
 ```bash
-npm install -g @bahulamai/b0@latest
+npm install -g @bahulamai/code@latest
 ```
 
 Run without global install:
 
 ```bash
-npx @bahulamai/b0@latest
+npx @bahulamai/code@latest
 ```
 
-## Quick Start
+## Start the CLI
+
+After install, sign in and launch:
 
 ```bash
-b0 login
-b0
-b0 "fix the failing auth test"
+bahulam-code login       # one-time: sign in through the browser
+bahulam-code             # start the interactive REPL
+```
+
+Or run a single instruction and exit:
+
+```bash
+bahulam-code "fix the failing auth test"
 ```
 
 ## Common Commands
 
 ```text
-b0                    Start interactive REPL
-b0 "instruction"      Run a single instruction and exit
-b0 login              Sign in through the browser
-b0 dashboard          Open local analytics dashboard
-b0 sessions           List recent local sessions
-b0 stats              Aggregate local session stats
-b0 history            Show recent prompt history
-b0 version            Show installed version
+bahulam-code                    Start interactive REPL
+bahulam-code "instruction"      Run a single instruction and exit
+bahulam-code login              Sign in through the browser
+bahulam-code configure          Open settings in your browser
+bahulam-code config --show      Display local configuration
+bahulam-code resume             Resume a paused or previous session
+bahulam-code --version          Show installed version
+bahulam-code --help             Full command reference
 ```
 
-## 2.2.0 Highlights
+Inside the REPL, type `/help` for slash commands (models, cache, approvals,
+skills, workflows, session tools).
 
-- Checkpointed `/resume` summaries with summary-only and summary-plus-tail modes.
-- One approval prompt model for shell, sensitive reads, destructive actions, and
-  backend/framework HITL.
-- Redacted local approval logs.
-- Wrapped full shell command display.
-- Long-running shell command tail capture.
+## 2.6.1 Highlights
+
+- Published under both `@bahulam/code` and `@bahulamai/code` scopes.
+- Full removal of legacy `b0` references from CLI help, error messages,
+  analytics headers, and internal comments.
+
+## 2.6.0 Highlights
+
+- Rebrand: `@bahulamai/b0` → `@bahulamai/code`; binary `b0` → `bahulam-code`.
+- Redesigned fixed input dock — labeled "Bahulam Code" identity, colored
+  border, horizontal and vertical margins, meta row showing project, git
+  branch, turn count, and token usage.
+- Extended session-context meta line under the input dock.
 
 ## Development
 
 ```bash
 npm test
-env NPM_CONFIG_CACHE=/private/tmp/b0-npm-cache npm pack --dry-run
+npm pack --dry-run
 ```
 
 See [RELEASE.md](./RELEASE.md) for the merge, PR, and npm publish checklist.
 
 ## Links
 
-- Website: https://getb0.ai
+- Website: https://bahulam.ai
 - Company: https://axplusb.tech
 - Repository: https://github.com/raviakasapu/codekepler-npm
 

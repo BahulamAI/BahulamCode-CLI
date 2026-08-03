@@ -29,7 +29,7 @@ export async function runSkillsCommand(args, { cwd = process.cwd() } = {}) {
     }
     if (action === 'view') {
         const name = rest.find(arg => !arg.startsWith('--'));
-        if (!name) throw new Error('Usage: b0 skills view <name> [resource-path]');
+        if (!name) throw new Error('Usage: bahulam-code skills view <name> [resource-path]');
         const nameIndex = rest.indexOf(name);
         const resource = rest.slice(nameIndex + 1).find(arg => !arg.startsWith('--')) || null;
         print(loader.view(name, resource));

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @bahulamai/b0 — b0 CLI (Bahulam's coding agent).
+ * @bahulamai/code — Bahulam Code CLI (Bahulam's coding agent).
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
@@ -152,21 +152,21 @@ function printUsage() {
     const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
     process.stderr.write(`${B}USAGE${R}\n`);
-    process.stderr.write(`  ${C}b0 "instruction"${R}         Execute instruction\n`);
-    process.stderr.write(`  ${C}b0${R}                       Interactive mode (REPL)\n`);
-    process.stderr.write(`  ${C}b0 login${R}                 Authenticate via GitHub OAuth\n`);
-    process.stderr.write(`  ${C}b0 configure${R}             Open settings in browser\n`);
-    process.stderr.write(`  ${C}b0 config --show${R}         Display local configuration\n`);
-    process.stderr.write(`  ${C}b0 resume${R}                Resume a paused session\n`);
-    process.stderr.write(`  ${C}b0 workflow create --file <path>${R}  Create workflow from YAML\n`);
-    process.stderr.write(`  ${C}b0 workflow run <name>${R}           Run a workflow\n`);
-    process.stderr.write(`  ${C}b0 workflow list${R}                 List workflows\n`);
-    process.stderr.write(`  ${C}b0 workflow get <name>${R}           Show workflow details\n`);
-    process.stderr.write(`  ${C}b0 workflow delete <name>${R}        Delete a workflow\n`);
-    process.stderr.write(`  ${C}b0 workflow sync${R}                 Sync workflow YAML files\n`);
-    process.stderr.write(`  ${C}b0 agent list${R}                    List user-defined agents\n`);
-    process.stderr.write(`  ${C}b0 agent get <slug>${R}              Show agent details\n`);
-    process.stderr.write(`  ${C}b0 agent sync${R}                    Sync agent YAML files\n`);
+    process.stderr.write(`  ${C}bahulam-code "instruction"${R}         Execute instruction\n`);
+    process.stderr.write(`  ${C}bahulam-code${R}                       Interactive mode (REPL)\n`);
+    process.stderr.write(`  ${C}bahulam-code login${R}                 Authenticate via GitHub OAuth\n`);
+    process.stderr.write(`  ${C}bahulam-code configure${R}             Open settings in browser\n`);
+    process.stderr.write(`  ${C}bahulam-code config --show${R}         Display local configuration\n`);
+    process.stderr.write(`  ${C}bahulam-code resume${R}                Resume a paused session\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow create --file <path>${R}  Create workflow from YAML\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow run <name>${R}           Run a workflow\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow list${R}                 List workflows\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow get <name>${R}           Show workflow details\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow delete <name>${R}        Delete a workflow\n`);
+    process.stderr.write(`  ${C}bahulam-code workflow sync${R}                 Sync workflow YAML files\n`);
+    process.stderr.write(`  ${C}bahulam-code agent list${R}                    List user-defined agents\n`);
+    process.stderr.write(`  ${C}bahulam-code agent get <slug>${R}              Show agent details\n`);
+    process.stderr.write(`  ${C}bahulam-code agent sync${R}                    Sync agent YAML files\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
@@ -177,7 +177,7 @@ function printUsage() {
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
-    process.stderr.write(`  ${D}Models are configured via: b0 configure${R}\n`);
+    process.stderr.write(`  ${D}Models are configured via: bahulam-code configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
@@ -231,7 +231,7 @@ import { startTerminalRepl } from './terminal/repl.mjs';
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (args.version) { console.log(`@bahulamai/b0 ${VERSION}`); process.exit(0); }
+    if (args.version) { console.log(`@bahulamai/code ${VERSION}`); process.exit(0); }
     if (args.help) { printUsage(); process.exit(0); }
 
     const auth = new TarangAuth();

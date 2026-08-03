@@ -4,9 +4,9 @@ import * as path from 'node:path';
 const FILES = {
   'README.md': `# .bahulam/ - project agent context
 
-b0 reads and writes here to keep state between sessions.
+Bahulam Code reads and writes here to keep state between sessions.
 
-## Files b0 writes
+## Files Bahulam Code writes
 - \`plan.md\` - current agent plan
 - \`goal.md\` - durable session goal
 - \`tasks/\` - task list
