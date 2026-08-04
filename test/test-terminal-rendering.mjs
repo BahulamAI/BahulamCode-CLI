@@ -27,14 +27,14 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-terminal-rendering.mjs\x1b[0m\n');
 
-test('Kepler brand uses Deep Space Purple (PRD-055 §4.1)', () => {
-  // Post-Phase-1: c.brand routes through paint.brand.primary (#7c3aed).
-  // In ansi16 fallback that resolves to magenta (35); in truecolor it is
-  // \x1b[38;2;124;58;237m. Accept either so the test runs in any terminal.
-  const brand = c.brand('kepler');
-  assert.ok(brand.startsWith('\x1b[35m') || brand.startsWith('\x1b[38;2;124;58;237m'),
-    `expected magenta/truecolor brand, got ${JSON.stringify(brand)}`);
-  // c.cyan now routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
+test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
+  // Bahulam Code rebrand: paint.brand.primary is cyan #06b6d4 (abundance
+  // theme) — was purple #7c3aed in the pre-rename era. In ansi16 fallback
+  // that resolves to cyan (36); truecolor is \x1b[38;2;6;182;212m.
+  const brand = c.brand('bahulam');
+  assert.ok(brand.startsWith('\x1b[36m') || brand.startsWith('\x1b[38;2;6;182;212m'),
+    `expected cyan/truecolor brand, got ${JSON.stringify(brand)}`);
+  // c.cyan routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
   const cyan = c.cyan('code');
   assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
     `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
@@ -133,11 +133,12 @@ test('sub-agent running line shows full query and hides model', () => {
 });
 
 test('renders shell commands with semantic syntax colors', () => {
-  // Post-Phase-1: c.blue routes to brand.primary, so command tokens get the
-  // brand color instead of basic blue. Flags stay yellow, pipes stay red.
+  // c.blue routes to brand.primary — post-rebrand that's cyan #06b6d4
+  // (was purple #7c3aed pre-Bahulam-Code). Command tokens get the brand
+  // color. Flags stay yellow, pipes stay red.
   const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
-  // Command tokens — brand.primary (#7c3aed). ansi16 magenta or truecolor.
-  assert.ok(/\x1b\[35m|\x1b\[38;2;124;58;237m/.test(rendered),
+  // Command tokens — brand.primary (#06b6d4). ansi16 cyan or truecolor.
+  assert.ok(/\x1b\[36m|\x1b\[38;2;6;182;212m/.test(rendered),
     'expected brand color for command tokens');
   assert.ok(rendered.includes('python'));
   assert.ok(rendered.includes('head'));

@@ -452,6 +452,11 @@ await test('multiple projects require explicit routing, while exact outside read
     fs.writeFileSync(path.join(first, 'first.js'), 'export const firstValue = 1;\n');
     fs.writeFileSync(path.join(second, 'second.py'), 'def second_value():\n    return 2\n');
     fs.writeFileSync(path.join(undeclared, 'secret.txt'), 'not registered\n');
+    // Project markers — get_project_overview now refuses roots without them.
+    // `undeclared` deliberately omits any marker so the read_file on-the-fly
+    // path (which bypasses the check) is what registers it.
+    fs.writeFileSync(path.join(first, 'package.json'), '{"name":"first"}\n');
+    fs.writeFileSync(path.join(second, 'pyproject.toml'), '[project]\nname="second"\n');
 
     try {
         const multi = createToolExecutor();

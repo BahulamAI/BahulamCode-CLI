@@ -1897,7 +1897,14 @@ print('OK: replaced')
                 if (!root || seen.has(root)) continue;
                 seen.add(root);
                 try {
-                    const result = await projectRegistry.register(root, { forceRefresh });
+                    // CLI-startup roots are declared by the user (via cwd, flag,
+                    // or preflight) and should not be second-guessed by the
+                    // project-marker guard. That guard exists to stop the AGENT
+                    // from calling get_project_overview on non-project paths.
+                    const result = await projectRegistry.register(root, {
+                        forceRefresh,
+                        bypassProjectMarkers: true,
+                    });
                     results.push({ success: true, root: result.resource.root, ...result });
                 } catch (err) {
                     results.push({ success: false, root, error: err.message });
