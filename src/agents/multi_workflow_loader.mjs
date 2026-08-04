@@ -1,6 +1,6 @@
 /**
  * Multi-Agent Workflow Loader — loads multi-agent workflow YAML files
- * from .kepler/workflows/ and produces API payloads for POST /api/workflows.
+ * from .bahulam/workflows/ and produces API payloads for POST /api/workflows.
  *
  * Multi-agent workflow YAML schema:
  *

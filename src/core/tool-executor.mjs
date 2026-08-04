@@ -333,7 +333,7 @@ export function createToolExecutor({
         const result = clonePlain(cached.result);
         const output = String(result.output || result.content || result.message || '').trim();
         const excerpt = output.length > 1200 ? `${output.slice(0, 1200)}\n[... cached output truncated ...]` : output;
-        result.output = `[Kepler reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
+        result.output = `[Bahulam Code reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
         if (typeof result.content === 'string') {
             result.content = result.content.length > 1200
                 ? `${result.content.slice(0, 1200)}\n[... cached content truncated ...]`
@@ -1531,7 +1531,7 @@ print('OK: replaced')
             const selected = selectAgentsForSync(args);
             if (!selected.length) {
                 const target = args.name || args.slug || '';
-                throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .kepler/agents');
+                throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .bahulam/agents');
             }
             const creds = new TarangAuth().loadCredentials();
             const result = await syncAgentsToBackend({
@@ -1619,11 +1619,11 @@ print('OK: replaced')
             const selected = selectWorkflowsForSync(args);
             if (!selected.length) {
                 const target = args.name || args.slug || '';
-                throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .kepler/workflows');
+                throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .bahulam/workflows');
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run kepler login first.');
+                throw new Error('Not logged in. Run bahulam-code login first.');
             }
 
             const headers = {
@@ -1695,7 +1695,7 @@ print('OK: replaced')
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run kepler login first.');
+                throw new Error('Not logged in. Run bahulam-code login first.');
             }
 
             const workflowId = await resolveWorkflowId(creds, target);
@@ -1897,7 +1897,14 @@ print('OK: replaced')
                 if (!root || seen.has(root)) continue;
                 seen.add(root);
                 try {
-                    const result = await projectRegistry.register(root, { forceRefresh });
+                    // CLI-startup roots are declared by the user (via cwd, flag,
+                    // or preflight) and should not be second-guessed by the
+                    // project-marker guard. That guard exists to stop the AGENT
+                    // from calling get_project_overview on non-project paths.
+                    const result = await projectRegistry.register(root, {
+                        forceRefresh,
+                        bypassProjectMarkers: true,
+                    });
                     results.push({ success: true, root: result.resource.root, ...result });
                 } catch (err) {
                     results.push({ success: false, root, error: err.message });

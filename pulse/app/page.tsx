@@ -5,8 +5,8 @@ export default function OverviewPage() {
   return (
     <div className="flex flex-col min-h-screen">
       <TopBar
-        title="Kepler Pulse"
-        subtitle="Real-time analytics for your Kepler AI agent sessions"
+        title="Bahulam Pulse"
+        subtitle="Real-time analytics for your Bahulam Code agent sessions"
       />
       <OverviewClient />
     </div>

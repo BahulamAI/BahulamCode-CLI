@@ -5,7 +5,7 @@ import * as path from 'node:path';
 
 const SCHEMA = 'kepler.work_scope/1';
 const ROOT_MARKERS = [
-    '.kepler',
+    '.bahulam',
     '.git',
     'package.json',
     'pyproject.toml',

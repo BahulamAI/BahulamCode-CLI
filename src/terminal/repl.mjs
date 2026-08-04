@@ -18,6 +18,8 @@
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execSync as _execSync } from 'node:child_process';
+import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
@@ -62,20 +64,84 @@ import {
   writeClipboardImageToTemp,
 } from '../core/attachments.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
+import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
+import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
+import { safeCwd } from './repl-utils.mjs';
+import {
+  appendContent,
+  clearPendingHead,
+  clippedThinking,
+  expandIndex,
+  expandLast,
+  flushContent,
+  flushExploreRun,
+  flushPendingHead,
+  isInlineOutcomeTool,
+  renderBlockBoundary,
+  renderExploreRun,
+  renderStagnation,
+  renderToolCall,
+  renderToolResult,
+  startContentStream,
+  startSpinner,
+  stopSpinner,
+  thinkingPrefix,
+  updateSpinner,
+} from './repl-render.mjs';
+import {
+  chooseResumeHistoryMode,
+  chooseThresholdMode,
+  compactCurrentSession,
+  confirmCwdSwitch,
+  formatResumeCheckpointStatus,
+  formatResumeContextStatus,
+  listResumableSessions,
+  pickResumableSession,
+  previewResumeSession,
+  renderResumePreview,
+  summarizeResumeTranscript,
+} from './repl-resume.mjs';
+import {
+  endStatusMarker,
+  filterResumeReplayEvents,
+  fitAnsiLine,
+  formatRelativeTime,
+  formatSessionCost,
+  historyRoleLabel,
+  mergeResumeReplayItems,
+  messageCountLabel,
+  normalizeResumableSession,
+  oneLineInstruction,
+  renderHistoryEntries,
+  replayStartOrderForMode,
+  resumeModeLabel,
+  resumeProgressBar,
+  resumeTailTurnCount,
+  sessionListTimestamp,
+  startResumeProgress,
+} from './repl-format.mjs';
+import {
+  COMMANDS,
+  HELP_GROUPS,
+  HELP_GROUP_ALIASES,
+  LEGACY_COMMAND_HINTS,
+  NAMESPACED_COMMANDS,
+  normalizeCommandInput,
+} from '../ui/slash-commands.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
   clearInputPrompt,
-  clearPinnedStatus,
-  drawPinnedStatus,
   focusDockInput,
   isInputDockMounted,
   mountInputDock,
   moveToContent,
   prepareInputPrompt,
+  redrawDockFrame,
   renderDockInput,
   unmountInputDock,
 } from '../ui/input-dock.mjs';
 import { term } from '../ui/term.mjs';
+import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
 import {
   formatCardHead,
   formatCompactFileDiff,
@@ -104,1107 +170,40 @@ const VERSION = __require('../../package.json').version;
 // If the working directory gets deleted (by a rogue tool call),
 // process.cwd() throws ENOENT. Detect and recover.
 
-let _cachedCwd = null;
+// safeCwd() moved to ./repl-utils.mjs.
 
-function safeCwd() {
-  try {
-    _cachedCwd = process.cwd();
-    return _cachedCwd;
-  } catch {
-    // CWD deleted — try to recover
-    const fallback = _cachedCwd || process.env.HOME || '/tmp';
-    try {
-      process.chdir(fallback);
-      process.stderr.write(`  ${c.yellow('Working directory was deleted. Recovered to: ' + fallback)}\n`);
-      _cachedCwd = fallback;
-      return fallback;
-    } catch {
-      return process.env.HOME || '/tmp';
-    }
-  }
-}
+// messageCountLabel, sessionListTimestamp, oneLineInstruction, fitAnsiLine
+// moved to ./repl-format.mjs. Imported at the top of this file.
 
-function messageCountLabel(count) {
-  return `${count} ${count === 1 ? 'message' : 'messages'}`;
-}
+// normalizeResumableSession moved to ./repl-format.mjs.
 
-function sessionListTimestamp(s) {
-  const value = s.updatedAt || s.startedAt;
-  return value ? new Date(value).toLocaleString() : '?';
-}
 
-function oneLineInstruction(text, max = 72) {
-  const compact = String(text || '(no instruction)').replace(/\s+/g, ' ').trim();
-  return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
-}
+// resumeTailTurnCount, replayStartOrderForMode, filterResumeReplayEvents,
+// mergeResumeReplayItems, resumeProgressBar moved to ./repl-format.mjs.
 
-function fitAnsiLine(text, maxColumns) {
-  const max = Math.max(1, Number(maxColumns) || 80);
-  const value = String(text || '');
-  if (stripAnsi(value).length <= max) return value;
-
-  let visible = 0;
-  let out = '';
-  for (let i = 0; i < value.length; i++) {
-    if (value[i] === '\x1b') {
-      const match = value.slice(i).match(/^\x1b\[[0-9;]*m/);
-      if (match) {
-        out += match[0];
-        i += match[0].length - 1;
-        continue;
-      }
-    }
-    if (visible >= max - 1) break;
-    out += value[i];
-    visible++;
-  }
-  return `${out}${c.dim('…')}`;
-}
-
-function normalizeResumableSession(s) {
-  return {
-    sessionId: s.sessionId,
-    instruction: s.firstPrompt || s.instruction || '(no instruction)',
-    startedAt: s.startTime || s.startedAt || '',
-    updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
-    project: s.project ? path.basename(s.project) : s.projectName || s.project || '',
-    projectPath: s.project || s.projectPath || '',
-    transcriptPath: s.filePath || s.transcriptPath || '',
-    messageCount: (s.userMessages || 0) + (s.assistantMessages || 0),
-    // PRD-068 §5.14.11 derived fields for the picker
-    endStatus: s.endStatus || 'unknown',       // 'completed' | 'interrupted' | 'errored' | 'unknown'
-    contextTokens: s.contextTokens || 0,       // projected transcript token count
-    contextTokenSource: s.contextTokenSource || 'jsonl_bytes',
-    resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
-    models: Array.isArray(s.models) ? s.models : [],
-    modelLimits: s.modelLimits && typeof s.modelLimits === 'object' ? s.modelLimits : {},
-    costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
-    partial: !!s.partial,                      // true if the transcript file was partially malformed
-    source: 'transcript',
-  };
-}
-
-async function listResumableSessions() {
-  // PRD-068 §5.14.6: JSONL is the single source of truth. The legacy
-  // per-project state-only entries never had a transcript, so they can't be
-  // replayed — silently dropping them removes a source of "picked a session
-  // and got a flat history" surprises.
-  const rich = (await getRecentSessions(Infinity)).map(normalizeResumableSession);
-  return rich.sort((a, b) => {
-    const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
-    const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
-    return bt - at;
-  });
-}
-
-// ── PRD-068 §5.14 helpers ────────────────────────────────────────────
-
-function endStatusMarker(status) {
-  switch (status) {
-    case 'completed':   return c.green('✓');
-    case 'interrupted': return c.yellow('⚠');
-    case 'errored':     return c.red('✗');
-    default:            return c.dim('·');
-  }
-}
-
-function formatSessionCost(usd) {
-  const n = Number(usd);
-  if (!Number.isFinite(n) || n <= 0) return c.dim('     ');
-  if (n < 0.01) return c.dim('<$0.01');
-  return c.dim(`$${n.toFixed(2)}`);
-}
-
-function formatResumeCheckpointStatus(session) {
-  const marker = session?.resumeSummary;
-  if (!marker || !Number(marker.sourceMessageCount)) return '';
-  const full = Number(marker.fullMessageCount) || 0;
-  const covered = Number(marker.sourceMessageCount) || 0;
-  const pct = full > 0 ? ` ${Math.min(100, Math.round((covered / full) * 100))}%` : '';
-  return c.dim(` · summarized${pct}`);
-}
-
-function formatResumeContextStatus(session) {
-  const full = formatCtxTokens(session?.contextTokens || 0);
-  const marker = session?.resumeSummary;
-  if (!marker || !Number(marker.sourceMessageCount)) {
-    return c.dim(`${full.padStart(5, ' ')} ctx`);
-  }
-  const resumable = formatCtxTokens(projectedTokensForChoice('checkpoint-full', session.contextTokens || 0, {
-    resumeSummary: marker,
-  }));
-  return c.dim(`${resumable.padStart(5, ' ')} resumable · ${full} full`) + formatResumeCheckpointStatus(session);
-}
-
-function formatRelativeTime(iso) {
-  if (!iso) return '';
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return '';
-  const ago = Date.now() - t;
-  const m = Math.floor(ago / 60_000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
-  return `${mo}mo ago`;
-}
-
-/**
- * PRD-068 §5.14.2 — enriched one-prompt picker.
- * Returns the picked session, `null` on cancel, or `{ action: 'preview', session }`
- * when the user hits P.
- */
-async function pickResumableSession(resumable, ctx) {
-  const rl = ctx._rl || null;
-  if (rl) rl.pause();
-
-  return await new Promise((resolve) => {
-    if (!process.stdin.isTTY) { resolve(null); return; }
-    const wasRaw = process.stdin.isRaw;
-    const pageSize = Math.min(10, resumable.length);
-    const numWidth = String(resumable.length).length;
-    let selected = 0;
-    let offset = 0;
-    let renderedLines = 0;
-
-    const renderMenu = () => {
-      if (renderedLines > 0) {
-        process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
-      }
-      if (selected < offset) offset = selected;
-      if (selected >= offset + pageSize) offset = selected - pageSize + 1;
-
-      const cols = Math.max(60, process.stderr.columns || 120);
-      const lines = [];
-      lines.push(`  ${c.bold('Resume a session')}`);
-      lines.push('');
-      const end = Math.min(offset + pageSize, resumable.length);
-      for (let i = offset; i < end; i++) {
-        const s = resumable[i];
-        const marker = i === selected ? c.brand('▸') : ' ';
-        const num = c.dim(`[${String(i + 1).padStart(numWidth, ' ')}]`);
-        const project = (s.project || '(unknown)').padEnd(18, ' ').slice(0, 18);
-        const ago = formatRelativeTime(s.updatedAt || s.startedAt).padEnd(9, ' ').slice(0, 9);
-        const status = endStatusMarker(s.endStatus);
-        const msgs = String(s.messageCount).padStart(3, ' ') + ' msgs';
-        const ctx = formatResumeContextStatus(s);
-        const cost = formatSessionCost(s.costUsd);
-        const partial = s.partial ? c.yellow(' ⚠partial') : '';
-        const instr = oneLineInstruction(s.instruction, 48);
-        lines.push(fitAnsiLine(
-          `  ${marker} ${num} ${c.brand(project)} ${c.dim(ago)} ${status} ${c.dim(msgs)} ${ctx} ${cost}${partial}  ${c.dim(instr)}`,
-          cols - 1
-        ));
-      }
-      lines.push('');
-      lines.push(fitAnsiLine(
-        `  ${c.dim(`↑↓ move  ·  Enter resume  ·  P preview  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`,
-        cols - 1
-      ));
-      process.stderr.write(lines.join('\n') + '\n');
-      renderedLines = lines.length;
-    };
-
-    const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
-      if (rl) rl.resume();
-      resolve(value);
-    };
-    const onData = (data) => {
-      const key = data.toString('utf8');
-      if (key === '' || key === '') { cleanup(null); return; }
-      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', session: resumable[selected] }); return; }
-      if (key === 'p' || key === 'P') { cleanup({ action: 'preview', session: resumable[selected] }); return; }
-      if (key === '[A') { selected = Math.max(0, selected - 1); renderMenu(); return; }
-      if (key === '[B') { selected = Math.min(resumable.length - 1, selected + 1); renderMenu(); return; }
-      if (key === '[5~') { selected = Math.max(0, selected - pageSize); renderMenu(); return; }
-      if (key === '[6~') { selected = Math.min(resumable.length - 1, selected + pageSize); renderMenu(); return; }
-      if (key === '[H' || key === '[1~') { selected = 0; renderMenu(); return; }
-      if (key === '[F' || key === '[4~') { selected = resumable.length - 1; renderMenu(); return; }
-      if (/^[1-9]$/.test(key)) {
-        const index = Number(key) - 1;
-        if (index < resumable.length) cleanup({ action: 'resume', session: resumable[index] });
-      }
-    };
-
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
-    renderMenu();
-  });
-}
-
-/**
- * PRD-068 §5.14.4 — tri-choice overlay shown only when projected ctx > highWatermark.
- * Returns 'full' | 'summary' | 'tail-10' | 'tail-20' | null (cancel).
- */
-async function chooseThresholdMode(ctx, decision) {
-  if (!process.stdin.isTTY) return decision.defaultChoice;
-  const rl = ctx._rl || null;
-  if (rl) rl.pause();
-
-  const canFull = decision.mode !== 'no-full-allowed';
-  const hasCheckpoint = Boolean(decision.resumeSummary?.sourceMessageCount);
-  const firstOption = canFull
-    ? { key: 'f', value: 'full', label: 'full transcript', enabled: true }
-    : hasCheckpoint
-      ? { key: 'f', value: 'checkpoint-full', label: 'checkpointed transcript', enabled: true }
-      : { key: 'f', value: 'full', label: 'full transcript', enabled: false };
-  const options = [
-    firstOption,
-    { key: 's', value: 'summary', label: 'summary only',    enabled: true },
-    { key: '1', value: 'tail-10', label: 'summary + last 10 turns', enabled: true },
-    { key: '2', value: 'tail-20', label: 'summary + last 20 turns', enabled: true },
-  ];
-  let selected = options.findIndex(o => o.value === decision.defaultChoice && o.enabled);
-  if (selected < 0) selected = options.findIndex(o => o.enabled);
-
-  return await new Promise((resolve) => {
-    const wasRaw = process.stdin.isRaw;
-    let renderedLines = 0;
-
-    const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
-      const cols = Math.max(60, process.stderr.columns || 120);
-      const pct = Math.round(decision.usageRatio * 100);
-      const projected = formatCtxTokens(decision.projected);
-      const win = `${formatCtxTokens(decision.windowSize)}${decision.windowKnown ? '' : ' est'}`;
-      const lines = [];
-      const rawLabel = hasCheckpoint ? 'Raw full transcript would use' : 'This session would use';
-      lines.push(`  ${rawLabel}  ${c.brand(`${projected} / ${win}`)} tokens  (${pct}%)`);
-      if (!decision.windowKnown) {
-        lines.push(`  ${c.dim('Model context window is a CLI fallback estimate; backend/provider limits may differ.')}`);
-      }
-      if (decision.resumeSummary?.sourceMessageCount) {
-        const covered = Number(decision.resumeSummary.sourceMessageCount) || 0;
-        const full = Number(decision.resumeSummary.fullMessageCount) || 0;
-        const suffix = full > 0 ? ` (${covered}/${full} resume messages)` : '';
-        lines.push(`  ${c.green('✓')} ${c.dim(`summary checkpoint available${suffix}; summary/tail modes reuse it`)}`);
-      }
-      lines.push(canFull
-        ? `  ${c.yellow('⚠')} ${c.dim('close to the highWatermark — consider a leaner mode:')}`
-        : hasCheckpoint
-          ? `  ${c.yellow('⚠')} ${c.dim('raw full is over hardCap — checkpoint/tail modes are available:')}`
-          : `  ${c.red('⛔')} ${c.dim('over hardCap — full mode disabled:')}`);
-      lines.push('');
-      for (let i = 0; i < options.length; i++) {
-        const o = options[i];
-        const disabled = !o.enabled;
-        const marker = i === selected && !disabled ? c.brand('▸') : ' ';
-        const keyTag = c.dim('[') + (disabled ? c.dim(o.key) : c.brand(o.key)) + c.dim(']');
-        const proj = formatCtxTokens(projectedTokensForChoice(o.value, decision.projected, {
-          resumeSummary: decision.resumeSummary,
-        }));
-        const label = disabled ? c.dim(o.label) : (i === selected ? c.brand(o.label) : o.label);
-        const projCol = c.dim(`${proj.padStart(5, ' ')} ctx`);
-        const suffix = disabled ? c.dim('  (over hardCap)') : '';
-        lines.push(fitAnsiLine(`  ${marker} ${keyTag} ${label.padEnd(30, ' ')} ${projCol}${suffix}`, cols - 1));
-      }
-      lines.push('');
-      lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/s/1/2 shortcut  ·  Esc cancel')}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
-      renderedLines = lines.length;
-    };
-
-    const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
-      if (rl) rl.resume();
-      resolve(value);
-    };
-    const onData = (data) => {
-      const key = data.toString('utf8');
-      const low = key.toLowerCase();
-      if (key === '' || key === '') { cleanup(null); return; }
-      if (key === '\r' || key === '\n') { cleanup(options[selected]?.value || null); return; }
-      if (key === '[A') {
-        // step to previous enabled option
-        for (let i = selected - 1; i >= 0; i--) if (options[i].enabled) { selected = i; render(); return; }
-        return;
-      }
-      if (key === '[B') {
-        for (let i = selected + 1; i < options.length; i++) if (options[i].enabled) { selected = i; render(); return; }
-        return;
-      }
-      for (let i = 0; i < options.length; i++) {
-        if (options[i].key === low && options[i].enabled) { cleanup(options[i].value); return; }
-      }
-    };
-
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
-    render();
-  });
-}
-
-function resumeModeLabel(mode = 'full') {
-  if (mode === 'checkpoint-full') return 'checkpointed transcript';
-  if (mode === 'summary') return 'summary only';
-  const tailTurns = resumeTailTurnCount(mode);
-  if (tailTurns) return `summary + last ${tailTurns} turns`;
-  return mode || 'full';
-}
-
-/**
- * PRD-068 §5.14.5 — preview overlay for a session/mode. Read-only, `q` to return.
- * If user hits Enter, resolve to the currently-previewed mode so caller can activate.
- */
-async function previewResumeSession(session, ctx) {
-  if (!process.stdin.isTTY) return null;
-  const detail = await getSessionDetail(session.sessionId, { filePath: session.transcriptPath });
-  if (!detail) return null;
-
-  const rl = ctx._rl || null;
-  if (rl) rl.pause();
-
-  let mode = 'summary';
-  const rich = () => buildResumeHistory({ ...detail, recapTailTurns: 8 }, mode);
-  let history = rich();
-
-  return await new Promise((resolve) => {
-    const wasRaw = process.stdin.isRaw;
-    let renderedLines = 0;
-    let scrollOffset = 0;
-
-    const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
-      const cols = Math.max(60, process.stderr.columns || 120);
-      const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
-      const contentLines = (history.summary || '').split('\n');
-      // For tail/full modes, also append serialized tail so preview reflects
-      // what the agent will actually receive.
-      if (mode !== 'summary') {
-        contentLines.push('', c.dim('── conversation tail ──'));
-        for (const msg of history.agentHistory.slice(1)) {
-          contentLines.push(`${msg.role === 'user' ? c.dim('You:') : c.brand('Kepler:')} ${String(msg.content).slice(0, 300)}`);
-        }
-      }
-      const totalLines = contentLines.length;
-      const maxOffset = Math.max(0, totalLines - rows);
-      if (scrollOffset > maxOffset) scrollOffset = maxOffset;
-
-      const lines = [];
-      lines.push(`  ${c.bold('Preview:')} ${c.brand(session.project || '(unknown)')}  ${c.dim('Mode:')} ${c.brand(resumeModeLabel(mode))}  ${c.dim(formatCtxTokens(projectedTokensForChoice(mode, session.contextTokens, { resumeSummary: session.resumeSummary })) + ' ctx')}`);
-      lines.push(`  ${c.dim('─'.repeat(60))}`);
-      for (let i = scrollOffset; i < Math.min(scrollOffset + rows, totalLines); i++) {
-        lines.push(fitAnsiLine(`  ${c.dim(contentLines[i] || '')}`, cols - 1));
-      }
-      lines.push('');
-      lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/s/1/2 switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
-      renderedLines = lines.length;
-    };
-
-    const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
-      if (rl) rl.resume();
-      resolve(value);
-    };
-    const onData = (data) => {
-      const key = data.toString('utf8');
-      const low = key.toLowerCase();
-      if (key === '' || key === '' || low === 'q') { cleanup({ action: 'back' }); return; }
-      if (key === '\r' || key === '\n') { cleanup({ action: 'resume', mode }); return; }
-      if (key === '[A') { scrollOffset = Math.max(0, scrollOffset - 1); render(); return; }
-      if (key === '[B') { scrollOffset += 1; render(); return; }
-      if (key === '[5~') { scrollOffset = Math.max(0, scrollOffset - 10); render(); return; }
-      if (key === '[6~') { scrollOffset += 10; render(); return; }
-      if (low === 'f') { mode = session.resumeSummary?.sourceMessageCount ? 'checkpoint-full' : 'full'; history = rich(); scrollOffset = 0; render(); return; }
-      if (low === 's') { mode = 'summary'; history = rich(); scrollOffset = 0; render(); return; }
-      if (low === '1') { mode = 'tail-10'; history = rich(); scrollOffset = 0; render(); return; }
-      if (low === '2') { mode = 'tail-20'; history = rich(); scrollOffset = 0; render(); return; }
-    };
-
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
-    render();
-  });
-}
-
-/**
- * PRD-068 §5.14.7 — explicit cwd confirmation when the picked session lives
- * elsewhere. Returns 'switch' | 'stay' | 'cancel'.
- */
-async function confirmCwdSwitch(ctx, savedPath, currentPath) {
-  if (!process.stdin.isTTY) return 'switch';
-  process.stderr.write(`\n  ${c.dim('This session lives in another repo:')}\n`);
-  process.stderr.write(`  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}\n`);
-  process.stderr.write(`  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel  `);
-  const rl = ctx._rl || null;
-  if (rl) rl.pause();
-  return await new Promise((resolve) => {
-    const wasRaw = process.stdin.isRaw;
-    const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
-      if (rl) rl.resume();
-      process.stderr.write('\n');
-      resolve(value);
-    };
-    const onData = (data) => {
-      const key = data.toString('utf8').toLowerCase();
-      if (key === '' || key === '' || key === 'n') { cleanup('cancel'); return; }
-      if (key === '\r' || key === '\n') { cleanup('switch'); return; }
-      if (key === 's') { cleanup('stay'); return; }
-    };
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
-  });
-}
-
-// Legacy prompt (kept as a fallback for callers that force compact/full explicitly).
-async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } = {}) {
-  if (!process.stdin.isTTY) return defaultMode;
-  process.stderr.write(`\n  ${c.dim('Load history for agent:')} ${c.brand('[c]')} ${c.dim('compact summary')}  ${c.brand('[f]')} ${c.dim('full transcript')}  ${c.dim('(Enter = compact, Esc = cancel):')} `);
-  const rl = ctx._rl || null;
-  if (rl) rl.pause();
-  return await new Promise((resolve) => {
-    const wasRaw = process.stdin.isRaw;
-    const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
-      if (rl) rl.resume();
-      process.stderr.write('\n');
-      resolve(value);
-    };
-    const onData = (data) => {
-      const key = data.toString('utf8').toLowerCase();
-      if (key === '\u0003' || key === '\u001b') { cleanup(null); return; }
-      if (key === '\r' || key === '\n' || key === 'c') { cleanup('compact'); return; }
-      if (key === 'f') { cleanup('full'); }
-    };
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
-  });
-}
-
-function historyRoleLabel(role) {
-  return role === 'user'
-    ? c.white('You')
-    : role === 'tool'
-      ? c.dim('Tool')
-      : c.brand('Kepler');
-}
-
-function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
-  const shown = limit === Infinity ? entries : entries.slice(-limit);
-  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-  for (const msg of shown) {
-    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
-    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
-  }
-  process.stderr.write('\n');
-}
-
-function renderResumePreview(resumed) {
-  const tailTurns = resumeTailTurnCount(resumed.historyMode);
-  if (resumed.historyMode === 'compact' || resumed.historyMode === 'summary') {
-    if (!resumed.summary) return;
-    process.stderr.write(`\n  ${c.bold('Continuity Summary Sent To Agent')}\n`);
-    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-    for (const line of resumed.summary.split('\n')) {
-      process.stderr.write(`  ${c.dim(line)}\n`);
-    }
-    process.stderr.write('\n');
-    return;
-  }
-
-  if (tailTurns && resumed.summary) {
-    process.stderr.write(`\n  ${c.bold(`Summary + Last ${tailTurns} Turns`)}\n`);
-    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-    for (const line of resumed.summary.split('\n')) {
-      process.stderr.write(`  ${c.dim(line)}\n`);
-    }
-    process.stderr.write('\n');
-  }
-
-  if (resumed.replayEvents?.length) {
-    const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
-    const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
-      .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
-    const userTurns = (resumed.history || [])
-      .filter(m => m.role === 'user')
-      .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
-    const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
-    const replayTitle = tailTurns ? `Last ${tailTurns} Turns Replay` : 'Replayed Live Session Events';
-    process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
-    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-    const sessionSnapshot = JSON.parse(JSON.stringify(session));
-    const savedOrbit = _orbit;
-    const savedSessionMgr = _sessionMgr;
-    _orbit = null;
-    _sessionMgr = null;
-    try {
-      startContentStream();
-      for (const item of replayItems) {
-        if (item.kind === 'user') {
-          flushContent();
-          stopSpinner();
-          const content = String(item.message.content || '').replace(/\s+/g, ' ').trim();
-          process.stderr.write(`\n  ${historyRoleLabel('user')}: ${content}\n`);
-          continue;
-        }
-        renderEvent(item.event.event);
-      }
-      flushContent();
-      stopSpinner();
-    } finally {
-      _orbit = savedOrbit;
-      _sessionMgr = savedSessionMgr;
-      for (const key of Object.keys(session)) delete session[key];
-      Object.assign(session, sessionSnapshot);
-    }
-    process.stderr.write('\n');
-    return;
-  }
-
-  if (resumed.history?.length) {
-    renderHistoryEntries(resumed.history, {
-      limit: Infinity,
-      maxChars: 220,
-      title: tailTurns ? `Last ${tailTurns} Turns` : 'Replayed Session History',
-    });
-  }
-}
-
-async function summarizeResumeTranscript({
-  auth,
-  toolExecutor,
-  sessionId,
-  projectPath,
-  messages,
-}) {
-  const creds = auth?.loadCredentials?.() || {};
-  if (!creds.backendUrl || !creds.token || !Array.isArray(messages) || messages.length === 0) {
-    return {
-      ok: false,
-      source: 'local',
-      reason: !creds.backendUrl || !creds.token ? 'missing backend credentials' : 'empty transcript',
-    };
-  }
-  try {
-    const client = new TarangStreamClient({
-      baseUrl: creds.backendUrl,
-      token: creds.token,
-      toolExecutor,
-    });
-    const result = await client.summarizeSession(messages, {
-      sessionId,
-      projectPath,
-      maxTokens: 800,
-      timeoutMs: 15000,
-    });
-    return { ...result, ok: true };
-  } catch (err) {
-    return {
-      ok: false,
-      source: 'local',
-      reason: err?.message || 'backend summary request failed',
-    };
-  }
-}
-
-async function compactCurrentSession(ctx, rest = '') {
-  const tailCount = parseCompactTailCount(rest, 8);
-  const preparedLive = prepareCompactHistory({
-    agentHistory: session.agentHistory,
-    tailCount,
-  });
-  if (!preparedLive.ok) {
-    process.stderr.write(`  ${c.gray(`Nothing to compact — ${preparedLive.reason}.`)}\n`);
-    return;
-  }
-
-  const progress = startResumeProgress('compact');
-  progress.update('preparing compact summary', 18);
-  let sourceMessages = preparedLive.sourceMessages;
-  let priorSummary = preparedLive.previousSummary || '';
-  let previousSourceMessageCount = 0;
-  let fullMessageCount = preparedLive.beforeCount;
-  let projectPath = safeCwd();
-  let sourceFrom = 'live';
-  let summaryWarning = '';
-
-  try {
-    if (session.id && ctx.jsonlWriter?.flush) {
-      progress.update('reading transcript checkpoint', 28);
-      await ctx.jsonlWriter.flush();
-      const detail = await getSessionDetail(session.id, { filePath: ctx.jsonlWriter.transcriptPath });
-      if (detail) {
-        const richHistory = buildResumeHistory({ ...detail, recapTailTurns: 8 }, `tail-${tailCount}`);
-        if (richHistory.sourceMessages?.length) {
-          sourceMessages = richHistory.sourceMessages;
-          priorSummary = richHistory.priorSummary || '';
-          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
-          fullMessageCount = richHistory.fullMessageCount || sourceMessages.length;
-          projectPath = detail.meta?.project || safeCwd();
-          sourceFrom = 'transcript';
-        } else if (richHistory.priorSummary) {
-          priorSummary = richHistory.priorSummary;
-          previousSourceMessageCount = richHistory.summaryCheckpointMessageCount || 0;
-          fullMessageCount = richHistory.fullMessageCount || preparedLive.beforeCount;
-        }
-      }
-    }
-
-    if (!sourceMessages.length) {
-      progress.stop();
-      process.stderr.write(`  ${c.gray('Nothing new to compact.')}\n`);
-      return;
-    }
-
-    progress.update('summarizing compacted history', 46);
-    const backendSummary = await summarizeResumeTranscript({
-      auth: ctx.auth,
-      toolExecutor: ctx.toolExecutor,
-      sessionId: session.id,
-      projectPath,
-      messages: sourceMessages,
-    });
-    let summarySource = backendSummary?.summary ? (backendSummary.source || 'backend') : 'local fallback';
-    let deltaSummary = backendSummary?.summary || '';
-    if (!deltaSummary) {
-      summaryWarning = backendSummary?.reason || 'backend summary unavailable';
-      deltaSummary = localCompactSummary(sourceMessages);
-    }
-    const summary = combineResumeSummaries(priorSummary, deltaSummary);
-
-    progress.update('rewriting live context', 74);
-    const applied = applyCompactSummary({
-      prepared: { ...preparedLive, sourceMessages },
-      summary,
-      sessionId: session.id,
-      cwd: projectPath,
-      originalRequest: session.history.find(m => m.role === 'user')?.content || session.lastTask || '',
-      previousSourceMessageCount,
-    });
-    session.agentHistory = applied.agentHistory;
-    session.compactSummary = summary;
-    session.compactSourceMessageCount = applied.sourceMessageCount;
-
-    if (ctx.jsonlWriter) {
-      progress.update('writing summary checkpoint', 88);
-      ctx.jsonlWriter.writeKeplerEvent({
-        type: 'resume_summary',
-        data: {
-          session_id: session.id || null,
-          mode: 'compact',
-          mode_label: '/compact',
-          summary,
-          summary_source: summarySource,
-          summary_warning: summaryWarning || null,
-          source: sourceFrom,
-          source_message_count: applied.sourceMessageCount,
-          previous_source_message_count: previousSourceMessageCount,
-          full_message_count: fullMessageCount,
-          retained_tail_messages: applied.retainedCount,
-          live_before_messages: applied.beforeCount,
-          live_after_messages: applied.afterCount,
-        },
-      });
-      await ctx.jsonlWriter.flush?.();
-    }
-
-    progress.stop();
-    process.stderr.write(
-      `  ${c.green('✓')} ${c.dim(`Compacted context: ${applied.beforeCount} → ${applied.afterCount} live messages · retained ${applied.retainedCount} · summary ${summarySource}`)}\n`
-    );
-    if (summaryWarning) {
-      process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — used local summary (${summaryWarning})`)}\n`);
-    }
-  } catch (err) {
-    progress.stop();
-    process.stderr.write(`  ${c.red(`Compact failed: ${err?.message || String(err)}`)}\n`);
-  }
-}
-
-function resumeTailTurnCount(mode = '') {
-  const match = String(mode || '').match(/^tail-(\d+)$/);
-  if (!match) return null;
-  return Math.max(1, Number(match[1]) || 1);
-}
-
-function replayStartOrderForMode(history = [], mode = '') {
-  const match = String(mode || '').match(/^tail-(\d+)$/);
-  if (!match) return null;
-  const wanted = Math.max(1, Number(match[1]) || 1);
-  let seen = 0;
-  const userTurns = history.filter(m => m.role === 'user' && typeof m.content === 'string');
-  for (let i = userTurns.length - 1; i >= 0; i--) {
-    seen++;
-    if (seen >= wanted) {
-      const order = Number(userTurns[i].order);
-      return Number.isFinite(order) ? order : null;
-    }
-  }
-  return null;
-}
-
-function filterResumeReplayEvents(events = []) {
-  return events.filter(item => {
-    const type = item?.event?.type;
-    return !['status', 'session_info', 'complete', 'resumed', 'paused'].includes(type);
-  });
-}
-
-function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
-  const items = [];
-  let order = 0;
-  for (const message of userTurns) {
-    items.push({
-      kind: 'user',
-      message,
-      fileOrder: Number.isFinite(Number(message.order)) ? Number(message.order) : null,
-      order: order++,
-      time: Date.parse(message.timestamp || '') || 0,
-    });
-  }
-  for (const event of replayEvents) {
-    items.push({
-      kind: 'event',
-      event,
-      fileOrder: Number.isFinite(Number(event.order)) ? Number(event.order) : null,
-      order: order++,
-      time: Date.parse(event.timestamp || '') || 0,
-    });
-  }
-  return items.sort((a, b) => {
-    if (a.fileOrder !== null && b.fileOrder !== null && a.fileOrder !== b.fileOrder) {
-      return a.fileOrder - b.fileOrder;
-    }
-    if (a.fileOrder !== null && b.fileOrder === null) return -1;
-    if (a.fileOrder === null && b.fileOrder !== null) return 1;
-    const at = a.time || Number.MAX_SAFE_INTEGER;
-    const bt = b.time || Number.MAX_SAFE_INTEGER;
-    return at - bt || a.order - b.order;
-  });
-}
-
-function resumeProgressBar(percent, width = 12) {
-  const p = Math.max(0, Math.min(100, Math.round(percent)));
-  const filled = Math.round((p / 100) * width);
-  return `${c.brand('█'.repeat(filled))}${c.gray('░'.repeat(width - filled))} ${String(p).padStart(3)}%`;
-}
-
-function startResumeProgress(mode = 'full') {
-  let percent = 8;
-  let label = `resuming as ${resumeModeLabel(mode)}`;
-  let active = true;
-  const started = Date.now();
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let frame = 0;
-
-  const render = () => {
-    if (!active) return;
-    const glyph = frames[frame % frames.length];
-    frame++;
-    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
-  };
-
-  render();
-  const timer = setInterval(render, 100);
-  return {
-    update(nextLabel, nextPercent) {
-      if (!active) return;
-      if (nextLabel) label = nextLabel;
-      if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
-      render();
-    },
-    stop() {
-      if (!active) return;
-      active = false;
-      clearInterval(timer);
-      inPlace('');
-    },
-  };
-}
+// startResumeProgress moved to ./repl-format.mjs.
 
 // ── Session State ──
 
-let _sessionMgr = null; // Set in startTerminalRepl, used by renderEvent
-let _orbit = null;      // Mission Control orbit state machine; set in startTerminalRepl
+// sessionMgrRef.current + orbitRef.current live in ./repl-state.mjs;
+// assigned below at startup by startTerminalRepl().
 
-const session = {
-  id: null,                  // set by backend on first turn via session_info event
-  startTime: Date.now(),
-  inputTokens: 0,
-  outputTokens: 0,
-  toolCalls: 0,        // primary-agent tool calls in the current turn
-  subAgentToolCalls: 0,// forwarded internal sub-agent tool calls in the current turn
-  totalToolCalls: 0,   // across all turns
-  totalPrimaryToolCalls: 0,
-  totalSubAgentToolCalls: 0,
-  turns: 0,
-  history: [],         // display transcript (can include reconstructed tool entries)
-  agentHistory: [],    // backend continuity payload (compact or full)
-  inputHistory: [],    // previous prompts (for Up/Down)
-  user: null,          // { github_username, email, role }
-  model: null,         // from backend user profile
-  modelLimits: {},     // role -> {model, context_length, max_output, source}
-  blockedOps: 0,       // safety guardrail blocks
-  delegations: [],     // agent delegation events: { from, to, time }
-  phases: [],          // phase history: { name, time }
-  inSubAgent: false,   // true while a sub-agent is running (for indented tool display)
-  filesChanged: [],    // files modified this session
-  filesRead: [],       // files read this turn
-  lastTurnDuration: 0,
-  toolCounts: {},      // per-tool histogram (mission report)
-  subAgentCounts: {},  // per-sub-agent histogram (mission report)
-  savedUsd: 0,         // total sub-agent cost (for "saved by routing")
-  lastTask: '',        // most recent user prompt (mission report title)
-  lastReasoning: '',   // captured from agent for /why
-  budgetUsd: null,     // /budget cap, null = unlimited
-  budgetExceeded: false,
-  costBreakdown: [],   // per-model usage: [{ model, role, input_tokens, output_tokens, cost }]
-  totalCost: 0,        // accumulated session cost (USD)
-  costAccurate: false, // true if backend provides per-model breakdown
-  modelOverrides: {},  // session-local role -> model overrides sent to backend
-  isByok: false,       // set from session_info; hides cost + credits when true
-  // ── Subscription / credit state (server-authoritative; set from
-  //    session_info + complete events) ──
-  subscriptionTier: null,        // 'free' | 'cli' | 'pro' | 'pro_plus' | 'enterprise'
-  creditsTotal: null,            // remaining credits (included + purchased)
-  creditsIncluded: null,         // remaining included credits this period
-  creditsPurchased: null,        // remaining purchased credits
-  creditsLimit: null,            // per-period included credits limit
-  creditsCharged: 0,             // session-cumulative server-reported charges
-  creditsLowWarned: false,       // emit the low-balance hint only once per turn
-  rateLimit: null,               // rolling message-window state from backend
-  msgsLowWarned: false,          // emit the low-window hint only once per turn
-};
+// The `session` object lives in repl-state.mjs so other repl-* modules
+// (resume helpers, tool renderers, streaming, etc.) can import it during
+// the ongoing split. Everything below still references `session.<field>`
+// directly; only the declaration site moved.
 
 // ── Commands ──
 
-const COMMANDS = {
-  '/help':     'Show commands',
-  '/login':    'Sign in via browser',
-  '/whoami':   'Show logged-in user',
-  '/status':   'Session status & system info',
-  '/plan':     'Show plan/tasks',
-  '/tasks':    'Show or update project tasks',
-  '/stats':    'Progress bars & metrics',
-  '/new':      'Start a new session',
-  '/clear':    'Clear conversation',
-  '/git':      'Git status',
-  '/diff':     'Git diff',
-  '/cost':     'Show session cost',
-  '/model':    'Show or set session model overrides',
-  '/attach':   'Attach image path or clipboard image to next prompt',
-  '/attachments':'List or clear pending image attachments',
-  '/history':  'Show conversation',
-  '/settings': 'Show policy/settings',
-  '/last':     'Expand last tool output',
-  '/expand':   'Expand tool output by index (or "all")',
-  '/fold':     'Hide previously expanded tool output',
-  '/checkpoint':'List recent file checkpoints',
-  '/undo':     'Restore the last file checkpoint',
-  '/preflight':'Re-run the onboarding diagnostic',
-  '/report':   'Save the mission report as markdown',
-  '/why':      'Print the agent reasoning for the last decision',
-  '/map':      'Show the registered project tree',
-  '/budget':   'Set / clear a hard session cost cap',
-  '/quiet':    'Verbosity: hide sub-agent inner tools',
-  '/verbose':  'Verbosity: show sub-agent inner tools',
-  '/surgical': 'Verbosity: show everything (reasoning, expanded tools)',
-  '/compact':  'Compact conversation context',
-  '/agents':   'List available agents',
-  '/explore':  'Code explorer agent',
-  '/review':   'Code review agent',
-  '/architect':'Feature architect agent',
-  '/safety':   'Show safety guardrail status',
-  '/revoke':   'Revoke auto-approvals',
-  '/resume':   'Resume a previous session',
-  '/sessions': 'List resumable sessions',
-  '/logout':   'Sign out and clear credentials',
-  '/exit':     'Exit CLI',
-};
+// COMMANDS + HELP_GROUPS + HELP_GROUP_ALIASES + LEGACY_COMMAND_HINTS +
+// NAMESPACED_COMMANDS + normalizeCommandInput are now the canonical
+// catalog in ui/slash-commands.mjs. See imports at the top of this file.
 
-const HELP_GROUPS = [
-  {
-    key: 'plan',
-    title: 'Plan',
-    summary: 'plan and project tasks',
-    commands: [
-      ['/plan', 'Plan and task overview'],
-      ['/plan status', 'Plan owner and task files'],
-      ['/plan edit', 'Show editable task/plan paths'],
-      ['/tasks', 'List project tasks'],
-      ['/tasks add <text>', 'Add backlog task'],
-      ['/tasks active|blocked|done <text>', 'Append to a task list'],
-    ],
-  },
-  {
-    key: 'status',
-    title: 'Status',
-    summary: 'session, usage, budget',
-    commands: [
-      ['/status', 'Session snapshot'],
-      ['/status context', 'Loaded .kepler context'],
-      ['/status metrics', 'Progress bars and runtime metrics'],
-      ['/status cost', 'Credits and message window'],
-      ['/model [role] [model]', 'Show or set session model override'],
-      ['/attach <image>', 'Attach image to the next prompt'],
-      ['/attach clipboard', 'Attach image currently copied to macOS/Windows clipboard'],
-      ['/attachments', 'List pending image attachments'],
-      ['/attachments clear', 'Clear pending image attachments'],
-      ['/status budget <amount|clear>', 'Set or clear session budget'],
-    ],
-  },
-  {
-    key: 'history',
-    title: 'History',
-    summary: 'transcript, reports, undo',
-    commands: [
-      ['/history', 'Recent transcript'],
-      ['/history approvals', 'Approval log'],
-      ['/history last', 'Expand last tool output'],
-      ['/history expand [n|all]', 'Expand tool output'],
-      ['/history checkpoint', 'List checkpoints'],
-      ['/history undo', 'Restore latest checkpoint'],
-      ['/history report', 'Save mission report'],
-    ],
-  },
-  {
-    key: 'settings',
-    title: 'Settings',
-    summary: 'auth, policy, verbosity',
-    commands: [
-      ['/settings policy', 'Effective project policy'],
-      ['/settings login', 'Sign in'],
-      ['/settings logout', 'Sign out'],
-      ['/settings whoami', 'Current user'],
-      ['/settings quiet|verbose|surgical', 'Verbosity'],
-      ['/settings revoke', 'Revoke auto-approvals'],
-    ],
-  },
-  {
-    key: 'worktree',
-    title: 'Worktree',
-    summary: 'git and files',
-    commands: [
-      ['/git', 'Git status'],
-      ['/diff', 'Git diff'],
-      ['/map', 'Registered project tree'],
-      ['/preflight', 'Onboarding diagnostic'],
-      ['/safety', 'Safety guardrail status'],
-    ],
-  },
-  {
-    key: 'agents',
-    title: 'Agents',
-    summary: 'specialist modes',
-    commands: [
-      ['/agents', 'List built-in and local agents'],
-      ['/agents create <name>', 'Create .kepler/agents/<name>.yaml'],
-      ['/agents edit <name>', 'Open local agent YAML'],
-      ['/agents sync [name]', 'Sync all or one local agent to cloud'],
-      ['/explore <instruction>', 'Explore code'],
-      ['/review <instruction>', 'Review code'],
-      ['/architect <instruction>', 'Design an approach'],
-    ],
-  },
-  {
-    key: 'session',
-    title: 'Session',
-    summary: 'resume and clear',
-    commands: [
-      ['/sessions', 'List resumable sessions'],
-      ['/resume [id]', 'Resume a session'],
-      ['/compact', 'Compact conversation context'],
-      ['/new', 'Start a fresh session'],
-      ['/clear', 'Clear conversation'],
-      ['/exit', 'Exit CLI'],
-    ],
-  },
-];
-
-const HELP_GROUP_ALIASES = new Map(
-  HELP_GROUPS.flatMap(group => [[group.key, group], [group.title.toLowerCase(), group]])
-);
-
-const LEGACY_COMMAND_HINTS = {
-  '/stats': '/status metrics',
-  '/cost': '/status cost',
-  '/budget': '/status budget',
-  '/last': '/history last',
-  '/expand': '/history expand',
-  '/fold': '/history fold',
-  '/undo': '/history undo',
-  '/checkpoint': '/history checkpoint',
-  '/report': '/history report',
-  '/login': '/settings login',
-  '/logout': '/settings logout',
-  '/whoami': '/settings whoami',
-  '/quiet': '/settings quiet',
-  '/verbose': '/settings verbose',
-  '/surgical': '/settings surgical',
-  '/revoke': '/settings revoke',
-};
-
-const NAMESPACED_COMMANDS = {
-  '/status': {
-    metrics: '/stats',
-    stats: '/stats',
-    cost: '/cost',
-    credits: '/cost',
-    budget: '/budget',
-  },
-  '/history': {
-    last: '/last',
-    expand: '/expand',
-    fold: '/fold',
-    undo: '/undo',
-    checkpoint: '/checkpoint',
-    checkpoints: '/checkpoint',
-    report: '/report',
-  },
-  '/settings': {
-    login: '/login',
-    logout: '/logout',
-    whoami: '/whoami',
-    quiet: '/quiet',
-    verbose: '/verbose',
-    surgical: '/surgical',
-    revoke: '/revoke',
-  },
-};
-
-function normalizeCommandInput(input) {
-  const parts = input.trim().split(/\s+/).filter(Boolean);
-  const rawCmd = (parts[0] || '').toLowerCase();
-  const restParts = parts.slice(1);
-  const sub = (restParts[0] || '').toLowerCase();
-  const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
-  if (namespaced) {
-    return {
-      cmd: namespaced,
-      rest: restParts.slice(1).join(' '),
-      rawCmd,
-      aliasTarget: null,
-    };
-  }
-  return {
-    cmd: rawCmd,
-    rest: restParts.join(' '),
-    rawCmd,
-    aliasTarget: LEGACY_COMMAND_HINTS[rawCmd] || null,
-  };
-}
 
 function renderHelp(topic = '') {
   const key = String(topic || '').trim().toLowerCase();
   if (!key) {
-    process.stderr.write(`\n  ${c.bold('Kepler Commands')}\n`);
+    process.stderr.write(`\n  ${c.bold('Bahulam Code Commands')}\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
     const top = [
       ['/help', 'Grouped command help'],
@@ -1464,7 +463,7 @@ async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
   if (!ctx?._rl || !process.stdin.isTTY) return false;
   const names = attachments.map(a => a.name).join(', ');
   return await new Promise(resolve => {
-    ctx._rl.question(`  ${c.yellow('Upload image for Kepler vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
+    ctx._rl.question(`  ${c.yellow('Upload image for vision analysis?')} ${c.dim(names)} ${c.dim('[y/N]')} `, answer => {
       resolve(/^y(?:es)?$/i.test(String(answer || '').trim()));
     });
   });
@@ -1506,7 +505,7 @@ function printAgentsList() {
     process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
   }
 
-  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.kepler/agents + ~/.kepler/agents')}\n`);
+  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.bahulam/agents + ~/.bahulam/agents')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   if (!local.length) {
     process.stderr.write(`  ${c.dim('(none)')}\n`);
@@ -1647,15 +646,14 @@ function slashCommandSuggestions(line, limit = 5) {
 // ── Banner ──
 
 function printBanner(auth) {
-  // Delegate the visual block to the branded banner module (PRD-055 §4.3,
-  // gradient KEPLER letters in Deep Space Purple → Stellar Magenta → Neon
-  // Cyan). The trailing status line stays here because it needs `auth`.
-  printBrandedBanner();
+  // The visual block itself lives in the branded banner module. The trailing
+  // status line stays here because it needs `auth`.
+  printBrandedBanner(VERSION);
 
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
   const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
-  process.stderr.write(`  ${c.gray('v' + VERSION)}  ${c.dim(env)}  ${authStatus}\n\n`);
+  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -1711,6 +709,51 @@ function buildContextStrip() {
   return right;
 }
 
+// ── Dock meta line (model · cwd ⎇ branch · turn N) ─────────────────────
+//
+// The dock's meta row shows durable session context. Git branch is cached
+// so we don't shell out on every keystroke; refreshed at most every 5s.
+
+const _dockGitCache = { branch: null, at: 0, cwd: null };
+
+function _probeGitBranch(cwd) {
+  const now = Date.now();
+  if (_dockGitCache.cwd === cwd && (now - _dockGitCache.at) < 5000) {
+    return _dockGitCache.branch;
+  }
+  let branch = null;
+  try {
+    // Synchronous but bounded: git head lookup is a single file read.
+    branch = _execSync('git branch --show-current', {
+      cwd, encoding: 'utf-8', timeout: 500, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || null;
+  } catch { branch = null; }
+  _dockGitCache.cwd = cwd;
+  _dockGitCache.at = now;
+  _dockGitCache.branch = branch;
+  return branch;
+}
+
+function buildDockMeta() {
+  const parts = [];
+
+  const cwd = process.cwd();
+  const projectName = path.basename(cwd);
+  const branch = _probeGitBranch(cwd);
+  parts.push(branch ? `${projectName} ⎇ ${branch}` : projectName);
+
+  if (session.turns > 0) {
+    parts.push(`turn ${session.turns}`);
+  }
+
+  const totalTokens = session.inputTokens + session.outputTokens;
+  if (totalTokens > 0) {
+    parts.push(`${formatTokens(totalTokens)} tok`);
+  }
+
+  return parts.join(' · ');
+}
+
 /**
  * Print the prompt separator + prompt label.
  * Minimal horizontal rule with contextual info.
@@ -1754,7 +797,7 @@ function printTurnSummary(toolCount, durationS, turnCost) {
   if (parts.length > 0) {
     renderBlockBoundary('status', { compactSame: true });
     process.stderr.write(`  ${c.green('✓')} ${c.dim(parts.join(' · '))}\n`);
-    _lastRenderedBlock = 'status';
+    runtime.lastRenderedBlock = 'status';
   }
 }
 
@@ -1788,510 +831,17 @@ function updateStatusBar() {
 // content event, a sub-agent open, an error, completion), we flush the
 // buffered head as a regular two-line shape first so the interleaving
 // content lands below it.
-let _pendingHead = null; // { callId, head, indent }
-let _lastRenderedBlock = null; // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
+// (declaration moved to repl-state.mjs runtime.*)
+// (declaration moved to repl-state.mjs runtime.*)
 // Explore-run collapse: reduces bursts of list/read/search/index tool calls
 // into one in-place summary line so the user sees the agent's PROGRESS
 // (12 files listed, 8 read, latest name) instead of a wall of individual
 // tool cards. Any non-explore event flushes it to a static line so the
 // summary survives when the transcript scrolls.
-let _exploreRun = { counts: {}, recent: [], lineActive: false };
-const EXPLORE_TOOL_CATEGORY = new Map([
-  ['read_file', 'read'], ['read', 'read'], ['read_files', 'read'],
-  ['read_batch', 'read'], ['get_file_info', 'read'],
-  ['list_files', 'list'], ['glob', 'list'], ['ls', 'list'],
-  ['search_code', 'search'], ['search_files', 'search'], ['grep', 'search'],
-  ['index_project', 'index'], ['register_project', 'index'],
-]);
-function exploreCollapseEnabled() {
-  return process.env.KEPLER_EXPLORE_COLLAPSE !== '0';
-}
-function isExploreTool(tool) {
-  if (!exploreCollapseEnabled()) return false;
-  return EXPLORE_TOOL_CATEGORY.has(String(tool || '').toLowerCase());
-}
-function exploreCategory(tool) {
-  return EXPLORE_TOOL_CATEGORY.get(String(tool || '').toLowerCase()) || 'explore';
-}
+// Mutable run state stays here for now — see repl-explore.mjs for the pure
+// classifier. Split TBD.
+// (declaration moved to repl-state.mjs runtime.*)
 
-function blockSeparatorMode() {
-  return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
-}
-
-function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
-  if (!_lastRenderedBlock) return;
-  if (compactSame && _lastRenderedBlock === nextBlock) return;
-
-  const mode = blockSeparatorMode();
-  if (mode === 'off' || mode === 'none') return;
-  if (mode === 'dotted' || mode === 'dots') {
-    const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);
-    process.stderr.write(`  ${c.dim('·'.repeat(Math.min(44, cols - 4)))}\n`);
-    return;
-  }
-
-  process.stderr.write('\n');
-}
-
-function flushPendingHead() {
-  if (!_pendingHead) return;
-  process.stderr.write(`${_pendingHead.head}\n`);
-  _lastRenderedBlock = 'tool';
-  _pendingHead = null;
-}
-
-function clearPendingHead() {
-  // Called by interleaving handlers — flush as 2-line shape (because we are
-  // about to print something else) and continue.
-  flushPendingHead();
-}
-
-function isInlineOutcomeTool(tool) {
-  return [
-    'read_file', 'read_files', 'read_batch', 'get_file_info',
-    'search_code', 'search_files', 'grep', 'list_files',
-  ].includes(String(tool || '').toLowerCase());
-}
-
-function compactHeadForOutcome(head, outcome, cols) {
-  const reserve = stripAnsi(outcome).length + 4;
-  const maxHead = Math.max(28, cols - reserve);
-  return fitAnsiLine(head, maxHead);
-}
-
-function readToolLabel(tool, data = {}) {
-  const args = data.args || {};
-  const filePath = args.file_path || args.path || data.file_path || data.path
-    || args.pattern || args.query || '';
-  if (filePath) return shortPath(String(filePath));
-  const output = String(data.output_preview || data.output || '').split('\n').find(Boolean) || '';
-  const match = output.match(/^([^:\s][^:\n]*):/);
-  return match ? shortPath(match[1]) : String(tool || 'file');
-}
-
-function rememberExplore(label) {
-  const value = String(label || '').trim();
-  if (!value) return;
-  _exploreRun.recent.push(value);
-  if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();
-}
-
-function exploreSummary() {
-  const { counts, recent } = _exploreRun;
-  const bits = [];
-  if (counts.list)   bits.push(`${counts.list} listed`);
-  if (counts.read)   bits.push(`${counts.read} read`);
-  if (counts.search) bits.push(`${counts.search} searched`);
-  if (counts.index)  bits.push(`${counts.index} indexed`);
-  const stats = bits.length ? bits.join(' · ') : 'starting…';
-  const latest = recent.length ? ` · ${recent[recent.length - 1]}` : '';
-  return `exploring · ${stats}${latest}`;
-}
-
-function renderExploreRun() {
-  // Set the lock BEFORE touching the spinner so the interval's next tick
-  // picks up exploreSummary() text instead of any stale label.
-  _exploreRun.lineActive = true;
-
-  // Paint the pinned line immediately so the user sees the update from
-  // the very first tool call, not after the 80 ms interval delay.
-  if (isInputDockMounted()) {
-    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
-    drawPinnedStatus(`  ${c.brand(frame)} ${c.dim(exploreSummary())}`);
-  }
-
-  if (!_spinInterval) {
-    // Bypass the lockout in startSpinner by seeding _spinText directly.
-    _spinText = exploreSummary();
-    _spinFrame = 0;
-    _spinInterval = setInterval(() => {
-      const isExploreActive = _exploreRun && _exploreRun.lineActive;
-      const label = isExploreActive ? exploreSummary() : _spinText;
-      if (!label) return;
-      const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
-      _spinFrame++;
-      const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-      if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
-        return;
-      }
-      if (isInputDockMounted()) moveToContent();
-      inPlace(rendered);
-    }, 80);
-  }
-  _lastRenderedBlock = 'tool';
-}
-
-function flushExploreRun() {
-  const total = Object.values(_exploreRun.counts).reduce((a, b) => a + b, 0);
-  // Release the lock first so the real spinner teardown can run.
-  const wasActive = _exploreRun.lineActive;
-  _exploreRun.lineActive = false;
-  if (total > 0) {
-    if (wasActive) {
-      if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
-      _spinText = '';
-      // Clear the pinned status row instead of using inPlace (which is
-      // unreliable near the bottom of the scroll region).
-      if (isInputDockMounted()) clearPinnedStatus();
-    }
-    const cols = process.stderr.columns || 120;
-    const line = `  ${paint.text.dim(fitAnsiLine(exploreSummary(), Math.max(32, cols - 2)))}`;
-    process.stderr.write(`${line}\n`);
-    _lastRenderedBlock = 'tool';
-  }
-  _exploreRun = { counts: {}, recent: [], lineActive: false };
-}
-
-// Legacy alias — several sites (resetContentStream, older event handlers)
-// call this. Keep pointing at the new flush so nothing has to change.
-const flushCompactReadRun = flushExploreRun;
-
-function renderToolCall(data) {
-  const tool = data?.tool || 'unknown';
-  const args = data?.args || {};
-  const indent = subAgentIndent();
-  const callId = data?.call_id || data?._callId || `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  // If a previous head is still pending (no result yet), flush it as a
-  // regular two-line shape before starting the next one.
-  flushPendingHead();
-
-  // ── Explore-run collapse ────────────────────────────────────────────────
-  // For list/read/search/index tools, skip the per-call head entirely and
-  // update a single animated summary spinner. The transcript stays clean;
-  // the user still sees live progress (12 read · 3 listed · latest: foo.py).
-  if (isExploreTool(tool)) {
-    _exploreRun.counts[exploreCategory(tool)] =
-      (_exploreRun.counts[exploreCategory(tool)] || 0) + 1;
-    session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-    const label = readToolLabel(tool, { args });
-    if (label) rememberExplore(label);
-    recordCard({ id: callId, tool, args, startedAt: Date.now() });
-    renderExploreRun();
-    return;
-  }
-
-  flushExploreRun();
-  renderBlockBoundary('tool', { compactSame: tool !== 'shell' });
-
-  const head = formatCardHead(tool, args, {
-    cwd: safeCwd(),
-    columns: process.stderr.columns || 120,
-    indent,
-  });
-
-  recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
-  session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  _pendingHead = { callId, head, indent };
-  _lastRenderedBlock = 'tool';
-  // Spinner shows what's running until the result arrives.
-  startSpinner(`${tool}…`);
-}
-
-/**
- * Render a tool result (success/failure, output snippet).
- */
-const _renderedToolResults = new Set();
-
-function formatToolDuration(data) {
-  const ms = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
-  if (ms == null) return '';
-  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function renderToolResult(data, eventType = 'tool_result') {
-  if (!data) return;
-  const indent = subAgentIndent();
-  const gutter = `${indent}${paint.text.dim('⎿')}  `;
-  const callId = data.call_id || data._callId;
-  // Either tool_result or tool_done is allowed to render — whichever wins
-  // the race. Subsequent events for the same callId are duplicates.
-  if (callId && _renderedToolResults.has(callId)) return;
-  if (callId) _renderedToolResults.add(callId);
-
-  const tool = data.tool || data._tool || '';
-  const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
-  recordReadActivity(tool, data.args || {});
-
-  // Update the card buffer so /last and `d` can find it.
-  if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
-
-  if (data._blocked) session.blockedOps++;
-
-  const { text, tone: t } = summarizeResult(tool, data);
-  // Em dash reads more like prose than a system arrow.
-  const arrow = paint.text.dim('—');
-  const painter = t === 'success' ? paint.state.success
-                : t === 'warn'    ? paint.state.warn
-                : t === 'danger'  ? paint.state.danger
-                                  : paint.text.dim;
-  // Skip the duration tail when the tool was effectively instant (<200ms) —
-  // "1ms" / "0ms" was noise that hurt the prose feel.
-  const duration = (durationMs != null && durationMs < 200) ? '' : formatToolDuration(data);
-  const tail = duration ? paint.text.dim(` · ${duration}`) : '';
-  const outcome = `${arrow} ${painter(text || 'done')}${tail}`;
-  const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
-  const diffPreview = formatCompactFileDiff(data, {
-    indent: gutter,
-    columns: process.stderr.columns || 120,
-  });
-
-  // Explore tools: the call already updated the summary spinner. Refresh
-  // the "latest" hint with the result's file if we have one, and skip the
-  // per-result render entirely.
-  if (isExploreTool(tool)) {
-    const label = readToolLabel(tool, data);
-    if (label) rememberExplore(label);
-    renderExploreRun();
-    return;
-  }
-
-  // ── Single-line combined emit ──
-  // If the head for this call is still buffered (no interleaving content
-  // landed), and the combined line fits the terminal width, emit ONE line
-  // and skip the gutter entirely.
-  if (_pendingHead && _pendingHead.callId === callId && !hasLint && !_pendingHead.head.includes('\n')) {
-    const cols = process.stderr.columns || 120;
-    const combined = `${_pendingHead.head}  ${outcome}`;
-    if (stripAnsi(combined).length <= cols) {
-      process.stderr.write(`${combined}\n`);
-      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-      _lastRenderedBlock = 'tool';
-      _pendingHead = null;
-      return;
-    }
-    if (isInlineOutcomeTool(tool)) {
-      const compactHead = compactHeadForOutcome(_pendingHead.head, outcome, cols);
-      process.stderr.write(`${compactHead}  ${outcome}\n`);
-      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-      _lastRenderedBlock = 'tool';
-      _pendingHead = null;
-      return;
-    }
-    // Combined too wide — flush the head as 2-line and fall through.
-    flushPendingHead();
-  } else if (_pendingHead) {
-    // Stale pending head (different callId) — flush it before printing this
-    // result's gutter line below.
-    flushPendingHead();
-  }
-
-  // Two-line shape: gutter under the (already-printed or just-flushed) head.
-  process.stderr.write(`${gutter}${outcome}\n`);
-  if (diffPreview) process.stderr.write(`${diffPreview}\n`);
-  _lastRenderedBlock = 'tool';
-
-  // Lint warnings stay visible alongside writes.
-  if (hasLint) {
-    process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
-  }
-}
-
-// ── Expand handler — `d`, `/last`, `/expand` ───────────────────────────
-//
-// All three call into the same renderer so output is consistent across
-// keypress and slash-command paths. `expandLast` and `expandIndex` write
-// directly to stderr.
-
-function expandLast() {
-  const card = lastCard();
-  if (!card) {
-    process.stderr.write(`  ${paint.text.dim('(no tool to expand yet)')}\n`);
-    return;
-  }
-  process.stderr.write('\n' + detailFor(card) + '\n\n');
-}
-
-function expandIndex(idxOrAll) {
-  if (idxOrAll === 'all') {
-    const cards = allCards();
-    if (!cards.length) {
-      process.stderr.write(`  ${paint.text.dim('(no tools to expand yet)')}\n`);
-      return;
-    }
-    process.stderr.write('\n');
-    for (const c of cards) process.stderr.write(detailFor(c) + '\n');
-    process.stderr.write('\n');
-    return;
-  }
-  const card = getCard(idxOrAll);
-  if (!card) {
-    process.stderr.write(`  ${paint.text.dim('(no card at index ' + idxOrAll + ')')}\n`);
-    return;
-  }
-  process.stderr.write('\n' + detailFor(card) + '\n\n');
-}
-
-/**
- * Shorten a file path for display: /Users/sree/Sites/project/src/foo.mjs → src/foo.mjs
- */
-function shortPath(p) {
-  if (!p) return '';
-  const cwd = safeCwd();
-  if (p.startsWith(cwd)) return p.slice(cwd.length + 1);
-  // Show last 2 segments
-  const parts = p.split('/');
-  return parts.length > 2 ? parts.slice(-2).join('/') : p;
-}
-
-function rememberReadFile(filePath) {
-  const file = shortPath(String(filePath || '').trim());
-  if (file && !session.filesRead.includes(file)) session.filesRead.push(file);
-}
-
-function recordReadActivity(tool, args = {}) {
-  const normalized = String(tool || '').toLowerCase();
-  if (normalized === 'read_file' || normalized === 'read') {
-    rememberReadFile(args.file_path || args.path);
-    return;
-  }
-  if (normalized === 'read_files') {
-    const files = args.file_paths || args.paths || args.files || [];
-    for (const file of Array.isArray(files) ? files : []) {
-      rememberReadFile(typeof file === 'string' ? file : file?.file_path || file?.path);
-    }
-  }
-}
-
-function thinkingKind(text) {
-  return /\b(read|reading|inspect|scan|search|open|trace|look(?:ing)?\s+at)\b/i.test(text)
-    ? 'Reading'
-    : 'Thinking';
-}
-
-function thinkingPrefix(text) {
-  const kind = thinkingKind(text);
-  return kind === 'Thinking' ? 'Thinking' : `Thinking · ${kind}`;
-}
-
-function clippedThinking(text, limit = 200) {
-  const value = String(text || '');
-  return value.length > limit ? `${value.slice(0, limit - 2)} …` : value;
-}
-
-// ── Live Spinner ──
-// A real animated spinner that ticks on an interval, not just per-call.
-// Shows what's happening right now — thinking, tool executing, etc.
-
-const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-let _spinInterval = null;
-let _spinFrame = 0;
-let _spinText = '';
-
-function startSpinner(text) {
-  _spinText = text;
-  _spinFrame = 0;
-  if (_spinInterval) return; // already running
-  _spinInterval = setInterval(() => {
-    // While an explore run is active, its live counts own the spinner
-    // line — re-fetch on every tick so the text stays current no matter
-    // which handler happened to call startSpinner/updateSpinner last.
-    const isExploreActive = _exploreRun && _exploreRun.lineActive;
-    const label = isExploreActive ? exploreSummary() : _spinText;
-    if (!label) return;
-    const frame = SPIN_FRAMES[_spinFrame % SPIN_FRAMES.length];
-    _spinFrame++;
-    const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-    // Explore uses ABSOLUTE cursor positioning to a pinned row inside the
-    // content region. inPlace()'s _lastLineCount-based approach stacks copies
-    // of the line into scrollback whenever a '\n' at the region's bottom row
-    // triggers a scroll — absolute positioning + clear-line is immune.
-    if (isExploreActive && isInputDockMounted() && drawPinnedStatus(rendered)) {
-      return;
-    }
-    if (isInputDockMounted()) moveToContent();
-    inPlace(rendered);
-  }, 80);
-}
-
-function updateSpinner(text) {
-  _spinText = text;
-}
-
-function stopSpinner() {
-  // Explore owns the line while active — a stray stopSpinner from a
-  // transient handler must not blank the progress feedback.
-  // flushExploreRun() releases the lock and does the real teardown.
-  if (_exploreRun && _exploreRun.lineActive) return;
-  if (_spinInterval) { clearInterval(_spinInterval); _spinInterval = null; }
-  _spinText = '';
-  if (isInputDockMounted()) moveToContent();
-  inPlace('');
-}
-
-// ── Content Streaming Display ──
-
-let _streamBuffer = '';
-let _streamedPartialText = '';
-let _streamTimer = null;
-let _renderedContentThisTurn = false;
-let _afterContentFlush = null;
-
-function startContentStream() {
-  _streamBuffer = '';
-  _streamedPartialText = '';
-  _renderedToolResults.clear();
-  _exploreRun = { counts: {}, recent: [], lineActive: false };
-  _renderedContentThisTurn = false;
-  _lastRenderedBlock = null;
-  stopSpinner();
-}
-
-function appendContent(text) {
-  if (!text) return;
-  // Any streamed content between renderToolCall and renderToolResult would
-  // scroll the head off "the line above", breaking the in-place collapse.
-  clearPendingHead();
-  _streamBuffer += text;
-  _streamedPartialText += text;
-
-  // Debounce rendering to avoid flicker on rapid partial updates
-  if (_streamTimer) clearTimeout(_streamTimer);
-  _streamTimer = setTimeout(() => flushContent(), 50);
-}
-
-function flushContent() {
-  if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null; }
-  if (!_streamBuffer) return;
-
-  if (isInputDockMounted()) moveToContent();
-  stopSpinner();
-  // Any buffered tool head needs to land BEFORE this content so the order
-  // is preserved on screen.
-  flushPendingHead();
-  flushCompactReadRun();
-  renderBlockBoundary('content');
-  const rendered = renderMarkdown(_streamBuffer);
-  for (const line of rendered.split('\n')) {
-    process.stdout.write(`  ${line}\n`);
-  }
-  _streamBuffer = '';
-  _renderedContentThisTurn = true;
-  _lastRenderedBlock = 'content';
-  if (typeof _afterContentFlush === 'function') _afterContentFlush();
-}
-
-function renderStagnation(data = {}) {
-  const rawMessage = data?.message || '';
-  const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
-  const tool = data?.tool || data?.tool_name || '';
-  const suggestion = data?.suggestion || data?.recovery_strategy || data?.strategy || '';
-  const message = reason
-    ? `Stagnation${tool ? ` (${tool})` : ''}: ${reason}`
-    : `Stagnation${tool ? ` (${tool})` : ''} detected`;
-  const key = `${message}\n${suggestion}`;
-
-  if (session._lastStagnationWarning === key) return;
-  session._lastStagnationWarning = key;
-
-  stopSpinner();
-  flushContent();
-  flushPendingHead();
-  renderBlockBoundary('status', { compactSame: true });
-  process.stderr.write(`  ${c.yellow('!')} ${c.yellow(message)}\n`);
-  if (suggestion) process.stderr.write(`    ${c.dim(suggestion)}\n`);
-  _lastRenderedBlock = 'status';
-}
 
 // ── Event Renderer ──
 
@@ -2300,7 +850,7 @@ function renderEvent(event) {
 
   // Push every event into the orbit state machine before rendering so phase
   // and cost state stay current for prompt/context surfaces.
-  if (_orbit) _orbit.onEvent(event);
+  if (orbitRef.current) orbitRef.current.onEvent(event);
 
   // If we've been collapsing explore tools into a summary spinner, an
   // incoming event that will actually WRITE to the screen ends the run
@@ -2309,7 +859,7 @@ function renderEvent(event) {
   // worker/phase updates, session_info) don't write and must NOT flush —
   // otherwise every sub-agent tool call fires a `sub_agent_tool` event
   // right before its `tool_call`, splitting each burst into a fresh line.
-  if (_exploreRun.lineActive) {
+  if (runtime.exploreRun.lineActive) {
     const isExploreEvent =
       (type === 'tool_call' || type === 'tool_request' ||
        type === 'tool_result' || type === 'tool_done') &&
@@ -2358,7 +908,7 @@ function renderEvent(event) {
           stopSpinner();
           renderBlockBoundary('thinking');
           process.stderr.write(`  ${c.dim(thinkingPrefix(text) + ' · ')}${c.italic(c.dim(clippedThinking(text)))}\n`);
-          _lastRenderedBlock = 'thinking';
+          runtime.lastRenderedBlock = 'thinking';
           session._lastEmittedThinking = text;
         }
         startSpinner(text.slice(0, 80));
@@ -2373,20 +923,24 @@ function renderEvent(event) {
       if (text) {
         flushContent();
         stopSpinner();
-        if (_streamedPartialText && text.startsWith(_streamedPartialText)) {
-          text = text.slice(_streamedPartialText.length);
-        } else if (_streamedPartialText.includes(text)) {
+        if (runtime.streamedPartialText && text.startsWith(runtime.streamedPartialText)) {
+          text = text.slice(runtime.streamedPartialText.length);
+        } else if (runtime.streamedPartialText.includes(text)) {
           text = '';
         }
       }
       if (text) {
         renderBlockBoundary('content');
+        if (!runtime.contentHeaderPrinted) {
+          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
+          runtime.contentHeaderPrinted = true;
+        }
         const rendered = renderMarkdown(text);
         for (const line of rendered.split('\n')) {
-          process.stdout.write(`  ${line}\n`);
+          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
         }
-        _renderedContentThisTurn = true;
-        _lastRenderedBlock = 'content';
+        runtime.renderedContentThisTurn = true;
+        runtime.lastRenderedBlock = 'content';
       }
       break;
     }
@@ -2403,7 +957,7 @@ function renderEvent(event) {
         : '';
       const after = data?.after != null ? ` from event ${data.after}` : '';
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(`connection lost; ${attempt}${wait}${after}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2414,7 +968,7 @@ function renderEvent(event) {
       renderBlockBoundary('status', { compactSame: true });
       const replayed = data?.replayed != null ? ` · replayed ${data.replayed} events` : '';
       process.stderr.write(`  ${c.green('✓')} ${c.dim(`reconnected${replayed}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2425,7 +979,7 @@ function renderEvent(event) {
       renderBlockBoundary('status', { compactSame: true });
       const message = data?.message || 'connection lost and reconnect failed. Use /resume to continue from saved history.';
       process.stderr.write(`  ${c.red('✗')} ${c.dim(message)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2475,7 +1029,7 @@ function renderEvent(event) {
         const label = toolDisplayLabel(toolName);
         const subject = summary ? `${label} ${summary}` : label;
         process.stderr.write(`  ${c.green('✓')} ${c.dim(`${subject} · auto-approved read`)}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -2486,7 +1040,7 @@ function renderEvent(event) {
       const indent = subAgentIndent();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`${indent}${c.red('✗')} ${c.dim(`Denied ${toolName}: ${reason}`)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2512,7 +1066,7 @@ function renderEvent(event) {
         const marker = status === 'complete' || status === 'completed' ? c.green('✓') : c.dim(`${index + 1}.`);
         process.stderr.write(`     ${marker} ${label}\n`);
       }
-      _lastRenderedBlock = 'plan';
+      runtime.lastRenderedBlock = 'plan';
       break;
     }
 
@@ -2524,7 +1078,7 @@ function renderEvent(event) {
                    changeType === 'delete' ? c.red('-') : c.yellow('~');
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${icon} ${c.dim(filePath)}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       // Track changed files
       if (filePath && !session.filesChanged.includes(filePath)) {
         session.filesChanged.push(filePath);
@@ -2540,7 +1094,7 @@ function renderEvent(event) {
         session.phases.push({ name: phase, time: Date.now() });
         renderBlockBoundary('plan');
         process.stderr.write(`  ${c.brand('▸')} ${c.bold(phase)}\n`);
-        _lastRenderedBlock = 'plan';
+        runtime.lastRenderedBlock = 'plan';
       }
       break;
     }
@@ -2550,7 +1104,7 @@ function renderEvent(event) {
       if (summary) {
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.dim(summary.slice(0, 120))}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -2569,7 +1123,7 @@ function renderEvent(event) {
       if (worker) {
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.green('✓')} ${c.dim(worker)}\n`);
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
     }
@@ -2586,7 +1140,7 @@ function renderEvent(event) {
         process.stderr.write(`  ${c.dim(data.instruction.slice(0, 50))}`);
       }
       process.stderr.write('\n');
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2599,7 +1153,7 @@ function renderEvent(event) {
       const query = data?.query || '';
       renderBlockBoundary('subagent');
       process.stderr.write(renderSubAgentOpen({ type: agentType, query }).replace(/^\n/, '') + '\n');
-      _lastRenderedBlock = 'subagent';
+      runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       startSpinner(`${agentType}: working...`);
@@ -2616,7 +1170,7 @@ function renderEvent(event) {
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
       // spinner would flip-flop between the two texts and read as blank.
-      if (_exploreRun.lineActive && isExploreTool(tool)) break;
+      if (runtime.exploreRun.lineActive && isExploreTool(tool)) break;
       updateSpinner(`${agentType} → ${tool}`);
       break;
     }
@@ -2642,7 +1196,7 @@ function renderEvent(event) {
         iterations: data?.iterations,
         error: data?.error,
       }) + '\n');
-      _lastRenderedBlock = 'subagent';
+      runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock();
       break;
     }
@@ -2650,14 +1204,14 @@ function renderEvent(event) {
     case 'plan_created': {
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project plan prepared')}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
     case 'goal_created': {
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.dim('project goal prepared')}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
     }
 
@@ -2665,7 +1219,7 @@ function renderEvent(event) {
       if (data?.session_id) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
-        if (_sessionMgr) _sessionMgr.setSessionInfo({ session_id: data.session_id });
+        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
       }
       if (data?.model) session.model = data.model;
       if (data?.models?.coder) session.model = data.models.coder;
@@ -2702,9 +1256,33 @@ function renderEvent(event) {
         if (guidance.meta.length) {
           process.stderr.write(`  ${c.dim(guidance.meta.join(' · '))}\n`);
         }
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       }
       break;
+
+    // Live steering ack events (PRD-081 §5.2). renderEvent is called from
+    // the SSE loop (see `for await ... jsonlWriter.writeKeplerEvent(event)`
+    // in the /execute path) so every event already lands in the transcript.
+    // Here we only render the user-visible surface — no direct jsonlWriter
+    // calls (it's out of scope in this top-level dispatcher anyway).
+    case 'user_intervention_accepted': {
+      // Endpoint response already told the CLI "sent to running agent".
+      // The SSE echo here is durable-replay backup; nothing to render.
+      break;
+    }
+    case 'user_intervention_delivered': {
+      renderBlockBoundary('status', { compactSame: true });
+      const tool = data?.delivered_at_tool ? ` ${c.dim(`(via ${data.delivered_at_tool})`)}` : '';
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('follow-up delivered to agent')}${tool}\n`);
+      runtime.lastRenderedBlock = 'status';
+      break;
+    }
+    case 'user_intervention_queued': {
+      // Task ended before delivery; endpoint returned queued_next_turn to
+      // the submission call and the CLI already rendered that ack. Nothing
+      // more to show; the outer SSE loop persists this event to JSONL.
+      break;
+    }
 
     case 'complete': {
       stopSpinner();
@@ -2713,14 +1291,18 @@ function renderEvent(event) {
       session.inSubAgent = false;
 
       const summary = data?.summary || '';
-      if (summary && !_renderedContentThisTurn) {
+      if (summary && !runtime.renderedContentThisTurn) {
         renderBlockBoundary('content');
+        if (!runtime.contentHeaderPrinted) {
+          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
+          runtime.contentHeaderPrinted = true;
+        }
         const rendered = renderMarkdown(summary);
         for (const line of rendered.split('\n')) {
-          process.stdout.write(`  ${line}\n`);
+          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
         }
-        _renderedContentThisTurn = true;
-        _lastRenderedBlock = 'content';
+        runtime.renderedContentThisTurn = true;
+        runtime.lastRenderedBlock = 'content';
       }
 
       // Update session token counts
@@ -2766,11 +1348,11 @@ function renderEvent(event) {
           const windowLine = formatMessageWindow(session.rateLimit);
           renderBlockBoundary('status', { compactSame: true });
           if (msgStatus === 'exhausted') {
-            process.stderr.write(`  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at codekepler.ai/pricing.`)}\n`);
+            process.stderr.write(`  ${c.red('✗')} ${c.dim(`${windowLine}. Wait for the window to reset or upgrade at bahulam.ai/pricing.`)}\n`);
           } else {
             process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${windowLine}. Message window is running low.`)}\n`);
           }
-          _lastRenderedBlock = 'status';
+          runtime.lastRenderedBlock = 'status';
           session.msgsLowWarned = true;
         }
 
@@ -2789,20 +1371,20 @@ function renderEvent(event) {
           const threshold = Math.max(10, Math.floor(session.creditsLimit * 0.2));
           if (session.creditsTotal <= threshold && session.creditsTotal > 0) {
             renderBlockBoundary('status', { compactSame: true });
-            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at codekepler.ai/pricing.`)}\n`);
-            _lastRenderedBlock = 'status';
+            process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`${session.creditsTotal} of ${session.creditsLimit} credits remaining on the ${session.subscriptionTier || 'free'} plan. Upgrade or top up at bahulam.ai/pricing.`)}\n`);
+            runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           } else if (session.creditsTotal <= 0) {
             renderBlockBoundary('status', { compactSame: true });
-            process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at codekepler.ai/pricing or switch to BYOK.`)}\n`);
-            _lastRenderedBlock = 'status';
+            process.stderr.write(`  ${c.red('✗')} ${c.yellow(`Credit balance exhausted on the ${session.subscriptionTier || 'free'} plan. Purchase credits at bahulam.ai/pricing or switch to BYOK.`)}\n`);
+            runtime.lastRenderedBlock = 'status';
             session.creditsLowWarned = true;
           }
         }
       }
 
       // Sync cumulative session cost into the orbit (status bar shows it).
-      if (_orbit) _orbit.onCost(session.totalCost);
+      if (orbitRef.current) orbitRef.current.onCost(session.totalCost);
 
       // Compact turn summary. Backend's tool_calls is authoritative and
       // includes primary + sub-agent internals for billing/credit rollups.
@@ -2851,7 +1433,7 @@ function renderEvent(event) {
         });
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(report.replace(/^\n/, '') + '\n');
-        _lastRenderedBlock = 'status';
+        runtime.lastRenderedBlock = 'status';
       } else {
         printTurnSummary(tools, data?.duration_s, turnCost);
       }
@@ -2863,7 +1445,7 @@ function renderEvent(event) {
       flushContent();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.yellow('⏹')} Cancelled${data?.reason ? ': ' + c.dim(data.reason) : ''}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     case 'paused':
@@ -2871,13 +1453,13 @@ function renderEvent(event) {
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.yellow('⏸')} Paused${data?.reason ? '  ' + c.dim(data.reason) : ''}\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     case 'resumed':
       renderBlockBoundary('status', { compactSame: true });
       process.stderr.write(`  ${c.green('▶')} Resumed\n`);
-      _lastRenderedBlock = 'status';
+      runtime.lastRenderedBlock = 'status';
       break;
 
     default:
@@ -3180,7 +1762,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.dim('─'.repeat(60))}\n`);
         const loaded = current.loaded || [];
         if (!loaded.length) {
-          process.stderr.write(`  ${c.dim('No .kepler context files loaded yet.')}\n`);
+          process.stderr.write(`  ${c.dim('No .bahulam context files loaded yet.')}\n`);
         } else {
           for (const file of loaded) {
             const changed = file.changed ? ` ${c.yellow('updated')}` : '';
@@ -3378,7 +1960,7 @@ async function handleCommand(input, ctx) {
 
     case '/cost': {
       if (session.isByok) {
-        process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Kepler does not charge credits for BYOK usage.')}\n\n`);
+        process.stderr.write(`\n  ${c.bold('Billing')}  ${c.green('BYOK')} ${c.dim('— you pay your model provider directly. Bahulam does not charge credits for BYOK usage.')}\n\n`);
         return;
       }
       // Prefer server-authoritative numbers when available.
@@ -3660,7 +2242,7 @@ async function handleCommand(input, ctx) {
         const project = s.project || path.basename(s.projectPath || '') || '(unknown)';
         process.stderr.write(`  ${c.brand(s.sessionId)}  ${c.brand(project)}  ${c.dim(date)}  ${messageCountLabel(s.messageCount)}  ${c.dim(instr)}\n`);
       }
-      process.stderr.write(`\n  ${c.dim('Resume with:')} kepler --resume <sessionId>\n`);
+      process.stderr.write(`\n  ${c.dim('Resume with:')} bahulam-code --resume <sessionId>\n`);
       return;
     }
 
@@ -3811,7 +2393,7 @@ async function handleCommand(input, ctx) {
         }
         process.stderr.write('\n');
       } else if (resumed.replayEvents?.length) {
-        renderResumePreview(resumed);
+        renderResumePreview(resumed, { renderEvent });
       } else if (resumed.history?.length) {
         // Full/tail modes feed real conversation to the agent — show
         // the tail so the user has visual context. Cap at 30 entries to avoid
@@ -3843,7 +2425,7 @@ async function handleCommand(input, ctx) {
     case '/logout': {
       const success = ctx.auth.logout();
       if (success) {
-        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.kepler/config.json')}\n`);
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.bahulam/config.json')}\n`);
         process.stderr.write(`  ${c.dim('Run /login to sign in again.')}\n`);
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim('No credentials to clear.')}\n`);
@@ -3853,6 +2435,7 @@ async function handleCommand(input, ctx) {
 
     case '/exit':
     case '/quit':
+      if (isInputDockMounted()) unmountInputDock();
       process.stderr.write(`\n  ${c.brand('Goodbye!')}\n\n`);
       process.exit(0);
 
@@ -3881,7 +2464,7 @@ async function fetchUser(ctx) {
 // Cache CWD at startup so safeCwd() has a fallback if the dir gets deleted
 
 export async function startTerminalRepl() {
-  _cachedCwd = process.cwd(); // Cache startup CWD for recovery
+  safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
   const auth = new TarangAuth();
@@ -3897,11 +2480,11 @@ export async function startTerminalRepl() {
   const skipPerms = cliArgs.freeswim;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
-  // Session manager — persists conversation messages to .kepler/conversations/
+  // Session manager — persists conversation messages to .bahulam/conversations/
   let sessionMgr = new SessionManager(safeCwd());
-  _sessionMgr = sessionMgr; // expose to renderEvent
+  sessionMgrRef.current = sessionMgr; // expose to renderEvent
 
-  // Local JSONL writer — writes cc-lens compatible session data to ~/.kepler/
+  // Local JSONL writer — writes cc-lens compatible session data to ~/.bahulam/
   let jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
 
   // Persistent stream client — session_id captured from backend on first turn
@@ -3940,7 +2523,7 @@ export async function startTerminalRepl() {
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
-    _sessionMgr = sessionMgr;
+    sessionMgrRef.current = sessionMgr;
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
     streamClient = null;
     latestProjectContext = null;
@@ -4096,7 +2679,7 @@ export async function startTerminalRepl() {
         if (choice === 'switch') {
           try {
             process.chdir(savedProjectPath);
-            _cachedCwd = process.cwd();
+            safeCwd(); // re-prime the cache after chdir
             switchedProject = true;
           } catch {
             projectMissing = true;
@@ -4122,7 +2705,7 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || '',
       started_at: detail?.meta?.startTime || new Date().toISOString(),
     }, displayHistory.filter(m => m.role === 'user' || m.role === 'assistant'));
-    _sessionMgr = sessionMgr;
+    sessionMgrRef.current = sessionMgr;
 
     try { await jsonlWriter.close(); } catch {}
     jsonlWriter = new JsonlWriter(safeCwd(), VERSION);
@@ -4262,7 +2845,7 @@ export async function startTerminalRepl() {
         if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
         if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
         process.stderr.write('\n');
-        renderResumePreview(resumed);
+        renderResumePreview(resumed, { renderEvent });
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
@@ -4276,7 +2859,7 @@ export async function startTerminalRepl() {
   // Keep one bottom-reserved UI surface: the fixed input dock. The older
   // status bar used the same terminal scroll-region primitive, so mounting
   // both would make prompt placement unpredictable.
-  _orbit = createOrbit();
+  orbitRef.current = createOrbit();
   const inputDockActive = mountInputDock();
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
@@ -4366,9 +2949,28 @@ export async function startTerminalRepl() {
     return 'type any extra context (paths, corrections, follow-ups) · [Enter] send · [Esc] cancel · [Ctrl+P] pause';
   }
 
+  // Proxy stream: swallows writes when the dock owns the input row so
+  // readline's echoes and _refreshLine cursor moves can't fight the dock's
+  // absolute cursor placement (PRD-081 §5.1 — cursor race). When the dock
+  // is not mounted (plain-mode fallback, KEPLER_FIXED_INPUT=0, non-TTY),
+  // writes pass through so history navigation / backspace still redraw.
+  const readlineOutputProxy = new _WritableStream({
+    write(chunk, _enc, cb) {
+      if (!isInputDockMounted()) {
+        try { process.stderr.write(chunk); } catch {}
+      }
+      cb();
+    },
+  });
+  // Preserve enough of stderr's TTY surface so readline still treats us as
+  // a terminal (raw mode, keypress events, history navigation).
+  readlineOutputProxy.isTTY = process.stderr.isTTY;
+  readlineOutputProxy.columns = process.stderr.columns;
+  readlineOutputProxy.rows = process.stderr.rows;
+
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stderr,
+    output: readlineOutputProxy,
     prompt: userPrompt(),
     completer: (line) => {
       if (line.startsWith('/')) {
@@ -4390,8 +2992,13 @@ export async function startTerminalRepl() {
   let slashHintLine = '';
 
   function promptBottomPaddingLines() {
-    if (isInputDockMounted()) return 0;
     if (!process.stderr.isTTY || term().plain) return 0;
+    // When the dock is mounted the hint borrows the rows below the input
+    // (bottom rule + tips + safety); prepareInputPrompt re-renders the
+    // frame when clearSlashHint() fires, so the rule/tips reappear.
+    // 3 rows fits comfortably in the dock's reservation without leaking
+    // past the safety row.
+    if (isInputDockMounted()) return 3;
     const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
@@ -4410,6 +3017,14 @@ export async function startTerminalRepl() {
   }
 
   function restoreReadlineCursor() {
+    // When the dock owns the input row, delegate to it so INPUT_INDENT +
+    // meta/tips row math stays authoritative. Falling back to
+    // readline.cursorTo(col) here lands INPUT_INDENT chars too far left
+    // and yields the "/-shifts-cursor" bug (PRD-081 §5.1 cursor race).
+    if (isInputDockMounted()) {
+      focusDockInput(userPrompt(), rl.line || '', typeof rl.cursor === 'number' ? rl.cursor : null);
+      return;
+    }
     const col = Math.max(0, promptColumns() + Number(rl.cursor || 0));
     readline.cursorTo(process.stderr, col);
   }
@@ -4444,7 +3059,7 @@ export async function startTerminalRepl() {
     slashHintRowsVisible = rows;
   }
 
-  function clearSlashHint() {
+  function clearSlashHint({ restoreCursor: shouldRestoreCursor = true } = {}) {
     if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
       slashHintVisible = false;
       slashHintRowsVisible = 0;
@@ -4458,7 +3073,10 @@ export async function startTerminalRepl() {
       if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
     }
     readline.moveCursor(process.stderr, 0, -rows);
-    restoreReadlineCursor();
+    // The dock's bottom rule + tips row live in the rows we just cleared.
+    // Repaint the frame (input row untouched) so they reappear.
+    if (isInputDockMounted()) redrawDockFrame();
+    if (shouldRestoreCursor) restoreReadlineCursor();
     slashHintVisible = false;
     slashHintRowsVisible = 0;
     slashHintItems = [];
@@ -4512,11 +3130,29 @@ export async function startTerminalRepl() {
     process.stderr.write(`${'\n'.repeat(lines)}\x1b[${lines}A\r`);
   }
 
+  function renderIdleDockInput() {
+    if (!isInputDockMounted()) return false;
+    // rl.cursor is readline's byte offset within rl.line. Threading it
+    // through to focusDockInput makes arrow-key navigation visually move
+    // the terminal cursor within the buffer instead of always landing at
+    // the end of the string.
+    return renderDockInput(userPrompt(), rl.line || '', {
+      context: buildContextStrip(),
+      meta: buildDockMeta(),
+      tips: idleInputTips(),
+      cursor: typeof rl.cursor === 'number' ? rl.cursor : null,
+    });
+  }
+
   function promptInputLine() {
-    rl.setPrompt(userPrompt());  // refresh label in case session.user resolved
+    // When the fixed dock is active, readline should own only the input
+    // buffer, not the visual prompt. If readline paints the prompt itself,
+    // long wrapped input can leave a stale duplicate row inside the dock.
+    rl.setPrompt(isInputDockMounted() ? '' : userPrompt());
     reservePromptBottomPadding();
     inputActive = true;
     rl.prompt();
+    renderIdleDockInput();
   }
 
   function printSubmittedInput(input) {
@@ -4524,22 +3160,18 @@ export async function startTerminalRepl() {
       printInputBottomRule();
       return;
     }
-    const prompt = userPrompt();
     const lines = String(input || '').split('\n');
     printInputBottomRule();
-    process.stderr.write(`${prompt}${lines[0] || ''}\n`);
-    if (lines.length > 1) {
-      const indent = ' '.repeat(stripAnsi(prompt).length);
-      for (const line of lines.slice(1)) {
-        process.stderr.write(`${indent}${line}\n`);
-      }
+    process.stderr.write(`${transcriptHeader('you', { tone: 'user' })}\n`);
+    for (const line of lines) {
+      process.stderr.write(`${transcriptLine(line, { tone: 'user' })}\n`);
     }
   }
 
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
     if (isInputDockMounted()) {
-      prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() });
+      prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() });
       promptInputLine();
       return;
     }
@@ -4559,11 +3191,13 @@ export async function startTerminalRepl() {
         if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
         if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
         if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
-        if (String(rl.line || '').trimStart().startsWith('/')) {
-          renderSlashHint(rl.line);
-        } else {
-          clearSlashHint();
-        }
+        const isSlash = String(rl.line || '').trimStart().startsWith('/');
+        if (!isSlash) clearSlashHint();
+        // Refresh the dock input FIRST so the frame (bottom rule + tips)
+        // is fresh, THEN paint the slash hint on top — otherwise the
+        // dock repaint would wipe the hint we just wrote.
+        renderIdleDockInput();
+        if (isSlash) renderSlashHint(rl.line);
       });
     });
   }
@@ -4763,7 +3397,7 @@ export async function startTerminalRepl() {
 
     // Tell the orbit a new turn started — switches to DISCOVERY and updates
     // task / turn counters in the status bar.
-    if (_orbit) _orbit.onUserInput(originalInput);
+    if (orbitRef.current) orbitRef.current.onUserInput(originalInput);
 
     // Start session tracking on first turn
     if (session.turns === 1) {
@@ -4777,15 +3411,6 @@ export async function startTerminalRepl() {
       userTurnWritten = true;
     };
     if (session.id) writeCurrentUserTurn();
-
-    // Kepler response label — full brand magenta, matches the user prompt.
-    process.stderr.write(`\n${paint.brand.primary('kepler')}\n`);
-
-    // Immediate feedback so the screen isn't blank between submit and the
-    // first backend event. The first `status`, `thinking`, or `content_*`
-    // event will replace this text; stopSpinner clears it before content
-    // renders.
-    startSpinner('thinking…');
 
     let assistantContent = '';
     const agentTurnHistory = new AgentHistoryTurnBuilder();
@@ -4809,6 +3434,7 @@ export async function startTerminalRepl() {
       if (isInputDockMounted()) {
         renderDockInput(executionInputPrefix(), executionInputBuffer, {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         executionInputVisible = true;
@@ -4828,7 +3454,7 @@ export async function startTerminalRepl() {
       if (!isInputDockMounted()) return;
       focusDockInput(executionInputPrefix(), executionInputBuffer);
     }
-    _afterContentFlush = focusExecutionInput;
+    runtime.afterContentFlush = focusExecutionInput;
 
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
@@ -4838,6 +3464,7 @@ export async function startTerminalRepl() {
           clearInputPrompt();
           renderDockInput(executionInputPrefix(), '', {
             context: buildContextStrip(),
+            meta: buildDockMeta(),
             tips: executionInputTips(),
           });
           moveToContent();
@@ -4853,6 +3480,7 @@ export async function startTerminalRepl() {
         process.stderr.write(`${executionInputPrefix()}${instruction}\n`);
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         moveToContent();
@@ -4860,16 +3488,41 @@ export async function startTerminalRepl() {
         process.stderr.write('\n');
       }
       executionInputVisible = false;
-      try {
-        await client.resume(instruction);
-        jsonlWriter.writeKeplerEvent({
-          type: 'user_intervention',
-          data: { instruction, task_id: client.currentTaskId || null },
-        });
-        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent follow-up to running agent')}\n`);
-      } catch {
+      // Live steering (PRD-081 §5.2): submit through the dedicated
+      // /api/intervention/{task_id} path, not /resume. The stream client
+      // returns a status object so we render the true backend decision
+      // (accepted vs queued-for-next-turn vs duplicate) instead of guessing.
+      const result = await client.sendIntervention(instruction);
+      const taskId = client.currentTaskId || null;
+      const status = result && result.status;
+      const interventionId = result && result.interventionId;
+
+      // Persist the local record regardless of outcome so the transcript
+      // reflects what the user typed. Delivered/queued follow-ups will
+      // get their SSE ack events written separately by the event handler.
+      jsonlWriter.writeKeplerEvent({
+        type: 'user_intervention',
+        data: {
+          instruction,
+          task_id: taskId,
+          intervention_id: interventionId || null,
+          status: status || 'unknown',
+        },
+      });
+
+      if (status === 'accepted') {
+        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent to running agent')}\n`);
+      } else if (status === 'duplicate') {
+        process.stderr.write(`  ${c.dim('↳ already sent (idempotent)')}\n`);
+      } else if (status === 'queued_next_turn') {
         _queuedLines.push(instruction);
-        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued follow-up for the next turn')}\n`);
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('task ended — queued for next turn')}\n`);
+      } else {
+        // no_task, error, or unknown — fall back to next-turn queue so the
+        // user's text is never silently lost.
+        _queuedLines.push(instruction);
+        const errBits = result && result.error ? ` ${c.dim(`(${String(result.error).slice(0, 80)})`)}` : '';
+        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued for next turn')}${errBits}\n`);
       }
     }
 
@@ -4963,6 +3616,7 @@ export async function startTerminalRepl() {
               clearInputPrompt();
               renderDockInput(executionInputPrefix(), '', {
                 context: buildContextStrip(),
+                meta: buildDockMeta(),
                 tips: executionInputTips(),
               });
               moveToContent();
@@ -4974,7 +3628,10 @@ export async function startTerminalRepl() {
             return;
           }
           stopSpinner();
-          if (isInputDockMounted()) moveToContent();
+          if (isInputDockMounted()) {
+            clearInputPrompt();
+            moveToContent();
+          }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled.')}\n`);
           // cancel() now aborts the in-flight SSE reader; the for-await loop
           // wakes up immediately and the prompt returns. No more "stuck"
@@ -5009,14 +3666,14 @@ export async function startTerminalRepl() {
             if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.green('▶')} ${c.dim('Resumed')}\n`);
             client.resume();
-            if (_orbit) _orbit.onResume();
+            if (orbitRef.current) orbitRef.current.onResume();
           } else {
             executionPaused = true;
             stopSpinner();
             if (isInputDockMounted()) moveToContent();
             process.stderr.write(`  ${c.yellow('⏸')} ${c.dim('Paused — press Ctrl+P to resume, Esc to cancel')}\n`);
             client.pause();
-            if (_orbit) _orbit.onPause();
+            if (orbitRef.current) orbitRef.current.onPause();
           }
           return;
         }
@@ -5034,7 +3691,10 @@ export async function startTerminalRepl() {
             process.exit(0);
           }
           lastCtrlCAt = now;
-          if (isInputDockMounted()) moveToContent();
+          if (isInputDockMounted()) {
+            clearInputPrompt();
+            moveToContent();
+          }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
           return;
@@ -5078,11 +3738,20 @@ export async function startTerminalRepl() {
       if (isInputDockMounted()) {
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),
+          meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         moveToContent();
       }
       startContentStream();
+      process.stderr.write(`\n${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
+      runtime.contentHeaderPrinted = true;
+
+      // Immediate feedback so the screen isn't blank between submit and the
+      // first backend event. The first `status`, `thinking`, or `content_*`
+      // event will replace this text; stopSpinner clears it before content
+      // renders.
+      startSpinner('thinking…');
 
       const execContext = { cwd: safeCwd() };
       if (skipPerms) execContext.freeswim = true;
@@ -5214,7 +3883,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
       // Clean up execution keypress listener
-      _afterContentFlush = null;
+      runtime.afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
     }
 
@@ -5233,7 +3902,10 @@ export async function startTerminalRepl() {
   }
 
   rl.on('close', async () => {
+    clearSlashHint({ restoreCursor: false });
+    inputActive = false;
     stopSpinner();
+    if (isInputDockMounted()) unmountInputDock();
     await hookRunner.run('Stop', { input: { session_id: session.id || '' } });
     await jsonlWriter.close();
     process.stderr.write(`\n  ${c.dim('session ended')}\n\n`);

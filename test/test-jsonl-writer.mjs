@@ -124,9 +124,9 @@ await test('tool result blocks preserve Kepler file diff metadata', async () => 
   const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
   const toolBlock = lines[2].message.content[0];
   assert.strictEqual(toolBlock.type, 'tool_result');
-  assert.strictEqual(toolBlock.kepler.tool, 'edit_file');
-  assert.strictEqual(toolBlock.kepler.file_diffs[0].relative_path, 'src/a.js');
-  assert.ok(toolBlock.kepler.file_diffs[0].unified.includes('+new'));
+  assert.strictEqual(toolBlock.bahulam.tool, 'edit_file');
+  assert.strictEqual(toolBlock.bahulam.file_diffs[0].relative_path, 'src/a.js');
+  assert.ok(toolBlock.bahulam.file_diffs[0].unified.includes('+new'));
 
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });

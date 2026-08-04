@@ -69,8 +69,8 @@ export function listLocalAgents(cwd = process.cwd()) {
       slug: spec.slug,
       spec,
       content_hash: agentContentHash(agent),
-      source_scope: String(agent.source || '').includes(`${path.sep}.kepler${path.sep}agents${path.sep}`)
-        ? (String(agent.source).startsWith(path.join(cwd, '.kepler')) ? 'project' : 'global')
+      source_scope: String(agent.source || '').includes(`${path.sep}.bahulam${path.sep}agents${path.sep}`)
+        ? (String(agent.source).startsWith(path.join(cwd, '.bahulam')) ? 'project' : 'global')
         : 'unknown',
     };
   });
@@ -151,14 +151,14 @@ export function createAgentFile({
   force = false,
 } = {}) {
   const slug = slugifyAgentName(name);
-  const dir = path.join(cwd, '.kepler', 'agents');
+  const dir = path.join(cwd, '.bahulam', 'agents');
   const filePath = path.join(dir, `${slug}.yaml`);
   if (fs.existsSync(filePath) && !force) {
     throw new Error(`Agent already exists: ${filePath}`);
   }
   fs.mkdirSync(dir, { recursive: true });
   const toolList = Array.isArray(tools) ? tools : String(tools || '').split(',').map(s => s.trim()).filter(Boolean);
-  const body = prompt || `You are ${name}, a project-local Kepler sub-agent.\n\nFocus on the assigned task and return a concise handoff with evidence.`;
+  const body = prompt || `You are ${name}, a project-local Bahulam Code sub-agent.\n\nFocus on the assigned task and return a concise handoff with evidence.`;
   const indentedPrompt = body.trim().split('\n').map(line => `    ${line}`).join('\n');
   const lines = [
     'apiVersion: agent.framework/v1',

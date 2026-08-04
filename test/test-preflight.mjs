@@ -174,7 +174,7 @@ await test('credits check warns on low rolling message window', async () => {
         const result = await checkCreditsAndPlan(authWith({ token: 'tok', backendUrl: url }));
         assert.strictEqual(result.status, 'warn');
         assert.ok(result.label.includes('2 / 50 messages this window'));
-        assert.strictEqual(result.hint, 'low message window — codekepler.ai/pricing');
+        assert.strictEqual(result.hint, 'low message window — bahulam.ai/pricing');
     });
 });
 
@@ -205,7 +205,7 @@ await test('credits check falls back to credit balance label when no window exis
         const result = await checkCreditsAndPlan(authWith({ token: 'tok', backendUrl: url }));
         assert.strictEqual(result.status, 'warn');
         assert.strictEqual(result.label, 'Plan: CREATOR · 24 credits remaining');
-        assert.strictEqual(result.hint, 'low balance — codekepler.ai/pricing');
+        assert.strictEqual(result.hint, 'low balance — bahulam.ai/pricing');
     });
 });
 

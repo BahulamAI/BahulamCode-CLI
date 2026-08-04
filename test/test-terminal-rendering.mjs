@@ -12,6 +12,7 @@ import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
+import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs';
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
@@ -26,14 +27,14 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-terminal-rendering.mjs\x1b[0m\n');
 
-test('Kepler brand uses Deep Space Purple (PRD-055 §4.1)', () => {
-  // Post-Phase-1: c.brand routes through paint.brand.primary (#7c3aed).
-  // In ansi16 fallback that resolves to magenta (35); in truecolor it is
-  // \x1b[38;2;124;58;237m. Accept either so the test runs in any terminal.
-  const brand = c.brand('kepler');
-  assert.ok(brand.startsWith('\x1b[35m') || brand.startsWith('\x1b[38;2;124;58;237m'),
-    `expected magenta/truecolor brand, got ${JSON.stringify(brand)}`);
-  // c.cyan now routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
+test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
+  // Bahulam Code rebrand: paint.brand.primary is cyan #06b6d4 (abundance
+  // theme) — was purple #7c3aed in the pre-rename era. In ansi16 fallback
+  // that resolves to cyan (36); truecolor is \x1b[38;2;6;182;212m.
+  const brand = c.brand('bahulam');
+  assert.ok(brand.startsWith('\x1b[36m') || brand.startsWith('\x1b[38;2;6;182;212m'),
+    `expected cyan/truecolor brand, got ${JSON.stringify(brand)}`);
+  // c.cyan routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
   const cyan = c.cyan('code');
   assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
     `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
@@ -47,6 +48,13 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
   const rendered = renderMarkdown('[Documentation](https://example.com)');
   assert.ok(rendered.includes('\x1b[4m'));
   assert.ok(rendered.includes('Documentation'));
+});
+
+test('transcript blocks distinguish user and assistant turns', () => {
+  assert.strictEqual(stripAnsi(transcriptHeader('you', { tone: 'user' })), '  ╭─ you');
+  assert.strictEqual(stripAnsi(transcriptLine('hello', { tone: 'user' })), '  │ hello');
+  assert.strictEqual(stripAnsi(transcriptHeader('kepler', { tone: 'assistant' })), '  ╭─ kepler');
+  assert.strictEqual(stripAnsi(transcriptLine('Understood', { tone: 'assistant' })), '  │ Understood');
 });
 
 test('markdown tables align after inline markdown is normalized', () => {
@@ -125,11 +133,12 @@ test('sub-agent running line shows full query and hides model', () => {
 });
 
 test('renders shell commands with semantic syntax colors', () => {
-  // Post-Phase-1: c.blue routes to brand.primary, so command tokens get the
-  // brand color instead of basic blue. Flags stay yellow, pipes stay red.
+  // c.blue routes to brand.primary — post-rebrand that's cyan #06b6d4
+  // (was purple #7c3aed pre-Bahulam-Code). Command tokens get the brand
+  // color. Flags stay yellow, pipes stay red.
   const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
-  // Command tokens — brand.primary (#7c3aed). ansi16 magenta or truecolor.
-  assert.ok(/\x1b\[35m|\x1b\[38;2;124;58;237m/.test(rendered),
+  // Command tokens — brand.primary (#06b6d4). ansi16 cyan or truecolor.
+  assert.ok(/\x1b\[36m|\x1b\[38;2;6;182;212m/.test(rendered),
     'expected brand color for command tokens');
   assert.ok(rendered.includes('python'));
   assert.ok(rendered.includes('head'));
@@ -227,26 +236,41 @@ test('search cards keep outcome inline by compacting long heads', () => {
 });
 
 test('tool activity rows only force blank spacing between shell commands', () => {
+  // Post PRD-081 repl split: rendering pipeline lives in repl-render.mjs,
+  // pure explore classifier in repl-explore.mjs. Test both files.
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
-  assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
-  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
-  assert.ok(replSource.includes("renderBlockBoundary('thinking')"));
-  assert.ok(replSource.includes('function thinkingPrefix(text)'));
-  assert.ok(replSource.includes('Thinking · ${kind}'));
-  assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
-  assert.ok(replSource.includes("renderBlockBoundary('content')"));
-  assert.ok(replSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
-  assert.ok(replSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
-  assert.ok(replSource.includes('function exploreSummary()'));
-  assert.ok(replSource.includes('exploring · ${stats}${latest}'));
-  assert.ok(replSource.includes('if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();'));
-  assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
+  const renderSource = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
+  const exploreSource = fs.readFileSync(new URL('../src/terminal/repl-explore.mjs', import.meta.url), 'utf-8');
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
+  assert.ok(renderSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
+  assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
+  // renderBlockBoundary('thinking'|'content') calls fire from the event
+  // dispatcher which still lives in repl.mjs — check both files.
+  assert.ok(replSource.includes("renderBlockBoundary('thinking')")
+         || renderSource.includes("renderBlockBoundary('thinking')"));
+  assert.ok(renderSource.includes('function thinkingPrefix(text)'));
+  assert.ok(renderSource.includes('Thinking · ${kind}'));
+  assert.ok(renderSource.includes('function clippedThinking(text, limit = 200)'));
+  assert.ok(replSource.includes("renderBlockBoundary('content')")
+         || renderSource.includes("renderBlockBoundary('content')"));
+  assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
+  assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(replSource.includes("from './repl-explore.mjs'"));
+  assert.ok(renderSource.includes('function exploreSummary()'));
+  assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
+  assert.ok(renderSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
+  assert.ok(renderSource.includes('function writeExploreSnapshot(summary = exploreSummary())'));
+  assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
+  assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
+  assert.ok(!renderSource.includes('drawPinnedStatus'));
+  assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -264,8 +288,20 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function printInputBottomRule()'));
   assert.ok(replSource.includes('printInputBottomRule();'));
-  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
+  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(replSource.includes('function renderIdleDockInput()'));
+  assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
+  assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
+  assert.ok(replSource.includes("case '/exit':"));
+  assert.ok(replSource.includes('if (isInputDockMounted()) unmountInputDock();'));
+  assert.ok(replSource.includes("rl.on('close', async () => {"));
+  assert.ok(replSource.includes('clearSlashHint({ restoreCursor: false });'));
+  assert.ok(replSource.includes('inputActive = false;'));
+  assert.ok(replSource.includes('clearSlashHint();'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
@@ -283,7 +319,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
-  assert.ok(replSource.includes('if (!input) { showPrompt(); return; }'));
+  // Empty-Enter branch now clears the phantom prompt line(s) before
+  // re-rendering — see PRD-081 §5.1 acceptance "Empty Enter must not leave
+  // phantom prompt lines".
+  assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
   assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
@@ -294,21 +333,46 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
-  assert.ok(replSource.includes('_afterContentFlush = focusExecutionInput;'));
-  assert.ok(replSource.includes('_afterContentFlush = null;'));
-  assert.ok(replSource.includes("if (typeof _afterContentFlush === 'function') _afterContentFlush();"));
+  // Post PRD-081 repl split: _afterContentFlush is now runtime.afterContentFlush.
+  // The assignment stays in repl.mjs (execution loop sets the callback),
+  // the invocation moved into flushContent inside repl-render.mjs.
+  const renderSourceRt = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('runtime.afterContentFlush = focusExecutionInput;'));
+  assert.ok(replSource.includes('runtime.afterContentFlush = null;'));
+  assert.ok(renderSourceRt.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
-  assert.ok(replSource.includes('client.resume(instruction)'));
+  // PRD-081 Phase 3: active-run follow-ups now go through the dedicated
+  // /api/intervention/{task_id} path (client.sendIntervention), not /resume.
+  assert.ok(replSource.includes('client.sendIntervention(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('Ctrl+D'));
 });
 
-test('fixed input dock clears input row before repainting', () => {
+test('resume preview avoids circular renderEvent import during repl split', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  const resumeSource = fs.readFileSync(new URL('../src/terminal/repl-resume.mjs', import.meta.url), 'utf-8');
+  assert.ok(resumeSource.includes("import { startContentStream, flushContent, stopSpinner } from './repl-render.mjs';"));
+  assert.ok(!resumeSource.includes("from './repl.mjs'"));
+  assert.ok(resumeSource.includes('export function renderResumePreview(resumed, ctx = {})'));
+  assert.ok(resumeSource.includes('const renderEvent = ctx.renderEvent;'));
+  assert.ok(replSource.includes('renderResumePreview(resumed, { renderEvent });'));
+});
+
+test('fixed input dock clears input rows before repainting', () => {
+  // Post-PRD-081: the dock now supports N input rows (1..5, default 2),
+  // so `clearInputRow` is `clearInputRows` and covers the full input area.
   const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
-  assert.ok(dockSource.includes('function clearInputRow()'));
-  assert.ok(dockSource.includes('moveTo(inputRow(), 1);'));
-  assert.ok(dockSource.includes('clearInputRow();\n  renderFrame({ context, tips });'));
-  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
+  assert.ok(dockSource.includes('function clearInputRows()'));
+  assert.ok(dockSource.includes('moveTo(row, 1);'));
+  // Post cursor-race fix: clearInputPrompt clears the input rows, resets
+  // the tracked value, redraws the frame, and parks the cursor at the input.
+  assert.ok(dockSource.includes('clearInputRows();'));
+  assert.ok(dockSource.includes('renderFrame(lastFrame);'));
+  assert.ok(dockSource.includes('function parkCursorAtInput()'));
+  // Signature accepts an optional cursorInValue for readline rl.cursor tracking.
+  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\''));
+  assert.ok(dockSource.includes('cursorInValue'));
+  assert.ok(dockSource.includes("from './text-layout.mjs'"));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {

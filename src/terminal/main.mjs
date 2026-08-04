@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kepler CLI — ANSI Terminal UI.
+ * Bahulam Code CLI — ANSI Terminal UI. Bahulam's coding agent.
  * Zero React. Zero Ink. Zero flickering.
  */
 
@@ -85,7 +85,7 @@ function parseKeplerSubcommandArgs(command, argv) {
 
 async function main() {
   if (subcommand === 'dashboard') {
-    // Launch Kepler Pulse Next.js dashboard
+    // Launch Bahulam Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const path = await import('node:path');
@@ -171,38 +171,38 @@ async function main() {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
     const { version } = require('../../package.json');
-    process.stdout.write(`kepler v${version}\n`);
+    process.stdout.write(`Bahulam Code v${version}\n`);
     return;
   }
 
   if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
     process.stderr.write(`
-  \x1b[1m\x1b[36mkepler\x1b[0m — AI Coding Agent — codekepler.ai
+  \x1b[1m\x1b[36mBahulam Code\x1b[0m — Bahulam's coding agent — bahulam.ai
 
   \x1b[1mUsage:\x1b[0m
-    kepler                    Start interactive REPL
-    kepler "instruction"      Run a single instruction
-    kepler --headless -p "x"  Non-interactive: auto-approve, JSONL output
-    kepler --headless -p "x" --vision screenshot.png
+    bahulam-code                        Start interactive REPL
+    bahulam-code "instruction"          Run a single instruction
+    bahulam-code --headless -p "x"      Non-interactive: auto-approve, JSONL output
+    bahulam-code --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
-    kepler --resume            Resume last conversation
-    kepler dashboard          Open Kepler Pulse analytics dashboard
-    kepler login              Sign in via browser
-    kepler logout             Sign out and clear credentials
-    kepler init               Scaffold .kepler config, memory, hooks, tasks
-    kepler version            Show version
+    bahulam-code --resume               Resume last conversation
+    bahulam-code dashboard              Open analytics dashboard
+    bahulam-code login                  Sign in via browser
+    bahulam-code logout                 Sign out and clear credentials
+    bahulam-code init                   Scaffold .bahulam config, memory, hooks, tasks
+    bahulam-code version                Show version
 
   \x1b[1mAnalytics:\x1b[0m
-    kepler sessions           List recent local sessions
-    kepler stats              Show aggregate local session stats
-    kepler history            Show recent prompt history
+    bahulam-code sessions               List recent local sessions
+    bahulam-code stats                  Show aggregate local session stats
+    bahulam-code history                Show recent prompt history
 
   \x1b[1mSkills:\x1b[0m
-    kepler skills list [--all|--project]
-    kepler skills view <name> [resource]
-    kepler skills install <path-or-git-url> [--project] [--force]
-    kepler skills update <name> [--project]
-    kepler skills remove <name> [--project]
+    bahulam-code skills list [--all|--project]
+    bahulam-code skills view <name> [resource]
+    bahulam-code skills install <path-or-git-url> [--project] [--force]
+    bahulam-code skills update <name> [--project]
+    bahulam-code skills remove <name> [--project]
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands
@@ -233,12 +233,13 @@ async function main() {
     TARANG_ENV              Set backend (local, treetop, production)
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
-    KEPLER_CONFIG_DIR         Override config directory (default: ~/.kepler)
+    BAHULAM_CONFIG_DIR        Override config directory (default: ~/.bahulam)
+    KEPLER_CONFIG_DIR         Legacy config directory override
     KEPLER_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
 
-  \x1b[2mDocs: https://docs.codekepler.ai\x1b[0m
+  \x1b[2mDocs: https://bahulam.ai\x1b[0m
 `);
     return;
   }

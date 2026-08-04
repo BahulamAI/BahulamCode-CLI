@@ -21,7 +21,7 @@ function asString(value) {
 function maybeTruncate(text, maxChars) {
     const value = asString(text);
     if (!maxChars || value.length <= maxChars) return value;
-    return `${value.slice(0, maxChars)}\n\n[Kepler truncated this tool result from ${value.length} to ${maxChars} characters for live session continuity.]`;
+    return `${value.slice(0, maxChars)}\n\n[Bahulam Code truncated this tool result from ${value.length} to ${maxChars} characters for live session continuity.]`;
 }
 
 function mergeTextBlock(blocks, text) {

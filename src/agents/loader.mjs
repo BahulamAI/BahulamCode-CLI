@@ -1,10 +1,10 @@
 /**
- * Agent Loader — loads custom agent definitions from .kepler/agents/
+ * Agent Loader — loads custom agent definitions from .bahulam/agents/
  *
  * Supports two formats:
- * - YAML: .kepler/agents/*.yaml / *.yml (native Kepler SubAgent config)
- * - JSON: .kepler/agents/*.json
- * - Markdown with YAML frontmatter: .kepler/agents/*.md
+ * - YAML: .bahulam/agents/*.yaml / *.yml (native Kepler SubAgent config)
+ * - JSON: .bahulam/agents/*.json
+ * - Markdown with YAML frontmatter: .bahulam/agents/*.md
  *
  * Agent definitions specify: name, description, model, tools, hooks, prompt.
  */
@@ -24,8 +24,12 @@ export class AgentLoader {
      * @param {string} [cwd] - project working directory
      */
     load(cwd = process.cwd()) {
+        // Prefer .bahulam/, but also scan legacy .kepler/ so agents defined
+        // under the old convention keep loading for existing projects.
         this.searchPaths = [
+            path.join(cwd, '.bahulam', 'agents'),
             path.join(cwd, '.kepler', 'agents'),
+            path.join(process.env.HOME || '', '.bahulam', 'agents'),
             path.join(process.env.HOME || '', '.kepler', 'agents'),
         ];
 

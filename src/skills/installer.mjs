@@ -84,8 +84,8 @@ export class SkillInstaller {
 
     paths(scope = 'global') {
         const base = scope === 'project'
-            ? path.join(this.cwd, '.kepler')
-            : path.join(this.homeDir, '.kepler');
+            ? path.join(this.cwd, '.bahulam')
+            : path.join(this.homeDir, '.bahulam');
         return {
             skillsDir: path.join(base, 'skills'),
             lockFile: path.join(base, 'skills.lock.json'),
@@ -94,7 +94,7 @@ export class SkillInstaller {
 
     install(source, { scope = 'global', force = false, onlyNames = null } = {}) {
         if (!source) throw new Error('A local directory or Git repository is required');
-        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-skill-'));
+        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-code-skill-'));
         let resolvedSource;
         let commit = null;
         try {

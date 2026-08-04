@@ -19,7 +19,7 @@
  *   none      → identity (input returned unchanged)
  *
  * Brand identity (Mission Control PRD-055):
- *   primary  Deep Space Purple  #7c3aed
+ *   primary  Abundance Cyan     #06b6d4
  *   accent   Stellar Magenta    #ec4899
  *   data     Neon Cyan          #22d3ee
  *   success  Aligned green      #22c55e
@@ -40,7 +40,7 @@ const RESET = `${ESC}0m`;
 
 export const TOKENS = Object.freeze({
   // Brand
-  'brand.primary': { rgb: [124, 58, 237],  ansi256: 99,  ansi16: 'magenta' }, // #7c3aed
+  'brand.primary': { rgb: [6, 182, 212],   ansi256: 44,  ansi16: 'cyan'     }, // #06b6d4
   'brand.accent':  { rgb: [236, 72, 153],  ansi256: 198, ansi16: 'magenta' }, // #ec4899
   'brand.data':    { rgb: [34, 211, 238],  ansi256: 87,  ansi16: 'cyan'    }, // #22d3ee
 

@@ -26,7 +26,7 @@ function readJson(filePath) {
 }
 
 export function loadKeplerSettings({ cwd = process.cwd() } = {}) {
-  const base = path.join(cwd, '.kepler');
+  const base = path.join(cwd, '.bahulam');
   const layers = [
     { name: 'default', path: null, data: DEFAULT_KEPLER_SETTINGS },
   ];

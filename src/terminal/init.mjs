@@ -2,11 +2,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const FILES = {
-  'README.md': `# .kepler/ - project agent context
+  'README.md': `# .bahulam/ - project agent context
 
-Kepler reads and writes here to keep state between sessions.
+Bahulam Code reads and writes here to keep state between sessions.
 
-## Files Kepler writes
+## Files Bahulam Code writes
 - \`plan.md\` - current agent plan
 - \`goal.md\` - durable session goal
 - \`tasks/\` - task list
@@ -75,7 +75,7 @@ Format v1. Markdown files are intentionally hand-editable.
   'style.md': '# Style\n\nAdd code and communication conventions here.\n',
   'hitl.md': '# HITL Guidance\n\nAdd project-specific approval guidance here.\n',
   'trust.json': JSON.stringify({ version: 1, rules: [] }, null, 2) + '\n',
-  'tasks/README.md': `# Kepler Tasks
+  'tasks/README.md': `# Bahulam Tasks
 
 Checklist files are read every turn.
 
@@ -107,12 +107,12 @@ description: Explore the project and record onboarding notes.
 Context:
 $ARGUMENTS
 
-Explore the codebase, ask clarifying questions, and record useful notes in .kepler/tasks/active.md.
+Explore the codebase, ask clarifying questions, and record useful notes in .bahulam/tasks/active.md.
 `,
 };
 
 export function scaffoldKeplerProject({ cwd = process.cwd(), force = false } = {}) {
-  const root = path.join(cwd, '.kepler');
+  const root = path.join(cwd, '.bahulam');
   const written = [];
   const skipped = [];
   for (const [rel, content] of Object.entries(FILES)) {
@@ -138,7 +138,7 @@ export function scaffoldKeplerProject({ cwd = process.cwd(), force = false } = {
 export async function runInitCommand(args = [], { cwd = process.cwd() } = {}) {
   const force = args.includes('--force');
   const result = scaffoldKeplerProject({ cwd, force });
-  process.stderr.write(`\x1b[32m✓\x1b[0m Initialized .kepler at ${result.root}\n`);
+  process.stderr.write(`\x1b[32m✓\x1b[0m Initialized .bahulam at ${result.root}\n`);
   process.stderr.write(`  wrote ${result.written.length} files`);
   if (result.skipped.length) process.stderr.write(`, skipped ${result.skipped.length} existing files`);
   process.stderr.write('\n');

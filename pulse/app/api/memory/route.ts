@@ -1,12 +1,10 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs/promises'
 import path from 'path'
-import os from 'os'
 import { readMemories } from '@/lib/claude-reader'
+import { bahulamPath } from '@/lib/bahulam-paths'
 
 export const dynamic = 'force-dynamic'
-
-const CLAUDE_DIR = path.join(os.homedir(), '.kepler')
 
 export async function GET() {
   const memories = await readMemories()
@@ -35,10 +33,10 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'Invalid path' }, { status: 400 })
     }
 
-    const filePath = path.join(CLAUDE_DIR, 'projects', projectSlug, 'memory', file)
+    const filePath = bahulamPath('projects', projectSlug, 'memory', file)
 
-    // Ensure the resolved path stays within ~/.kepler/projects/
-    const allowedRoot = path.join(CLAUDE_DIR, 'projects')
+    // Ensure the resolved path stays within ~/.bahulam/projects/ (or the configured legacy dir).
+    const allowedRoot = bahulamPath('projects')
     if (!filePath.startsWith(allowedRoot + path.sep)) {
       return NextResponse.json({ error: 'Path outside allowed directory' }, { status: 403 })
     }

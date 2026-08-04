@@ -28,7 +28,7 @@ test('detects Bedrock missing AWS credentials from gateway message', () => {
   const guidance = formatAgentErrorGuidance(data);
   assert.strictEqual(guidance.title, 'AWS Bedrock credentials are missing.');
   assert.ok(guidance.lines.some((line) => line.includes('Access Key ID')));
-  assert.ok(guidance.lines.some((line) => line.includes('Kepler/AppStak')));
+  assert.ok(guidance.lines.some((line) => line.includes('Bahulam model settings')));
   assert.ok(guidance.meta.includes('provider=bedrock'));
   assert.ok(guidance.meta.includes('phase=gateway'));
   assert.ok(guidance.meta.includes('task=task_123'));
@@ -106,7 +106,8 @@ test('credit exhaustion guidance gives billing and BYOK actions', () => {
 
   assert.ok(guidance.lines.some((line) => line.includes('Add credits or upgrade')));
   assert.ok(guidance.lines.some((line) => line.includes('BYOK')));
-  assert.ok(guidance.lines.some((line) => line.includes('codekepler.ai/pricing')));
+  assert.ok(guidance.lines.some((line) => line.includes('Bahulam credit charges')));
+  assert.ok(guidance.lines.some((line) => line.includes('bahulam.ai/pricing')));
 });
 
 test('message window guidance explains wait or upgrade decision', () => {
@@ -120,6 +121,7 @@ test('message window guidance explains wait or upgrade decision', () => {
   assert.ok(guidance.lines.some((line) => line.includes('message limit')));
   assert.ok(guidance.lines.some((line) => line.includes('Wait 1h 1m')));
   assert.ok(guidance.lines.some((line) => line.includes('larger 5-hour message window')));
+  assert.ok(guidance.lines.some((line) => line.includes('bahulam.ai/pricing')));
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

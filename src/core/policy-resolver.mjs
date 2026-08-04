@@ -98,11 +98,11 @@ function readJson(filePath) {
 }
 
 function projectConfigPath(cwd) {
-  return path.join(cwd, '.kepler', 'config.json');
+  return path.join(cwd, '.bahulam', 'config.json');
 }
 
 function globalPolicyPath() {
-  return path.join(os.homedir(), '.kepler', 'policy.json');
+  return path.join(os.homedir(), '.bahulam', 'policy.json');
 }
 
 function flatten(obj, prefix = '', out = []) {

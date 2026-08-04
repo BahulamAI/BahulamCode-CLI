@@ -1,8 +1,8 @@
 /**
- * JSONL Writer — writes cc-lens compatible session transcripts to ~/.kepler/.
+ * JSONL Writer — writes cc-lens compatible session transcripts to ~/.bahulam/.
  *
  * Format mirrors Claude Code's ~/.claude/ JSONL structure so that
- * cc-lens (CLAUDE_CONFIG_DIR=~/.kepler npx cc-lens) can read Kepler sessions.
+ * cc-lens (CLAUDE_CONFIG_DIR=~/.bahulam npx cc-lens) can read Kepler sessions.
  *
  * Design:
  * - Non-blocking: buffered writes, flushed every 500ms or on turn end
@@ -13,11 +13,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
+import { bahulamHome } from './paths.mjs';
 
-const KEPLER_DIR = process.env.KEPLER_HOME || path.join(os.homedir(), '.kepler');
+const KEPLER_DIR = bahulamHome();
 const FLUSH_INTERVAL_MS = 500;
 
 /**
@@ -205,7 +205,7 @@ export class JsonlWriter {
       is_error: !!isError,
     };
     const kepler = compactToolResultMetadata(metadata);
-    if (kepler) entry.kepler = kepler;
+    if (kepler) entry.bahulam = kepler;
     this._turnToolResults.push(entry);
   }
 
@@ -281,7 +281,7 @@ export class JsonlWriter {
               content: r.content.slice(0, 5000), // truncate large outputs
               is_error: r.is_error,
             };
-            if (r.kepler) block.kepler = r.kepler;
+            if (r.bahulam) block.bahulam = r.bahulam;
             return block;
           }),
         },
@@ -295,7 +295,7 @@ export class JsonlWriter {
   }
 
   /**
-   * Write a prompt entry to ~/.kepler/history.jsonl.
+   * Write a prompt entry to ~/.bahulam/history.jsonl.
    */
   writeHistory(prompt) {
     const entry = {

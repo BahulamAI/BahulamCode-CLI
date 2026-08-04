@@ -117,7 +117,7 @@ export function renderMissionReport(state) {
 
 /**
  * Same content as renderMissionReport, but as plain markdown so callers
- * can persist it under `.kepler/reports/`.
+ * can persist it under `.bahulam/reports/`.
  */
 export function toMarkdown(state) {
   const success = state.success !== false;
@@ -159,11 +159,11 @@ export function toMarkdown(state) {
 }
 
 /**
- * Save a markdown copy of the report to `.kepler/reports/<timestamp>.md`
+ * Save a markdown copy of the report to `.bahulam/reports/<timestamp>.md`
  * inside the working directory. Returns the absolute path.
  */
 export function saveReport(state, { cwd = process.cwd(), timestamp } = {}) {
-  const dir = path.join(cwd, '.kepler', 'reports');
+  const dir = path.join(cwd, '.bahulam', 'reports');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = timestamp || new Date().toISOString().replace(/[:.]/g, '-');
   const out = path.join(dir, `${stamp}.md`);

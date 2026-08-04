@@ -62,7 +62,7 @@ function safeText(value, max = 500) {
 export class ApprovalLog {
   constructor({ cwd = process.cwd() } = {}) {
     this.cwd = cwd;
-    this.filePath = path.join(cwd, '.kepler', 'approvals.log');
+    this.filePath = path.join(cwd, '.bahulam', 'approvals.log');
   }
 
   append(entry) {

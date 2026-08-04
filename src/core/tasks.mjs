@@ -9,7 +9,7 @@ export const TASK_FILES = Object.freeze({
 });
 
 const DEFAULT_CONTENT = Object.freeze({
-  'README.md': '# Kepler Tasks\n\nChecklist files are read every turn.\n',
+  'README.md': '# Bahulam Tasks\n\nChecklist files are read every turn.\n',
   'active.md': '# Active\n\n',
   'backlog.md': '# Backlog\n\n',
   'blocked.md': '# Blocked\n\n',
@@ -17,7 +17,7 @@ const DEFAULT_CONTENT = Object.freeze({
 });
 
 export function ensureTaskFiles({ cwd = process.cwd() } = {}) {
-  const dir = path.join(cwd, '.kepler', 'tasks');
+  const dir = path.join(cwd, '.bahulam', 'tasks');
   fs.mkdirSync(dir, { recursive: true });
   const written = [];
   for (const [name, content] of Object.entries(DEFAULT_CONTENT)) {
@@ -30,7 +30,7 @@ export function ensureTaskFiles({ cwd = process.cwd() } = {}) {
 }
 
 export function loadTaskBoard({ cwd = process.cwd(), create = false } = {}) {
-  const dir = path.join(cwd, '.kepler', 'tasks');
+  const dir = path.join(cwd, '.bahulam', 'tasks');
   if (create) ensureTaskFiles({ cwd });
   const lists = {};
   for (const [list, fileName] of Object.entries(TASK_FILES)) {
@@ -46,8 +46,8 @@ export function loadTaskBoard({ cwd = process.cwd(), create = false } = {}) {
     };
   }
 
-  const planPath = path.join(cwd, '.kepler', 'plan.md');
-  const goalPath = path.join(cwd, '.kepler', 'goal.md');
+  const planPath = path.join(cwd, '.bahulam', 'plan.md');
+  const goalPath = path.join(cwd, '.bahulam', 'goal.md');
   return {
     dir,
     lists,
@@ -141,7 +141,7 @@ function normalizeTaskIndex(value) {
 }
 
 function taskFilePath(cwd, list) {
-  return path.join(cwd, '.kepler', 'tasks', TASK_FILES[list]);
+  return path.join(cwd, '.bahulam', 'tasks', TASK_FILES[list]);
 }
 
 function taskLine(text, list, checked = false) {

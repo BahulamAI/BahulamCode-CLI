@@ -11,7 +11,7 @@
 
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
-import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
+import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
 export const EVENT_TYPES = Object.freeze({
@@ -53,7 +53,24 @@ export const EVENT_TYPES = Object.freeze({
     APPROVAL_REQUIRED: 'approval_required',
     APPROVAL_GRANTED: 'approval_granted',
     APPROVAL_DENIED: 'approval_denied',
+    // Live steering (PRD-081 §5.2)
+    USER_INTERVENTION_ACCEPTED: 'user_intervention_accepted',
+    USER_INTERVENTION_DELIVERED: 'user_intervention_delivered',
+    USER_INTERVENTION_QUEUED: 'user_intervention_queued',
 });
+
+// Lightweight UUID-ish generator for intervention ids. Node ≥18 has
+// crypto.randomUUID but the fallback avoids importing node:crypto here.
+function _uuidLike() {
+  try {
+    // eslint-disable-next-line no-undef
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+      return globalThis.crypto.randomUUID();
+    }
+  } catch {}
+  const rand = () => Math.random().toString(16).slice(2, 10);
+  return `iv-${Date.now().toString(36)}-${rand()}${rand()}`;
+}
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -204,7 +221,7 @@ export class TarangStreamClient {
         }
 
         if (response.status === 401) {
-            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `kepler login` to re-authenticate.', fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `bahulam-code login` to re-authenticate.', fatal: true } };
             return;
         }
         if (response.status === 429) {
@@ -224,7 +241,7 @@ export class TarangStreamClient {
                     retry_after: detail?.retry_after ?? detail?.rate_limit?.retry_after,
                     rate_limit: detail?.rate_limit || null,
                     action: detail?.action || null,
-                    pricing_url: detail?.pricing_url || null,
+                    pricing_url: normalizeBillingBrandCopy(detail?.pricing_url || null),
                     fatal: true,
                 },
             };
@@ -755,6 +772,73 @@ export class TarangStreamClient {
                     body,
                 });
             } catch { /* best effort */ }
+        }
+    }
+
+    /**
+     * Submit a live-steering follow-up on the current running task (PRD-081 §5.2).
+     * Unlike resume(), this does NOT pause/unpause — the text is queued and
+     * delivered at the next tool boundary.
+     *
+     * Returns a status object; callers should NOT swallow errors:
+     *   { status: 'accepted', interventionId }        — queued on backend, SSE ack forthcoming
+     *   { status: 'queued_next_turn', interventionId } — task already ended; hand back as next turn
+     *   { status: 'duplicate', interventionId }       — same intervention_id previously submitted
+     *   { status: 'no_task' }                          — no currentTaskId (nothing to steer)
+     *   { status: 'error', error, httpStatus? }        — network or non-2xx response
+     *
+     * @param {string} instruction  Follow-up text (non-empty, trimmed by caller).
+     * @param {object} [opts]
+     * @param {string} [opts.idempotencyKey]  Optional client-generated id.
+     *                                        Auto-generated when omitted; pass the same key
+     *                                        for retries to stay idempotent.
+     */
+    async sendIntervention(instruction, opts = {}) {
+        if (!this.currentTaskId) {
+            return { status: 'no_task' };
+        }
+        const text = String(instruction || '').trim();
+        if (!text) {
+            return { status: 'error', error: 'instruction is empty' };
+        }
+        const interventionId = opts.idempotencyKey || _uuidLike();
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/api/intervention/${this.currentTaskId}`,
+                {
+                    method: 'POST',
+                    headers: this._headers({
+                        'Content-Type': 'application/json',
+                    }),
+                    body: JSON.stringify({
+                        instruction: text,
+                        intervention_id: interventionId,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                let errText = '';
+                try { errText = (await response.text()).slice(0, 400); } catch {}
+                return {
+                    status: 'error',
+                    httpStatus: response.status,
+                    error: errText || `HTTP ${response.status}`,
+                    interventionId,
+                };
+            }
+            const body = await response.json().catch(() => ({}));
+            const backendStatus = body.status || 'accepted';
+            const status = body.duplicate ? 'duplicate' : backendStatus;
+            return {
+                status,
+                interventionId: body.intervention_id || interventionId,
+            };
+        } catch (e) {
+            return {
+                status: 'error',
+                error: (e && e.message) || String(e),
+                interventionId,
+            };
         }
     }
 

@@ -23,14 +23,14 @@ const written = persistProjectArtifacts({
 
 assert.strictEqual(written.length, 2);
 assert.strictEqual(
-    fs.readFileSync(path.join(second, '.kepler', 'goal.md'), 'utf-8'),
+    fs.readFileSync(path.join(second, '.bahulam', 'goal.md'), 'utf-8'),
     'Fix the parser.',
 );
 assert.strictEqual(
-    fs.readFileSync(path.join(second, '.kepler', 'plan.md'), 'utf-8'),
+    fs.readFileSync(path.join(second, '.bahulam', 'plan.md'), 'utf-8'),
     '1. Inspect\n2. Test',
 );
-assert.strictEqual(fs.existsSync(path.join(first, '.kepler')), false);
+assert.strictEqual(fs.existsSync(path.join(first, '.bahulam')), false);
 
 const ignored = persistProjectArtifacts({
     project_ids: ['unregistered'],

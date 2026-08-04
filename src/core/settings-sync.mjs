@@ -2,7 +2,7 @@
  * Settings Sync — fetch user settings from Tarang web and cache locally.
  *
  * Syncs: gateway_type, model preferences, configured providers.
- * Cached in ~/.kepler/config.json alongside auth token.
+ * Cached in ~/.bahulam/config.json alongside auth token.
  */
 
 import { resolveWebUrl } from './backend-url.mjs';
@@ -29,7 +29,7 @@ export async function fetchRemoteSettings(token) {
 
         if (!resp.ok) {
             if (resp.status === 401) {
-                process.stderr.write('\x1b[33mSettings sync: token expired or invalid. Run `kepler login` to re-authenticate.\x1b[0m\n');
+                process.stderr.write('\x1b[33mSettings sync: token expired or invalid. Run `bahulam-code login` to re-authenticate.\x1b[0m\n');
             }
             return null;
         }
@@ -44,7 +44,7 @@ export async function fetchRemoteSettings(token) {
 /**
  * Merge remote settings into local config.
  * Remote settings override local only for fields that are set.
- * @param {Object} localConfig - Current ~/.kepler/config.json content
+ * @param {Object} localConfig - Current ~/.bahulam/config.json content
  * @param {Object} remote - Settings from fetchRemoteSettings()
  * @returns {Object} Merged config to save
  */

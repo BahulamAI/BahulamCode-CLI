@@ -2,9 +2,9 @@
  * Agent CLI Commands — list, get, sync user-defined agents.
  *
  * Commands:
- *   kepler agent list
- *   kepler agent get <slug>
- *   kepler agent sync [--dir <path>]
+ *   bahulam-code agent list
+ *   bahulam-code agent get <slug>
+ *   bahulam-code agent sync [--dir <path>]
  */
 
 import { resolveBackendUrl } from '../core/backend-url.mjs';
@@ -23,7 +23,7 @@ const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 
 /**
- * Main entry point for all `kepler agent` subcommands.
+ * Main entry point for all `bahulam-code agent` subcommands.
  * @param {object} args - parsed CLI args
  */
 export async function handleAgentCommand(args) {
@@ -47,9 +47,9 @@ export async function handleAgentCommand(args) {
 
 function printAgentUsage() {
     process.stderr.write(`${BOLD}AGENT COMMANDS${RESET}\n`);
-    process.stderr.write(`  ${CYAN}kepler agent list${RESET}                       List user-defined agents\n`);
-    process.stderr.write(`  ${CYAN}kepler agent get <slug>${RESET}                 Show agent details\n`);
-    process.stderr.write(`  ${CYAN}kepler agent sync [--dir <path>]${RESET}        Sync agent YAML files\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent list${RESET}                           List user-defined agents\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent get <slug>${RESET}                     Show agent details\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent sync [--dir <path>]${RESET}            Sync agent YAML files\n`);
     process.stderr.write('\n');
 }
 
@@ -59,7 +59,7 @@ function getAuth() {
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        process.stderr.write(`${RED}✗ Not authenticated. Run 'kepler login' first.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Not authenticated. Run `bahulam-code login` first.${RESET}\n`);
         process.exit(1);
     }
     return creds;
@@ -82,7 +82,7 @@ async function apiFetch(path, options = {}) {
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-        process.stderr.write(`${RED}✗ Authentication failed. Run 'kepler login' to re-authenticate.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Authentication failed. Run `bahulam-code login` to re-authenticate.${RESET}\n`);
         process.exit(1);
     }
 
@@ -129,7 +129,7 @@ async function handleList(args) {
 async function handleGet(args) {
     const slug = args.agentSlug;
     if (!slug) {
-        process.stderr.write(`${RED}✗ Usage: kepler agent get <slug>${RESET}\n`);
+        process.stderr.write(`${RED}✗ Usage: bahulam-code agent get <slug>${RESET}\n`);
         process.exit(1);
     }
 

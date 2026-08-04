@@ -1,6 +1,6 @@
 # Release Checklist
 
-This repo publishes the npm package `@axplusb/kepler`.
+This repo publishes the npm package `@bahulamai/code`.
 
 ## Branch Flow
 
@@ -16,7 +16,7 @@ This repo publishes the npm package `@axplusb/kepler`.
    ```bash
    npm version minor --no-git-tag-version
    git add package.json package-lock.json
-   git commit -m "chore: bump kepler to <version>"
+   git commit -m "chore: bump bahulam-code to <version>"
    ```
 
 4. Push the feature branch:
@@ -43,14 +43,14 @@ This repo publishes the npm package `@axplusb/kepler`.
 Use a temporary npm cache if the local `~/.npm` cache has permission issues:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm pack --dry-run
+env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm pack --dry-run
 ```
 
 Check registry state:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm view @axplusb/kepler version versions --json
-env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm whoami
+env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm view @bahulamai/code version versions --json
+env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm whoami
 ```
 
 `npm whoami` must succeed before publishing.
@@ -61,20 +61,20 @@ Only publish after the release PR is reviewed and the intended commit is the
 release candidate.
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/kepler-npm-cache npm publish --tag latest --access public
+env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm publish --tag latest --access public
 ```
 
 Verify:
 
 ```bash
-npm view @axplusb/kepler version
-npx @axplusb/kepler@latest --version
+npm view @bahulamai/code version
+npx @bahulamai/code@latest --version
 ```
 
 ## Notes
 
-- `package.json` points npm at `KEPLER-README.md`; update that file for npm
-  package documentation.
-- `README.md` is the shorter GitHub/local landing page.
-- Do not commit local `.kepler/` runtime state.
+- `package.json` ships `README.md` as the canonical npm-facing docs.
+- `B0-README.md` is a legacy long-form reference; keep it in sync with
+  `README.md` for GitHub browsers who land on the old file.
+- Do not commit local `.bahulam/` runtime state.
 - Do not publish with missing npm auth or a failed test run.
