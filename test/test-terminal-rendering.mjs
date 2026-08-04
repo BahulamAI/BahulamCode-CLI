@@ -7,6 +7,11 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
+import {
+  isExploreTool as _isExploreTool,
+  exploreCategory as _exploreCategory,
+  _knownExploreTools,
+} from '../src/terminal/repl-explore.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
@@ -641,6 +646,172 @@ test('approval compatibility wrapper uses unified prompt', () => {
   }));
   assert.ok(trusted.includes('pre-approved (session'));
   assert.ok(trusted.includes('rule shell-test'));
+});
+
+// ── Phase 4: tool/result display polish ────────────────────────────────
+
+test('Phase 4a: burst-collapse classifier covers common read-adjacent tools', () => {
+  // The classifier drives whether a tool call collapses into the explore-run
+  // summary or renders as its own card. Missing entries here mean bursts of
+  // that tool spam the transcript (PRD-081 §5.3 acceptance).
+  const known = new Set(_knownExploreTools());
+  for (const t of ['read_file', 'read_files', 'list_files', 'grep', 'search_code',
+                   'search_files', 'analyze_code', 'validate_file',
+                   'validate_structure', 'get_project_overview']) {
+    assert.ok(known.has(t), `expected ${t} in burst-collapse classifier`);
+    assert.ok(_isExploreTool(t), `expected isExploreTool(${t}) → true`);
+  }
+  // Categorization sanity — reads and writes end up in the right bucket.
+  assert.strictEqual(_exploreCategory('read_file'), 'read');
+  assert.strictEqual(_exploreCategory('analyze_code'), 'read');
+  assert.strictEqual(_exploreCategory('search_code'), 'search');
+  assert.strictEqual(_exploreCategory('validate_structure'), 'search');
+  assert.strictEqual(_exploreCategory('get_project_overview'), 'index');
+  // Writes / shell must NOT be collapsed — they carry information the user
+  // needs to see per-call (diff, exit code, error output).
+  assert.ok(!_isExploreTool('write_file'), 'write_file must NOT collapse');
+  assert.ok(!_isExploreTool('edit_file'), 'edit_file must NOT collapse');
+  assert.ok(!_isExploreTool('shell'), 'shell must NOT collapse');
+});
+
+test('Phase 4a: KEPLER_EXPLORE_COLLAPSE=0 disables the classifier', () => {
+  const prev = process.env.KEPLER_EXPLORE_COLLAPSE;
+  process.env.KEPLER_EXPLORE_COLLAPSE = '0';
+  try {
+    assert.strictEqual(_isExploreTool('read_file'), false,
+      'disable flag should suppress classification');
+  } finally {
+    if (prev === undefined) delete process.env.KEPLER_EXPLORE_COLLAPSE;
+    else process.env.KEPLER_EXPLORE_COLLAPSE = prev;
+  }
+});
+
+test('Phase 4b: formatCardHead never exceeds terminal width at 40/60/80 cols', () => {
+  // Long paths + long queries are the classic overflow vectors. Card widths
+  // must ALWAYS wrap or clip, never bleed past the visible column budget.
+  const longPath = 'src/deeply/nested/module/that/keeps/going/until/it/really/hurts.mjs';
+  const longQuery = 'the quick brown fox jumps over the lazy dog exactly seventeen times';
+
+  for (const cols of [40, 60, 80]) {
+    for (const [tool, args] of [
+      ['read_file', { file_path: longPath }],
+      ['search_code', { query: longQuery }],
+      ['edit_file', { file_path: longPath }],
+      ['shell', { command: 'npm test -- --coverage --reporter=json' }],
+    ]) {
+      const head = formatCardHead(tool, args, { columns: cols, cwd: process.cwd() });
+      for (const line of head.split('\n')) {
+        assert.ok(stripAnsi(line).length <= cols,
+          `[${cols}col ${tool}] line width ${stripAnsi(line).length} > ${cols}: ${JSON.stringify(line)}`);
+      }
+    }
+  }
+});
+
+test('Phase 4b: formatCard fits terminal width at 40/60/80 cols', () => {
+  const longPath = 'src/deeply/nested/module/that/keeps/going/until/it/really/hurts.mjs';
+  const longOutput = 'output '.repeat(30);
+
+  for (const cols of [40, 60, 80]) {
+    const rendered = formatCard({
+      tool: 'read_file',
+      args: { file_path: longPath },
+      result: { success: true, output: longOutput, line_count: 42 },
+      durationMs: 320,
+      columns: cols,
+      cwd: process.cwd(),
+    });
+    for (const line of rendered.split('\n')) {
+      assert.ok(stripAnsi(line).length <= cols,
+        `[${cols}col] card line ${stripAnsi(line).length} > ${cols}: ${JSON.stringify(line)}`);
+    }
+  }
+});
+
+test('Phase 4c: plain mode strips ANSI from tool cards', () => {
+  // Non-TTY / KEPLER_PLAIN=1 / --plain — output must be deterministic and
+  // parseable by scripts. Any ANSI escape leaking through breaks that.
+  _setTermForTesting({ isTTY: false, color: false, colorLevel: 'none', plain: true });
+  try {
+    const head = formatCardHead('read_file', { file_path: 'src/foo.mjs' }, { columns: 80 });
+    assert.ok(!/\x1b\[/.test(head), `plain head has ANSI: ${JSON.stringify(head)}`);
+
+    const card = formatCard({
+      tool: 'edit_file',
+      args: { file_path: 'src/foo.mjs' },
+      result: { success: true, lines_added: 5, lines_removed: 2 },
+      columns: 80,
+    });
+    assert.ok(!/\x1b\[/.test(card), `plain card has ANSI: ${JSON.stringify(card)}`);
+
+    const detail = detailFor({
+      id: 'test-1',
+      tool: 'read_file',
+      args: { file_path: 'src/foo.mjs' },
+      result: { success: true, output: 'line1\nline2\nline3\n', line_count: 3 },
+    });
+    assert.ok(!/\x1b\[/.test(detail), `plain detail has ANSI: ${JSON.stringify(detail)}`);
+  } finally {
+    // Restore the ansi16 test defaults so downstream tests are unaffected.
+    _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false });
+  }
+});
+
+test('Phase 4d: failed shell command keeps actionable error visible', () => {
+  const card = formatCard({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    result: {
+      success: false,
+      exit_code: 1,
+      output: 'FAIL src/foo.test.js\n  Expected 3 but received 2',
+      error: 'Test suite failed',
+    },
+    durationMs: 1200,
+    columns: 120,
+  });
+  const plain = stripAnsi(card);
+  // The exit code, first error line, and duration should ALL survive the card.
+  assert.ok(plain.includes('FAIL src/foo.test.js') || plain.includes('Expected 3'),
+    `expected actionable error line in card: ${JSON.stringify(plain)}`);
+});
+
+test('Phase 4d: large diff shows compact preview + full available via detail', () => {
+  // 40-line write should show a bounded compact preview in the card and the
+  // full diff via detailFor. Cap tolerated to prevent transcript spam.
+  const lines = Array.from({ length: 40 }, (_, i) => `+ line ${i + 1}`).join('\n');
+  const card = formatCard({
+    tool: 'write_file',
+    args: { file_path: 'src/big.mjs' },
+    result: {
+      success: true,
+      lines_added: 40,
+      lines_removed: 0,
+      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    },
+    durationMs: 45,
+    columns: 120,
+  });
+  const cardLines = stripAnsi(card).split('\n').filter(Boolean);
+  // The card body (post-header) must not dump all 40 diff lines — cap ~20.
+  assert.ok(cardLines.length <= 20,
+    `compact card grew to ${cardLines.length} lines — should stay bounded`);
+
+  // Detail view is the escape hatch: gives the model/user access to more.
+  const detail = detailFor({
+    id: 'x',
+    tool: 'write_file',
+    args: { file_path: 'src/big.mjs' },
+    result: {
+      success: true,
+      lines_added: 40,
+      lines_removed: 0,
+      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    },
+  });
+  const detailLines = stripAnsi(detail).split('\n').filter(Boolean);
+  assert.ok(detailLines.length > cardLines.length,
+    'detail should expose more than the compact preview');
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

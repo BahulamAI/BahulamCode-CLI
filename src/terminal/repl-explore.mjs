@@ -10,9 +10,18 @@
 const EXPLORE_TOOL_CATEGORY = new Map([
   ['read_file', 'read'], ['read', 'read'], ['read_files', 'read'],
   ['read_batch', 'read'], ['get_file_info', 'read'],
+  // analyze_code is the "cheap 10x-lighter than read_file" tool the system
+  // prompt tells the agent to prefer for structure lookups. Burst usage is
+  // as common as read bursts, so classify it as a read for collapse.
+  ['analyze_code', 'read'],
   ['list_files', 'list'], ['glob', 'list'], ['ls', 'list'],
   ['search_code', 'search'], ['search_files', 'search'], ['grep', 'search'],
+  // validate_* tools are read-only structure/build checks the agent chains
+  // during post-write verification. They fit naturally in a search-ish bucket
+  // ("checking") rather than opening a discrete card per call.
+  ['validate_file', 'search'], ['validate_structure', 'search'],
   ['index_project', 'index'], ['register_project', 'index'],
+  ['get_project_overview', 'index'],
 ]);
 
 export function exploreCollapseEnabled() {
