@@ -57,9 +57,13 @@ import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskC
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
 import {
   appendVisionAnalysisToInstruction,
+  appendDocumentsToInstruction,
   attachmentSummaryLine,
+  documentSummaryLine,
   prepareImageAttachments,
+  prepareDocumentAttachments,
   publicAttachmentMetadata,
+  publicDocumentMetadata,
   resolveAttachmentPath,
   writeClipboardImageToTemp,
 } from '../core/attachments.mjs';
@@ -3335,8 +3339,28 @@ export async function startTerminalRepl() {
     }
 
     try {
+      // ── Document attachments (client-side, PRD-091 shape 1) ──
+      // Extract text locally (PDF via pdf-parse, others as UTF-8). We stage
+      // the docs here and inline their text into the user turn LAST, after
+      // vision/image processing, because the image parser normalizes
+      // whitespace and would collapse the doc block's newlines.
+      const docPrep = await prepareDocumentAttachments(originalInput, { cwd: safeCwd() });
+      if (docPrep.documents.length) {
+        process.stderr.write(
+          `  ${c.brand('◇')} ${c.dim(`attached ${docPrep.documents.length} document${docPrep.documents.length === 1 ? '' : 's'}:`)} ` +
+          `${docPrep.documents.map(documentSummaryLine).join(c.dim(' · '))}\n`
+        );
+        jsonlWriter.writeKeplerEvent({
+          type: 'attachments',
+          data: { documents: docPrep.documents.map(publicDocumentMetadata) },
+        });
+      }
+      // Image parser operates on the doc-stripped instruction so @doc.pdf
+      // refs are already gone by the time it sees the text.
+      const imageSourceInput = docPrep.instruction || originalInput;
+
       const pending = pendingVisionPaths(ctx);
-      const prepared = prepareImageAttachments(originalInput, {
+      const prepared = prepareImageAttachments(imageSourceInput, {
         cwd: safeCwd(),
         extraPaths: pending,
       });
@@ -3371,6 +3395,11 @@ export async function startTerminalRepl() {
         }
       } else {
         input = prepared.instruction || originalInput;
+      }
+      // Inline documents AFTER image/vision handling so their newlines
+      // survive the image parser's whitespace normalization.
+      if (docPrep.documents.length) {
+        input = appendDocumentsToInstruction(input, docPrep.documents);
       }
     } catch (err) {
       process.stderr.write(`  ${c.red('Vision error: ' + (err.message || String(err)))}\n`);

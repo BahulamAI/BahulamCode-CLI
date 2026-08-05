@@ -5,8 +5,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+// Text-first document formats we can extract client-side and inline into the
+// user turn as plain text — zero backend upload, zero tool call. PDFs go
+// through pdf-parse; the rest are read as UTF-8.
+const DOCUMENT_EXTENSIONS = new Set([
+  '.pdf',
+  '.txt', '.md', '.mdx', '.rst',
+  '.csv', '.tsv', '.log',
+  '.json', '.yaml', '.yml', '.toml', '.ini', '.env',
+  '.html', '.htm', '.xml',
+]);
 const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_TURN_BYTES = 20 * 1024 * 1024;
+// Per-document and per-turn caps for inlined document text. Keep well under
+// context so multiple attachments still leave room for the actual work.
+const DEFAULT_MAX_DOC_CHARS = 80_000;
+const DEFAULT_MAX_TURN_DOC_CHARS = 200_000;
+const DEFAULT_MAX_DOC_BYTES = 5 * 1024 * 1024;
 
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -359,6 +374,234 @@ export function prepareImageAttachments(input, {
     attachments,
     metadata: attachments.map(publicAttachmentMetadata),
   };
+}
+
+// ── Document attachments (PRD-091 shared tools mirror) ──────────────────
+//
+// Same @path parser shape as images, but for text-first formats we can
+// extract client-side and inline as text into the user turn. Zero upload,
+// zero tool round-trip. PDFs go through pdf-parse; text formats are read
+// as UTF-8 with a byte + char cap. Kept in this module so callers get one
+// unified attachment pipeline.
+
+function looksLikeDocumentPath(value) {
+  const ext = path.extname(String(value || '').toLowerCase());
+  return DOCUMENT_EXTENSIONS.has(ext);
+}
+
+function looksLikeAttachment(value) {
+  return looksLikeImagePath(value) || looksLikeDocumentPath(value);
+}
+
+/**
+ * Parse @path references from `input` for BOTH images and documents.
+ * Returns a cleaned instruction (with @refs removed) plus separate
+ * image + document reference lists. Mirrors parseImageReferences but
+ * dispatches on extension.
+ */
+export function parseAttachmentReferences(input, { cwd = process.cwd() } = {}) {
+  const text = String(input || '');
+  const images = [];
+  const documents = [];
+  let cleaned = '';
+  let i = 0;
+
+  while (i < text.length) {
+    if (text[i] !== '@') {
+      cleaned += text[i++];
+      continue;
+    }
+    const next = text[i + 1];
+    let parsed = null;
+    if (next === '"' || next === "'") {
+      parsed = readQuoted(text, i + 1);
+    } else if (next && !/\s/.test(next)) {
+      parsed = readBare(text, i + 1);
+    }
+    if (!parsed || !looksLikeAttachment(parsed.value)) {
+      cleaned += text[i++];
+      continue;
+    }
+    const attachment = {
+      raw: parsed.value,
+      path: resolveAttachmentPath(parsed.value, cwd),
+    };
+    if (looksLikeImagePath(parsed.value)) images.push(attachment);
+    else documents.push(attachment);
+    i = parsed.end;
+  }
+
+  return {
+    instruction: cleaned.replace(/\s+/g, ' ').trim(),
+    images,
+    documents,
+  };
+}
+
+async function extractPdfText(filePath, { maxChars }) {
+  // pdf-parse is a CJS module. Dynamic import so ESM callers stay clean and
+  // we don't pay the parse cost on startup for CLIs that never touch PDFs.
+  const { default: pdfParse } = await import('pdf-parse');
+  const buffer = fs.readFileSync(filePath);
+  const parsed = await pdfParse(buffer);
+  const raw = String(parsed?.text || '').trim();
+  const truncated = raw.length > maxChars;
+  return {
+    text: truncated ? raw.slice(0, maxChars) : raw,
+    pages: parsed?.numpages || 0,
+    truncated,
+  };
+}
+
+function extractPlainText(filePath, { maxChars }) {
+  const buffer = fs.readFileSync(filePath);
+  // Best-effort UTF-8; binary files that sneak through the ext list will
+  // still decode but likely with replacement chars. That's a signal to the
+  // model that this attachment is not meaningful text.
+  const raw = buffer.toString('utf-8');
+  const truncated = raw.length > maxChars;
+  return {
+    text: truncated ? raw.slice(0, maxChars) : raw,
+    pages: 0,
+    truncated,
+  };
+}
+
+/**
+ * Load a single document attachment. Reads locally, extracts text, returns
+ * a public metadata block plus the extracted text. Errors bubble as
+ * throws — callers should catch per-document and continue.
+ */
+export async function loadDocumentAttachment(filePath, {
+  cwd = process.cwd(),
+  maxBytes = DEFAULT_MAX_DOC_BYTES,
+  maxChars = DEFAULT_MAX_DOC_CHARS,
+} = {}) {
+  const resolved = path.isAbsolute(filePath) ? filePath : resolveAttachmentPath(filePath, cwd);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Document not found: ${filePath}`);
+  }
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    throw new Error(`Not a file: ${filePath}`);
+  }
+  if (stat.size > maxBytes) {
+    throw new Error(
+      `Document ${path.basename(resolved)} is ${Math.round(stat.size / 1024)} KB, ` +
+      `exceeds ${Math.round(maxBytes / 1024)} KB cap`,
+    );
+  }
+
+  const ext = path.extname(resolved).toLowerCase();
+  const isPdf = ext === '.pdf';
+  const { text, pages, truncated } = isPdf
+    ? await extractPdfText(resolved, { maxChars })
+    : extractPlainText(resolved, { maxChars });
+
+  const buffer = fs.readFileSync(resolved);
+  const sha256 = createHash('sha256').update(buffer).digest('hex');
+
+  return {
+    id: randomUUID(),
+    path: resolved,
+    name: path.basename(resolved),
+    ext,
+    kind: isPdf ? 'pdf' : 'text',
+    bytes: stat.size,
+    chars: text.length,
+    pages,
+    truncated,
+    sha256,
+    text,
+  };
+}
+
+/**
+ * Public metadata for a document (drop the text body — that's for the
+ * inline block, not the transcript log).
+ */
+export function publicDocumentMetadata(doc) {
+  if (!doc) return null;
+  return {
+    id: doc.id,
+    name: doc.name,
+    path: doc.path,
+    ext: doc.ext,
+    kind: doc.kind,
+    bytes: doc.bytes,
+    chars: doc.chars,
+    pages: doc.pages,
+    truncated: doc.truncated,
+    sha256: doc.sha256,
+  };
+}
+
+export function documentSummaryLine(doc) {
+  if (!doc) return '';
+  const size = doc.bytes > 1024
+    ? `${Math.round(doc.bytes / 1024)} KB`
+    : `${doc.bytes} B`;
+  const extra = doc.pages ? `, ${doc.pages} page${doc.pages === 1 ? '' : 's'}` : '';
+  const trunc = doc.truncated ? ' · truncated' : '';
+  return `${doc.name} (${doc.kind}${extra}, ${size}${trunc})`;
+}
+
+/**
+ * Batch-prepare document attachments (parse + load) with a per-turn
+ * character budget. Returns { instruction (@refs stripped), documents,
+ * metadata }. Throws if the combined extracted text exceeds
+ * DEFAULT_MAX_TURN_DOC_CHARS.
+ */
+export async function prepareDocumentAttachments(input, {
+  cwd = process.cwd(),
+  extraPaths = [],
+  maxDocBytes = envInt('BAHULAM_DOC_MAX_BYTES', DEFAULT_MAX_DOC_BYTES),
+  maxDocChars = envInt('BAHULAM_DOC_MAX_CHARS', DEFAULT_MAX_DOC_CHARS),
+  maxTurnDocChars = envInt('BAHULAM_DOC_MAX_TURN_CHARS', DEFAULT_MAX_TURN_DOC_CHARS),
+} = {}) {
+  const parsed = parseAttachmentReferences(input, { cwd });
+  const paths = [
+    ...parsed.documents.map(ref => ref.path),
+    ...extraPaths.map(p => resolveAttachmentPath(p, cwd)),
+  ];
+  const uniquePaths = [...new Set(paths)];
+  const documents = [];
+  for (const p of uniquePaths) {
+    documents.push(await loadDocumentAttachment(p, { cwd, maxBytes: maxDocBytes, maxChars: maxDocChars }));
+  }
+  const totalChars = documents.reduce((sum, d) => sum + (d.chars || 0), 0);
+  if (totalChars > maxTurnDocChars) {
+    throw new Error(
+      `Attached documents total ${totalChars.toLocaleString()} chars, ` +
+      `exceeds per-turn cap of ${maxTurnDocChars.toLocaleString()}`,
+    );
+  }
+  return {
+    instruction: parsed.instruction || String(input || '').trim(),
+    documents,
+    metadata: documents.map(publicDocumentMetadata),
+  };
+}
+
+/**
+ * Fold extracted document text into the user turn as a bounded block. The
+ * agent sees the content directly — no tool call needed. Format is stable
+ * so read_attachment output and inlined output look the same shape to the
+ * model.
+ */
+export function appendDocumentsToInstruction(instruction, documents) {
+  const docs = (documents || []).filter(d => d && d.text);
+  if (!docs.length) return String(instruction || '');
+  const parts = [String(instruction || '').trim()];
+  for (const doc of docs) {
+    const meta = `${doc.name}` +
+      (doc.pages ? ` · ${doc.pages} page${doc.pages === 1 ? '' : 's'}` : '') +
+      (doc.truncated ? ` · truncated to ${doc.chars.toLocaleString()} chars` : '');
+    parts.push('');
+    parts.push(`[Attached document: ${meta}]`);
+    parts.push(doc.text);
+  }
+  return parts.join('\n');
 }
 
 export function appendVisionAnalysisToInstruction(instruction, analysis) {
