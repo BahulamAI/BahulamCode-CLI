@@ -93,8 +93,24 @@ export function parseImageReferences(input, { cwd = process.cwd() } = {}) {
       parsed = readBare(text, i + 1);
     }
 
-    if (!parsed || !looksLikeImagePath(parsed.value)) {
+    if (!parsed || (!looksLikeImagePath(parsed.value) && !isClipboardAlias(parsed.value))) {
       cleaned += text[i++];
+      continue;
+    }
+
+    // @clipboard / @paste — resolve via OS clipboard, attach the resulting
+    // temp file path. Skipping (with a stderr note) on unsupported platforms
+    // or empty clipboards so the rest of the parse continues cleanly.
+    if (isClipboardAlias(parsed.value)) {
+      try {
+        const filePath = writeClipboardImageToTemp();
+        attachments.push({ raw: parsed.value, path: filePath, source: 'clipboard' });
+      } catch (err) {
+        try {
+          process.stderr.write(`  ! @${parsed.value} skipped — ${err.message || String(err)}\n`);
+        } catch {}
+      }
+      i = parsed.end;
       continue;
     }
 
@@ -389,8 +405,16 @@ function looksLikeDocumentPath(value) {
   return DOCUMENT_EXTENSIONS.has(ext);
 }
 
+// Special reference tokens (no path extension) — parser recognises them
+// and resolves at parse time.
+const CLIPBOARD_ALIASES = new Set(['clipboard', 'paste']);
+
+function isClipboardAlias(value) {
+  return CLIPBOARD_ALIASES.has(String(value || '').trim().toLowerCase());
+}
+
 function looksLikeAttachment(value) {
-  return looksLikeImagePath(value) || looksLikeDocumentPath(value);
+  return looksLikeImagePath(value) || looksLikeDocumentPath(value) || isClipboardAlias(value);
 }
 
 /**
@@ -422,6 +446,25 @@ export function parseAttachmentReferences(input, { cwd = process.cwd() } = {}) {
       cleaned += text[i++];
       continue;
     }
+
+    // @clipboard / @paste — resolve now via the OS clipboard helper. Side
+    // effect (writes a temp PNG) is fine at parse time because the parser
+    // is called once per turn, matching when the user typed @clipboard.
+    if (isClipboardAlias(parsed.value)) {
+      try {
+        const filePath = writeClipboardImageToTemp();
+        images.push({ raw: parsed.value, path: filePath, source: 'clipboard' });
+      } catch (err) {
+        // Emit a stderr note so the user knows why their @clipboard
+        // reference didn't attach anything, then drop it from the parse.
+        try {
+          process.stderr.write(`  ! @${parsed.value} skipped — ${err.message || String(err)}\n`);
+        } catch {}
+      }
+      i = parsed.end;
+      continue;
+    }
+
     const attachment = {
       raw: parsed.value,
       path: resolveAttachmentPath(parsed.value, cwd),

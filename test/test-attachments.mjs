@@ -147,6 +147,21 @@ await asyncTest('parseAttachmentReferences splits image + doc refs', () => {
   return Promise.resolve();
 });
 
+await asyncTest('parseAttachmentReferences recognises @clipboard as an image ref (falls back gracefully)', () => {
+  // We can't guarantee the clipboard has an image on the test runner,
+  // so we accept EITHER: (a) it resolved to a temp path (rare but ok),
+  // or (b) it was skipped with a stderr warning and no ref was added.
+  // Both paths mean parsing didn't crash and the @token was consumed.
+  const parsed = parseAttachmentReferences('explain @clipboard');
+  assert.ok(!parsed.instruction.includes('@clipboard'),
+    '@clipboard token should be consumed from the instruction regardless of outcome');
+  assert.ok(parsed.images.length <= 1, 'at most one clipboard image');
+  if (parsed.images.length === 1) {
+    assert.strictEqual(parsed.images[0].source, 'clipboard');
+  }
+  return Promise.resolve();
+});
+
 await asyncTest('parseAttachmentReferences recognizes common doc extensions', () => {
   const parsed = parseAttachmentReferences(
     '@a.txt @b.md @c.mdx @d.csv @e.json @f.yaml @g.toml @h.log @i.rst @j.pdf',
