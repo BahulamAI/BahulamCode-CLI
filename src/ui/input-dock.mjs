@@ -29,6 +29,8 @@
  *
  * Config:
  *   BAHULAM_INPUT_ROWS_MAX / KEPLER_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
+ *   BAHULAM_TTY_MODE=stable / KEPLER_TTY_MODE=stable        scrollback-safe transcript, no fixed dock
+ *   BAHULAM_PLAIN=1 / KEPLER_PLAIN=1                        deterministic no-ANSI output for automation
  *   BAHULAM_FIXED_INPUT=0 / KEPLER_FIXED_INPUT=0             disable dock entirely (fallback readline)
  */
 
@@ -347,6 +349,7 @@ export function isInputDockMounted() {
 export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
   const t = term();
   if (!t.isTTY || t.plain) return false;
+  if (t.ttyMode !== 'rich' || t.fixedInput === false) return false;
   if (process.env.BAHULAM_FIXED_INPUT === '0' || process.env.KEPLER_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 

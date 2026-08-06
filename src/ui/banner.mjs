@@ -8,7 +8,6 @@
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
 
-import { icons } from './icons.mjs';
 import { paint, strip } from './palette.mjs';
 import { term } from './term.mjs';
 
@@ -17,56 +16,54 @@ const write = (s) => { try { out.write(s); } catch {} };
 
 // ── Brand banner ─────────────────────────────────────────────────────────
 
-// BAHULAM CODE is the product wordmark; the 0xB0 motif is preserved as a
-// dev-culture callback beneath it.
-
-// Renders a gradient purple → magenta → cyan across the given string, one
-// codepoint at a time. Falls back to a plain (no-color) string when the
-// terminal doesn't support color at all.
-function gradientText(text) {
-  if (!term().color) return text;
-  const chars = [...text];
-  const painters = [paint.brand.primary, paint.brand.accent, paint.brand.data];
-  return chars.map((ch, i) => painters[Math.floor((i / Math.max(1, chars.length)) * painters.length)](ch)).join('');
-}
-
-/**
- * Render the framed BAHULAM CODE wordmark. Box is 24 cols wide, 3 rows
- * tall, and fits any terminal ≥40 cols.
- */
-function wordmarkFrame() {
-  const dim = paint.text.dim;
-  const top    = dim('╔════════════════════════╗');
-  const bottom = dim('╚════════════════════════╝');
-  const inner  = dim('║');
-  //   ║   BAHULAM  CODE   ║  — 3-space pad each side around a 18-char wordmark
-  const glyph  = paint.bold(gradientText('BAHULAM  CODE'));
-  const bodyPad = ' '.repeat(5);
-  const tailPad = ' '.repeat(6);
+function abundanceGlyph() {
+  const loop = term().unicode ? '∞' : 'o';
   return [
-    `       ${top}`,
-    `       ${inner}${bodyPad}${glyph}${tailPad}${inner}`,
-    `       ${bottom}`,
-  ].join('\n');
+    `  ${loop}${loop}   ${loop}${loop}  `,
+    `${loop}   ${loop} ${loop}   ${loop}`,
+    `${loop}    ${loop}    ${loop}`,
+    `${loop}   ${loop} ${loop}   ${loop}`,
+    `  ${loop}${loop}   ${loop}${loop}  `,
+  ];
+}
+
+function wordmarkLines() {
+  return [
+    '████   ███  █   █ █   █ █      ███  █   █',
+    '█   █ █   █ █   █ █   █ █     █   █ ██ ██',
+    '████  █████ █████ █   █ █     █████ █ █ █',
+    '█   █ █   █ █   █ █   █ █     █   █ █   █',
+    '████  █   █ █   █  ███  █████ █   █ █   █',
+  ];
 }
 
 /**
- * Print the branded orbital banner.
+ * Render the branded startup banner.
+ */
+export function renderBanner(version = '') {
+  const dim = paint.text.dim;
+  const mark = abundanceGlyph();
+  const wordmark = wordmarkLines();
+  const code = paint.brand.data('code');
+  const vTag = version ? `${dim(' · v' + version)}` : '';
+  const markWidth = 11;
+  const wordmarkIndent = ' '.repeat(2 + markWidth + 2);
+  const lines = [''];
+
+  for (let i = 0; i < wordmark.length; i++) {
+    lines.push(`  ${paint.brand.accent(mark[i].padEnd(markWidth))}  ${paint.bold(paint.brand.primary(wordmark[i]))}`);
+  }
+
+  lines.push(`${wordmarkIndent}${code} ${dim('· abundance in your terminal')}${vTag}`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Print the branded startup banner.
  */
 export function printBanner(version = '') {
-  const dim = paint.text.dim;
-  const orbit = paint.brand.accent(icons.orbit);
-  const dev = paint.brand.data('0xB0');
-  const vTag = version ? `${dim(' — ')}${dim('v' + version)}` : '';
-
-  write('\n');
-  write(`         ${orbit} ${dim('· bahulam — abundance')}\n`);
-  write('\n');
-  write(`${wordmarkFrame()}\n`);
-  write('\n');
-  write(`              ${dim('abundance, in your terminal')}\n`);
-  write(`              ${dev}${vTag}\n`);
-  write('\n');
+  write(renderBanner(version));
 }
 
 // ── Project info bar ─────────────────────────────────────────────────────

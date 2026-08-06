@@ -180,6 +180,15 @@ test('mountInputDock signature accepts { inputRowsMax }', () => {
     'mountInputDock should accept inputRowsMax option');
 });
 
+test('stable tty mode disables the fixed input dock', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'stable', fixedInput: false });
+  try {
+    assert.strictEqual(dock.mountInputDock(), false);
+  } finally {
+    _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'rich', fixedInput: true });
+  }
+});
+
 test('unmountInputDock clears dock rows before resetting terminal state', () => {
   const source = dock.unmountInputDock.toString();
   assert.ok(source.includes('clearDockArea({ restore: false })'),

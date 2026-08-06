@@ -12,6 +12,7 @@ import {
   exploreCategory as _exploreCategory,
   _knownExploreTools,
 } from '../src/terminal/repl-explore.mjs';
+import { renderBanner } from '../src/ui/banner.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
@@ -43,6 +44,26 @@ test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
   const cyan = c.cyan('code');
   assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
     `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
+});
+
+test('startup banner uses compact abundance mark with ASCII fallback', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
+  const rendered = stripAnsi(renderBanner('2.6.8'));
+  assert.ok(rendered.includes('∞∞   ∞∞'));
+  assert.ok(rendered.includes('████   ███  █   █'));
+  assert.ok(rendered.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(!rendered.includes('बहुलम्'));
+  assert.ok(!rendered.includes('0xB0'));
+  assert.ok(!rendered.includes('╔'));
+
+  _setTermForTesting({ isTTY: true, color: false, colorLevel: 'none', plain: true, unicode: false });
+  const fallback = renderBanner('2.6.8');
+  assert.ok(fallback.includes('oo   oo'));
+  assert.ok(fallback.includes('████   ███  █   █'));
+  assert.ok(fallback.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(!/\x1b\[/.test(fallback), `plain banner has ANSI: ${JSON.stringify(fallback)}`);
+
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
 });
 
 test('text.primary wraps user labels; markdown links are underlined', () => {
@@ -595,15 +616,17 @@ test('approval prompt uses risk title and compact scoped menu', () => {
     why: 'Resetting dependencies after a Node upgrade, but this removes a directory and needs explicit confirmation.',
     width: 82,
   }));
-  assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('dangerous · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('risk   rm -rf'));
+  assert.ok(rendered.includes('reason Resetting dependencies'));
   assert.ok(rendered.includes('Decision'));
   assert.ok(rendered.includes('cancel'));
   assert.ok(!rendered.includes('[?] why'));
   assert.ok(!rendered.includes('re-plan'));
   assert.ok(rendered.includes('rm -rf node_modules'));
-  assert.ok(!rendered.includes('Why  Resetting dependencies'));
   assert.ok(!rendered.includes('┃'));
   assert.ok(!rendered.includes('▔'));
+  assert.ok(!rendered.includes('────'));
 });
 
 test('approval prompt compacts shell cwd wrapper', () => {
@@ -632,8 +655,9 @@ test('approval compatibility wrapper uses unified prompt', () => {
     tier: TIERS.SHELL_MEDIUM,
     why: 'verify the change',
   }));
-  assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
+  assert.ok(inline.includes('approval · SHELL-MEDIUM'));
   assert.ok(inline.includes('Decision'));
+  assert.ok(inline.includes('reason verify the change'));
   assert.ok(inline.includes('always allow'));
   assert.ok(inline.includes('cancel'));
   assert.ok(!inline.includes('[?] why'));
