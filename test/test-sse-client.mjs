@@ -7,6 +7,8 @@ import * as telemetry from '../src/telemetry/index.mjs';
 import * as http from 'node:http';
 import assert from 'node:assert';
 
+process.env.BAHULAM_RUNTIME_MODE = 'remote';
+
 let passed = 0;
 let failed = 0;
 

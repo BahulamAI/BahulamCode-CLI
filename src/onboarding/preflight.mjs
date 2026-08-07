@@ -42,6 +42,20 @@ export async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
   const creds = auth.loadCredentials();
   const hasToken = !!creds.token;
   const url = creds.backendUrl;
+
+  // Bundled runtime mode: the local Python runtime replaces the cloud
+  // backend for agent execution. Probing a remote /api/user/me here would
+  // falsely paint the CLI as "Offline" even though the local runtime
+  // is fully operational. Report bundled state directly.
+  const bundledMode =
+    process.env.BAHULAM_RUNTIME_MODE === 'bundled' ||
+    process.env.TARANG_ENV === 'bundled';
+  if (bundledMode) {
+    return hasToken
+      ? { status: 'ok', label: 'Bundled runtime · authenticated' }
+      : { status: 'warn', label: 'Bundled runtime', hint: '/login to enable metered calls' };
+  }
+
   // Local Docker backends round-trip Supabase and often take 2–4s. Give them
   // more headroom so preflight doesn't falsely report Offline.
   const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:|$|\/)/i.test(url || '');

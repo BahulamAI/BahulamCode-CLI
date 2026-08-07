@@ -47,7 +47,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        emit({ type: 'error', error: 'Not logged in. Run: bahulam-code login' });
+        emit({ type: 'error', error: 'Not logged in. Run: bahulam login' });
         process.exit(1);
     }
 
