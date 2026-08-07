@@ -180,29 +180,29 @@ async function main() {
   \x1b[1m\x1b[36mBahulam Code\x1b[0m — Bahulam's coding agent — bahulam.ai
 
   \x1b[1mUsage:\x1b[0m
-    bahulam-code                        Start interactive REPL
-    bahulam-code "instruction"          Run a single instruction
-    bahulam-code --headless -p "x"      Non-interactive: auto-approve, JSONL output
-    bahulam-code --headless -p "x" --vision screenshot.png
+    bahulam                        Start interactive REPL
+    bahulam "instruction"          Run a single instruction
+    bahulam --headless -p "x"      Non-interactive: auto-approve, JSONL output
+    bahulam --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
-    bahulam-code --resume               Resume last conversation
-    bahulam-code dashboard              Open analytics dashboard
-    bahulam-code login                  Sign in via browser
-    bahulam-code logout                 Sign out and clear credentials
-    bahulam-code init                   Scaffold .bahulam config, memory, hooks, tasks
-    bahulam-code version                Show version
+    bahulam --resume               Resume last conversation
+    bahulam dashboard              Open analytics dashboard
+    bahulam login                  Sign in via browser
+    bahulam logout                 Sign out and clear credentials
+    bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
+    bahulam version                Show version
 
   \x1b[1mAnalytics:\x1b[0m
-    bahulam-code sessions               List recent local sessions
-    bahulam-code stats                  Show aggregate local session stats
-    bahulam-code history                Show recent prompt history
+    bahulam sessions               List recent local sessions
+    bahulam stats                  Show aggregate local session stats
+    bahulam history                Show recent prompt history
 
   \x1b[1mSkills:\x1b[0m
-    bahulam-code skills list [--all|--project]
-    bahulam-code skills view <name> [resource]
-    bahulam-code skills install <path-or-git-url> [--project] [--force]
-    bahulam-code skills update <name> [--project]
-    bahulam-code skills remove <name> [--project]
+    bahulam skills list [--all|--project]
+    bahulam skills view <name> [resource]
+    bahulam skills install <path-or-git-url> [--project] [--force]
+    bahulam skills update <name> [--project]
+    bahulam skills remove <name> [--project]
 
   \x1b[1mREPL Commands:\x1b[0m
     /help                   Show available commands
@@ -237,6 +237,7 @@ async function main() {
     KEPLER_CONFIG_DIR         Legacy config directory override
     KEPLER_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
+    BAHULAM_TTY_MODE=stable Scrollback-safe transcript if fixed dock redraws leak
     KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
 
   \x1b[2mDocs: https://bahulam.ai\x1b[0m

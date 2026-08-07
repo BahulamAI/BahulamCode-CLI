@@ -12,6 +12,8 @@ import assert from 'node:assert';
 
 import { TarangStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
 
+process.env.BAHULAM_RUNTIME_MODE = 'remote';
+
 let passed = 0;
 async function test(name, fn) {
   await fn();

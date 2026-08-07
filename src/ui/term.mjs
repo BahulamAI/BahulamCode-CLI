@@ -33,7 +33,10 @@ function readEnv() {
   return {
     NO_COLOR: env.NO_COLOR,
     FORCE_COLOR: env.FORCE_COLOR,
+    BAHULAM_PLAIN: env.BAHULAM_PLAIN,
     KEPLER_PLAIN: env.KEPLER_PLAIN,
+    BAHULAM_TTY_MODE: env.BAHULAM_TTY_MODE,
+    KEPLER_TTY_MODE: env.KEPLER_TTY_MODE,
     COLORTERM: (env.COLORTERM || '').toLowerCase(),
     TERM: (env.TERM || '').toLowerCase(),
     TERM_PROGRAM: env.TERM_PROGRAM || '',
@@ -44,6 +47,7 @@ function readEnv() {
 function detectColorLevel(env, isTTY) {
   // Hard opt-out (https://no-color.org). Honored even on TTYs.
   if (env.NO_COLOR !== undefined && env.NO_COLOR !== '') return 'none';
+  if (env.BAHULAM_PLAIN === '1') return 'none';
   if (env.KEPLER_PLAIN === '1') return 'none';
 
   // Hard opt-in. FORCE_COLOR=1|2|3 maps to ansi16|ansi256|truecolor.
@@ -79,6 +83,7 @@ function detectColorLevel(env, isTTY) {
 }
 
 function detectUnicode(env) {
+  if (env.BAHULAM_PLAIN === '1') return false;
   if (env.KEPLER_PLAIN === '1') return false;
   // Most modern terminals on macOS/Linux handle UTF-8.
   // Windows ConEmu / older terminals are the main holdouts; conservative
@@ -89,10 +94,18 @@ function detectUnicode(env) {
   return false;
 }
 
+function detectTtyMode(env) {
+  const raw = String(env.BAHULAM_TTY_MODE || env.KEPLER_TTY_MODE || '').trim().toLowerCase();
+  if (env.BAHULAM_PLAIN === '1' || env.KEPLER_PLAIN === '1') return 'plain';
+  if (raw === 'stable' || raw === 'simple' || raw === 'static' || raw === 'transcript') return 'stable';
+  return 'rich';
+}
+
 function compute() {
   const env = readEnv();
   const isTTY = !!(process.stdout && process.stdout.isTTY);
   const level = detectColorLevel(env, isTTY);
+  const ttyMode = detectTtyMode(env);
   return {
     isTTY,
     colorLevel: level,                       // 'none' | 'ansi16' | 'ansi256' | 'truecolor'
@@ -100,7 +113,9 @@ function compute() {
     truecolor: level === 'truecolor',
     ansi256: level === 'ansi256' || level === 'truecolor',
     unicode: detectUnicode(env),
-    plain: env.KEPLER_PLAIN === '1',
+    ttyMode,                                 // 'rich' | 'stable' | 'plain'
+    plain: ttyMode === 'plain',
+    fixedInput: ttyMode === 'rich',
     columns: (process.stdout && process.stdout.columns) || 80,
     rows: (process.stdout && process.stdout.rows) || 24,
     ci: !!env.CI,

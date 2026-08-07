@@ -1623,7 +1623,7 @@ print('OK: replaced')
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run bahulam-code login first.');
+                throw new Error('Not logged in. Run bahulam login first.');
             }
 
             const headers = {
@@ -1695,7 +1695,7 @@ print('OK: replaced')
             }
             const creds = new TarangAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
-                throw new Error('Not logged in. Run bahulam-code login first.');
+                throw new Error('Not logged in. Run bahulam login first.');
             }
 
             const workflowId = await resolveWorkflowId(creds, target);

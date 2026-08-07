@@ -42,22 +42,52 @@ az vm run-command invoke -g $RG -n swebench-eval-vm \
 
 ## Setup from Scratch
 
-### 1. Deploy code to VM
+### 1. Deploy code to VM (current practice — tarball sync)
 
-From your laptop (with repos checked out under a common parent dir):
-
-```bash
-./benchmark/deploy-and-run.sh <VM_IP> <MODEL> [PARALLEL] [OPTIONS]
-
-# Examples:
-./benchmark/deploy-and-run.sh 20.9.77.9 deepseek/deepseek-v4-flash 1
-./benchmark/deploy-and-run.sh 20.9.77.9 minimax/minimax-m3 1 --skip-setup
-```
-
-Or use `vm-setup.sh` for setup-only (no benchmark run):
+Old `deploy-and-run.sh` and `vm-setup.sh` scripts are unused and stale. The actual sync pattern we run every time we bump framework/backend/CLI:
 
 ```bash
-./benchmark/vm-setup.sh
+# From your laptop, in "Tarang Orca" parent dir:
+
+# a. Package framework (source only, no build artifacts)
+tar czf /tmp/framework.tar.gz \
+  -C tarang-ai-agent-framework/agent-framework-pypi \
+  --exclude='__pycache__' --exclude='*.egg-info' \
+  --exclude='dist' --exclude='build' --exclude='.pytest_cache' \
+  src pyproject.toml
+
+# b. Package backend (app + configs + Dockerfile; drop junk)
+tar czf /tmp/backend.tar.gz -C codekepler-backend \
+  --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
+  --exclude='node_modules' --exclude='.pytest_cache' \
+  --exclude='*.egg-info' --exclude='.mypy_cache' --exclude='dist' \
+  --exclude='build' --exclude='local' --exclude='.next' \
+  app configs Dockerfile
+
+# c. Package harness only (if CLI changes, add `src` too)
+tar czf /tmp/harness.tar.gz -C codekepler-npm \
+  --exclude='node_modules' --exclude='__pycache__' benchmark
+
+# d. Ship
+scp /tmp/framework.tar.gz /tmp/backend.tar.gz /tmp/harness.tar.gz \
+  azureuser@20.9.77.9:~/
+
+# e. Install on VM
+ssh azureuser@20.9.77.9 <<'SSH'
+set -a && source ~/.tarang-benchmark.env && set +a
+source ~/backend-env/bin/activate
+
+# Extract framework and reinstall (editable)
+cd ~/tarang-ai-agent-framework/agent-framework-pypi && tar xzf ~/framework.tar.gz
+pip install -e . --quiet
+
+# Extract backend + harness (overlays existing files)
+cd ~/tarang-backend && tar xzf ~/backend.tar.gz
+cd ~/codekepler-npm && tar xzf ~/harness.tar.gz
+
+# Verify
+python3 -c "import agent_framework; print('framework:', agent_framework.__version__)"
+SSH
 ```
 
 ### 2. Configure environment
@@ -65,19 +95,47 @@ Or use `vm-setup.sh` for setup-only (no benchmark run):
 The env file `~/.tarang-benchmark.env` must contain:
 
 ```bash
-# Required
+# ── Auth / secrets ──────────────────────────────────
 OPENROUTER_API_KEY=sk-or-v1-...
 LICENSE_KEY=eyJ...                    # Agent framework license JWT
-SKIP_QUOTA=1
-TARANG_ENV=local
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...
 
-# Recommended
-KEPLER_STAGNATION_DETECTION=true
-KEPLER_ENHANCED_STAGNATION=true
-KEPLER_STAGNATION_THRESHOLD=3
-KEPLER_MEMORY_ENABLED=false           # Prevents cross-session path leaks
-KEPLER_PREFLIGHT_PLAN=true            # Pre-flight plan with reasoning model
+# ── Backend flags ───────────────────────────────────
+SKIP_QUOTA=1                          # Bypass credit-check for benchmark user
+TARANG_ENV=local                      # CLI resolves to http://127.0.0.1:8150
+LLM_GATEWAY=OpenRouterGateway
+ENCRYPTION_SECRET=dev-secret-change-in-production
+
+# ── Model routing (the ONLY levers that matter) ─────
+# Main coder model — swap this to change the primary agent between v-runs:
+PLATFORM_REASONING_MODEL=deepseek/deepseek-v4-flash
+
+# Ceiling defaults (used when user has no per-role override):
+PLATFORM_FAST_MODEL=deepseek/deepseek-v4-flash
+PLATFORM_ORCHESTRATOR_MODEL=deepseek/deepseek-v4-pro
+
+# Sub-agent per-role overrides (win over PLATFORM_ROUTING in sub_agents.py):
+EXPLORER_MODEL=minimax/minimax-m3     # or: SUB_AGENT_EXPLORE_MODEL=...
+PLAN_MODEL=deepseek/deepseek-v4-pro   # or: SUB_AGENT_PLAN_MODEL=...
+
+# ── Agent behaviour flags (AGENT_* prefix, NOT KEPLER_*) ─
+AGENT_MEMORY_ENABLED=false            # Prevents cross-session path leaks
+AGENT_PREFLIGHT_PLAN=true             # Pre-flight plan with reasoning model
+AGENT_PREFLIGHT_TIMEOUT_SECONDS=120
 ```
+
+**Do NOT use `KEPLER_STAGNATION_*`, `KEPLER_MEMORY_ENABLED`, `KEPLER_PREFLIGHT_PLAN`** — those names were silently ignored by the runtime and are the reason v3-flash-rerun100 misbehaved. Everything is `AGENT_*` now.
+
+**Priority chain for main-agent model** (per `app/services/model_defaults.py`):
+
+1. Request `context.model_override` (CLI `--model` flag — currently no-op, see below)
+2. User Supabase `default_reasoning_model` (per-user setting via web dashboard)
+3. `PLATFORM_REASONING_MODEL` env var ← **this is the benchmark lever**
+4. `CODER_MODEL` / `LLM_MODEL` env fallbacks
+5. Hardcoded fallback `deepseek/deepseek-v4-flash`
+
+Note: the CLI's `-m` / `--model` flag is a no-op (parser was removed). To change the main model between v-runs, **edit `PLATFORM_REASONING_MODEL` in the env file and restart the backend**.
 
 ### 3. Configure CLI auth
 
@@ -92,89 +150,129 @@ chmod 600 ~/.kepler/config.json
 The token is a `kepler_`, `orca_`, or `tarang_` prefixed hash stored in
 Supabase `cli_tokens` table. Copy from `~/.orca/config.json` if migrating.
 
-### 4. Start backend manually
+### 4. Start backend (tmux, not nohup)
+
+We use tmux so the session survives SSH drops and we can `tmux attach` to watch live:
 
 ```bash
-set -a; source ~/.tarang-benchmark.env; set +a
-export LOG_DIR=~/kepler-logs
-source ~/backend-env/bin/activate
-cd ~/tarang-backend
-nohup uvicorn app.main:app --port 8150 > ~/backend.log 2>&1 &
+tmux kill-session -t back 2>/dev/null   # if already running
+tmux new-session -d -s back "\
+  set -a && source ~/.tarang-benchmark.env && set +a && \
+  export LOG_DIR=~/kepler-logs && mkdir -p \$LOG_DIR && \
+  cd ~/tarang-backend && source ~/backend-env/bin/activate && \
+  uvicorn app.main:app --port 8150 2>&1 | tee ~/backend.log"
 
-# Verify
-curl -s http://localhost:8150/health
-# Check env flags are loaded:
-tr "\0" "\n" < /proc/$(pgrep -x uvicorn | head -1)/environ | grep KEPLER
+sleep 25   # startup takes ~20s (Supabase seed, license validate, etc.)
+
+# Verify — no /health endpoint; root returns JSON
+python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8150/', timeout=3).status)"
+# → 200
+
+# Framework version
+grep "agent_framework version:" ~/backend.log | tail -1
+
+# Verify env vars picked up by uvicorn process:
+UPID=$(pgrep -f "backend-env/bin/uvicorn" | head -1)
+cat /proc/$UPID/environ | tr "\0" "\n" | grep -E "^(PLATFORM_|EXPLORER|PLAN|AGENT_)" | sort
 ```
+
+To attach and watch live: `tmux attach -t back` (`Ctrl+B, D` to detach).
 
 ## Running Benchmarks
 
 ### Single instance (smoke test)
 
+The `--model` flag on the harness is passed through the CLI's `-m` flag — which is a no-op after the model-flag removal. The backend picks the main model from `PLATFORM_REASONING_MODEL` env var. Set that first, then run the smoke:
+
 ```bash
 source ~/swebench-env/bin/activate
-cd ~/tarang-npm
+cd ~/codekepler-npm
 python3 benchmark/swe-bench/harness.py \
   --dataset lite \
-  --model minimax/minimax-m3 \
+  --model deepseek/deepseek-v4-flash \
   --instance django__django-11848 \
   --timeout 300 \
   --debug \
   --output /tmp/test-single.json
 ```
 
-### Full 300 (sequential, ~24h)
+`--model` still goes into the results file as a label and is what the CLI passes on the command line, but the actual routing uses env. Always confirm via `[CACHE] model=<...>` in `~/backend.log`.
+
+### Full 300 (sequential in tmux)
 
 ```bash
-source ~/swebench-env/bin/activate
-cd ~/tarang-npm
-nohup python3 benchmark/swe-bench/harness.py \
-  --dataset lite \
-  --model minimax/minimax-m3 \
-  --parallel 1 \
-  --timeout 600 \
-  --skip-done \
-  --output ~/results-full.json \
-  > ~/benchmark-full.log 2>&1 &
+tmux new-session -d -s full "\
+  cd ~/codekepler-npm && \
+  set -a && source ~/.tarang-benchmark.env && set +a && \
+  python3 benchmark/swe-bench/harness.py \
+    --dataset lite \
+    --model deepseek/deepseek-v4-flash \
+    --parallel 2 \
+    --timeout 600 \
+    --skip-done \
+    --output ~/results-full300_$(date +%Y%m%d_%H%M).json \
+    2>&1 | tee ~/benchmark-full300_$(date +%Y%m%d_%H%M).log"
+
+# Watch:
+tmux attach -t full
+# Or peek:
+tail -f ~/benchmark-full300_*.log
 ```
 
-### Sharded parallel (5 VMs, ~5h)
+**Parallel choice:**
 
-See `run.sh --shard` or manually:
+- `--parallel 1` — safe, ~20-24h, avoids the sympy worktree race that killed v5/v6 harness mid-run
+- `--parallel 2` — ~10-14h, works but may hit the sympy race and require resume with `--skip-done`
+- `--parallel 4` — ~4-6h, higher risk of the race; v5 crashed twice at parallel=4
+
+### Sharded parallel (5 VMs)
+
+**Untested since Jun 2026** — VM2-5 have been deallocated the entire time we've been iterating. The `--gen-shards` flag referenced in older docs does not exist in the current harness. If you want to shard, use `--instance-file` with a manually-split list:
 
 ```bash
-# Generate shard files (run once on any machine with swebench-env)
-python3 benchmark/swe-bench/harness.py --dataset lite --gen-shards 5
+# Split the 300 instance IDs into 5 shards of 60:
+python3 -c "
+from datasets import load_dataset
+ds = load_dataset('princeton-nlp/SWE-bench_Lite', split='test')
+ids = sorted(x['instance_id'] for x in ds)
+for i in range(5):
+    with open(f'/tmp/shard_{i+1}.txt', 'w') as f:
+        f.write('\n'.join(ids[i*60:(i+1)*60]))
+    print(f'shard_{i+1}.txt: {ids[i*60]} .. {ids[(i+1)*60-1]}')
+"
 
-# This creates:
-#   benchmark/shards/shard_1.txt  (60 instance IDs)
-#   benchmark/shards/shard_2.txt  (60 instance IDs)
-#   ...
-#   benchmark/shards/shard_5.txt  (60 instance IDs)
-
-# On each VM, run its shard:
+# On each VM (once code is deployed):
 python3 benchmark/swe-bench/harness.py \
   --dataset lite \
-  --model minimax/minimax-m3 \
-  --instance-file benchmark/shards/shard_N.txt \
-  --timeout 600 \
+  --model deepseek/deepseek-v4-flash \
+  --instance-file /tmp/shard_N.txt \
+  --parallel 1 --timeout 600 \
   --output ~/results-shard-N.json
 ```
 
+The 5-VM parallel setup block below is also unverified — treat as scaffolding, not a tested procedure.
+
 ### Monitor progress
 
+Live tail:
 ```bash
-# Count completed instances
-cat ~/results-*.json | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-r = d.get('results', [])
-ok = sum(1 for x in r if x.get('model_patch'))
-print(f'{ok}/{len(r)} patched ({len(r)} done)')
-"
+tail -f ~/benchmark-full300_*.log
+```
 
-# Tail the log
-tail -f ~/benchmark-full.log
+Or a richer snapshot including cache hit / cost / sub-agent counts:
+```bash
+python3 - <<'PY'
+import json, glob
+for f in sorted(glob.glob(os.path.expanduser("~/results-full300_*.json"))):
+    r = json.load(open(f))["results"]
+    patched = sum(1 for x in r if x.get("model_patch"))
+    cost = sum(x.get("kepler",{}).get("cost_usd",0) for x in r)
+    inp = sum(x.get("kepler",{}).get("usage",{}).get("input_tokens",0) for x in r)
+    cr  = sum(x.get("kepler",{}).get("usage",{}).get("cache_read",0) for x in r)
+    subs = sum(1 for x in r if x.get("kepler",{}).get("sub_agents"))
+    tim = sum(1 for x in r if x.get("kepler",{}).get("duration_s",0) >= 599.5 and not x.get("model_patch"))
+    print(f"{f}: {len(r)}/300  patched: {patched} ({100*patched//max(len(r),1)}%)  cost: ${cost:.2f}  cache: {100*cr//max(inp,1)}%  subs: {subs}  timeouts: {tim}")
+PY
 ```
 
 ## Cache Verification (PRD-071)
@@ -286,21 +384,30 @@ PYEOF
 
 ### 2. Run swebench evaluation
 
+Use `--max_workers 4` on the D16s_v3 — 6 has OOM'd once when many sympy containers were rebuilding simultaneously.
+
 ```bash
 source ~/swebench-env/bin/activate
-nohup python3 -m swebench.harness.run_evaluation \
-  --predictions_path ~/eval/predictions.json \
-  --dataset_name princeton-nlp/SWE-bench_Lite \
-  --run_id kepler-eval \
-  --max_workers 6 \
-  > ~/eval/docker-eval.log 2>&1 &
+RUN_ID="kepler-eval-$(date +%Y%m%d-%H%M)"
+tmux new-session -d -s eval "\
+  cd ~/eval && \
+  python3 -m swebench.harness.run_evaluation \
+    --predictions_path ~/eval/predictions.json \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --run_id $RUN_ID \
+    --max_workers 4 \
+    2>&1 | tee ~/eval/docker-eval.log"
 
 # Monitor
+tmux attach -t eval
+# or:
 tail -f ~/eval/docker-eval.log
 
-# Results file: ~/kepler.kepler-eval.json
-# Contains: resolved_ids, error_ids, etc.
+# Report file: ~/eval/kepler-<model>.<run-id>.json
+# Contains: resolved_ids, unresolved_ids, empty_patch_ids, error_ids
 ```
+
+Typical timing on D16s_v3: **~15 min per 100 patches with `--max_workers 4`.** For a full 300 with ~220 patches, budget ~40-45 min.
 
 ### 3. Score
 
@@ -402,17 +509,40 @@ done
 
 ## Results History
 
-| Run | Model | Score | Cost | Cache hit | Date |
-|-----|-------|-------|------|-----------|------|
-| Full 300 | deepseek-v4-flash | 115/300 = 38.3% | ~$10 | n/m | June 2026 |
-| Regression 35 | deepseek-v4-flash | 10/35 new | union 125/300 = 41.7% | n/m | June 2026 |
-| Smoke 3 | deepseek-v4-flash | 3/3 resolved | $0.026/inst | n/m | June 2026 |
-| V4 Pro 28 | deepseek-v4-pro | 14/28 = 50.0% | $0.48/inst | n/m | June 2026 |
-| Cache-check calc | deepseek-v4-flash | 3/3 resolved | $0.007/inst | 83% steady | 2026-07-12 |
-| Cache-check calc | z-ai/glm-5.2 | 3/3 resolved | $0.007-$0.013/inst | 74-83% | 2026-07-12 |
-| Cache-check calc | claude-sonnet-5 (direct) | 3/3 resolved | $0.06-$0.07/inst | 84-88% | 2026-07-12 |
+### Full 300 SWE-bench Lite runs (Docker-evaluated)
 
-*"n/m" = not measured. Pre-PRD-071 runs didn't capture cache metrics; starting 2026-07-12, `--cache-report` is wired through and all new runs get hit-rate + write-tokens recorded.*
+| Run | Date | Framework | Main model | Patched | **Resolved** | Cost | Cache | Notes |
+|---|---|---|---|---:|---:|---:|---:|---|
+| v1-v4 | Jun 2026 | pre-PRD-071 | DS V4 Flash | see RESULTS.md | 28–36.8% | $6–14 | 40–50% | Baseline runs, harness contamination in v1/v2 |
+| **v5** | 2026-07-15 | 3.2.7 | DS V4 Flash | 212 (71%) | **142 (47.3%)** | $4.14 | 91% | +PRD-071 cache parity |
+| **v6** | 2026-07-15 | 3.2.7 | Tencent HY3 (free) | 230 (77%) | **133 (44.3%)** | $0 | 93% | Free-tier main; sub-agents never fired |
+| **v7** | 2026-07-17 | 3.2.7 | GLM 5.2 | 235 (78%) | **183 (61.0%)** | $46 | 94% | Top of SWE-bench Lite leaderboard tier |
+
+### Hard-10 A/B tests (10 v5-failed instances)
+
+Used to iterate framework changes without spending 12h + $30 on a full 300 run each time.
+
+| Framework | Model | Patched | **Resolved** | Cost | Sub-agents fired |
+|---|---|---:|---:|---:|---:|
+| v5 baseline | DS Flash (old code) | 0/10 | 0 | ~$0.50 | 10 (old counting) |
+| 3.4.4 | DS Flash | 1/10 | 0 | $0.10 | 0 |
+| 3.4.4 | GLM 5.2 | 3/10 | 1 | $1.05 | 0 |
+| **3.4.13** | **DS Flash** | **8/10** | **4** | **$0.40** | **2** |
+| 3.4.13 | GLM 5.2 | 4/10 | 2 | $0.50 | 0 |
+| 3.4.13 | Kimi K3 | 1/10 | 1 | $0.62 | 0 |
+| 3.4.14 | DS Flash | 5/10 | 2 | $0.20 | 1 |
+| 3.4.14 | GLM 5.2 | 4/10 | 2 | $0.39 | 0 |
+| 3.4.14 | Kimi K3 | 3/10 | 2 | $2.57 | 0 |
+
+### Cache-check calibration (single-session smoke, calculator fixture)
+
+| Model | Path | Hit rate | Cost | Date |
+|---|---|---:|---:|---:|
+| DS V4 Flash | OR → Fireworks | 58% cold → 83% steady | ~$0.007 | 2026-07-12 |
+| GLM 5.2 | OR → Zhipu | 74–83% | ~$0.007–$0.013 | 2026-07-12 |
+| Claude Sonnet 5 (direct) | Anthropic API | 84–88% | ~$0.059–$0.070 | 2026-07-12 |
+
+Full artifacts per run at `benchmark/results/runs/swebench-<vN>-<model>-300/`. See `benchmark/results/RESULTS.md` for narrative and cross-run analysis.
 
 ## Troubleshooting
 
@@ -431,10 +561,29 @@ done
 - Restart with `set -a; source ~/.tarang-benchmark.env; set +a` to pick up flags
 
 **Agent explores wrong directory**:
-- `KEPLER_MEMORY_ENABLED=false` prevents cross-session path injection
+- `AGENT_MEMORY_ENABLED=false` prevents cross-session path injection (NOT `KEPLER_MEMORY_ENABLED` — that was silently ignored)
 - Clean `/tmp/kepler-swe-bench` between runs if stale indexes persist
 
 **Preflight plan not generating**:
-- `KEPLER_PREFLIGHT_PLAN=true` must be in the env file
-- Check gateway class matches PLATFORM_ROUTING (needs OpenRouterV2Gateway entry)
-- Logs: `grep PreflightPlan ~/backend.log`
+- `AGENT_PREFLIGHT_PLAN=true` must be in the env file (NOT `KEPLER_PREFLIGHT_PLAN`)
+- Check gateway class matches `PLATFORM_ROUTING` in `sub_agents.py` (needs `OpenRouterV2Gateway` entry)
+- Logs: `grep -iE "preflight|plan.*sub-agent" ~/backend.log`
+
+**Main model isn't what the harness says**:
+- The CLI's `-m` / `--model` flag is a no-op — parser was removed. `[CACHE] model=...` in the backend log is authoritative.
+- Real routing lever is `PLATFORM_REASONING_MODEL` env var. Restart backend after changing it.
+- Sub-agent routing lever: `EXPLORER_MODEL`, `PLAN_MODEL` (or the `SUB_AGENT_*_MODEL` variants).
+
+**Orphan Kepler session after killing the harness**:
+- The backend's uvicorn keeps running the agent loop even after the SSE client (harness) disconnects. Killing the harness tmux does NOT stop the LLM calls.
+- To fully stop, `tmux kill-session -t back` and restart uvicorn. Otherwise the orphan will burn tokens until it hits `max_iterations: 100`.
+
+**Harness crashes with `FileNotFoundError: /tmp/kepler-swe-bench/sympy__sympy/<hash>`**:
+- Known race between parallel workers on the sympy worktree. Doesn't affect completed instances.
+- Recover with `--skip-done` (the results file up to the crash is preserved).
+- Reduce `--parallel` to 1 to avoid entirely.
+
+**OpenRouter HTTP 402 (Payment Required) at the start of a run**:
+- Balance may be over the per-request reservation threshold OR at $0.
+- Check: `KEY=$(grep OPENROUTER_API_KEY ~/.tarang-benchmark.env | cut -d= -f2); curl -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/credits`
+- Top up to at least $10-20 free balance for DeepSeek Flash workloads, $50+ for GLM 5.2 / Kimi K3 (they have larger per-request reservations).
