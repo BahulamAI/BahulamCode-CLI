@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.kepler', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next']);
+const IGNORED_DIRS = new Set(['.git', 'node_modules', '.bahulam', '.kepler', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.ts', '.tsx', '.py', '.go', '.rs', '.java', '.rb', '.php', '.c', '.cpp', '.h', '.css', '.html', '.json', '.yaml', '.yml', '.toml', '.md', '.sh']);
 const SYMBOL_EXTS = new Set(['.py', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.go', '.rs']);
 const MAX_FILE_SIZE = 100_000; // 100KB

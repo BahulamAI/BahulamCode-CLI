@@ -90,7 +90,19 @@ export function summarizeResult(tool, data) {
     return { text: 'timed out', tone: 'danger' };
   }
   if (data.success === false) {
-    const msg = String(data.error || firstOutputLine(data) || 'failed').slice(0, 140);
+    // For shell / test / build / lint / validate failures, the actual output
+    // usually holds the actionable line ("FAIL src/foo.test.js expected 3
+    // got 2") while data.error is a generic wrapper ("Test suite failed",
+    // "Command exited with code 1"). Prefer the first output line when it
+    // has meaningful content; fall back to error for other tools.
+    const shellFamily = new Set([
+      'shell', 'run_tests', 'validate_build', 'lint_check',
+      'validate_file', 'validate_structure',
+    ]);
+    const outputLine = firstOutputLine(data);
+    const msg = shellFamily.has(tool) && outputLine
+      ? String(outputLine).slice(0, 140)
+      : String(data.error || outputLine || 'failed').slice(0, 140);
     return { text: msg, tone: 'danger' };
   }
 
@@ -344,9 +356,17 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
   const candidate = `${head}  ${arrow} ${body}${tail}`;
   if (!head.includes('\n') && visibleWidth(candidate) <= cols) return candidate;
   if (!head.includes('\n') && isInlineOutcomeTool(tool)) {
+    // Reserve = outcome width + 4 (2 gap + a couple padding). Compact the head
+    // to whatever remains. Floor at 12 so the head stays recognizable; on
+    // very narrow terminals (cols - reserve < 12) fall through to the
+    // two-line gutter shape below rather than emit an overflowing line.
     const reserve = visibleWidth(`${arrow} ${body}${tail}`) + 4;
-    const compactHead = truncateMiddle(head, Math.max(28, cols - reserve));
-    return `${compactHead}  ${arrow} ${body}${tail}`;
+    const headBudget = cols - reserve;
+    if (headBudget >= 12) {
+      const compactHead = truncateMiddle(head, headBudget);
+      const combined = `${compactHead}  ${arrow} ${body}${tail}`;
+      if (visibleWidth(combined) <= cols) return combined;
+    }
   }
 
   // Doesn't fit on one line → push outcome to a separate gutter line.

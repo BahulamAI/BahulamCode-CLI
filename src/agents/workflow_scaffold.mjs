@@ -126,7 +126,7 @@ export function createWorkflowFile({
     throw new Error('name is required');
   }
   const slug = slugifyWorkflowName(name);
-  const dir = path.join(cwd, '.kepler', 'workflows');
+  const dir = path.join(cwd, '.bahulam', 'workflows');
   const filePath = path.join(dir, `${slug}.yaml`);
   if (fs.existsSync(filePath) && !force) {
     throw new Error(`Workflow already exists: ${filePath}`);
@@ -141,7 +141,7 @@ export function createWorkflowFile({
   const normalizedEdges = normalizeWorkflowEdges(edges, agentSlugs);
 
   const lines = [
-    'apiVersion: kepler.workflow/v1',
+    'apiVersion: bahulam.workflow/v1',
     'kind: MultiWorkflow',
     'metadata:',
     `  name: ${yamlQuote(name)}`,
@@ -217,7 +217,7 @@ export function createWorkflowFile({
 }
 
 export function listLocalWorkflows(cwd = process.cwd()) {
-  const dir = path.join(cwd, '.kepler', 'workflows');
+  const dir = path.join(cwd, '.bahulam', 'workflows');
   const results = [];
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });

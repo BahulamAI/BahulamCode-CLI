@@ -174,10 +174,8 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
             { risk: 'high', reason: 'Publishes this package publicly' },
         );
         assert.strictEqual(result.approved, false);
-        // Approval surface migrated to the Mission Control bordered prompt
-        // (PRD-055 §8). Risk levels are tier strings now.
-        assert.ok(output.includes('APPROVAL') || output.includes('Decision'),
-          'expected Mission Control prompt header');
+        assert.ok(output.includes('approval') || output.includes('Decision'),
+          'expected approval prompt header');
         // v2.0.3: tool label is present-progressive "Running" (was "Run command").
         assert.ok(output.includes('Running') || output.includes('Run command'),
           'expected Running or Run command label');
@@ -188,7 +186,7 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         assert.ok(output.includes('[n] cancel'));
         assert.ok(!output.includes('[?] why'));
         assert.ok(!output.includes('re-plan'));
-        assert.ok(!output.includes('Publishes this package publicly'));
+        assert.ok(output.includes('Publishes this package publicly'));
     } finally {
         process.stderr.write = originalWrite;
     }

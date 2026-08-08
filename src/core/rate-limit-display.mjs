@@ -85,17 +85,26 @@ export function lowWindowStatus(rateLimit) {
 export function rateLimitErrorMessage(payload, fallback = 'Message limit reached.') {
     const detail = quotaErrorDetail(payload);
     const retryAfter = detail?.retry_after ?? detail?.rate_limit?.retry_after ?? detail?.rate_limit?.retry_after_seconds;
+    const detailMessage = normalizeBillingBrandCopy(detail?.message);
     if (detail?.code === 'credit_balance_exhausted') {
-        return detail.message || 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.';
+        return detailMessage || 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.';
     }
     if (detail?.code === 'message_limit_reached') {
-        if (detail.message) return detail.message;
+        if (detailMessage) return detailMessage;
         if (retryAfter != null) return `Message window exhausted — try again in ${formatRetryAfter(retryAfter)}, or upgrade your plan.`;
         return 'Message window exhausted — wait for the window to reset or upgrade your plan.';
     }
-    if (detail?.message) return detail.message;
+    if (detailMessage) return detailMessage;
     if (retryAfter != null) return `Message window exhausted — try again in ${formatRetryAfter(retryAfter)}, or upgrade your plan.`;
     return fallback;
+}
+
+export function normalizeBillingBrandCopy(value) {
+    if (typeof value !== 'string') return value;
+    return value
+        .replace(/codekepler\.ai\/pricing/gi, 'bahulam.ai/pricing')
+        .replace(/Kepler credit charges/g, 'Bahulam credit charges')
+        .replace(/Kepler credits/g, 'Bahulam credits');
 }
 
 export function quotaErrorDetail(payload) {

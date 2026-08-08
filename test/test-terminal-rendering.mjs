@@ -7,11 +7,18 @@ _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: fals
 
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
 import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
+import {
+  isExploreTool as _isExploreTool,
+  exploreCategory as _exploreCategory,
+  _knownExploreTools,
+} from '../src/terminal/repl-explore.mjs';
+import { renderBanner } from '../src/ui/banner.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
 import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
+import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs';
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
@@ -26,17 +33,37 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-terminal-rendering.mjs\x1b[0m\n');
 
-test('Kepler brand uses Deep Space Purple (PRD-055 §4.1)', () => {
-  // Post-Phase-1: c.brand routes through paint.brand.primary (#7c3aed).
-  // In ansi16 fallback that resolves to magenta (35); in truecolor it is
-  // \x1b[38;2;124;58;237m. Accept either so the test runs in any terminal.
-  const brand = c.brand('kepler');
-  assert.ok(brand.startsWith('\x1b[35m') || brand.startsWith('\x1b[38;2;124;58;237m'),
-    `expected magenta/truecolor brand, got ${JSON.stringify(brand)}`);
-  // c.cyan now routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
+test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
+  // Bahulam Code rebrand: paint.brand.primary is cyan #06b6d4 (abundance
+  // theme) — was purple #7c3aed in the pre-rename era. In ansi16 fallback
+  // that resolves to cyan (36); truecolor is \x1b[38;2;6;182;212m.
+  const brand = c.brand('bahulam');
+  assert.ok(brand.startsWith('\x1b[36m') || brand.startsWith('\x1b[38;2;6;182;212m'),
+    `expected cyan/truecolor brand, got ${JSON.stringify(brand)}`);
+  // c.cyan routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
   const cyan = c.cyan('code');
   assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
     `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
+});
+
+test('startup banner uses compact abundance mark with ASCII fallback', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
+  const rendered = stripAnsi(renderBanner('2.6.8'));
+  assert.ok(rendered.includes('∞∞   ∞∞'));
+  assert.ok(rendered.includes('████   ███  █   █'));
+  assert.ok(rendered.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(!rendered.includes('बहुलम्'));
+  assert.ok(!rendered.includes('0xB0'));
+  assert.ok(!rendered.includes('╔'));
+
+  _setTermForTesting({ isTTY: true, color: false, colorLevel: 'none', plain: true, unicode: false });
+  const fallback = renderBanner('2.6.8');
+  assert.ok(fallback.includes('oo   oo'));
+  assert.ok(fallback.includes('████   ███  █   █'));
+  assert.ok(fallback.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(!/\x1b\[/.test(fallback), `plain banner has ANSI: ${JSON.stringify(fallback)}`);
+
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
 });
 
 test('text.primary wraps user labels; markdown links are underlined', () => {
@@ -47,6 +74,13 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
   const rendered = renderMarkdown('[Documentation](https://example.com)');
   assert.ok(rendered.includes('\x1b[4m'));
   assert.ok(rendered.includes('Documentation'));
+});
+
+test('transcript blocks distinguish user and assistant turns', () => {
+  assert.strictEqual(stripAnsi(transcriptHeader('you', { tone: 'user' })), '  ╭─ you');
+  assert.strictEqual(stripAnsi(transcriptLine('hello', { tone: 'user' })), '  │ hello');
+  assert.strictEqual(stripAnsi(transcriptHeader('kepler', { tone: 'assistant' })), '  ╭─ kepler');
+  assert.strictEqual(stripAnsi(transcriptLine('Understood', { tone: 'assistant' })), '  │ Understood');
 });
 
 test('markdown tables align after inline markdown is normalized', () => {
@@ -125,11 +159,12 @@ test('sub-agent running line shows full query and hides model', () => {
 });
 
 test('renders shell commands with semantic syntax colors', () => {
-  // Post-Phase-1: c.blue routes to brand.primary, so command tokens get the
-  // brand color instead of basic blue. Flags stay yellow, pipes stay red.
+  // c.blue routes to brand.primary — post-rebrand that's cyan #06b6d4
+  // (was purple #7c3aed pre-Bahulam-Code). Command tokens get the brand
+  // color. Flags stay yellow, pipes stay red.
   const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
-  // Command tokens — brand.primary (#7c3aed). ansi16 magenta or truecolor.
-  assert.ok(/\x1b\[35m|\x1b\[38;2;124;58;237m/.test(rendered),
+  // Command tokens — brand.primary (#06b6d4). ansi16 cyan or truecolor.
+  assert.ok(/\x1b\[36m|\x1b\[38;2;6;182;212m/.test(rendered),
     'expected brand color for command tokens');
   assert.ok(rendered.includes('python'));
   assert.ok(rendered.includes('head'));
@@ -227,26 +262,41 @@ test('search cards keep outcome inline by compacting long heads', () => {
 });
 
 test('tool activity rows only force blank spacing between shell commands', () => {
+  // Post PRD-081 repl split: rendering pipeline lives in repl-render.mjs,
+  // pure explore classifier in repl-explore.mjs. Test both files.
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
-  assert.ok(!replSource.includes('process.stderr.write(`\\n${_pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${combined}\\n`);'));
-  assert.ok(replSource.includes('process.stderr.write(`${_pendingHead.head}\\n`);'));
-  assert.ok(replSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(replSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
-  assert.ok(replSource.includes("mode === 'dotted' || mode === 'dots'"));
-  assert.ok(replSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
-  assert.ok(replSource.includes("renderBlockBoundary('thinking')"));
-  assert.ok(replSource.includes('function thinkingPrefix(text)'));
-  assert.ok(replSource.includes('Thinking · ${kind}'));
-  assert.ok(replSource.includes('function clippedThinking(text, limit = 200)'));
-  assert.ok(replSource.includes("renderBlockBoundary('content')"));
-  assert.ok(replSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
-  assert.ok(replSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
-  assert.ok(replSource.includes('function exploreSummary()'));
-  assert.ok(replSource.includes('exploring · ${stats}${latest}'));
-  assert.ok(replSource.includes('if (_exploreRun.recent.length > 3) _exploreRun.recent.shift();'));
-  assert.ok(replSource.includes("_lastRenderedBlock = 'content';"));
+  const renderSource = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
+  const exploreSource = fs.readFileSync(new URL('../src/terminal/repl-explore.mjs', import.meta.url), 'utf-8');
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
+  assert.ok(!renderSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
+  assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
+  assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
+  assert.ok(renderSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
+  assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
+  // renderBlockBoundary('thinking'|'content') calls fire from the event
+  // dispatcher which still lives in repl.mjs — check both files.
+  assert.ok(replSource.includes("renderBlockBoundary('thinking')")
+         || renderSource.includes("renderBlockBoundary('thinking')"));
+  assert.ok(renderSource.includes('function thinkingPrefix(text)'));
+  assert.ok(renderSource.includes('Thinking · ${kind}'));
+  assert.ok(renderSource.includes('function clippedThinking(text, limit = 200)'));
+  assert.ok(replSource.includes("renderBlockBoundary('content')")
+         || renderSource.includes("renderBlockBoundary('content')"));
+  assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
+  assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(replSource.includes("from './repl-explore.mjs'"));
+  assert.ok(renderSource.includes('function exploreSummary()'));
+  assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
+  assert.ok(renderSource.includes('if (runtime.exploreRun.recent.length > 3) runtime.exploreRun.recent.shift();'));
+  assert.ok(renderSource.includes('function writeExploreSnapshot(summary = exploreSummary())'));
+  assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
+  assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
+  assert.ok(!renderSource.includes('drawPinnedStatus'));
+  assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
+  assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -264,8 +314,20 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function printInputBottomRule()'));
   assert.ok(replSource.includes('printInputBottomRule();'));
-  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), tips: idleInputTips() })'));
+  assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
+  assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(replSource.includes('function renderIdleDockInput()'));
+  assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
+  assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
+  assert.ok(replSource.includes("case '/exit':"));
+  assert.ok(replSource.includes('if (isInputDockMounted()) unmountInputDock();'));
+  assert.ok(replSource.includes("rl.on('close', async () => {"));
+  assert.ok(replSource.includes('clearSlashHint({ restoreCursor: false });'));
+  assert.ok(replSource.includes('inputActive = false;'));
+  assert.ok(replSource.includes('clearSlashHint();'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
@@ -283,7 +345,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
-  assert.ok(replSource.includes('if (!input) { showPrompt(); return; }'));
+  // Empty-Enter branch now clears the phantom prompt line(s) before
+  // re-rendering — see PRD-081 §5.1 acceptance "Empty Enter must not leave
+  // phantom prompt lines".
+  assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
   assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
@@ -294,21 +359,46 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
-  assert.ok(replSource.includes('_afterContentFlush = focusExecutionInput;'));
-  assert.ok(replSource.includes('_afterContentFlush = null;'));
-  assert.ok(replSource.includes("if (typeof _afterContentFlush === 'function') _afterContentFlush();"));
+  // Post PRD-081 repl split: _afterContentFlush is now runtime.afterContentFlush.
+  // The assignment stays in repl.mjs (execution loop sets the callback),
+  // the invocation moved into flushContent inside repl-render.mjs.
+  const renderSourceRt = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('runtime.afterContentFlush = focusExecutionInput;'));
+  assert.ok(replSource.includes('runtime.afterContentFlush = null;'));
+  assert.ok(renderSourceRt.includes("if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();"));
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
-  assert.ok(replSource.includes('client.resume(instruction)'));
+  // PRD-081 Phase 3: active-run follow-ups now go through the dedicated
+  // /api/intervention/{task_id} path (client.sendIntervention), not /resume.
+  assert.ok(replSource.includes('client.sendIntervention(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('Ctrl+D'));
 });
 
-test('fixed input dock clears input row before repainting', () => {
+test('resume preview avoids circular renderEvent import during repl split', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  const resumeSource = fs.readFileSync(new URL('../src/terminal/repl-resume.mjs', import.meta.url), 'utf-8');
+  assert.ok(resumeSource.includes("import { startContentStream, flushContent, stopSpinner } from './repl-render.mjs';"));
+  assert.ok(!resumeSource.includes("from './repl.mjs'"));
+  assert.ok(resumeSource.includes('export function renderResumePreview(resumed, ctx = {})'));
+  assert.ok(resumeSource.includes('const renderEvent = ctx.renderEvent;'));
+  assert.ok(replSource.includes('renderResumePreview(resumed, { renderEvent });'));
+});
+
+test('fixed input dock clears input rows before repainting', () => {
+  // Post-PRD-081: the dock now supports N input rows (1..5, default 2),
+  // so `clearInputRow` is `clearInputRows` and covers the full input area.
   const dockSource = fs.readFileSync(new URL('../src/ui/input-dock.mjs', import.meta.url), 'utf-8');
-  assert.ok(dockSource.includes('function clearInputRow()'));
-  assert.ok(dockSource.includes('moveTo(inputRow(), 1);'));
-  assert.ok(dockSource.includes('clearInputRow();\n  renderFrame({ context, tips });'));
-  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\')'));
+  assert.ok(dockSource.includes('function clearInputRows()'));
+  assert.ok(dockSource.includes('moveTo(row, 1);'));
+  // Post cursor-race fix: clearInputPrompt clears the input rows, resets
+  // the tracked value, redraws the frame, and parks the cursor at the input.
+  assert.ok(dockSource.includes('clearInputRows();'));
+  assert.ok(dockSource.includes('renderFrame(lastFrame);'));
+  assert.ok(dockSource.includes('function parkCursorAtInput()'));
+  // Signature accepts an optional cursorInValue for readline rl.cursor tracking.
+  assert.ok(dockSource.includes('export function focusDockInput(prefix, value = \'\''));
+  assert.ok(dockSource.includes('cursorInValue'));
+  assert.ok(dockSource.includes("from './text-layout.mjs'"));
 });
 
 test('legacy formatter wraps full shell commands without ellipsis', () => {
@@ -526,15 +616,17 @@ test('approval prompt uses risk title and compact scoped menu', () => {
     why: 'Resetting dependencies after a Node upgrade, but this removes a directory and needs explicit confirmation.',
     width: 82,
   }));
-  assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('dangerous · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('risk   rm -rf'));
+  assert.ok(rendered.includes('reason Resetting dependencies'));
   assert.ok(rendered.includes('Decision'));
   assert.ok(rendered.includes('cancel'));
   assert.ok(!rendered.includes('[?] why'));
   assert.ok(!rendered.includes('re-plan'));
   assert.ok(rendered.includes('rm -rf node_modules'));
-  assert.ok(!rendered.includes('Why  Resetting dependencies'));
   assert.ok(!rendered.includes('┃'));
   assert.ok(!rendered.includes('▔'));
+  assert.ok(!rendered.includes('────'));
 });
 
 test('approval prompt compacts shell cwd wrapper', () => {
@@ -563,8 +655,9 @@ test('approval compatibility wrapper uses unified prompt', () => {
     tier: TIERS.SHELL_MEDIUM,
     why: 'verify the change',
   }));
-  assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
+  assert.ok(inline.includes('approval · SHELL-MEDIUM'));
   assert.ok(inline.includes('Decision'));
+  assert.ok(inline.includes('reason verify the change'));
   assert.ok(inline.includes('always allow'));
   assert.ok(inline.includes('cancel'));
   assert.ok(!inline.includes('[?] why'));
@@ -577,6 +670,172 @@ test('approval compatibility wrapper uses unified prompt', () => {
   }));
   assert.ok(trusted.includes('pre-approved (session'));
   assert.ok(trusted.includes('rule shell-test'));
+});
+
+// ── Phase 4: tool/result display polish ────────────────────────────────
+
+test('Phase 4a: burst-collapse classifier covers common read-adjacent tools', () => {
+  // The classifier drives whether a tool call collapses into the explore-run
+  // summary or renders as its own card. Missing entries here mean bursts of
+  // that tool spam the transcript (PRD-081 §5.3 acceptance).
+  const known = new Set(_knownExploreTools());
+  for (const t of ['read_file', 'read_files', 'list_files', 'grep', 'search_code',
+                   'search_files', 'analyze_code', 'validate_file',
+                   'validate_structure', 'get_project_overview']) {
+    assert.ok(known.has(t), `expected ${t} in burst-collapse classifier`);
+    assert.ok(_isExploreTool(t), `expected isExploreTool(${t}) → true`);
+  }
+  // Categorization sanity — reads and writes end up in the right bucket.
+  assert.strictEqual(_exploreCategory('read_file'), 'read');
+  assert.strictEqual(_exploreCategory('analyze_code'), 'read');
+  assert.strictEqual(_exploreCategory('search_code'), 'search');
+  assert.strictEqual(_exploreCategory('validate_structure'), 'search');
+  assert.strictEqual(_exploreCategory('get_project_overview'), 'index');
+  // Writes / shell must NOT be collapsed — they carry information the user
+  // needs to see per-call (diff, exit code, error output).
+  assert.ok(!_isExploreTool('write_file'), 'write_file must NOT collapse');
+  assert.ok(!_isExploreTool('edit_file'), 'edit_file must NOT collapse');
+  assert.ok(!_isExploreTool('shell'), 'shell must NOT collapse');
+});
+
+test('Phase 4a: KEPLER_EXPLORE_COLLAPSE=0 disables the classifier', () => {
+  const prev = process.env.KEPLER_EXPLORE_COLLAPSE;
+  process.env.KEPLER_EXPLORE_COLLAPSE = '0';
+  try {
+    assert.strictEqual(_isExploreTool('read_file'), false,
+      'disable flag should suppress classification');
+  } finally {
+    if (prev === undefined) delete process.env.KEPLER_EXPLORE_COLLAPSE;
+    else process.env.KEPLER_EXPLORE_COLLAPSE = prev;
+  }
+});
+
+test('Phase 4b: formatCardHead never exceeds terminal width at 40/60/80 cols', () => {
+  // Long paths + long queries are the classic overflow vectors. Card widths
+  // must ALWAYS wrap or clip, never bleed past the visible column budget.
+  const longPath = 'src/deeply/nested/module/that/keeps/going/until/it/really/hurts.mjs';
+  const longQuery = 'the quick brown fox jumps over the lazy dog exactly seventeen times';
+
+  for (const cols of [40, 60, 80]) {
+    for (const [tool, args] of [
+      ['read_file', { file_path: longPath }],
+      ['search_code', { query: longQuery }],
+      ['edit_file', { file_path: longPath }],
+      ['shell', { command: 'npm test -- --coverage --reporter=json' }],
+    ]) {
+      const head = formatCardHead(tool, args, { columns: cols, cwd: process.cwd() });
+      for (const line of head.split('\n')) {
+        assert.ok(stripAnsi(line).length <= cols,
+          `[${cols}col ${tool}] line width ${stripAnsi(line).length} > ${cols}: ${JSON.stringify(line)}`);
+      }
+    }
+  }
+});
+
+test('Phase 4b: formatCard fits terminal width at 40/60/80 cols', () => {
+  const longPath = 'src/deeply/nested/module/that/keeps/going/until/it/really/hurts.mjs';
+  const longOutput = 'output '.repeat(30);
+
+  for (const cols of [40, 60, 80]) {
+    const rendered = formatCard({
+      tool: 'read_file',
+      args: { file_path: longPath },
+      result: { success: true, output: longOutput, line_count: 42 },
+      durationMs: 320,
+      columns: cols,
+      cwd: process.cwd(),
+    });
+    for (const line of rendered.split('\n')) {
+      assert.ok(stripAnsi(line).length <= cols,
+        `[${cols}col] card line ${stripAnsi(line).length} > ${cols}: ${JSON.stringify(line)}`);
+    }
+  }
+});
+
+test('Phase 4c: plain mode strips ANSI from tool cards', () => {
+  // Non-TTY / KEPLER_PLAIN=1 / --plain — output must be deterministic and
+  // parseable by scripts. Any ANSI escape leaking through breaks that.
+  _setTermForTesting({ isTTY: false, color: false, colorLevel: 'none', plain: true });
+  try {
+    const head = formatCardHead('read_file', { file_path: 'src/foo.mjs' }, { columns: 80 });
+    assert.ok(!/\x1b\[/.test(head), `plain head has ANSI: ${JSON.stringify(head)}`);
+
+    const card = formatCard({
+      tool: 'edit_file',
+      args: { file_path: 'src/foo.mjs' },
+      result: { success: true, lines_added: 5, lines_removed: 2 },
+      columns: 80,
+    });
+    assert.ok(!/\x1b\[/.test(card), `plain card has ANSI: ${JSON.stringify(card)}`);
+
+    const detail = detailFor({
+      id: 'test-1',
+      tool: 'read_file',
+      args: { file_path: 'src/foo.mjs' },
+      result: { success: true, output: 'line1\nline2\nline3\n', line_count: 3 },
+    });
+    assert.ok(!/\x1b\[/.test(detail), `plain detail has ANSI: ${JSON.stringify(detail)}`);
+  } finally {
+    // Restore the ansi16 test defaults so downstream tests are unaffected.
+    _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false });
+  }
+});
+
+test('Phase 4d: failed shell command keeps actionable error visible', () => {
+  const card = formatCard({
+    tool: 'shell',
+    args: { command: 'npm test' },
+    result: {
+      success: false,
+      exit_code: 1,
+      output: 'FAIL src/foo.test.js\n  Expected 3 but received 2',
+      error: 'Test suite failed',
+    },
+    durationMs: 1200,
+    columns: 120,
+  });
+  const plain = stripAnsi(card);
+  // The exit code, first error line, and duration should ALL survive the card.
+  assert.ok(plain.includes('FAIL src/foo.test.js') || plain.includes('Expected 3'),
+    `expected actionable error line in card: ${JSON.stringify(plain)}`);
+});
+
+test('Phase 4d: large diff shows compact preview + full available via detail', () => {
+  // 40-line write should show a bounded compact preview in the card and the
+  // full diff via detailFor. Cap tolerated to prevent transcript spam.
+  const lines = Array.from({ length: 40 }, (_, i) => `+ line ${i + 1}`).join('\n');
+  const card = formatCard({
+    tool: 'write_file',
+    args: { file_path: 'src/big.mjs' },
+    result: {
+      success: true,
+      lines_added: 40,
+      lines_removed: 0,
+      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    },
+    durationMs: 45,
+    columns: 120,
+  });
+  const cardLines = stripAnsi(card).split('\n').filter(Boolean);
+  // The card body (post-header) must not dump all 40 diff lines — cap ~20.
+  assert.ok(cardLines.length <= 20,
+    `compact card grew to ${cardLines.length} lines — should stay bounded`);
+
+  // Detail view is the escape hatch: gives the model/user access to more.
+  const detail = detailFor({
+    id: 'x',
+    tool: 'write_file',
+    args: { file_path: 'src/big.mjs' },
+    result: {
+      success: true,
+      lines_added: 40,
+      lines_removed: 0,
+      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    },
+  });
+  const detailLines = stripAnsi(detail).split('\n').filter(Boolean);
+  assert.ok(detailLines.length > cardLines.length,
+    'detail should expose more than the compact preview');
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

@@ -31,7 +31,7 @@ function tempProject() {
 }
 
 function readLog(cwd) {
-  return fs.readFileSync(path.join(cwd, '.kepler', 'approvals.log'), 'utf-8')
+  return fs.readFileSync(path.join(cwd, '.bahulam', 'approvals.log'), 'utf-8')
     .trim()
     .split('\n')
     .filter(Boolean)
@@ -100,7 +100,7 @@ test('approvals.log is created with user-only permissions where supported', () =
   const cwd = tempProject();
   const log = new ApprovalLog({ cwd });
   log.append({ tier: 'test', tool: 'shell', args: { command: 'echo ok' }, decision: 'approve' });
-  const stat = fs.statSync(path.join(cwd, '.kepler', 'approvals.log'));
+  const stat = fs.statSync(path.join(cwd, '.bahulam', 'approvals.log'));
   assert.equal(stat.mode & 0o777, 0o600);
 });
 

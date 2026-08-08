@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { TIERS } from './risk-tier.mjs';
 
 function trustPath(cwd) {
-  return path.join(cwd, '.kepler', 'trust.json');
+  return path.join(cwd, '.bahulam', 'trust.json');
 }
 
 function nowIso() {

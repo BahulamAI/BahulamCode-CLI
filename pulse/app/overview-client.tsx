@@ -381,7 +381,7 @@ export function OverviewClient() {
       <Card>
         <CardHeader>
           <CardTitle>Recent Sessions</CardTitle>
-          <CardDescription>Your latest Kepler sessions</CardDescription>
+          <CardDescription>Your latest Bahulam Code sessions</CardDescription>
         </CardHeader>
         <CardContent>
           <OverviewConversationTable sessions={sessions} />

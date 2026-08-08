@@ -1,27 +1,30 @@
 {
-  "name": "@axplusb/kepler",
-  "version": "2.5.0",
-  "description": "Kepler — AI coding agent with operating brief, preflight planning, and sub-agents. SWE-bench Lite evaluated.",
+  "name": "@bahulam/code",
+  "version": "2.6.9",
+  "description": "Bahulam Code \u2014 abundance, in your terminal. CLI-first, reliability-first, sub-agents, 65.6% SWE-bench Verified.",
   "type": "module",
   "bin": {
-    "kepler": "src/terminal/main.mjs"
+    "bahulam": "src/terminal/main.mjs",
+    "bahulam-code": "src/terminal/main.mjs"
   },
   "files": [
     "src/",
     "pulse/",
-    "KEPLER-README.md"
+    "README.md"
   ],
-  "readme": "KEPLER-README.md",
   "scripts": {
     "start": "node src/terminal/main.mjs",
-    "test": "KEPLER_HOME=/tmp/kepler-test-home node test/test-backend-url.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-agent-history.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-sse-client.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-tool-executor.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-project-artifacts.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-work-scope.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-skills.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-callback.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-rate-limit-display.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-preflight.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-formatter.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-terminal-rendering.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-slash-commands.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-approval.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-approval-log.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-kepler-contract.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-session-manager.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-safety.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-jsonl-writer.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-analytics.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-stagnation.mjs && KEPLER_HOME=/tmp/kepler-test-home node test/test-attachments.mjs"
+    "test": "BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-backend-url.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-agent-history.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-sse-client.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-tool-executor.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-project-artifacts.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-work-scope.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-skills.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-callback.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-rate-limit-display.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-preflight.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-formatter.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-terminal-rendering.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-input-dock.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-live-steering-client.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-slash-commands.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-approval.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-approval-log.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-kepler-contract.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-session-manager.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-safety.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-jsonl-writer.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-analytics.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-stagnation.mjs && BAHULAM_HOME=/tmp/bahulam-code-test-home node test/test-attachments.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
-    "kepler",
-    "codekepler",
+    "bahulam",
+    "bahulam-code",
     "ai",
     "coding-agent",
     "swe-bench",
@@ -35,13 +38,19 @@
   ],
   "license": "MIT",
   "author": "axplusb.tech <hello@axplusb.tech>",
-  "homepage": "https://codekepler.ai",
+  "homepage": "https://bahulam.ai/code",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/raviakasapu/codekepler-npm.git"
   },
   "dependencies": {
+    "pdf-parse": "^1.1.1",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.26.9"
+  },
+  "optionalDependencies": {
+    "@bahulam/runtime-darwin-arm64": "2.6.9",
+    "@bahulam/runtime-linux-x64": "2.6.9",
+    "@bahulam/runtime-win32-x64": "2.6.9"
   }
 }

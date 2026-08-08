@@ -1,8 +1,8 @@
 /**
  * Session Manager — persist session state, history, and conversation messages.
  *
- * All data lives under ~/.kepler/:
- *   ~/.kepler/
+ * All data lives under ~/.bahulam/:
+ *   ~/.bahulam/
  *     projects/{hash}/
  *       state.json              — current session metadata
  *       sessions/               — session metadata archive

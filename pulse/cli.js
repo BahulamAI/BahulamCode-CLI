@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Kepler Pulse — local analytics dashboard launcher.
- * Launches a Next.js dev server from ~/.kepler-pulse/ cache directory.
+ * Bahulam Pulse — local analytics dashboard launcher.
+ * Launches a Next.js dev server from ~/.bahulam-pulse/ cache directory.
  */
 
 const { spawn, exec } = require('child_process')
@@ -11,9 +11,9 @@ const path = require('path')
 const fs   = require('fs')
 
 const PKG_DIR   = __dirname
-const CACHE_DIR = path.join(os.homedir(), '.kepler-pulse')
+const CACHE_DIR = path.join(os.homedir(), '.bahulam-pulse')
 
-// ANSI helpers — Kepler cyan palette
+// ANSI helpers — Bahulam cyan palette
 const C   = '\x1b[36m'     // cyan
 const C2  = '\x1b[96m'     // bright cyan
 const DIM = '\x1b[2m'
@@ -23,12 +23,26 @@ const G   = '\x1b[32m'
 
 function printBanner() {
   console.log()
-  const configDir = process.env.KEPLER_CONFIG_DIR ?? path.join(os.homedir(), '.kepler')
-  console.log(`  ${B}${C}K · E · P · L · E · R${R}`)
-  console.log(`  ${B}${C2}Kepler Pulse${R}   ${DIM}real-time agent analytics${R}`)
+  const configDir = resolveConfigDir()
+  console.log(`  ${B}${C}B · 0${R}`)
+  console.log(`  ${B}${C2}Bahulam Pulse${R}   ${DIM}real-time agent analytics${R}`)
   console.log()
   console.log(`  ${DIM}Data dir:${R}    ${C2}${configDir}${R}`)
   console.log()
+}
+
+function resolveConfigDir() {
+  if (process.env.BAHULAM_CONFIG_DIR) return process.env.BAHULAM_CONFIG_DIR
+  if (process.env.BAHULAM_HOME) return process.env.BAHULAM_HOME
+  if (process.env.KEPLER_CONFIG_DIR) return process.env.KEPLER_CONFIG_DIR
+  if (process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR
+  if (process.env.KEPLER_HOME) return process.env.KEPLER_HOME
+
+  const next = path.join(os.homedir(), '.bahulam')
+  const legacy = path.join(os.homedir(), '.kepler')
+  if (fs.existsSync(next)) return next
+  if (fs.existsSync(legacy)) return legacy
+  return next
 }
 
 function findFreePort(port = 3000) {
@@ -48,7 +62,7 @@ function openBrowser(url) {
   exec(cmd)
 }
 
-// Source dirs/files to mirror into ~/.kepler-pulse/
+// Source dirs/files to mirror into ~/.bahulam-pulse/
 const SRC_DIRS  = ['app', 'components', 'lib', 'types', 'public']
 const SRC_FILES = ['next.config.ts', 'tsconfig.json', 'postcss.config.mjs', 'components.json']
 
@@ -68,7 +82,7 @@ function syncSource(pkg) {
   }
   // Write a minimal package.json with only runtime dependencies
   fs.writeFileSync(path.join(CACHE_DIR, 'package.json'), JSON.stringify({
-    name: 'kepler-pulse-runtime',
+    name: 'bahulam-pulse-runtime',
     version: pkg.version,
     dependencies: pkg.dependencies,
   }, null, 2))
@@ -79,8 +93,8 @@ async function main() {
 
   const pkg = require(path.join(PKG_DIR, 'package.json'))
 
-  // Check whether ~/.kepler-pulse/ is up-to-date for this version
-  const versionFile = path.join(CACHE_DIR, '.kepler-pulse-version')
+  // Check whether ~/.bahulam-pulse/ is up-to-date for this version
+  const versionFile = path.join(CACHE_DIR, '.bahulam-pulse-version')
   const cachedVersion = fs.existsSync(versionFile)
     ? fs.readFileSync(versionFile, 'utf8').trim()
     : null
@@ -110,13 +124,14 @@ async function main() {
   const port = await findFreePort(3000)
   const url  = `http://localhost:${port}`
 
-  // Pass KEPLER_CONFIG_DIR to the Next.js process so it reads from ~/.kepler/
-  const keplerDir = process.env.KEPLER_CONFIG_DIR ?? path.join(os.homedir(), '.kepler')
+  // Pass config vars to the Next.js process so it reads from ~/.bahulam.
+  const configDir = resolveConfigDir()
   const env = {
     ...process.env,
     PORT: String(port),
-    KEPLER_CONFIG_DIR: keplerDir,
-    CLAUDE_CONFIG_DIR: keplerDir,
+    BAHULAM_CONFIG_DIR: configDir,
+    KEPLER_CONFIG_DIR: configDir,
+    CLAUDE_CONFIG_DIR: configDir,
   }
 
   console.log(`  ${DIM}Starting server on${R} ${C2}${B}${url}${R}\n`)

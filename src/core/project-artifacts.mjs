@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { projectConfigDir } from './paths.mjs';
 
 /**
  * Persist generated session artifacts only beneath roots registered by the CLI.
@@ -21,7 +22,8 @@ export function persistProjectArtifacts(data, resources, log = () => {}) {
     for (const resource of targets) {
         for (const [field, filename] of artifacts) {
             try {
-                const keplerDir = path.join(resource.root, '.kepler');
+                // Resolver honors legacy .kepler/ when it's the only dir that exists.
+                const keplerDir = projectConfigDir(resource.root);
                 fs.mkdirSync(keplerDir, { recursive: true });
                 const artifactPath = path.join(keplerDir, filename);
                 fs.writeFileSync(artifactPath, data[field], 'utf-8');

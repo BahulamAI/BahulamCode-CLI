@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * @axplusb/kepler v1.0.1 — Kepler AI Coding Agent CLI
+ * @bahulamai/code — Bahulam Code CLI (Bahulam's coding agent).
  *
  * Phase 3: Hybrid local/remote/auto + advanced features.
  */
 
-// Load .env file from cwd or ~/.kepler/.env
+// Load .env file from cwd or ~/.bahulam/.env
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.kepler', '.env')]) {
+for (const envPath of [join(process.cwd(), '.env'), join(homedir(), '.bahulam', '.env')]) {
     if (existsSync(envPath)) {
         for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
             const match = line.match(/^\s*([\w]+)\s*=\s*(.+?)\s*$/);
@@ -29,7 +29,7 @@ import { TarangAuth } from './auth/tarang-auth.mjs';
 import { ApprovalManager } from './core/approval.mjs';
 import { SessionManager } from './core/session-manager.mjs';
 import { EventFormatter } from './ui/formatter.mjs';
-import { handleSlashCommand, COMMANDS } from './ui/slash-commands.mjs';
+import { COMMANDS } from './ui/slash-commands.mjs';
 import { selectMode } from './core/mode-selector.mjs';
 import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyledConfig, printGoodbye } from './ui/banner.mjs';
 import { ContextRetriever } from './context/retriever.mjs';
@@ -147,26 +147,26 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-    printBanner();
+    printBanner(VERSION);
 
     const B = '\x1b[1m', C = '\x1b[36m', D = '\x1b[2m', G = '\x1b[32m', R = '\x1b[0m';
 
     process.stderr.write(`${B}USAGE${R}\n`);
-    process.stderr.write(`  ${C}kepler "instruction"${R}         Execute instruction\n`);
-    process.stderr.write(`  ${C}kepler${R}                       Interactive mode (REPL)\n`);
-    process.stderr.write(`  ${C}kepler login${R}                 Authenticate via GitHub OAuth\n`);
-    process.stderr.write(`  ${C}kepler configure${R}             Open settings in browser\n`);
-    process.stderr.write(`  ${C}kepler config --show${R}         Display local configuration\n`);
-    process.stderr.write(`  ${C}kepler resume${R}                Resume a paused session\n`);
-    process.stderr.write(`  ${C}kepler workflow create --file <path>${R}  Create workflow from YAML\n`);
-    process.stderr.write(`  ${C}kepler workflow run <name>${R}           Run a workflow\n`);
-    process.stderr.write(`  ${C}kepler workflow list${R}                 List workflows\n`);
-    process.stderr.write(`  ${C}kepler workflow get <name>${R}           Show workflow details\n`);
-    process.stderr.write(`  ${C}kepler workflow delete <name>${R}        Delete a workflow\n`);
-    process.stderr.write(`  ${C}kepler workflow sync${R}                 Sync workflow YAML files\n`);
-    process.stderr.write(`  ${C}kepler agent list${R}                    List user-defined agents\n`);
-    process.stderr.write(`  ${C}kepler agent get <slug>${R}              Show agent details\n`);
-    process.stderr.write(`  ${C}kepler agent sync${R}                    Sync agent YAML files\n`);
+    process.stderr.write(`  ${C}bahulam "instruction"${R}         Execute instruction\n`);
+    process.stderr.write(`  ${C}bahulam${R}                       Interactive mode (REPL)\n`);
+    process.stderr.write(`  ${C}bahulam login${R}                 Authenticate via GitHub OAuth\n`);
+    process.stderr.write(`  ${C}bahulam configure${R}             Open settings in browser\n`);
+    process.stderr.write(`  ${C}bahulam config --show${R}         Display local configuration\n`);
+    process.stderr.write(`  ${C}bahulam resume${R}                Resume a paused session\n`);
+    process.stderr.write(`  ${C}bahulam workflow create --file <path>${R}  Create workflow from YAML\n`);
+    process.stderr.write(`  ${C}bahulam workflow run <name>${R}           Run a workflow\n`);
+    process.stderr.write(`  ${C}bahulam workflow list${R}                 List workflows\n`);
+    process.stderr.write(`  ${C}bahulam workflow get <name>${R}           Show workflow details\n`);
+    process.stderr.write(`  ${C}bahulam workflow delete <name>${R}        Delete a workflow\n`);
+    process.stderr.write(`  ${C}bahulam workflow sync${R}                 Sync workflow YAML files\n`);
+    process.stderr.write(`  ${C}bahulam agent list${R}                    List user-defined agents\n`);
+    process.stderr.write(`  ${C}bahulam agent get <slug>${R}              Show agent details\n`);
+    process.stderr.write(`  ${C}bahulam agent sync${R}                    Sync agent YAML files\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODE FLAGS${R}\n`);
     process.stderr.write(`  ${G}--local${R}                      Direct LLM API ${D}(<100ms, offline)${R}\n`);
@@ -177,7 +177,7 @@ function printUsage() {
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
-    process.stderr.write(`  ${D}Models are configured via: kepler configure${R}\n`);
+    process.stderr.write(`  ${D}Models are configured via: bahulam configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);
@@ -200,7 +200,7 @@ function printUsage() {
     process.stderr.write('\n');
     process.stderr.write(`${B}SLASH COMMANDS${R} ${D}(interactive mode)${R}\n`);
     for (const [k, v] of Object.entries(COMMANDS)) {
-        process.stderr.write(`  ${C}${k.padEnd(14)}${R} ${v.description}\n`);
+        process.stderr.write(`  ${C}${k.padEnd(14)}${R} ${v}\n`);
     }
     process.stderr.write('\n');
 }
@@ -231,13 +231,13 @@ import { startTerminalRepl } from './terminal/repl.mjs';
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (args.version) { console.log(`@axplusb/kepler ${VERSION}`); process.exit(0); }
+    if (args.version) { console.log(`@bahulam/code ${VERSION}`); process.exit(0); }
     if (args.help) { printUsage(); process.exit(0); }
 
     const auth = new TarangAuth();
 
     if (args.command === 'login') {
-        printBanner();
+        printBanner(VERSION);
         process.stderr.write('\x1b[1mAuthentication\x1b[0m\n\n');
         await auth.login();
         process.stderr.write('\n\x1b[32m✓ Login successful!\x1b[0m\n');
@@ -247,14 +247,14 @@ async function main() {
             const remote = await auth.syncSettings();
             process.stderr.write(`\x1b[32m✓ Settings synced\x1b[0m ${remote.gateway_type ? `(gateway: ${remote.gateway_type})` : ''}\n`);
         } catch {
-            process.stderr.write('\x1b[2mSettings sync skipped — configure at codekepler.ai/dashboard/settings\x1b[0m\n');
+            process.stderr.write('\x1b[2mSettings sync skipped — configure at bahulam.ai/dashboard/settings\x1b[0m\n');
         }
         process.stderr.write('\n');
         // Fall through to REPL — user starts working right away
     }
 
     if (args.command === 'sync') {
-        printBanner();
+        printBanner(VERSION);
         process.stderr.write('\x1b[1mSyncing settings...\x1b[0m\n\n');
         try {
             const remote = await auth.syncSettings();
@@ -263,7 +263,7 @@ async function main() {
             if (remote.models?.reasoning)    process.stderr.write(`\x1b[32m✓ Coding:\x1b[0m       ${remote.models.reasoning}\n`);
             if (remote.models?.local)        process.stderr.write(`\x1b[32m✓ Local:\x1b[0m        ${remote.models.local}\n`);
             if (remote.configured_providers?.length) process.stderr.write(`\x1b[32m✓ Providers:\x1b[0m   ${remote.configured_providers.join(', ')}\n`);
-            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.kepler/config.json\x1b[0m\n');
+            process.stderr.write('\n\x1b[32m✓ Settings saved to ~/.bahulam/config.json\x1b[0m\n');
         } catch (err) {
             process.stderr.write(`\x1b[31m✗ ${err.message}\x1b[0m\n`);
         }
@@ -271,7 +271,7 @@ async function main() {
     }
 
     if (args.command === 'configure') {
-        printBanner();
+        printBanner(VERSION);
         const { resolveWebUrl } = await import('./core/backend-url.mjs');
         const webUrl = resolveWebUrl();
         const settingsUrl = `${webUrl}/dashboard/settings?tab=providers&source=cli`;

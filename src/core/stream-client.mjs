@@ -11,7 +11,7 @@
 
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
-import { quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
+import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
 export const EVENT_TYPES = Object.freeze({
@@ -53,7 +53,24 @@ export const EVENT_TYPES = Object.freeze({
     APPROVAL_REQUIRED: 'approval_required',
     APPROVAL_GRANTED: 'approval_granted',
     APPROVAL_DENIED: 'approval_denied',
+    // Live steering (PRD-081 §5.2)
+    USER_INTERVENTION_ACCEPTED: 'user_intervention_accepted',
+    USER_INTERVENTION_DELIVERED: 'user_intervention_delivered',
+    USER_INTERVENTION_QUEUED: 'user_intervention_queued',
 });
+
+// Lightweight UUID-ish generator for intervention ids. Node ≥18 has
+// crypto.randomUUID but the fallback avoids importing node:crypto here.
+function _uuidLike() {
+  try {
+    // eslint-disable-next-line no-undef
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+      return globalThis.crypto.randomUUID();
+    }
+  } catch {}
+  const rand = () => Math.random().toString(16).slice(2, 10);
+  return `iv-${Date.now().toString(36)}-${rand()}${rand()}`;
+}
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -86,10 +103,13 @@ function isOfflineLikelyError(err) {
 export class TarangStreamClient {
     /**
      * @param {Object} opts
-     * @param {string} opts.baseUrl - Tarang backend URL
+     * @param {string} opts.baseUrl - Tarang backend URL (ignored when mode='bundled')
      * @param {string} opts.token - CLI auth token
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
+     * @param {'remote'|'bundled'} [opts.mode='remote'] - 'bundled' routes all
+     *   requests through the local bahulam-agent runtime subprocess (PRD-091 §6).
+     *   'remote' uses baseUrl and standard fetch (default; matches cloud/dev/prod backend).
      */
     constructor({
         baseUrl,
@@ -99,13 +119,14 @@ export class TarangStreamClient {
         approvalManager = null,
         product = null,
         reconnectMaxElapsedMs = null,
+        mode = null,
     }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
-        this.product = product || process.env.TARANG_PRODUCT || process.env.KEPLER_PRODUCT || 'kepler';
+        this.product = product || process.env.BAHULAM_PRODUCT || process.env.TARANG_PRODUCT || 'bahulam';
         this.currentTaskId = null;
         this.lastEventId = null;
         this.retryDelayMs = null;
@@ -121,6 +142,43 @@ export class TarangStreamClient {
         this._pauseWaiters = new Set();
         this._abort = null;
         this._toolAbort = null;
+
+        // Transport mode:
+        //   'bundled' → local Python runtime (PRD-091 §6). Framework calls
+        //     the Bahulam Gateway directly. Metering runs. THIS IS THE
+        //     PUBLIC CLI DEFAULT.
+        //   'remote' → cloud backend runs the agent loop server-side.
+        //     Backend hits its provider directly (bypasses gateway metering).
+        //     Retained for enterprise flows (Power BI workspaces, scheduled
+        //     jobs) that need a persistent host. Not for individual devs.
+        //
+        // Explicit opt precedence: constructor arg > env vars > sniff runtime
+        // package availability > default 'bundled'.
+        this.mode = mode
+            || (process.env.BAHULAM_RUNTIME_MODE === 'remote' ? 'remote' : null)
+            || (process.env.BAHULAM_RUNTIME_MODE === 'bundled' ? 'bundled' : null)
+            || (process.env.TARANG_ENV === 'remote' ? 'remote' : null)
+            || (process.env.TARANG_ENV === 'bundled' ? 'bundled' : null)
+            || 'bundled';
+        // Bundled runtime binds to a random localhost port on first use. Cached
+        // here so every method sees the same baseUrl without re-spawning.
+        this._bundledReady = false;
+    }
+
+    /**
+     * Ensure the bundled runtime is spawned and this.baseUrl points at it.
+     * No-op in remote mode. Callers that hit the backend should invoke this
+     * at the top of their method (idempotent, cheap after the first call).
+     */
+    async _ensureBundledRuntime() {
+        if (this.mode !== 'bundled' || this._bundledReady) return;
+        const { ensureRuntimeReady } = await import('./bundled-runtime.mjs');
+        const info = await ensureRuntimeReady();
+        // Runtime speaks the same HTTP shape as the cloud backend, just on a
+        // random localhost port. Overriding baseUrl means every existing
+        // ${this.baseUrl}/api/* fetch call keeps working unchanged.
+        this.baseUrl = info.baseUrl;
+        this._bundledReady = true;
     }
 
     _headers(extra = {}) {
@@ -172,6 +230,11 @@ export class TarangStreamClient {
         this._cancelled = false;
         this.currentTaskId = null;
 
+        // Bundled mode: spawn the local Python runtime on first turn.
+        // After this, this.baseUrl points at http://127.0.0.1:<random-port>
+        // and every existing fetch call in this class works unchanged.
+        await this._ensureBundledRuntime();
+
         const url = `${this.baseUrl}/api/execute`;
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
@@ -204,7 +267,7 @@ export class TarangStreamClient {
         }
 
         if (response.status === 401) {
-            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `kepler login` to re-authenticate.', fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `bahulam login` to re-authenticate.', fatal: true } };
             return;
         }
         if (response.status === 429) {
@@ -224,7 +287,7 @@ export class TarangStreamClient {
                     retry_after: detail?.retry_after ?? detail?.rate_limit?.retry_after,
                     rate_limit: detail?.rate_limit || null,
                     action: detail?.action || null,
-                    pricing_url: detail?.pricing_url || null,
+                    pricing_url: normalizeBillingBrandCopy(detail?.pricing_url || null),
                     fatal: true,
                 },
             };
@@ -755,6 +818,73 @@ export class TarangStreamClient {
                     body,
                 });
             } catch { /* best effort */ }
+        }
+    }
+
+    /**
+     * Submit a live-steering follow-up on the current running task (PRD-081 §5.2).
+     * Unlike resume(), this does NOT pause/unpause — the text is queued and
+     * delivered at the next tool boundary.
+     *
+     * Returns a status object; callers should NOT swallow errors:
+     *   { status: 'accepted', interventionId }        — queued on backend, SSE ack forthcoming
+     *   { status: 'queued_next_turn', interventionId } — task already ended; hand back as next turn
+     *   { status: 'duplicate', interventionId }       — same intervention_id previously submitted
+     *   { status: 'no_task' }                          — no currentTaskId (nothing to steer)
+     *   { status: 'error', error, httpStatus? }        — network or non-2xx response
+     *
+     * @param {string} instruction  Follow-up text (non-empty, trimmed by caller).
+     * @param {object} [opts]
+     * @param {string} [opts.idempotencyKey]  Optional client-generated id.
+     *                                        Auto-generated when omitted; pass the same key
+     *                                        for retries to stay idempotent.
+     */
+    async sendIntervention(instruction, opts = {}) {
+        if (!this.currentTaskId) {
+            return { status: 'no_task' };
+        }
+        const text = String(instruction || '').trim();
+        if (!text) {
+            return { status: 'error', error: 'instruction is empty' };
+        }
+        const interventionId = opts.idempotencyKey || _uuidLike();
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/api/intervention/${this.currentTaskId}`,
+                {
+                    method: 'POST',
+                    headers: this._headers({
+                        'Content-Type': 'application/json',
+                    }),
+                    body: JSON.stringify({
+                        instruction: text,
+                        intervention_id: interventionId,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                let errText = '';
+                try { errText = (await response.text()).slice(0, 400); } catch {}
+                return {
+                    status: 'error',
+                    httpStatus: response.status,
+                    error: errText || `HTTP ${response.status}`,
+                    interventionId,
+                };
+            }
+            const body = await response.json().catch(() => ({}));
+            const backendStatus = body.status || 'accepted';
+            const status = body.duplicate ? 'duplicate' : backendStatus;
+            return {
+                status,
+                interventionId: body.intervention_id || interventionId,
+            };
+        } catch (e) {
+            return {
+                status: 'error',
+                error: (e && e.message) || String(e),
+                interventionId,
+            };
         }
     }
 

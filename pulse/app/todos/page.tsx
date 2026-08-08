@@ -126,7 +126,7 @@ export default function TodosPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <TopBar title="Todos" subtitle="~/.kepler/todos/" />
+      <TopBar title="Todos" subtitle="~/.bahulam/todos/" />
       <div className="p-4 md:p-6 space-y-5">
 
         {error && (
@@ -192,7 +192,7 @@ export default function TodosPage() {
                 <CircleCheck className="w-8 h-8 mx-auto mb-3 text-muted-foreground/40" />
                 <p className="text-muted-foreground text-sm">
                   {allItems.length === 0
-                    ? 'No todos found in ~/.kepler/todos/'
+                    ? 'No todos found in ~/.bahulam/todos/'
                     : 'No todos match your filter.'}
                 </p>
               </div>

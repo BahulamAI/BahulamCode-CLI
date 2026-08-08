@@ -1,10 +1,10 @@
 /**
- * Preflight diagnostic — Mission Control (PRD-055 §9).
+ * Preflight diagnostic.
  *
  * Prints a non-blocking summary of the runtime environment before the REPL
  * starts so the user can see what is and is not aligned:
  *
- *   🔭 Kepler v1.0.4 · initializing orbit
+ *   🔭 Bahulam Code v1.0.4 · initializing orbit
  *
  *     [✓] Auth token
  *     [✓] OpenRouter key
@@ -42,6 +42,20 @@ export async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
   const creds = auth.loadCredentials();
   const hasToken = !!creds.token;
   const url = creds.backendUrl;
+
+  // Bundled runtime mode: the local Python runtime replaces the cloud
+  // backend for agent execution. Probing a remote /api/user/me here would
+  // falsely paint the CLI as "Offline" even though the local runtime
+  // is fully operational. Report bundled state directly.
+  const bundledMode =
+    process.env.BAHULAM_RUNTIME_MODE === 'bundled' ||
+    process.env.TARANG_ENV === 'bundled';
+  if (bundledMode) {
+    return hasToken
+      ? { status: 'ok', label: 'Bundled runtime · authenticated' }
+      : { status: 'warn', label: 'Bundled runtime', hint: '/login to enable metered calls' };
+  }
+
   // Local Docker backends round-trip Supabase and often take 2–4s. Give them
   // more headroom so preflight doesn't falsely report Offline.
   const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:|$|\/)/i.test(url || '');
@@ -115,7 +129,7 @@ export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
         return { status: 'fail', label: windowLabel, hint: 'message window exhausted — try again after reset' };
       }
       if (status === 'low') {
-        return { status: 'warn', label: windowLabel, hint: 'low message window — codekepler.ai/pricing' };
+        return { status: 'warn', label: windowLabel, hint: 'low message window — bahulam.ai/pricing' };
       }
       return { status: 'ok', label: windowLabel };
     }
@@ -128,10 +142,10 @@ export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
       return { status: 'ok', label: `Plan: ${tier}` };
     }
     if (remaining <= 0) {
-      return { status: 'fail', label: `Plan: ${tier} · 0 credits remaining`, hint: 'codekepler.ai/pricing to purchase or upgrade' };
+      return { status: 'fail', label: `Plan: ${tier} · 0 credits remaining`, hint: 'bahulam.ai/pricing to purchase or upgrade' };
     }
     if (remaining < 25) {
-      return { status: 'warn', label: `Plan: ${tier} · ${remaining} credits remaining`, hint: 'low balance — codekepler.ai/pricing' };
+      return { status: 'warn', label: `Plan: ${tier} · ${remaining} credits remaining`, hint: 'low balance — bahulam.ai/pricing' };
     }
     return { status: 'ok', label: `Plan: ${tier} · ${remaining} credits remaining` };
   } catch {
@@ -277,7 +291,7 @@ function topLanguages(byExt, n) {
 
 function quickFileCount(cwd, { max = 5000 } = {}) {
   // Shallow walk: skip node_modules, .git, dist, build, .venv, __pycache__.
-  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', 'venv', '__pycache__', '.kepler', '.terraform']);
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', 'venv', '__pycache__', '.bahulam', '.terraform']);
   const byExt = {};
   let total = 0;
   const stack = [cwd];
@@ -287,7 +301,7 @@ function quickFileCount(cwd, { max = 5000 } = {}) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { continue; }
     for (const e of entries) {
-      if (e.name.startsWith('.') && e.name !== '.kepler') continue;
+      if (e.name.startsWith('.') && e.name !== '.bahulam') continue;
       if (SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) stack.push(full);
@@ -329,7 +343,7 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   const t = term();
   const write = (s) => { if (!silent) process.stderr.write(s); };
 
-  const header = `${icons.search} ${paint.bold(paint.brand.primary('Kepler v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
+  const header = `${icons.search} ${paint.bold(paint.brand.primary('Bahulam Code v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
   write('\n' + header + '\n\n');
 
   const checks = [];

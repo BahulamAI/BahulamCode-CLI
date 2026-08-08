@@ -64,21 +64,23 @@ export function defaultOptions(tier) {
  * @param {number} [opts.selected]   — index of the highlighted option
  */
 export function renderApprovalPrompt({
-  tool, args = {}, tier, why: _why = '', width,
+  tool, args = {}, tier, why = '', width,
   options, selected = 0,
 } = {}) {
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const explicit = requiresExplicitApproval(tier);
   const accent = explicit ? paint.brand.accent : paint.brand.data;
   const opts = options || defaultOptions(tier);
-  const title = `${riskIcon(tier)}  ${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
+  const title = `${approvalTitle(tier).toLowerCase()} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
-    horizontalRule(title, cols, accent),
+    blockHeader(title, accent),
     ...subjectRows(tool, args, cols, accent),
+    ...riskRows(tool, args, tier, accent),
+    ...reasonRows(why, cols, accent),
+    blockLine(accent),
     ...decisionRows(opts, selected, accent),
-    `  ${paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc cancel')}`,
-    horizontalRule('', cols, accent),
+    blockLine(accent, paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc cancel')),
   ];
 
   return '\n' + lines.join('\n');
@@ -110,24 +112,6 @@ export function renderInlinePrompt({ tool, args = {}, tier, why = '' } = {}) {
 
 export { TIERS };
 
-function riskIcon(tier) {
-  switch (tier) {
-    case TIERS.SENSITIVE_READ:
-      return '🔐';
-    case TIERS.SHELL_DANGEROUS:
-    case TIERS.DESTRUCTIVE:
-      return '🔴';
-    case TIERS.SHELL_MEDIUM:
-      return '⚠';
-    case TIERS.NETWORK:
-      return '🌐';
-    case TIERS.LOCAL_EDIT:
-      return '✎';
-    default:
-      return '◈';
-  }
-}
-
 function tierTitle(tier) {
   switch (tier) {
     case TIERS.SENSITIVE_READ: return 'SENSITIVE';
@@ -153,38 +137,87 @@ function approvalTitle(tier) {
   }
 }
 
-function horizontalRule(title, cols, accent) {
-  if (!title) return `  ${accent('─'.repeat(Math.max(24, cols - 2)))}`;
-  const label = ` ${paint.bold(accent(title))} `;
-  const remaining = Math.max(8, cols - 2 - visibleWidth(label) - 2);
-  return `  ${accent('─')} ${label}${accent('─'.repeat(remaining))}`;
+function blockHeader(title, accent) {
+  return `  ${accent('╭─')} ${paint.bold(accent(title))}`;
+}
+
+function blockLine(accent, text = '') {
+  return `  ${accent('│')}${text ? ` ${text}` : ''}`;
 }
 
 function subjectRows(tool, args, cols, accent) {
   const rows = [];
-  const available = Math.max(24, cols - 4);
+  const available = Math.max(24, cols - 5);
   const summary = toolDisplaySummary(tool, args, {});
   const label = `${icon(tool)} ${paint.text.primary(toolDisplayLabel(tool))}`;
   const details = subjectDetails(tool, args, summary, Math.max(24, available - visibleWidth(label) - 1));
 
   if (details.length === 1 && visibleWidth(`${label} ${details[0]}`) <= available) {
-    rows.push(`  ${label} ${paint.text.primary(details[0])}`);
+    rows.push(blockLine(accent, `${label} ${paint.text.primary(details[0])}`));
     return rows;
   }
 
-  rows.push(`  ${label}`);
+  rows.push(blockLine(accent, label));
   for (const line of subjectDetails(tool, args, summary, Math.max(24, available - 2))) {
-    rows.push(`    ${paint.text.primary(line)}`);
+    rows.push(blockLine(accent, `${paint.text.dim('  ')}${paint.text.primary(line)}`));
   }
   return rows;
 }
 
 function decisionRows(opts, selected, accent) {
-  const rows = [`  ${paint.text.dim('Decision')}`];
+  const rows = [blockLine(accent, paint.text.dim('Decision'))];
   for (let i = 0; i < opts.length; i++) {
-    rows.push(`  ${optionToken(opts[i], i === selected, accent)}`);
+    rows.push(blockLine(accent, optionToken(opts[i], i === selected, accent)));
   }
   return rows;
+}
+
+function reasonRows(why, cols, accent) {
+  const reason = String(why || '').replace(/\s+/g, ' ').trim();
+  if (!reason) return [];
+  const label = paint.text.dim('reason ');
+  const firstWidth = Math.max(20, cols - 5 - visibleWidth(label));
+  const restWidth = Math.max(20, cols - 5 - 7);
+  const wrapped = wrapText(reason, firstWidth);
+  const rows = [];
+  wrapped.forEach((line, index) => {
+    if (index === 0) {
+      rows.push(blockLine(accent, `${label}${paint.text.primary(line)}`));
+    } else {
+      for (const rest of wrapText(line, restWidth)) {
+        rows.push(blockLine(accent, `${paint.text.dim('       ')}${paint.text.primary(rest)}`));
+      }
+    }
+  });
+  return rows;
+}
+
+function riskRows(tool, args = {}, tier, accent) {
+  const terms = riskTerms(tool, args, tier);
+  if (!terms.length) return [];
+  return [blockLine(accent, `${paint.text.dim('risk   ')}${paint.state.warn(terms.join(', '))}`)];
+}
+
+function riskTerms(tool, args = {}, tier) {
+  const terms = [];
+  if (tool === 'shell') {
+    const command = String(args.command || args.cmd || '');
+    const patterns = [
+      [/rm\s+-[^\n]*r[^\n]*f|rm\s+-[^\n]*f[^\n]*r/i, 'rm -rf'],
+      [/\bsudo\b/i, 'sudo'],
+      [/\bgit\s+push\b[^\n]*(?:--force|-f)\b/i, 'force push'],
+      [/\bnpm\s+publish\b/i, 'publish'],
+      [/\b(?:kill|pkill)\b/i, 'process kill'],
+      [/\bchmod\s+777\b/i, 'chmod 777'],
+      [/\bcurl\b|\bwget\b/i, 'network download'],
+    ];
+    for (const [re, label] of patterns) {
+      if (re.test(command)) terms.push(label);
+    }
+  }
+  if (tier === TIERS.SENSITIVE_READ) terms.push('sensitive read');
+  if (tier === TIERS.DESTRUCTIVE) terms.push('destructive');
+  return [...new Set(terms)].slice(0, 3);
 }
 
 function optionToken(option, selected, accent) {

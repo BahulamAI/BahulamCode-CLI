@@ -20,8 +20,8 @@ const pressStart2P = Press_Start_2P({
 })
 
 export const metadata: Metadata = {
-  title: 'Kepler Pulse',
-  description: 'Real-time analytics for your Kepler AI agent sessions',
+  title: 'Bahulam Pulse',
+  description: 'Real-time analytics for your Bahulam Code agent sessions',
 }
 
 export default function RootLayout({

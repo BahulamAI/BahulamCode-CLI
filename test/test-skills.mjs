@@ -30,7 +30,7 @@ fs.mkdirSync(project, { recursive: true });
 
 try {
     writeSkill(path.join(home, '.claude', 'skills'), 'review', 'Global review', 'global');
-    writeSkill(path.join(project, '.kepler', 'skills'), 'review', 'Project review', 'project');
+    writeSkill(path.join(project, '.bahulam', 'skills'), 'review', 'Project review', 'project');
 
     const loader = new SkillsLoader({ homeDir: home }).load(project);
     const rows = loader.list();
@@ -56,7 +56,7 @@ try {
     assert.equal(installed.success, true);
     assert.deepEqual(installed.installed, ['vendor-skill']);
     assert.ok(installer.lock('global').skills['vendor-skill']);
-    assert.equal(loader.get('vendor-skill').source, 'kepler-global');
+    assert.equal(loader.get('vendor-skill').source, 'bahulam-global');
 
     const listed = await executor.execute('skills_list', { query: 'vendor' });
     assert.equal(listed.success, true);
@@ -72,7 +72,7 @@ try {
 
     const removed = await executor.execute('skill_remove', { name: 'vendor-skill', scope: 'global' });
     assert.equal(removed.success, true);
-    assert.equal(fs.existsSync(path.join(home, '.kepler', 'skills', 'vendor-skill')), false);
+    assert.equal(fs.existsSync(path.join(home, '.bahulam', 'skills', 'vendor-skill')), false);
     console.log('Skills tests passed');
 } finally {
     fs.rmSync(root, { recursive: true, force: true });
