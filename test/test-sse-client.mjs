@@ -757,7 +757,6 @@ await test('summarizeSession posts transcript with auth and product headers', as
     const client = new TarangStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test-token',
-        product: 'appstak',
         toolExecutor: mockToolExecutor,
     });
     const result = await client.summarizeSession(
@@ -769,7 +768,7 @@ await test('summarizeSession posts transcript with auth and product headers', as
     assert.strictEqual(result.summary, 'backend summary');
     assert.strictEqual(result.source, 'llm');
     assert.strictEqual(received.auth, 'Bearer test-token');
-    assert.strictEqual(received.product, 'appstak');
+    assert.strictEqual(received.product, 'bahulam');
     assert.strictEqual(received.body.session_id, 'sess-1');
     assert.strictEqual(received.body.project_path, '/tmp/project');
     assert.strictEqual(received.body.max_tokens, 500);
