@@ -48,19 +48,19 @@ test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
 
 test('startup banner uses compact abundance mark with ASCII fallback', () => {
   _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
-  const rendered = stripAnsi(renderBanner('2.6.8'));
+  const rendered = stripAnsi(renderBanner('2.6.12'));
   assert.ok(rendered.includes('∞∞   ∞∞'));
   assert.ok(rendered.includes('████   ███  █   █'));
-  assert.ok(rendered.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(rendered.includes('code · abundance in your terminal · v2.6.12'));
   assert.ok(!rendered.includes('बहुलम्'));
   assert.ok(!rendered.includes('0xB0'));
   assert.ok(!rendered.includes('╔'));
 
   _setTermForTesting({ isTTY: true, color: false, colorLevel: 'none', plain: true, unicode: false });
-  const fallback = renderBanner('2.6.8');
+  const fallback = renderBanner('2.6.12');
   assert.ok(fallback.includes('oo   oo'));
   assert.ok(fallback.includes('████   ███  █   █'));
-  assert.ok(fallback.includes('code · abundance in your terminal · v2.6.8'));
+  assert.ok(fallback.includes('code · abundance in your terminal · v2.6.12'));
   assert.ok(!/\x1b\[/.test(fallback), `plain banner has ANSI: ${JSON.stringify(fallback)}`);
 
   _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });

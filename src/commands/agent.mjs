@@ -59,7 +59,7 @@ function getAuth() {
     const auth = new TarangAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        process.stderr.write(`${RED}✗ Not authenticated. Run `bahulam-code login` first.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Not authenticated. Run bahulam-code login first.${RESET}\n`);
         process.exit(1);
     }
     return creds;
@@ -76,13 +76,14 @@ async function apiFetch(path, options = {}) {
     const headers = {
         'Authorization': `Bearer ${creds.token}`,
         'Content-Type': 'application/json',
+        'X-Product': 'bahulam',
         ...options.headers,
     };
     const url = `${baseUrl}${path}`;
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-        process.stderr.write(`${RED}✗ Authentication failed. Run `bahulam-code login` to re-authenticate.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Authentication failed. Run bahulam-code login to re-authenticate.${RESET}\n`);
         process.exit(1);
     }
 

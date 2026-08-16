@@ -4,7 +4,7 @@
  * Prints a non-blocking summary of the runtime environment before the REPL
  * starts so the user can see what is and is not aligned:
  *
- *   🔭 Bahulam Code v1.0.4 · initializing orbit
+ *   🔭 Bahulam Code v2.6.12 · initializing orbit
  *
  *     [✓] Auth token
  *     [✓] OpenRouter key
