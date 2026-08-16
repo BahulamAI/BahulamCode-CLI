@@ -117,7 +117,6 @@ export class TarangStreamClient {
         toolExecutor,
         verbose = false,
         approvalManager = null,
-        product = null,
         reconnectMaxElapsedMs = null,
         mode = null,
     }) {
@@ -126,7 +125,7 @@ export class TarangStreamClient {
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.approval = approvalManager || new ApprovalManager();
-        this.product = product || process.env.BAHULAM_PRODUCT || process.env.TARANG_PRODUCT || 'bahulam';
+        this.product = 'bahulam';
         this.currentTaskId = null;
         this.lastEventId = null;
         this.retryDelayMs = null;
@@ -148,9 +147,8 @@ export class TarangStreamClient {
         //     the Bahulam Gateway directly. Metering runs. THIS IS THE
         //     PUBLIC CLI DEFAULT.
         //   'remote' → cloud backend runs the agent loop server-side.
-        //     Backend hits its provider directly (bypasses gateway metering).
-        //     Retained for enterprise flows (Power BI workspaces, scheduled
-        //     jobs) that need a persistent host. Not for individual devs.
+        //     Backend calls Bahulam Gateway with service-token attribution;
+        //     metering still runs at the gateway boundary.
         //
         // Explicit opt precedence: constructor arg > env vars > sniff runtime
         // package availability > default 'bundled'.

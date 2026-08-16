@@ -1513,7 +1513,9 @@ print('OK: replaced')
             const created = listLocalAgents(process.cwd()).find(agent => agent.slug === result.slug);
             const payload = {
                 ...result,
-                agent: created ? compactAgentMetadata(created) : null,
+                agent: created
+                    ? { ...compactAgentMetadata(created), spec: created.spec }
+                    : null,
                 next_actions: [
                     `Edit ${result.filePath}`,
                     `Run /agents sync ${result.slug} when ready`,

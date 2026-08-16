@@ -231,6 +231,9 @@ export async function ensureRuntimeReady() {
     env: {
       ...process.env,
       BAHULAM_CLI_LOCAL: '1',
+      BAHULAM_PRODUCT: 'bahulam',
+      LLM_GATEWAY: 'BahulamGateway',
+      BAHULAM_GATEWAY_URL: process.env.BAHULAM_GATEWAY_URL || 'https://gateway.bahulam.ai/v1',
       // Framework validates LICENSE_KEY against the license portal on import.
       // The portal is now embedded inside the Bahulam Gateway itself
       // (see codekepler-bahulam-gateway/app/main.py mount at /portal), so

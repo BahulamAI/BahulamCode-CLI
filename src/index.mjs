@@ -35,7 +35,7 @@ import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyled
 import { ContextRetriever } from './context/retriever.mjs';
 import { loadSettings } from './config/settings.mjs';
 
-const VERSION = '1.0.1';
+const VERSION = '2.6.14';
 
 // ── Arg Parsing (consolidated from index.mjs + cli-args.mjs) ──
 

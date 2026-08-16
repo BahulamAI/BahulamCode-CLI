@@ -204,6 +204,7 @@ export async function syncAgentsToBackend({
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      'X-Product': 'bahulam',
     },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
