@@ -8,6 +8,10 @@ import assert from 'node:assert';
 let passed = 0;
 let failed = 0;
 
+function stripAnsi(value) {
+    return String(value || '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 async function test(name, fn) {
     try {
         await fn();
@@ -111,6 +115,32 @@ await test('hard-blocked shell commands skip approval prompt', async () => {
         assert.ok(!output.includes('Decision'));
     } finally {
         process.stderr.write = originalWrite;
+    }
+});
+
+await test('hard-blocked shell command message wraps with retry hint', async () => {
+    const mgr = new ApprovalManager();
+
+    const originalWrite = process.stderr.write;
+    const originalColumns = process.stderr.columns;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+    process.stderr.columns = 62;
+
+    try {
+        const r = await mgr.check('shell', { command: 'echo `whoami`' });
+        assert.strictEqual(r.approved, false);
+        assert.strictEqual(r.blocked, true);
+        assert.ok(r.reason.includes('Retry with separate simple shell commands'));
+        const lines = stripAnsi(output).split('\n').filter(Boolean);
+        assert.ok(lines.length >= 2, 'expected wrapped safety output');
+        assert.ok(lines.every(line => line.length <= 62), 'safety output should fit terminal columns');
+    } finally {
+        process.stderr.write = originalWrite;
+        process.stderr.columns = originalColumns;
     }
 });
 

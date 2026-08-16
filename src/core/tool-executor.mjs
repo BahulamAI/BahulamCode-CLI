@@ -74,6 +74,14 @@ export function createToolExecutor({
         return path.resolve(cwd, value);
     }
 
+    function blockedShellOutput(reason) {
+        const text = String(reason || 'Blocked by shell safety policy').trim();
+        const hint = /command substitution|backticks|\$\(\)/i.test(text)
+            ? 'Retry with separate simple shell commands instead of backticks or $().'
+            : 'Work only inside a registered project root.';
+        return `BLOCKED: ${text}. ${hint}`;
+    }
+
     function longRunningObservationTimeoutMs() {
         const configured = Number(process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS);
         return Number.isFinite(configured) && configured > 0 ? configured : 15_000;
@@ -578,7 +586,7 @@ export function createToolExecutor({
             if (!shellCheck.safe) {
                 return {
                     success: false,
-                    output: `BLOCKED: ${shellCheck.reason}. Work only inside a registered project root.`,
+                    output: blockedShellOutput(shellCheck.reason),
                     _tool: 'shell', _blocked: true,
                 };
             }
@@ -588,7 +596,7 @@ export function createToolExecutor({
             if (classification.classification === 'blocked') {
                 return {
                     success: false,
-                    output: `BLOCKED: ${classification.reason}`,
+                    output: blockedShellOutput(classification.reason),
                     _tool: 'shell', _blocked: true,
                 };
             }

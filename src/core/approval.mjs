@@ -72,10 +72,20 @@ function shellHardBlockReason(tool, args = {}) {
     if (tool !== 'shell') return '';
     const command = args.command || args.cmd || '';
     const safety = validateShellCommand(command);
-    if (!safety.safe) return safety.reason || 'Blocked by shell safety policy';
+    if (!safety.safe) return withShellRetryHint(safety.reason || 'Blocked by shell safety policy');
     const classification = classifyCommand(command);
-    if (classification.classification === 'blocked') return classification.reason || 'Blocked by shell safety policy';
+    if (classification.classification === 'blocked') {
+        return withShellRetryHint(classification.reason || 'Blocked by shell safety policy');
+    }
     return '';
+}
+
+function withShellRetryHint(reason) {
+    const text = String(reason || '').trim();
+    if (/command substitution|backticks|\$\(\)/i.test(text)) {
+        return `${text}. Retry with separate simple shell commands instead of backticks or $().`;
+    }
+    return text;
 }
 
 // ── ANSI helpers ──
@@ -143,7 +153,8 @@ export class ApprovalManager {
             const reason = `Blocked by safety policy: ${hardBlock}`;
             this.history.push({ tool: toolName, decision: 'safety-block', tier, time: Date.now(), reason });
             this.approvalLog.append({ tool: toolName, args, tier, decision: 'safety_block', scope: 'none', reason });
-            write(`  ${RED}✗${RST}  ${DIM}${reason}${RST}\n\n`);
+            if (isInputDockMounted()) moveToContent();
+            writeSafetyBlock(reason);
             return { approved: false, tier, reason, blocked: true, code: 'safety_block' };
         }
 
@@ -473,4 +484,68 @@ export class ApprovalManager {
 function truncateNote(note) {
     const text = String(note || '').trim();
     return text.length <= 120 ? text : text.slice(0, 119) + '…';
+}
+
+function writeSafetyBlock(reason) {
+    const cols = Math.max(40, Math.min(process.stderr.columns || process.stdout.columns || 80, 140));
+    const firstPrefix = `  ${RED}✗${RST}  ${DIM}`;
+    const nextPrefix = `     ${DIM}`;
+    const firstWidth = Math.max(24, cols - 5);
+    const nextWidth = Math.max(24, cols - 5);
+    const lines = wrapSafetyText(reason, firstWidth, nextWidth);
+
+    write(`${firstPrefix}${lines[0] || ''}${RST}\n`);
+    for (const line of lines.slice(1)) {
+        write(`${nextPrefix}${line}${RST}\n`);
+    }
+    write('\n');
+}
+
+function wrapSafetyText(text, firstWidth, nextWidth) {
+    const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    if (!words.length) return [''];
+
+    const lines = [];
+    let line = '';
+    let width = firstWidth;
+
+    for (const word of words) {
+        if (!line) {
+            if (word.length <= width) {
+                line = word;
+            } else {
+                const chunks = splitWord(word, width);
+                lines.push(...chunks.slice(0, -1));
+                line = chunks[chunks.length - 1] || '';
+            }
+            continue;
+        }
+
+        if (line.length + 1 + word.length <= width) {
+            line += ` ${word}`;
+            continue;
+        }
+
+        lines.push(line);
+        width = nextWidth;
+        if (word.length <= width) {
+            line = word;
+        } else {
+            const chunks = splitWord(word, width);
+            lines.push(...chunks.slice(0, -1));
+            line = chunks[chunks.length - 1] || '';
+        }
+    }
+
+    if (line) lines.push(line);
+    return lines;
+}
+
+function splitWord(word, width) {
+    const size = Math.max(8, width);
+    const chunks = [];
+    for (let i = 0; i < word.length; i += size) {
+        chunks.push(word.slice(i, i + size));
+    }
+    return chunks;
 }

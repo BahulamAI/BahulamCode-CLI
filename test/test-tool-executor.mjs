@@ -323,6 +323,14 @@ await test('shell runs echo', async () => {
     assert.ok(result.output.includes('hello_tarang'));
 });
 
+await test('shell blocked command substitution returns retry guidance', async () => {
+    const result = await executor.execute('shell', { command: 'echo `whoami`' });
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result._blocked, true);
+    assert.ok(result.output.includes('Contains command substitution'));
+    assert.ok(result.output.includes('Retry with separate simple shell commands'));
+});
+
 await test('shell rm with tilde target runs after approval path', async () => {
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-home-rm-'));
     const lockFile = path.join(fakeHome, '.agent_framework', '.license_lock');
