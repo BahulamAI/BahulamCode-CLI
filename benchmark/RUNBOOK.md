@@ -12,15 +12,17 @@ already bundled into a platform-specific npm package or supplied as a tarball.
 
 ## VM Inventory
 
-| VM | Name | Size | IP | Role |
-|----|------|------|----|------|
-| VM1 | swebench-eval-vm | D16s_v3 (16 vCPU) | 20.9.77.9 | Docker eval + terminal-bench |
-| VM2 | swebench-eval-vm-2 | D4s_v3 (4 vCPU) | 172.202.17.40 | SWE-bench shard runner |
-| VM3 | swebench-eval-vm-3 | D4s_v3 (4 vCPU) | 104.43.140.29 | SWE-bench shard runner |
-| VM4 | swebench-eval-vm-4 | D4s_v3 (4 vCPU) | 74.249.204.194 | SWE-bench shard runner |
-| VM5 | swebench-eval-vm-5 | D4s_v3 (4 vCPU) | 20.29.69.244 | SWE-bench shard runner |
+| VM | Name | Size | IP | Role | Status |
+|----|------|------|----|------|--------|
+| VM1 | swebench-eval-vm | D16s_v3 (16 vCPU) | 172.173.113.58 | Docker eval + hard-10 bundled runtime | DEALLOCATED 2026-08-15 (disks + IP retained) |
+| VM2 | swebench-eval-vm-2 | D4s_v3 (4 vCPU) | (was 172.202.17.40) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
+| VM3 | swebench-eval-vm-3 | D4s_v3 (4 vCPU) | (was 104.43.140.29) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
+| VM4 | swebench-eval-vm-4 | D4s_v3 (4 vCPU) | (was 74.249.204.194) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
+| VM5 | swebench-eval-vm-5 | D4s_v3 (4 vCPU) | (was 20.29.69.244) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
 
 Resource Group: `AZ-RG-ORCA-BENCHMARK` in `centralus`.
+
+**Current state (2026-08-15):** Only VM1 exists (deallocated). VMs 2–5 were deleted prior to this run; the RG retains only their NSGs (`swebench-eval-vm{,-2,-3,-4,-5}NSG`), the VNET (`swebench-eval-vmVNET`), and the subnet (`swebench-eval-vmSubnet`). Rebuild any VM via `az vm create` reusing the existing VNET/NSG. VM1 disk contains all benchmark artifacts from the 2026-08-15 bundled-runtime hard-10 runs (delegation-tuned + baseline-reverted); restart with `az vm start -g AZ-RG-ORCA-BENCHMARK -n swebench-eval-vm`.
 
 ## VM Management
 

@@ -272,7 +272,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                     tool_calls: data?.tool_calls || 0,
                     success: data?.success !== false,
                 });
-                emit({ type: 'sub_agent', ...data });
+                emit({ ...data, type: 'sub_agent', agent_type: data?.type || '' });
                 log(`SubAgent done: ${data?.type} (${data?.tool_calls} tools, ${data?.duration_s}s)`);
             }
 
@@ -360,8 +360,19 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const subAgentToolBreakdown = countBreakdown(toolCalls.filter(t => t.internal));
 
     const subAgentReportedToolCount = subAgents.reduce((sum, sa) => sum + (sa.tool_calls || 0), 0);
-    const subAgentToolCount = backendSubAgentToolCount ?? Math.max(subAgentReportedToolCount, subAgentForwardedToolCount);
-    const totalToolCount = backendToolCount ?? (primaryToolCount + subAgentToolCount);
+    const observedSubAgentToolCount = Math.max(
+        subAgentReportedToolCount,
+        subAgentForwardedToolCount,
+    );
+    const subAgentToolCount = (
+        backendSubAgentToolCount && backendSubAgentToolCount > 0
+    )
+        ? backendSubAgentToolCount
+        : observedSubAgentToolCount;
+    const computedToolCount = primaryToolCount + subAgentToolCount;
+    const totalToolCount = backendToolCount != null
+        ? Math.max(backendToolCount, computedToolCount)
+        : computedToolCount;
     const primaryToolTotal = backendPrimaryToolCount ?? (
         backendToolCount != null
             ? Math.max(0, totalToolCount - subAgentToolCount)

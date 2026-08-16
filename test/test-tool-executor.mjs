@@ -199,6 +199,30 @@ await test('search_code routes through the registered project index', async () =
     assert.ok(result.output.includes('tool-executor'));
 });
 
+await test('agent_create returns runnable spec for same-turn delegation refresh', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-agent-create-'));
+    const previousCwd = process.cwd();
+    try {
+        const agentExecutor = createToolExecutor();
+        process.chdir(root);
+        const result = await agentExecutor.execute('agent_create', {
+            name: 'Probe Specialist',
+            description: 'Same-turn delegation probe',
+            tools: ['read_file'],
+            system_prompt: 'Return the requested marker.',
+            force: true,
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.agent.slug, 'probe-specialist');
+        assert.ok(result.agent.spec);
+        assert.strictEqual(result.agent.spec.slug, 'probe-specialist');
+        assert.ok(result.agent.spec.config);
+    } finally {
+        process.chdir(previousCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Test 2: read_file reads existing file
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
