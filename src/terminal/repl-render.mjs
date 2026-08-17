@@ -22,6 +22,8 @@ import { runtime, session } from './repl-state.mjs';
 import { fitAnsiLine } from './repl-format.mjs';
 import { exploreCategory, isExploreTool } from './repl-explore.mjs';
 import {
+  clearPinnedStatus,
+  drawPinnedStatus,
   isInputDockMounted,
   moveToContent,
 } from '../ui/input-dock.mjs';
@@ -470,7 +472,10 @@ export function startSpinner(text) {
     if (isExploreActive && isInputDockMounted()) {
       return;
     }
-    if (isInputDockMounted()) moveToContent();
+    if (isInputDockMounted()) {
+      drawPinnedStatus(rendered);
+      return;
+    }
     inPlace(rendered);
   }, 80);
 }
@@ -486,7 +491,11 @@ export function stopSpinner() {
   if (runtime.exploreRun && runtime.exploreRun.lineActive) return;
   if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
   runtime.spinText = '';
-  if (isInputDockMounted()) moveToContent();
+  if (isInputDockMounted()) {
+    clearPinnedStatus();
+    moveToContent();
+    return;
+  }
   inPlace('');
 }
 

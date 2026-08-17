@@ -849,6 +849,10 @@ function updateStatusBar() {
 
 // ── Event Renderer ──
 
+function isDeniedStatusMessage(message = '') {
+  return /^(?:Denied\s+\S+|Blocked by safety policy)\b/i.test(String(message || '').trim());
+}
+
 function renderEvent(event) {
   const { type, data } = event;
 
@@ -888,6 +892,10 @@ function renderEvent(event) {
       if (!msg || msg === 'Agent started') return;
       if (/^Stagnation:/i.test(msg)) {
         renderStagnation(data);
+        break;
+      }
+      if (isDeniedStatusMessage(msg)) {
+        stopSpinner();
         break;
       }
       startSpinner(msg);
@@ -1039,6 +1047,7 @@ function renderEvent(event) {
     }
 
     case 'approval_denied': {
+      stopSpinner();
       const reason = data?.reason || 'User denied';
       const toolName = data?.tool || '';
       const indent = subAgentIndent();
@@ -2989,6 +2998,9 @@ export async function startTerminalRepl() {
   const F2_SEQUENCES = new Set(['\x1bOQ', '\x1b[12~']);
   let _inBracketedPaste = false;
   let _bracketedPasteBuffer = '';
+  let _suppressBracketedPasteLines = false;
+  let _bracketedPasteStartLine = '';
+  let _bracketedPasteStartCursor = 0;
   const _pasteEndListeners = new Set();
   function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
   function isInBracketedPaste() { return _inBracketedPaste; }
@@ -3011,6 +3023,11 @@ export async function startTerminalRepl() {
           if (start === -1) return;
           _inBracketedPaste = true;
           _bracketedPasteBuffer = '';
+          _suppressBracketedPasteLines = true;
+          _bracketedPasteStartLine = String(rl?.line || '');
+          _bracketedPasteStartCursor = typeof rl?.cursor === 'number'
+            ? rl.cursor
+            : _bracketedPasteStartLine.length;
           i = start + PASTE_BEGIN.length;
         } else {
           const end = s.indexOf(PASTE_END, i);
@@ -3025,7 +3042,10 @@ export async function startTerminalRepl() {
           // Notify subscribers on next tick so readline finishes emitting its
           // synchronous `line` events for the buffered content first.
           const cbs = [..._pasteEndListeners];
-          setImmediate(() => { for (const cb of cbs) { try { cb(payload); } catch {} } });
+          setImmediate(() => {
+            for (const cb of cbs) { try { cb(payload); } catch {} }
+            _suppressBracketedPasteLines = false;
+          });
           i = end + PASTE_END.length;
         }
       }
@@ -3199,10 +3219,10 @@ export async function startTerminalRepl() {
     slashHintLine = '';
   }
 
-  function replaceReadlineLine(value) {
+  function replaceReadlineLine(value, cursor = null) {
     const next = String(value || '');
     rl.line = next;
-    rl.cursor = next.length;
+    rl.cursor = cursor == null ? next.length : Math.max(0, Math.min(next.length, Number(cursor) || 0));
     if (typeof rl._refreshLine === 'function') {
       rl._refreshLine();
     } else {
@@ -3210,6 +3230,16 @@ export async function startTerminalRepl() {
       readline.clearLine(process.stderr, 1);
       process.stderr.write(next);
     }
+  }
+
+  function insertPromptText(text, { baseLine = rl.line || '', baseCursor = rl.cursor } = {}) {
+    const payload = String(text || '');
+    if (!payload) return;
+    const line = String(baseLine || '');
+    const cursor = typeof baseCursor === 'number' ? Math.max(0, Math.min(line.length, baseCursor)) : line.length;
+    const next = `${line.slice(0, cursor)}${payload}${line.slice(cursor)}`;
+    replaceReadlineLine(next, cursor + payload.length);
+    renderIdleDockInput();
   }
 
   function acceptSlashHint() {
@@ -3365,8 +3395,16 @@ export async function startTerminalRepl() {
       _pasteFlushTimer = null;
     }
     if (!_pasteLines.length) return;
-    const line = _pasteLines.join('\n');
+    const trailing = String(rl.line || '');
+    const pastedLines = _pasteLines.slice();
     _pasteLines = [];
+    if (pastedLines.length > 1 || trailing) {
+      const text = [...pastedLines, trailing].join('\n');
+      replaceReadlineLine(text);
+      renderIdleDockInput();
+      return;
+    }
+    const line = pastedLines.join('\n');
     queueOrRunLine(line);
   }
 
@@ -3376,6 +3414,22 @@ export async function startTerminalRepl() {
   // or the user pressed Enter normally), the debounce falls back to old
   // behavior — a single Enter flushes almost instantly.
   rl.on('line', async (line) => {
+    if (_suppressBracketedPasteLines) {
+      _pasteLines = [];
+      if (_pasteFlushTimer) {
+        clearTimeout(_pasteFlushTimer);
+        _pasteFlushTimer = null;
+      }
+      return;
+    }
+    if (!inputActive) {
+      _pasteLines = [];
+      if (_pasteFlushTimer) {
+        clearTimeout(_pasteFlushTimer);
+        _pasteFlushTimer = null;
+      }
+      return;
+    }
     _pasteLines.push(line);
     if (_pasteFlushTimer) clearTimeout(_pasteFlushTimer);
     if (isInBracketedPaste()) {
@@ -3385,10 +3439,18 @@ export async function startTerminalRepl() {
     }
   });
 
-  onBracketedPasteEnd(() => {
-    // Readline has finished emitting synchronous line events for the pasted
-    // content by the time this fires (setImmediate in the pre-listener).
-    flushPastedLines();
+  onBracketedPasteEnd((payload) => {
+    _pasteLines = [];
+    if (_pasteFlushTimer) {
+      clearTimeout(_pasteFlushTimer);
+      _pasteFlushTimer = null;
+    }
+    // Readline has finished emitting synchronous `line` events by now.
+    // Treat paste as editing the prompt buffer; Enter remains the submit.
+    insertPromptText(payload || '', {
+      baseLine: _bracketedPasteStartLine,
+      baseCursor: _bracketedPasteStartCursor,
+    });
   });
 
   async function _handleLine(line) {

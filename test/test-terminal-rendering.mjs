@@ -348,7 +348,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function writeExploreSnapshot(summary = exploreSummary())'));
   assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
-  assert.ok(!renderSource.includes('drawPinnedStatus'));
+  assert.ok(renderSource.includes('drawPinnedStatus(rendered)'));
+  assert.ok(renderSource.includes('clearPinnedStatus()'));
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
@@ -377,6 +378,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
+  assert.ok(replSource.includes('function isDeniedStatusMessage'));
+  assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
+  assert.ok(replSource.includes('if (!inputActive)'));
+  assert.ok(replSource.includes('_pasteLines = [];'));
   assert.ok(replSource.includes("case '/exit':"));
   assert.ok(replSource.includes('if (isInputDockMounted()) unmountInputDock();'));
   assert.ok(replSource.includes("rl.on('close', async () => {"));
@@ -406,7 +411,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
   assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
-  assert.ok(replSource.includes("const line = _pasteLines.join('\\n');"));
+  assert.ok(replSource.includes('function insertPromptText'));
+  assert.ok(replSource.includes('_suppressBracketedPasteLines'));
+  assert.ok(replSource.includes('insertPromptText(payload || \'\','));
+  assert.ok(replSource.includes('replaceReadlineLine(text);'));
   assert.ok(replSource.includes('queueOrRunLine(line);'));
   assert.ok(replSource.includes('function executionInputPrefix()'));
   assert.ok(replSource.includes('add instruction'));
