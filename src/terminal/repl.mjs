@@ -258,7 +258,7 @@ function renderHelp(topic = '') {
 function renderKeyboardHelp() {
   process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
   process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
-  process.stderr.write(`  ${c.gray('Ctrl+D')}  expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
+  process.stderr.write(`  ${c.gray('F2')}      expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
 }
 
 const MODEL_ROLE_ALIASES = new Map([
@@ -2986,11 +2986,13 @@ export async function startTerminalRepl() {
   // terminals that ignore the request.
   const PASTE_BEGIN = '\x1b[200~';
   const PASTE_END   = '\x1b[201~';
+  const F2_SEQUENCES = new Set(['\x1bOQ', '\x1b[12~']);
   let _inBracketedPaste = false;
   let _bracketedPasteBuffer = '';
   const _pasteEndListeners = new Set();
   function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
   function isInBracketedPaste() { return _inBracketedPaste; }
+  function isF2Sequence(text) { return F2_SEQUENCES.has(String(text || '')); }
 
   if (process.stdin.isTTY) {
     try { process.stderr.write('\x1b[?2004h'); } catch {}
@@ -3055,11 +3057,11 @@ export async function startTerminalRepl() {
   }
 
   function idleInputTips() {
-    return '[Enter] send  [/] commands  [Tab] complete  [Ctrl+D] details';
+    return '[Enter] send  [/] commands  [Tab] complete  [F2] details';
   }
 
   function executionInputTips() {
-    return 'type any extra context (paths, corrections, follow-ups) · [Enter] send · [Esc] cancel · [Ctrl+P] pause';
+    return 'type extra context · [Enter] send · [Esc] cancel · [Ctrl+P] pause · [F2] details';
   }
 
   // Proxy stream: swallows writes when the dock owns the input row so
@@ -3299,6 +3301,13 @@ export async function startTerminalRepl() {
     readline.emitKeypressEvents(process.stdin, rl);
     process.stdin.on('keypress', (_str, key = {}) => {
       if (!inputActive) return;
+      if (key.name === 'f2') {
+        clearSlashHint();
+        if (isInputDockMounted()) moveToContent();
+        expandLast();
+        renderIdleDockInput();
+        return;
+      }
       setImmediate(() => {
         if (!inputActive) return;
         if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
@@ -3746,6 +3755,14 @@ export async function startTerminalRepl() {
         const bytes2 = [...data];
         const text2 = data.toString('utf8');
 
+        if (isF2Sequence(text2)) {
+          stopSpinner();
+          if (isInputDockMounted()) moveToContent();
+          expandLast();
+          if (isInputDockMounted()) redrawExecutionInput();
+          return;
+        }
+
         // Esc key (single byte 0x1b, not part of arrow sequence)
         if (bytes2.length === 1 && bytes2[0] === 0x1b) {
           if (executionInputVisible || executionInputBuffer) {
@@ -3835,15 +3852,6 @@ export async function startTerminalRepl() {
           }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
-          return;
-        }
-
-        // Ctrl+D — expand last tool card (Mission Control §6.2). Only when
-        // there's no in-progress follow-up input.
-        if (!executionInputBuffer && bytes2.length === 1 && bytes2[0] === 0x04) {
-          stopSpinner();
-          if (isInputDockMounted()) moveToContent();
-          expandLast();
           return;
         }
 

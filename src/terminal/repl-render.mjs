@@ -9,7 +9,7 @@
  *   - Content streaming (SSE partials → debounced markdown flush)
  *   - Spinner (single animated line, shared across concerns)
  *   - Stagnation banner
- *   - Detail expansion (/last, /expand N, Ctrl+D)
+ *   - Detail expansion (/last, /expand N, F2)
  *
  * All mutable state lives in repl-state.mjs (`runtime`). Consumers of this
  * module (renderEvent, handleCommand, keypress handlers) import the specific

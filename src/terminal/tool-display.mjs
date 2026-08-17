@@ -223,7 +223,7 @@ export function shellCommandProfile(command, {
     kind,
     summary,
     script,
-    detailHint: compact ? 'details: Ctrl+D' : '',
+    detailHint: compact ? 'details: F2 or /last' : '',
   };
 }
 

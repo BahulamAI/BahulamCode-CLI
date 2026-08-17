@@ -24,7 +24,7 @@ import {
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
-import { clearInputPrompt, isInputDockMounted, moveToContent, renderDockInput } from '../ui/input-dock.mjs';
+import { clearInputPrompt, isInputDockMounted, moveToContent, renderDockOverlay } from '../ui/input-dock.mjs';
 import { validateShellCommand } from './safety.mjs';
 import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
@@ -248,10 +248,12 @@ export class ApprovalManager {
                     showDetails,
                     width: process.stderr.columns || process.stdout.columns || 96,
                 });
-                renderDockInput(dock.prefix, dock.value, {
+                renderDockOverlay({
                     context: dock.context,
+                    lines: dock.lines || [`${dock.prefix || ''}${dock.value || ''}`],
                     meta: dock.meta,
                     tips: dock.tips,
+                    maxRows: dock.maxRows,
                 });
                 printedHeight = 0;
                 return;

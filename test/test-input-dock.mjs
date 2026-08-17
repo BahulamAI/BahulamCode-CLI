@@ -166,7 +166,8 @@ test('input-dock exports the dynamic-growth API surface', () => {
   // area to fit the wrapped content up to KEPLER_INPUT_ROWS_MAX.
   for (const fn of ['renderDockInput', 'focusDockInput', 'prepareInputPrompt',
                     'clearInputPrompt', 'mountInputDock', 'unmountInputDock',
-                    'clearDockArea', 'moveToContent', 'isInputDockMounted']) {
+                    'clearDockArea', 'moveToContent', 'isInputDockMounted',
+                    'renderDockOverlay']) {
     assert.strictEqual(typeof dock[fn], 'function', `missing export: ${fn}`);
   }
 });
@@ -239,6 +240,14 @@ test('prepareInputPrompt accepts a meta option alongside context and tips', () =
   const source = dock.prepareInputPrompt.toString();
   assert.ok(source.includes('meta'),
     'prepareInputPrompt should destructure meta from its options');
+});
+
+test('renderDockOverlay accepts stacked approval lines', () => {
+  const source = dock.renderDockOverlay.toString();
+  assert.ok(source.includes('lines = []'),
+    'renderDockOverlay should accept a line array');
+  assert.ok(source.includes('overlayLines'),
+    'renderDockOverlay should render through the overlay frame path');
 });
 
 console.log(`\n\x1b[32m${passed} passed\x1b[0m\n`);

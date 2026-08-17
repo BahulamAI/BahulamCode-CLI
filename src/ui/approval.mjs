@@ -100,24 +100,25 @@ export function renderApprovalDockPrompt({
 } = {}) {
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const opts = options || defaultOptions(tier, { tool, args });
-  const subject = showDetails && tool === 'shell'
-    ? approvalDockDetails(tool, args, cols)
-    : subjectDetails(tool, args, toolDisplaySummary(tool, args, {}), Math.max(24, cols - 20)).join(' · ');
+  const subject = approvalDockSubject(tool, args, cols, showDetails);
   const risks = riskTerms(tool, args, tier);
   const reason = compactReason(tool, args, why);
-  const optionText = opts
-    .map((option, index) => `${index === selected ? '▸' : ''}${option.key} ${option.label}`)
-    .join(' · ');
+  const lines = [
+    ...approvalDockSubjectRows(subject),
+    ...(risks.length ? [`${paint.text.dim('risk   ')}${paint.state.warn(risks.join(', '))}`] : []),
+    ...(reason ? [`${paint.text.dim('reason ')}${paint.text.primary(truncate(reason, 120))}`] : []),
+    paint.text.dim('Decision'),
+    ...opts.map((option, index) => optionToken(option, index === selected, explicitAccent(tier))),
+  ];
 
   return {
     prefix: '? approve › ',
     value: truncateForDock(subject, showDetails ? 1200 : 220),
     context: `${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`,
-    meta: [
-      risks.length ? `risk ${risks.join(', ')}` : '',
-      reason ? `reason ${truncate(reason, 90)}` : '',
-    ].filter(Boolean).join(' · '),
-    tips: `${optionText}${tool === 'shell' ? ` · d ${showDetails ? 'hide details' : 'details'}` : ''} · Esc cancel`,
+    meta: '',
+    tips: approvalFooter(tool, showDetails),
+    lines,
+    maxRows: showDetails ? 12 : 8,
   };
 }
 
@@ -185,6 +186,10 @@ function blockHeader(title, accent) {
 
 function blockLine(accent, text = '') {
   return text ? `  ${text}` : '  ';
+}
+
+function explicitAccent(tier) {
+  return requiresExplicitApproval(tier) ? paint.brand.accent : paint.brand.data;
 }
 
 function subjectRows(tool, args, cols, accent) {
@@ -377,6 +382,25 @@ function approvalDockDetails(tool, args = {}, cols = 96) {
     ].join('\n');
   }
   return profile.command;
+}
+
+function approvalDockSubject(tool, args = {}, cols = 96, showDetails = false) {
+  if (showDetails && tool === 'shell') return approvalDockDetails(tool, args, cols);
+  return subjectDetails(
+    tool,
+    args,
+    toolDisplaySummary(tool, args, {}),
+    Math.max(24, cols - 20),
+  ).join(' · ');
+}
+
+function approvalDockSubjectRows(subject) {
+  const lines = String(subject || '').split('\n');
+  const first = lines.shift() || '';
+  return [
+    `${paint.text.dim('? approve ›')} ${paint.text.primary(truncate(first, 160))}`,
+    ...lines.slice(0, 6).map(line => `${paint.text.dim('           ')}${paint.text.primary(truncate(line, 160))}`),
+  ];
 }
 
 function approvalSubjectSummary(tool, args = {}) {

@@ -6,12 +6,11 @@ function tonePaint(tone) {
 
 export function transcriptHeader(label, { tone = 'assistant' } = {}) {
   const p = tonePaint(tone);
-  return `  ${p('╭─')} ${paint.bold(p(label))}`;
+  return `${paint.bold(p(label))} ${p('›')}`;
 }
 
 export function transcriptLine(line = '', { tone = 'assistant' } = {}) {
-  const p = tonePaint(tone);
-  return `  ${p('│')} ${line}`;
+  return `  ${line}`;
 }
 
 export function transcriptLines(text, opts = {}) {

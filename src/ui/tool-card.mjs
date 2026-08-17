@@ -353,7 +353,7 @@ function tone(text, t) {
 export function formatCardHead(tool, args, opts = {}) {
   const cwd = opts.cwd || safeCwd();
   const cols = opts.columns || term().columns || 120;
-  const indent = opts.indent || '  ';
+  const indent = opts.indent ?? (tool === 'shell' ? '' : '  ');
 
   const label     = toolDisplayLabel(tool);
   const argsText  = formatArgs(tool, args, cwd);
@@ -397,7 +397,7 @@ function formatHeadLead(tool, label) {
 function compactShellProfile(profile) {
   const parts = [`${paint.text.dim('$')} ${paint.text.primary(profile.summary)}`];
   if (profile.cwdLabel) parts.push(`${paint.text.dim('in')} ${paint.brand.data(profile.cwdLabel)}`);
-  parts.push(paint.text.dim(profile.detailHint || 'details: Ctrl+D'));
+  parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
   return parts.join(' · ');
 }
 

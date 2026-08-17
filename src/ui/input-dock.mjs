@@ -71,7 +71,7 @@ let unsubResize = null;
 // the cursor at the correct input position. Without this, readline echoes
 // land on rows the dock briefly moved through mid-render and characters
 // appear above/below the input row.
-let lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null };
+let lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null, overlayLines: null };
 let resetting = false;
 let lastGeometry = null;
 
@@ -145,8 +145,8 @@ function computeInputRowsForBuffer(prefix, value) {
 // meta line) which then leaks into the transcript as streamed content
 // scrolls past them. We clear the old dock region BEFORE moving the frame
 // so the freed rows are blank when they enter the scroll region.
-function setInputRowsTo(nextRows) {
-  const clamped = Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(nextRows)));
+function setInputRowsTo(nextRows, { maxRows = inputRowsMax } = {}) {
+  const clamped = Math.max(MIN_INPUT_ROWS, Math.min(maxRows, Math.floor(nextRows)));
   if (clamped === inputRows) return false;
   const shrinking = clamped < inputRows;
   if (mounted && shrinking) {
@@ -273,6 +273,9 @@ function renderFrame(frame = {}) {
   clearLine();
 
   // (input rows are written by drawInputLines / clearInputRows)
+  if (Array.isArray(lastFrame.overlayLines)) {
+    drawInputLines(lastFrame.overlayLines);
+  }
 
   // Spacer below input.
   moveTo(spacerBelowRow(), 1);
@@ -354,6 +357,15 @@ function layoutInput(prefix, value) {
     wrapped,
     prefix: prefix || '',
   };
+}
+
+function layoutOverlayLines(lines) {
+  const budget = inputTextBudget();
+  const wrapped = [];
+  for (const line of lines) {
+    wrapped.push(...wrapToLines(line, budget));
+  }
+  return wrapped.length ? wrapped : [''];
 }
 
 function drawInputLines(lines) {
@@ -463,7 +475,7 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
   if (!mounted) return false;
   setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
-  renderFrame({ context, tips, meta, prefix: '', value: '' });
+  renderFrame({ context, tips, meta, prefix: '', value: '', overlayLines: null });
   moveTo(inputRowStart(), INPUT_INDENT + 1);
   return true;
 }
@@ -472,6 +484,7 @@ export function clearInputPrompt() {
   if (!mounted) return false;
   clearInputRows();
   lastFrame.value = '';
+  lastFrame.overlayLines = null;
   renderFrame(lastFrame);
   parkCursorAtInput();
   return true;
@@ -480,10 +493,36 @@ export function clearInputPrompt() {
 export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null } = {}) {
   if (!mounted) return false;
   setInputRowsTo(computeInputRowsForBuffer(prefix, value));
-  renderFrame({ context, tips, meta, prefix, value, cursor });
+  renderFrame({ context, tips, meta, prefix, value, cursor, overlayLines: null });
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
   focusDockInput(prefix, value, cursor);
+  return true;
+}
+
+export function renderDockOverlay({
+  context = '',
+  lines = [],
+  meta = '',
+  tips = '',
+  maxRows = 8,
+} = {}) {
+  if (!mounted) return false;
+  const sourceLines = Array.isArray(lines) ? lines : String(lines || '').split('\n');
+  const wrapped = layoutOverlayLines(sourceLines);
+  const rowCap = Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, Math.max(inputRowsMax, maxRows)));
+  setInputRowsTo(Math.min(rowCap, Math.max(MIN_INPUT_ROWS, wrapped.length)), { maxRows: rowCap });
+  const tail = tailWithEllipsis(wrapped, inputRows);
+  renderFrame({
+    context,
+    meta,
+    tips,
+    prefix: '',
+    value: '',
+    cursor: null,
+    overlayLines: tail.visible,
+  });
+  moveTo(rows(), 1);
   return true;
 }
 

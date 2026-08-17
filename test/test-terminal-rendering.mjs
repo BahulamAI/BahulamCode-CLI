@@ -77,10 +77,11 @@ test('text.primary wraps user labels; markdown links are underlined', () => {
 });
 
 test('transcript blocks distinguish user and assistant turns', () => {
-  assert.strictEqual(stripAnsi(transcriptHeader('you', { tone: 'user' })), '  ╭─ you');
-  assert.strictEqual(stripAnsi(transcriptLine('hello', { tone: 'user' })), '  │ hello');
-  assert.strictEqual(stripAnsi(transcriptHeader('kepler', { tone: 'assistant' })), '  ╭─ kepler');
-  assert.strictEqual(stripAnsi(transcriptLine('Understood', { tone: 'assistant' })), '  │ Understood');
+  assert.strictEqual(stripAnsi(transcriptHeader('you', { tone: 'user' })), 'you ›');
+  assert.strictEqual(stripAnsi(transcriptLine('hello', { tone: 'user' })), '  hello');
+  assert.strictEqual(stripAnsi(transcriptHeader('kepler', { tone: 'assistant' })), 'kepler ›');
+  assert.strictEqual(stripAnsi(transcriptLine('Understood', { tone: 'assistant' })), '  Understood');
+  assert.ok(!stripAnsi(transcriptLine('hello', { tone: 'user' })).includes('│'));
 });
 
 test('markdown tables align after inline markdown is normalized', () => {
@@ -256,9 +257,9 @@ test('multiline shell commands compact instead of leaking left-aligned lines', (
 
   assert.strictEqual(lines.length, 1);
   assert.ok(rendered.includes('• shell · Running $ shell script'));
-  assert.ok(rendered.includes('details: Ctrl+D'));
+  assert.ok(rendered.includes('details: F2 or /last'));
   assert.ok(!rendered.includes('\ngrep -n'));
-  assert.ok(lines.every(line => line.startsWith('  ')));
+  assert.ok(lines[0].startsWith('• shell ·'));
 });
 
 test('shell card compacts generated scripts and detail exposes command output', () => {
@@ -275,7 +276,7 @@ test('shell card compacts generated scripts and detail exposes command output', 
 
   const head = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
   assert.ok(head.includes('• shell · Running $ python script'));
-  assert.ok(head.includes('details: Ctrl+D'));
+  assert.ok(head.includes('details: F2 or /last'));
   assert.ok(!head.includes('Path("out.txt")'));
 
   const detail = stripAnsi(detailFor({
@@ -409,7 +410,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('queueOrRunLine(line);'));
   assert.ok(replSource.includes('function executionInputPrefix()'));
   assert.ok(replSource.includes('add instruction'));
-  assert.ok(replSource.includes('type any extra context (paths, corrections, follow-ups)'));
+  assert.ok(replSource.includes('type extra context'));
   assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
@@ -425,7 +426,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   // /api/intervention/{task_id} path (client.sendIntervention), not /resume.
   assert.ok(replSource.includes('client.sendIntervention(instruction)'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
-  assert.ok(replSource.includes('Ctrl+D'));
+  assert.ok(replSource.includes('[F2] details'));
+  assert.ok(replSource.includes("key.name === 'f2'"));
+  assert.ok(replSource.includes('isF2Sequence(text2)'));
+  assert.ok(!replSource.includes('Ctrl+D'));
 });
 
 test('resume preview avoids circular renderEvent import during repl split', () => {
@@ -787,9 +791,11 @@ test('approval dock prompt is concise and separate from transcript framing', () 
   assert.ok(dock.prefix.includes('approve'));
   assert.ok(dock.value.includes('$ npm publish'));
   assert.ok(dock.context.includes('APPROVAL · SHELL-MEDIUM · shell'));
-  assert.ok(dock.meta.includes('risk publish'));
+  assert.ok(dock.lines.some(line => stripAnsi(line).includes('risk   publish')));
+  assert.ok(dock.lines.some(line => stripAnsi(line).includes('Decision')));
+  assert.ok(dock.lines.some(line => stripAnsi(line).includes('approve once')));
   assert.ok(dock.tips.includes('d details'));
-  assert.ok(!dock.value.includes('│'));
+  assert.ok(!dock.lines.map(line => stripAnsi(line)).join('\n').includes('│'));
 });
 
 test('approval compatibility wrapper uses unified prompt', () => {
