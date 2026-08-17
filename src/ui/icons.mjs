@@ -61,6 +61,10 @@ const TOOL_ICON = Object.freeze({
   verify:            'subAgent',
   debug:             'subAgent',
   refactor:          'subAgent',
+  Agent:             'subAgent',
+  agent:             'subAgent',
+  task:              'subAgent',
+  sub_agent_tools:   'subAgent',
 
   // Read / search
   read_file:         'search',
@@ -133,14 +137,15 @@ export const icons = new Proxy({}, {
  */
 export function icon(toolName) {
   if (!toolName) return '';
-  const key = TOOL_ICON[toolName];
+  const raw = String(toolName);
+  const key = TOOL_ICON[raw] || TOOL_ICON[raw.toLowerCase()];
   if (key) return render(ICON_RECORDS[key]);
 
   // MCP tools often arrive as "mcp__server__tool" — strip the prefix and
   // try again before falling back to the generic glyph.
-  if (toolName.startsWith('mcp')) {
-    const cleaned = toolName.replace(/^mcp[_-]+/, '').split(/[_-]+/)[0];
-    const fallback = TOOL_ICON[cleaned];
+  if (raw.startsWith('mcp')) {
+    const cleaned = raw.replace(/^mcp[_-]+/, '').split(/[_-]+/)[0];
+    const fallback = TOOL_ICON[cleaned] || TOOL_ICON[cleaned.toLowerCase()];
     if (fallback) return render(ICON_RECORDS[fallback]);
   }
 
@@ -152,7 +157,8 @@ export function icon(toolName) {
  * Used by tier classification and color choice in the tool card renderer.
  */
 export function toolFamily(toolName) {
-  return TOOL_ICON[toolName] || 'other';
+  const raw = String(toolName || '');
+  return TOOL_ICON[raw] || TOOL_ICON[raw.toLowerCase()] || 'other';
 }
 
 /**

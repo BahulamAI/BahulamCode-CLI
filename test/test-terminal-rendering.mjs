@@ -159,6 +159,48 @@ test('sub-agent running line shows full query and hides model', () => {
   assert.ok(!rendered.includes('deepseek/deepseek-v4-flash'), 'model should be hidden');
 });
 
+test('Agent tool renders as compact sub-agent delegation', () => {
+  const head = stripAnsi(formatCardHead('Agent', {
+    subagent_type: 'prose',
+    prompt: 'Rename b0 → Bahulam Code in prose.\n\nSkip URLs and npm package names.',
+  }, { cwd: '/repo', columns: 100 }));
+
+  assert.ok(head.includes('Delegating'), head);
+  assert.ok(head.includes('prose'), head);
+  assert.ok(head.includes('Rename b0'), head);
+  assert.ok(!head.includes('Skip URLs'), head);
+});
+
+test('folded sub-agent tool batch expands individual details', () => {
+  const detail = stripAnsi(detailFor({
+    tool: 'sub_agent_tools',
+    args: { agent: 'rename-prose', total: 2 },
+    result: {
+      tools: [
+        {
+          tool: 'read_file',
+          args: { path: '/repo/apps/bahulam/page.tsx' },
+          result: { success: true, output: 'hello' },
+          outcome: '1 line',
+          durationMs: 12,
+        },
+        {
+          tool: 'shell',
+          args: { command: "python - <<'PY'\nprint(1)\nPY" },
+          result: { success: true, output: '1' },
+          outcome: 'ok',
+          durationMs: 250,
+        },
+      ],
+    },
+  }));
+
+  assert.ok(detail.includes('1. 🔭 Reading'), detail);
+  assert.ok(detail.includes('2. ⚙️ Running'), detail);
+  assert.ok(detail.includes('script'), detail);
+  assert.ok(detail.includes('print(1)'), detail);
+});
+
 test('renders shell commands with semantic syntax colors', () => {
   // c.blue routes to brand.primary — post-rebrand that's cyan #06b6d4
   // (was purple #7c3aed pre-Bahulam-Code). Command tokens get the brand
@@ -322,6 +364,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   const renderSource = fs.readFileSync(new URL('../src/terminal/repl-render.mjs', import.meta.url), 'utf-8');
   const exploreSource = fs.readFileSync(new URL('../src/terminal/repl-explore.mjs', import.meta.url), 'utf-8');
+  const agentsSource = fs.readFileSync(new URL('../src/terminal/agents.mjs', import.meta.url), 'utf-8');
   assert.ok(!renderSource.includes('process.stderr.write(`\\n${combined}\\n`);'));
   assert.ok(!renderSource.includes('process.stderr.write(`\\n${runtime.pendingHead.head}\\n`);'));
   assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
@@ -350,6 +393,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
   assert.ok(renderSource.includes('drawPinnedStatus(rendered)'));
   assert.ok(renderSource.includes('clearPinnedStatus()'));
+  assert.ok(replSource.includes('showSubAgentTools'));
+  assert.ok(replSource.includes('foldSubAgentToolCall(data)'));
+  assert.ok(replSource.includes('flushFoldedSubAgentTools();'));
+  assert.ok(agentsSource.includes('displayEventForDirectAgent(event, agent)'));
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));

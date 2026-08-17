@@ -13,7 +13,7 @@
 
 import { paint } from './palette.mjs';
 import { icon, toolFamily } from './icons.mjs';
-import { shellCommandProfile, toolDisplayLabel } from '../terminal/tool-display.mjs';
+import { shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 
 const MAX_DETAIL_LINES = 60;
 const MAX_SHELL_DETAIL_LINES = 220;
@@ -50,6 +50,10 @@ function renderBody(card) {
     case 'validate_file':
     case 'validate_structure': return detailValidator(card);
     case 'plan':            return detailPlan(card);
+    case 'Agent':
+    case 'agent':
+    case 'task':            return detailAgent(card);
+    case 'sub_agent_tools': return detailSubAgentTools(card);
     case 'explore':
     case 'verify':
     case 'debug':
@@ -118,6 +122,16 @@ function safeDetailArgs(tool, args) {
         path: file.path || file.file_path,
         content: typeof file.content === 'string' ? `[${file.content.split('\n').length} lines omitted]` : file.content,
       })),
+    };
+  }
+  if (tool === 'Agent' || tool === 'agent' || tool === 'task') {
+    const prompt = args?.prompt || args?.task || args?.query || args?.description || args?.instruction || '';
+    return {
+      ...(args?.subagent_type ? { subagent_type: args.subagent_type } : {}),
+      ...(args?.agent ? { agent: args.agent } : {}),
+      ...(args?.name ? { name: args.name } : {}),
+      ...(Array.isArray(args?.allowed_tools) ? { allowed_tools: args.allowed_tools } : {}),
+      ...(prompt ? { prompt: `[${String(prompt).split('\n').length} lines] ${String(prompt).split('\n').find(Boolean)?.slice(0, 80) || ''}` } : {}),
     };
   }
   if (tool === 'edit_file') {
@@ -295,6 +309,56 @@ function detailPlan(card) {
   }).join('\n');
 }
 
+function detailAgent(card) {
+  const args = card.args || {};
+  const prompt = args.prompt || args.task || args.query || args.description || args.instruction || '';
+  const out = [];
+  const meta = [
+    args.subagent_type ? `type ${args.subagent_type}` : '',
+    args.agent || args.name || '',
+    Array.isArray(args.allowed_tools) && args.allowed_tools.length
+      ? `${args.allowed_tools.length} allowed tools`
+      : '',
+  ].filter(Boolean).join(' · ');
+  if (meta) out.push(`    ${paint.text.dim(meta)}`);
+  if (prompt) {
+    out.push(paint.text.dim('    prompt'));
+    out.push(clip(prompt, paint.text.primary, { maxLines: MAX_DETAIL_LINES }));
+  }
+  const result = String(card.result?.output ?? card.result?.output_preview ?? '');
+  if (result) {
+    if (out.length) out.push('');
+    out.push(paint.text.dim('    result'));
+    out.push(clip(result));
+  }
+  return out.length ? out.join('\n') : detailGenericOutput(card);
+}
+
+function detailSubAgentTools(card) {
+  const entries = Array.isArray(card.result?.tools) ? card.result.tools : [];
+  if (!entries.length) return paint.text.dim('    (no folded tool calls)');
+
+  const out = [];
+  entries.forEach((entry, index) => {
+    const tool = entry.tool || 'tool';
+    const args = entry.args || {};
+    const summary = entry.summary || toolDisplaySummary(tool, args);
+    const outcome = entry.outcome ? ` ${paint.text.dim('—')} ${paint.text.muted(entry.outcome)}` : '';
+    const duration = entry.durationMs != null ? ` ${paint.text.dim('· ' + formatDuration(entry.durationMs))}` : '';
+    out.push(`    ${paint.text.dim(`${index + 1}.`)} ${icon(tool)} ${toolDisplayLabel(tool)}${summary ? ` ${paint.text.muted(summary)}` : ''}${outcome}${duration}`);
+
+    const child = {
+      tool,
+      args,
+      result: entry.result || null,
+      durationMs: entry.durationMs ?? null,
+    };
+    const detail = renderBody(child);
+    if (detail) out.push(indentBlock(detail, '      '));
+  });
+  return out.join('\n');
+}
+
 function detailGenericOutput(card) {
   const out = String(card.result?.output ?? card.result?.output_preview ?? '');
   return clip(out);
@@ -322,6 +386,13 @@ function clip(text, painter = paint.text.primary, { maxLines = MAX_DETAIL_LINES 
     head.push(`    ${paint.text.dim(`… ${lines.length - maxLines} more line(s)`)}`);
   }
   return head.join('\n');
+}
+
+function indentBlock(text, prefix) {
+  return String(text || '')
+    .split('\n')
+    .map(line => `${prefix}${line.trimStart()}`)
+    .join('\n');
 }
 
 function renderDiff(text) {

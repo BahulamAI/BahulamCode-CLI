@@ -42,6 +42,7 @@ export const runtime = {
 
   // Explore-run collapse (read/list/search/index bursts as concise progress).
   exploreRun: { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 },
+  foldedSubAgentTools: null, // { agentType, entries, startedAt } for default/quiet folded sub-agent tools
 
   // Animated spinner state (single shared interval; text/frame drive inPlace).
   spinInterval: null,

@@ -223,6 +223,21 @@ function agentInstructionPrefix(agent, execContext = {}) {
   return lines.join('\n');
 }
 
+function displayEventForDirectAgent(event, agent) {
+  if (!event || !event.type) return event;
+  if (!['tool_call', 'tool_request', 'tool_result', 'tool_done', 'sub_agent_tool'].includes(event.type)) {
+    return event;
+  }
+  return {
+    ...event,
+    data: {
+      ...(event.data || {}),
+      internal: true,
+      sub_agent: event.data?.sub_agent || agent.slug || agent.command || agent.name || 'agent',
+    },
+  };
+}
+
 /**
  * Run a normalized agent definition with the given instruction.
  * @param {Object} agentDefinition - Built-in or .bahulam/agents definition
@@ -298,7 +313,7 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
 
   try {
     for await (const event of client.execute(fullInstruction, execContext)) {
-      renderEvent(event);
+      renderEvent(displayEventForDirectAgent(event, agent));
 
       if (event.type === 'content' || event.type === 'content_partial') {
         const text = event.data?.text || '';

@@ -35,6 +35,7 @@ import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '
 import {
   getVerbosity,
   setVerbosity,
+  showSubAgentTools,
   label as verbosityLabel,
   MODES as V_MODES,
 } from '../state/verbosity.mjs';
@@ -854,6 +855,160 @@ function isDeniedStatusMessage(message = '') {
   return /^(?:Denied\s+\S+|Blocked by safety policy)\b/i.test(String(message || '').trim());
 }
 
+function toolCallId(data = {}, tool = 'tool') {
+  return data.call_id || data._callId || data.request_id || data.id ||
+    `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isSubAgentToolEvent(data = {}) {
+  return Boolean(data?.internal || data?.sub_agent);
+}
+
+function shouldFoldSubAgentTool(data = {}) {
+  return isSubAgentToolEvent(data) && !showSubAgentTools(getVerbosity());
+}
+
+function foldedSubAgentName(data = {}) {
+  return data?.sub_agent || data?.agent || data?.type || 'sub-agent';
+}
+
+function ensureFoldedSubAgentTools(agentType) {
+  const current = runtime.foldedSubAgentTools;
+  if (current && current.agentType === agentType) return current;
+  if (current?.entries?.length) flushFoldedSubAgentTools();
+  runtime.foldedSubAgentTools = {
+    agentType,
+    entries: [],
+    startedAt: Date.now(),
+  };
+  return runtime.foldedSubAgentTools;
+}
+
+function findFoldedToolEntry(fold, callId, tool) {
+  if (!fold) return null;
+  if (callId) {
+    const exact = fold.entries.find(entry => entry.callId === callId);
+    if (exact) return exact;
+  }
+  for (let i = fold.entries.length - 1; i >= 0; i--) {
+    const entry = fold.entries[i];
+    if (entry.tool === tool && !entry.result) return entry;
+  }
+  return null;
+}
+
+function foldSubAgentToolCall(data = {}) {
+  const tool = data?.tool || 'unknown';
+  const args = data?.args || {};
+  const callId = toolCallId(data, tool);
+  const agentType = foldedSubAgentName(data);
+  const fold = ensureFoldedSubAgentTools(agentType);
+  const existing = findFoldedToolEntry(fold, callId, tool);
+  const entry = existing || {
+    callId,
+    tool,
+    args,
+    summary: toolDisplaySummary(tool, args, { cwd: safeCwd() }),
+    startedAt: Date.now(),
+    result: null,
+    durationMs: null,
+    outcome: '',
+    tone: 'dim',
+  };
+  if (!existing) fold.entries.push(entry);
+  recordCard({ id: callId, tool, args, startedAt: entry.startedAt });
+  session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
+  startSpinner(`${agentType} → ${tool}`);
+}
+
+function foldSubAgentToolResult(data = {}) {
+  const tool = data?.tool || data?._tool || 'unknown';
+  const args = data?.args || {};
+  const callId = toolCallId(data, tool);
+  const agentType = foldedSubAgentName(data);
+  const fold = ensureFoldedSubAgentTools(agentType);
+  let entry = findFoldedToolEntry(fold, callId, tool);
+  if (!entry) {
+    entry = {
+      callId,
+      tool,
+      args,
+      summary: toolDisplaySummary(tool, args, { cwd: safeCwd() }),
+      startedAt: Date.now(),
+      result: null,
+      durationMs: null,
+      outcome: '',
+      tone: 'dim',
+    };
+    fold.entries.push(entry);
+  }
+  const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
+  const summary = summarizeResult(tool, data);
+  entry.args = entry.args && Object.keys(entry.args).length ? entry.args : args;
+  entry.result = data;
+  entry.durationMs = durationMs;
+  entry.outcome = summary.text || '';
+  entry.tone = summary.tone || 'dim';
+  if (data._blocked) session.blockedOps++;
+  recordCard({ id: callId, tool, args: entry.args, result: data, durationMs, startedAt: entry.startedAt });
+}
+
+function foldedOutcome(entry) {
+  if (!entry?.outcome) return '';
+  const painter = entry.tone === 'success' ? paint.state.success
+                : entry.tone === 'warn'    ? paint.state.warn
+                : entry.tone === 'danger'  ? paint.state.danger
+                                          : paint.text.muted;
+  return `${paint.text.dim('—')} ${painter(entry.outcome)}`;
+}
+
+function foldedToolLine(entry, indent, columns) {
+  const head = formatCardHead(entry.tool, entry.args || {}, {
+    cwd: safeCwd(),
+    columns: Math.max(40, columns - indent.length - 2),
+    indent: '',
+  }).split('\n')[0];
+  const line = `${indent}${paint.text.dim('•')} ${head}${entry.outcome ? `  ${foldedOutcome(entry)}` : ''}`;
+  return fitAnsiLine(line, Math.max(32, columns));
+}
+
+function flushFoldedSubAgentTools() {
+  const fold = runtime.foldedSubAgentTools;
+  if (!fold) return;
+  const entries = Array.isArray(fold.entries) ? fold.entries : [];
+  runtime.foldedSubAgentTools = null;
+  if (!entries.length) return;
+
+  renderBlockBoundary('tool', { compactSame: true });
+  const indent = subAgentIndent();
+  const cols = process.stderr.columns || 120;
+  const shown = entries.slice(0, 4);
+  const extra = Math.max(0, entries.length - shown.length);
+  const header = `${indent}${paint.text.dim('⎿')} ${paint.text.dim(`${fold.agentType} tools · ${entries.length} tool use${entries.length === 1 ? '' : 's'}`)}`;
+  process.stderr.write(`${fitAnsiLine(header, cols)}\n`);
+  for (const entry of shown) {
+    process.stderr.write(`${foldedToolLine(entry, `${indent}  `, cols)}\n`);
+  }
+  if (extra > 0) {
+    process.stderr.write(`${indent}  ${paint.text.dim(`… +${extra} tool use${extra === 1 ? '' : 's'} · /last expands this batch`)}\n`);
+  } else {
+    process.stderr.write(`${indent}  ${paint.text.dim('/last expands this batch')}\n`);
+  }
+  recordCard({
+    id: `sub-agent-tools:${fold.agentType}:${Date.now()}`,
+    tool: 'sub_agent_tools',
+    args: { agent: fold.agentType, total: entries.length },
+    result: {
+      success: true,
+      output: `${entries.length} folded sub-agent tool use${entries.length === 1 ? '' : 's'}`,
+      tools: entries,
+    },
+    durationMs: Date.now() - (fold.startedAt || Date.now()),
+    startedAt: fold.startedAt || Date.now(),
+  });
+  runtime.lastRenderedBlock = 'tool';
+}
+
 function renderEvent(event) {
   const { type, data } = event;
 
@@ -936,6 +1091,7 @@ function renderEvent(event) {
       if (text) {
         flushContent();
         stopSpinner();
+        flushFoldedSubAgentTools();
         if (runtime.streamedPartialText && text.startsWith(runtime.streamedPartialText)) {
           text = text.slice(runtime.streamedPartialText.length);
         } else if (runtime.streamedPartialText.includes(text)) {
@@ -1018,6 +1174,10 @@ function renderEvent(event) {
       session.totalToolCalls++;
       stopSpinner();
       flushContent();
+      if (shouldFoldSubAgentTool(data)) {
+        foldSubAgentToolCall(data);
+        break;
+      }
       renderToolCall(data);
       break;
     }
@@ -1061,6 +1221,10 @@ function renderEvent(event) {
     case 'tool_result':
     case 'tool_done': {
       stopSpinner();
+      if (shouldFoldSubAgentTool(data)) {
+        foldSubAgentToolResult(data);
+        break;
+      }
       renderToolResult(data, type);
       break;
     }
@@ -1163,6 +1327,7 @@ function renderEvent(event) {
     case 'sub_agent_start': {
       stopSpinner();
       clearPendingHead();
+      flushFoldedSubAgentTools();
       const agentType = data?.type || 'sub-agent';
       const query = data?.query || '';
       renderBlockBoundary('subagent');
@@ -1192,6 +1357,7 @@ function renderEvent(event) {
     case 'sub_agent_complete': {
       stopSpinner();
       clearPendingHead();
+      flushFoldedSubAgentTools();
       const agentType = data?.type || 'sub-agent';
       const usage = data?.usage || {};
       const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
@@ -1260,6 +1426,7 @@ function renderEvent(event) {
     case 'error':
       stopSpinner();
       flushContent();
+      flushFoldedSubAgentTools();
       {
         const guidance = formatAgentErrorGuidance(data || {});
         renderBlockBoundary('status', { compactSame: true });
@@ -1301,6 +1468,7 @@ function renderEvent(event) {
     case 'complete': {
       stopSpinner();
       flushContent();
+      flushFoldedSubAgentTools();
       resetSubAgents();
       session.inSubAgent = false;
 
@@ -2301,6 +2469,7 @@ async function handleCommand(input, ctx) {
       session.agentHistory.length = 0;
       session.toolCalls = 0;
       session.subAgentToolCalls = 0;
+      runtime.foldedSubAgentTools = null;
       clearCards();
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
@@ -2620,6 +2789,7 @@ export async function startTerminalRepl() {
     flushContent();
     flushPendingHead();
     flushCompactReadRun();
+    runtime.foldedSubAgentTools = null;
     clearCards();
 
     const preserved = {

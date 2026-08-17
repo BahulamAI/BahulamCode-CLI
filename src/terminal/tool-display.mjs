@@ -35,6 +35,10 @@ const TOOL_LABELS = Object.freeze({
   workflow_create_multi: 'Creating workflow',
   workflow_sync_multi: 'Syncing workflows',
   workflow_run_multi: 'Running workflow',
+  Agent: 'Delegating',
+  agent: 'Delegating',
+  task: 'Delegating',
+  sub_agent_tools: 'Sub-agent tools',
   explore: 'Exploring',
   plan: 'Planning',
   verify: 'Verifying',
@@ -43,9 +47,15 @@ const TOOL_LABELS = Object.freeze({
   ask_user: 'Asking',
 });
 
+function labelKey(tool) {
+  const raw = String(tool || '');
+  return TOOL_LABELS[raw] ? raw : raw.toLowerCase();
+}
+
 export function toolDisplayLabel(tool) {
   if (!tool) return 'Use tool';
-  if (TOOL_LABELS[tool]) return TOOL_LABELS[tool];
+  const key = labelKey(tool);
+  if (TOOL_LABELS[key]) return TOOL_LABELS[key];
   return tool
     .replace(/^mcp[_-]?/i, '')
     .split(/[_-]+/)
@@ -85,7 +95,8 @@ function firstParagraph(text) {
 }
 
 export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
-  switch (tool) {
+  const key = String(tool || '').toLowerCase();
+  switch (key) {
     case 'shell':
       return args.command || '(empty command)';
     case 'read_file': {
@@ -159,6 +170,17 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
       return args.name || args.slug || 'all local workflows';
     case 'workflow_run_multi':
       return [args.workflow_id || args.workflowId || args.name || '', args.pattern || 'sequential'].filter(Boolean).join(' · ');
+    case 'agent':
+    case 'task': {
+      const agentName = args.subagent_type || args.agent || args.name || args.type || '';
+      const task = firstParagraph(args.prompt || args.task || args.query || args.description || args.instruction || '');
+      return [agentName, task].filter(Boolean).join(' · ');
+    }
+    case 'sub_agent_tools': {
+      const total = Number(args.total || args.count || 0);
+      const agent = args.agent || args.type || '';
+      return [agent, total > 0 ? `${total} tool use${total === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+    }
     case 'explore':
     case 'plan':
     case 'verify':
