@@ -214,7 +214,7 @@ export class ApprovalManager {
     async _prompt(toolName, args, context = {}) {
         const tier = context.tier || classifyTier(toolName, args);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
-        const options = this._optionsFor(tier);
+        const options = this._optionsFor(tier, toolName, args);
 
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
@@ -289,11 +289,13 @@ export class ApprovalManager {
         };
 
         const value = await choose();
+        const prompt = promptForLog(toolName, args, tier, why);
 
         switch (value) {
             case 'approve':
                 this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once' });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once', prompt });
+                writeApprovalConfirmation(toolName, args, 'approved once');
                 return { approved: true, tier };
 
             case 'allow-session': {
@@ -301,7 +303,7 @@ export class ApprovalManager {
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'SESSION' });
                 write(`  ${GREEN}✓${RST}  ${DIM}trusted for this session: ${rule.pattern}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'session-trust', tier, time: Date.now(), rule_id: rule.id });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'SESSION', rule_id: rule.id });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'SESSION', rule_id: rule.id, prompt });
                 return { approved: true, tier, scope: 'SESSION', rule_id: rule.id };
             }
 
@@ -310,7 +312,7 @@ export class ApprovalManager {
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'PROJECT' });
                 write(`  ${GREEN}✓${RST}  ${DIM}trusted for this project: ${rule.pattern}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'project-trust', tier, time: Date.now(), rule_id: rule.id });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'PROJECT', rule_id: rule.id });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'PROJECT', rule_id: rule.id, prompt });
                 return { approved: true, tier, scope: 'PROJECT', rule_id: rule.id };
             }
 
@@ -319,7 +321,7 @@ export class ApprovalManager {
                 const reason = 'User stopped the command';
                 write(`  ${RED}✗${RST}  ${DIM}stopped${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason, prompt });
                 this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note: '' });
                 return { approved: false, tier, reason };
             }
@@ -329,14 +331,15 @@ export class ApprovalManager {
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve-all', scope: 'session' });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve-all', scope: 'session', prompt });
                 return { approved: true, tier };
 
             case 'allow-type':
                 if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session' });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session', prompt });
+                writeApprovalConfirmation(toolName, args, 'always allow');
                 return { approved: true, tier };
 
             case 'why':
@@ -351,7 +354,7 @@ export class ApprovalManager {
                 const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
                 write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });
-                this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason });
+                this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason, prompt });
                 this._rememberRejection({ tool: toolName, args, tier, decision: 'replan', reason, note });
                 return { approved: false, tier, reason };
             }
@@ -450,8 +453,8 @@ export class ApprovalManager {
         });
     }
 
-    _optionsFor(tier) {
-        return approvalOptions(tier);
+    _optionsFor(tier, toolName, args) {
+        return approvalOptions(tier, { tool: toolName, args });
     }
 
     getSummary() {
@@ -484,6 +487,31 @@ export class ApprovalManager {
 function truncateNote(note) {
     const text = String(note || '').trim();
     return text.length <= 120 ? text : text.slice(0, 119) + '…';
+}
+
+function promptForLog(tool, args, tier, why) {
+    return {
+        title: `${approvalTitleForLog(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`,
+        subject: approvalSummary(tool, args),
+        reason: why || '',
+    };
+}
+
+function approvalTitleForLog(tier) {
+    switch (tier) {
+        case TIERS.SENSITIVE_READ:
+        case TIERS.SHELL_DANGEROUS:
+        case TIERS.DESTRUCTIVE:
+            return 'EXPLICIT APPROVAL';
+        default:
+            return 'APPROVAL';
+    }
+}
+
+function writeApprovalConfirmation(tool, args, label) {
+    const subject = approvalSummary(tool, args);
+    const suffix = subject ? ` · ${truncateNote(subject)}` : '';
+    write(`  ${GREEN}✓${RST}  ${DIM}${label}${suffix}${RST}\n\n`);
 }
 
 function writeSafetyBlock(reason) {

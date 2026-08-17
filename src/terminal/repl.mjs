@@ -44,7 +44,7 @@ import { ApprovalManager } from '../core/approval.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
-import { BUILTIN_AGENTS, runAgent } from './agents.mjs';
+import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgentDefinition } from './agents.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -1649,6 +1649,111 @@ function handleTasksCommand(rest, ctx) {
   }
 }
 
+async function prepareDirectAgentRunContext(ctx, instruction = '') {
+  const cwd = safeCwd();
+  const registered = await ctx.toolExecutor.registerProjectRoots([cwd]);
+  const failed = registered.find(result => result?.success === false);
+  if (failed) {
+    throw new Error(`Could not register project root for sub-agent: ${failed.error || failed.root || cwd}`);
+  }
+
+  const effectivePolicy = loadEffectivePolicy({ cwd });
+  if (ctx.approval) {
+    ctx.approval.policy = effectivePolicy.policy;
+    if (ctx.approval.trustStore) ctx.approval.trustStore.policy = effectivePolicy.policy;
+  }
+  const projectContext = loadProjectContext({ cwd, previous: ctx.latestProjectContext || null });
+  const projectResources = ctx.toolExecutor.getProjectResources();
+  const envelope = buildContextEnvelope({
+    cwd,
+    effectivePolicy,
+    projectContext,
+    activeHints: [],
+    projectResources,
+    agentContext: ctx.toolExecutor.getAgentContext(),
+  });
+
+  ctx.effectivePolicy = effectivePolicy;
+  ctx.latestProjectContext = projectContext;
+  ctx.latestEnvelope = envelope;
+
+  const execContext = {
+    ...envelope,
+    cwd,
+    project_root: cwd,
+    project_resources: projectResources,
+    work_scope: buildWorkScope({
+      instruction: instruction || 'Run sub-agent task',
+      cwd,
+      projectResources,
+    }),
+  };
+  const modelOverrides = Object.fromEntries(sessionModelOverrideEntries());
+  if (Object.keys(modelOverrides).length > 0) {
+    execContext.model_overrides = modelOverrides;
+    if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
+  }
+  return execContext;
+}
+
+async function handleRunCommand(rest = '', ctx) {
+  const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  const target = parts.shift();
+  const instruction = parts.join(' ');
+
+  if (!target) {
+    process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+    return;
+  }
+
+  const localAgent = listLocalAgents(safeCwd()).find(agent => localAgentMatches(agent, target));
+  const builtinAgent = findBuiltinAgent(target);
+  const runnableAgent = localAgent || builtinAgent;
+  if (runnableAgent) {
+    try {
+      const execContext = await prepareDirectAgentRunContext(ctx, instruction || target);
+      return await runAgentDefinition(runnableAgent, instruction, ctx, session, renderEvent, {
+        cwd: execContext.cwd,
+        execContext,
+      });
+    } catch (err) {
+      process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
+      return;
+    }
+  }
+
+  try {
+    process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
+    const result = await ctx.toolExecutor.execute('workflow_run_multi', {
+      name: target,
+      instruction,
+    });
+
+    if (result?.success === false) {
+      process.stderr.write(`  ${c.red('✗')} ${result.output || `Workflow '${target}' failed.`}\n`);
+      return;
+    }
+
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Workflow '${target}' complete`)}\n`);
+    const details = [];
+    if (result?.run_id) details.push(`run ${result.run_id}`);
+    if (result?.duration_s) details.push(`${result.duration_s}s`);
+    if (result?.total_tokens) details.push(`${formatTokens(result.total_tokens)} tok`);
+    if (result?.total_cost) details.push(formatCostValue(result.total_cost));
+    if (details.length) process.stderr.write(`  ${c.dim(details.join(' · '))}\n`);
+
+    const output = result?.result || result?.output || '';
+    if (output) {
+      process.stderr.write('\n');
+      process.stderr.write(renderMarkdown(String(output), { width: process.stderr.columns || 96 }));
+      process.stderr.write('\n');
+    }
+  } catch (err) {
+    process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
+    process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+  }
+}
+
 async function handleCommand(input, ctx) {
   const { cmd, rest, aliasTarget } = normalizeCommandInput(input);
   if (aliasTarget) {
@@ -1684,6 +1789,10 @@ async function handleCommand(input, ctx) {
 
     case '/tasks':
       handleTasksCommand(rest, ctx);
+      return;
+
+    case '/run':
+      await handleRunCommand(rest, ctx);
       return;
 
     case '/attach':

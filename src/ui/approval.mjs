@@ -29,11 +29,18 @@ import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/ris
  *   value — return value from the menu loop
  *   hint  — secondary description shown to the right of the label
  */
-export function defaultOptions(tier) {
+export function defaultOptions(tier, { tool = '', args = {} } = {}) {
   const approve = { key: 'y', label: 'approve once',  value: 'approve',  hint: 'run this call' };
   const cancel = { key: 'n', label: 'cancel', value: 'reject', hint: 'do not run' };
   if (requiresExplicitApproval(tier)) {
     return [approve, cancel];
+  }
+  if (tool === 'shell') {
+    return [
+      approve,
+      { key: 't', label: 'allow similar', value: 'allow-session', hint: `auto-approve ${shellTrustHint(args)} this session` },
+      cancel,
+    ];
   }
   return [
     approve,
@@ -70,8 +77,8 @@ export function renderApprovalPrompt({
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const explicit = requiresExplicitApproval(tier);
   const accent = explicit ? paint.brand.accent : paint.brand.data;
-  const opts = options || defaultOptions(tier);
-  const title = `${approvalTitle(tier).toLowerCase()} · ${tierLabel(tier)} · ${tool || 'tool'}`;
+  const opts = options || defaultOptions(tier, { tool, args });
+  const title = `⚠ ${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
     blockHeader(title, accent),
@@ -84,6 +91,12 @@ export function renderApprovalPrompt({
   ];
 
   return '\n' + lines.join('\n');
+}
+
+function shellTrustHint(args = {}) {
+  const parts = String(args.command || args.cmd || '').trim().split(/\s+/).filter(Boolean);
+  const shape = parts.slice(0, 2).join(' ');
+  return shape ? `${shape}*` : 'similar shell commands';
 }
 
 export function renderTrustedApproval({ tool, args = {}, scope = 'session', ruleId = '', delaySeconds = 0 } = {}) {

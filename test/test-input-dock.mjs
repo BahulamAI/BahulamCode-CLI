@@ -197,6 +197,24 @@ test('unmountInputDock clears dock rows before resetting terminal state', () => 
     'unmountInputDock should reset the scroll region');
 });
 
+test('dock frame lines avoid final terminal column autowrap', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'rich', fixedInput: true, columns: 80, rows: 24 });
+  const { topRuleLine, bottomRuleLine, padLine, drawableColumns } = dock._internals();
+  const budget = drawableColumns();
+  const top = padLine(topRuleLine('102.0k tok · 3m41s'));
+  const bottom = padLine(bottomRuleLine());
+  assert.ok(visibleWidth(top) <= budget,
+    `top rule width ${visibleWidth(top)} should be <= drawable width ${budget}`);
+  assert.ok(visibleWidth(bottom) <= budget,
+    `bottom rule width ${visibleWidth(bottom)} should be <= drawable width ${budget}`);
+});
+
+test('resize repaint clears previous dock geometry before reflow', () => {
+  const source = dock.mountInputDock.toString();
+  assert.ok(source.includes('applyLayout({ clearPrevious: true })'),
+    'resize handler should request previous-frame clearing');
+});
+
 // ── frame identity + layout constants ───────────────────────────────────
 
 test('dock brands the frame with "Bahulam Code"', () => {

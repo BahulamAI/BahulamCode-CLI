@@ -616,7 +616,7 @@ test('approval prompt uses risk title and compact scoped menu', () => {
     why: 'Resetting dependencies after a Node upgrade, but this removes a directory and needs explicit confirmation.',
     width: 82,
   }));
-  assert.ok(rendered.includes('dangerous · SHELL-DANGEROUS · shell'));
+  assert.ok(rendered.includes('DANGEROUS · SHELL-DANGEROUS · shell'));
   assert.ok(rendered.includes('risk   rm -rf'));
   assert.ok(rendered.includes('reason Resetting dependencies'));
   assert.ok(rendered.includes('Decision'));
@@ -629,7 +629,7 @@ test('approval prompt uses risk title and compact scoped menu', () => {
   assert.ok(!rendered.includes('────'));
 });
 
-test('approval prompt compacts shell cwd wrapper', () => {
+test('approval prompt preserves shell cwd wrapper for auditability', () => {
   const command = [
     'cd /Users/sree/Sites/Tarang\\ Orca/tarang-ai-agent-framework &&',
     'git add agent-framework-pypi/src/pkg/requires.txt &&',
@@ -643,9 +643,9 @@ test('approval prompt compacts shell cwd wrapper', () => {
     width: 100,
   }));
 
+  assert.ok(rendered.includes('cd /Users/sree/Sites/Tarang'));
+  assert.ok(rendered.includes('tarang-ai-agent-framework'));
   assert.ok(rendered.includes('git add agent-framework-pypi/src/pkg/requires.txt && git status'));
-  assert.ok(rendered.includes('in tarang-ai-agent-framework'));
-  assert.ok(!rendered.includes('cd /Users/sree'));
 });
 
 test('approval compatibility wrapper uses unified prompt', () => {
@@ -655,10 +655,10 @@ test('approval compatibility wrapper uses unified prompt', () => {
     tier: TIERS.SHELL_MEDIUM,
     why: 'verify the change',
   }));
-  assert.ok(inline.includes('approval · SHELL-MEDIUM'));
+  assert.ok(inline.includes('APPROVAL · SHELL-MEDIUM'));
   assert.ok(inline.includes('Decision'));
   assert.ok(inline.includes('reason verify the change'));
-  assert.ok(inline.includes('always allow'));
+  assert.ok(inline.includes('allow similar'));
   assert.ok(inline.includes('cancel'));
   assert.ok(!inline.includes('[?] why'));
 

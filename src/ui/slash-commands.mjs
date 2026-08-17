@@ -45,6 +45,7 @@ export const COMMANDS = {
   '/surgical':    'Verbosity: show everything (reasoning, expanded tools)',
   '/compact':     'Compact conversation context',
   '/agents':      'List available agents',
+  '/run':         'Run a sub-agent or synced workflow',
   '/explore':     'Code explorer agent',
   '/review':      'Code review agent',
   '/architect':   'Feature architect agent',
@@ -137,9 +138,18 @@ export const HELP_GROUPS = [
       ['/agents create <name>', 'Create .bahulam/agents/<name>.yaml'],
       ['/agents edit <name>', 'Open local agent YAML'],
       ['/agents sync [name]', 'Sync all or one local agent to cloud'],
+      ['/run <agent> [instruction]', 'Run a local or built-in agent'],
       ['/explore <instruction>', 'Explore code'],
       ['/review <instruction>', 'Review code'],
       ['/architect <instruction>', 'Design an approach'],
+    ],
+  },
+  {
+    key: 'workflows',
+    title: 'Workflows',
+    summary: 'saved automations',
+    commands: [
+      ['/run <workflow> [instruction]', 'Run a synced workflow if no agent matches'],
     ],
   },
   {

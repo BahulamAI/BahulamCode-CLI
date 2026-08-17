@@ -73,6 +73,7 @@ let unsubResize = null;
 // appear above/below the input row.
 let lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null };
 let resetting = false;
+let lastGeometry = null;
 
 function write(s) { try { OUT.write(s); } catch {} }
 function setScrollRegion(top, bottom) { write(`${ESC}${top};${bottom}r`); }
@@ -88,6 +89,13 @@ function rows() {
 
 function cols() {
   return Math.max(40, term().columns || 80);
+}
+
+function drawableColumns() {
+  // Avoid writing into the final terminal column. Many terminals enter
+  // autowrap state there; during rapid resizes that can push fixed dock
+  // frame lines into scrollback.
+  return Math.max(1, cols() - 1);
 }
 
 function contentBottomRow() {
@@ -162,7 +170,7 @@ function setInputRowsTo(nextRows) {
 
 function padLine(text) {
   const value = String(text || '');
-  const pad = Math.max(0, cols() - visibleWidth(value));
+  const pad = Math.max(0, drawableColumns() - visibleWidth(value));
   return value + ' '.repeat(pad);
 }
 
@@ -183,7 +191,7 @@ function ruleChars(count) {
 // - Optional right-aligned context strip (session tokens/elapsed) with rule
 //   fill between label and context
 function topRuleLine(context = '') {
-  const w = Math.max(0, cols() - 1);
+  const w = Math.max(0, drawableColumns());
   const brand = paint.brand.primary;
   const bold = paint.bold;
 
@@ -192,14 +200,19 @@ function topRuleLine(context = '') {
   const label = bold(brand(BRAND_LABEL));
   const leftBlock = `${leadRule} ${accent}${label}`;
   const leftWidth = visibleWidth(leftBlock);
+  const rightPadRule = 2;
 
-  const ctx = fitText(context, Math.max(0, Math.floor(w / 2)));
+  const maxCtxWidth = Math.max(0, Math.min(
+    Math.floor(w / 2),
+    w - leftWidth - 1 /* left gap */ - 1 /* minimum middle */ - 1 /* ctx gap */ - rightPadRule - 1 /* tail gap */,
+  ));
+  const ctx = fitText(context, maxCtxWidth);
   const ctxWidth = ctx ? visibleWidth(ctx) : 0;
 
   // Rule fill in the middle. Reserve 1 space around ctx when present.
-  const gap = 1;
-  const rightPadRule = 2;
-  const middleWidth = Math.max(1, w - leftWidth - gap - ctxWidth - (ctx ? gap + rightPadRule : 0));
+  const middleWidth = ctx
+    ? Math.max(1, w - leftWidth - ctxWidth - rightPadRule - 3)
+    : Math.max(1, w - leftWidth - 1);
   const middleRule = brand(ruleChars(middleWidth));
 
   if (!ctx) {
@@ -210,7 +223,7 @@ function topRuleLine(context = '') {
 }
 
 function bottomRuleLine() {
-  return paint.brand.primary(ruleChars(Math.max(0, cols() - 1)));
+  return paint.brand.primary(ruleChars(Math.max(0, drawableColumns())));
 }
 
 // Always park the cursor at the tracked (prefix, value) input position.
@@ -229,8 +242,11 @@ function parkCursorAtInput() {
   focusDockInput(prefix, value, lastFrame.cursor);
 }
 
-function applyLayout() {
+function applyLayout({ clearPrevious = false } = {}) {
   if (!mounted) return;
+  if (clearPrevious && lastGeometry) {
+    clearDockArea({ restore: true, geometry: lastGeometry });
+  }
   const bottom = contentBottomRow();
   setScrollRegion(1, bottom);
   renderFrame(lastFrame);
@@ -290,6 +306,20 @@ function renderFrame(frame = {}) {
   // pinned-status writers clobber the outer save and restore to the wrong
   // place. Instead, callers that need the cursor parked at the input row
   // invoke parkCursorAtInput() after renderFrame returns.
+  lastGeometry = {
+    top: topRuleRow(),
+    bottom: rows(),
+  };
+}
+
+function clearDockRows(startRow, endRow) {
+  const maxRow = rows();
+  const start = Math.max(1, Math.min(maxRow, Math.floor(startRow || 1)));
+  const end = Math.max(start, Math.min(maxRow, Math.floor(endRow || maxRow)));
+  for (let row = start; row <= end; row++) {
+    moveTo(row, 1);
+    clearLine();
+  }
 }
 
 function clearInputRows() {
@@ -299,13 +329,10 @@ function clearInputRows() {
   }
 }
 
-export function clearDockArea({ restore = true } = {}) {
+export function clearDockArea({ restore = true, geometry = null } = {}) {
   if (!mounted) return false;
   if (restore) saveCursor();
-  for (let row = topRuleRow(); row <= rows(); row++) {
-    moveTo(row, 1);
-    clearLine();
-  }
+  clearDockRows(geometry?.top || topRuleRow(), geometry?.bottom || rows());
   if (restore) restoreCursor();
   return true;
 }
@@ -359,7 +386,7 @@ export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
   mounted = true;
   applyLayout();
 
-  unsubResize = onResize(() => applyLayout());
+  unsubResize = onResize(() => applyLayout({ clearPrevious: true }));
   process.once('exit', safeUnmount);
   process.once('SIGTERM', () => { safeUnmount(); process.exit(143); });
   return true;
@@ -377,6 +404,7 @@ export function unmountInputDock() {
   } finally {
     mounted = false;
     resetting = false;
+    lastGeometry = null;
   }
 }
 
@@ -499,6 +527,10 @@ export function _internals() {
     reservedRows: () => reservedRows,
     layoutInput,
     inputTextBudget,
+    topRuleLine,
+    bottomRuleLine,
+    padLine,
+    drawableColumns,
     FIXED_ROWS,
     BRAND_LABEL,
   };

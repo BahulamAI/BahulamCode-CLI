@@ -10,9 +10,8 @@
  * - architect: Feature architect — designs implementations, file plans
  */
 
-import { c, spinner, inPlace, hr } from './ansi.mjs';
+import { c } from './ansi.mjs';
 import { TarangStreamClient } from '../core/stream-client.mjs';
-import { resolveBackendUrl } from '../core/backend-url.mjs';
 
 // ── Agent Definitions ────────────────────────────────────────
 
@@ -105,20 +104,157 @@ Rules:
 
 // ── Agent Runner ─────────────────────────────────────────────
 
+const TOOL_ALIASES = new Map([
+  ['bash', 'shell'],
+  ['shell_command', 'shell'],
+  ['read', 'read_file'],
+  ['write', 'write_file'],
+  ['edit', 'edit_file'],
+  ['grep', 'search_code'],
+]);
+
+function canonicalToolName(value) {
+  const key = String(value || '').trim().toLowerCase();
+  return TOOL_ALIASES.get(key) || key;
+}
+
+const RUNTIME_PLACEHOLDER_CWDS = new Set([
+  '/workspace',
+  '/workspace/kepler-code',
+]);
+
+function normalizeScopedArgs(toolName, args = {}, { projectRoot = null } = {}) {
+  if (canonicalToolName(toolName) !== 'shell' || !projectRoot) return args;
+  const next = { ...(args || {}) };
+  const cwd = String(next.cwd || '').trim();
+  if (!cwd || RUNTIME_PLACEHOLDER_CWDS.has(cwd)) {
+    next.cwd = projectRoot;
+  }
+  return next;
+}
+
+function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = {}) {
+  const tools = Array.isArray(agent.tools) ? agent.tools : [];
+  const allowed = new Set(tools.map(canonicalToolName).filter(Boolean));
+  if (!allowed.size) return baseExecutor;
+
+  return {
+    ...baseExecutor,
+    execute: async (toolName, args = {}, options = {}) => {
+      const canonical = canonicalToolName(toolName);
+      if (!allowed.has(canonical)) {
+        return {
+          success: false,
+          output: `Tool '${toolName}' is not allowed for agent '${agent.name}'. Allowed tools: ${tools.join(', ')}`,
+        };
+      }
+      return baseExecutor.execute.call(
+        baseExecutor,
+        toolName,
+        normalizeScopedArgs(toolName, args, { projectRoot }),
+        options,
+      );
+    },
+  };
+}
+
+export function findBuiltinAgent(agentName) {
+  const target = String(agentName || '').trim().toLowerCase();
+  return BUILTIN_AGENTS.find(agent => agent.command === target || agent.name.toLowerCase() === target) || null;
+}
+
+export function localAgentMatches(agent, target) {
+  const needle = String(target || '').trim().toLowerCase();
+  if (!needle) return false;
+  return [
+    agent.slug,
+    agent.id,
+    agent.name,
+  ].some(value => String(value || '').trim().toLowerCase() === needle);
+}
+
+function normalizeRunnableAgent(agent) {
+  const spec = agent?.spec || {};
+  const config = agent?.config || spec.config || agent?.raw_config || {};
+  const configAgent = config.agent || {};
+  const tools = Array.isArray(agent?.tools)
+    ? agent.tools
+    : Array.isArray(spec.tools)
+      ? spec.tools
+      : Array.isArray(config.tools)
+        ? config.tools
+        : [];
+
+  const name = agent?.name || spec.name || agent?.slug || agent?.command || 'agent';
+  return {
+    command: agent?.command || agent?.slug || spec.slug || name,
+    slug: agent?.slug || spec.slug || agent?.command || name,
+    name,
+    description: agent?.description || spec.description || '',
+    role: agent?.role || spec.role || 'specialist',
+    icon: agent?.icon || '◇',
+    systemPrompt: agent?.systemPrompt || agent?.system_prompt || agent?.prompt || spec.system_prompt || configAgent.system_prompt || '',
+    readOnly: Boolean(agent?.readOnly),
+    model: agent?.model || spec.model || configAgent.model || null,
+    models: agent?.models || spec.models || configAgent.models || null,
+    tools,
+    source: agent?.source || spec.source || '',
+  };
+}
+
+function agentInstructionPrefix(agent, execContext = {}) {
+  const lines = [];
+  if (agent.systemPrompt) {
+    lines.push(agent.systemPrompt);
+  } else {
+    lines.push(`You are ${agent.name}, a Bahulam Code sub-agent.`);
+  }
+  if (agent.description) lines.push(`\nAgent description: ${agent.description}`);
+  if (agent.role) lines.push(`Agent role: ${agent.role}`);
+  if (agent.tools.length) {
+    lines.push(
+      `Allowed tools for this sub-agent: ${agent.tools.join(', ')}. ` +
+      'Do not request tools outside this list.',
+    );
+  }
+  if (execContext.project_root) {
+    lines.push(`Runtime project root: ${execContext.project_root}. Use this as the cwd for shell commands unless the task explicitly requires a different registered project root.`);
+  }
+  return lines.join('\n');
+}
+
 /**
- * Run a built-in agent with the given instruction.
- * @param {string} agentName - e.g. 'explore', 'review', 'architect'
+ * Run a normalized agent definition with the given instruction.
+ * @param {Object} agentDefinition - Built-in or .bahulam/agents definition
  * @param {string} instruction - User's instruction
  * @param {Object} ctx - { auth, toolExecutor, approval }
  * @param {Object} session - Session state
  * @param {Function} renderEvent - Event renderer function
+ * @param {Object} [options]
  */
-export async function runAgent(agentName, instruction, ctx, session, renderEvent) {
-  const agent = BUILTIN_AGENTS.find(a => a.command === agentName);
-  if (!agent) {
-    process.stderr.write(`  ${c.red('Unknown agent: ' + agentName)}\n`);
-    return;
-  }
+export async function runAgentDefinition(agentDefinition, instruction, ctx, session, renderEvent, options = {}) {
+  const agent = normalizeRunnableAgent(agentDefinition);
+  const userInstruction = String(instruction || '').trim() || 'Run your assigned task now.';
+  const suppliedContext = options.execContext || options.context || {};
+  const baseCwd = suppliedContext.cwd || options.cwd || process.cwd();
+  const suppliedSubAgent = suppliedContext.sub_agent && typeof suppliedContext.sub_agent === 'object'
+    ? suppliedContext.sub_agent
+    : {};
+  const projectRoot = suppliedContext.project_root || null;
+  const execContext = {
+    ...suppliedContext,
+    cwd: suppliedContext.cwd || baseCwd,
+    ...(projectRoot ? { project_root: projectRoot } : {}),
+    sub_agent: {
+      ...suppliedSubAgent,
+      name: agent.name,
+      slug: agent.slug,
+      role: agent.role,
+      description: agent.description,
+      tools: agent.tools,
+      source: agent.source,
+    },
+  };
 
   const creds = ctx.auth.loadCredentials();
   if (!creds.token) {
@@ -129,49 +265,74 @@ export async function runAgent(agentName, instruction, ctx, session, renderEvent
   // Header
   process.stderr.write(`\n  ${agent.icon} ${c.bold(c.brand(agent.name))}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(40))}\n`);
-  process.stderr.write(`  ${c.gray(instruction)}\n\n`);
+  if (agent.description) process.stderr.write(`  ${c.gray(agent.description)}\n`);
+  if (agent.source) process.stderr.write(`  ${c.dim(agent.source)}\n`);
+  process.stderr.write(`  ${c.gray(userInstruction)}\n\n`);
 
   // Prepend agent system prompt to instruction
-  const fullInstruction = `${agent.systemPrompt}\n\n---\n\nUser request: ${instruction}`;
+  const fullInstruction = `${agentInstructionPrefix(agent, execContext)}\n\n---\n\nUser request: ${userInstruction}`;
 
   // For read-only agents, use a restricted approval manager
   const { ApprovalManager } = await import('../core/approval.mjs');
   const agentApproval = agent.readOnly
     ? new ApprovalManager({ planMode: true })  // planMode blocks all writes
     : ctx.approval;
+  const toolExecutor = createScopedToolExecutor(ctx.toolExecutor, agent, {
+    projectRoot: execContext.project_root || null,
+  });
 
   const client = new TarangStreamClient({
     baseUrl: creds.backendUrl,
     token: creds.token,
-    toolExecutor: ctx.toolExecutor,
+    toolExecutor,
     approvalManager: agentApproval,
   });
 
   session.turns++;
   session.toolCalls = 0;
   let assistantContent = '';
+  if (agent.model) execContext.model_override = agent.model;
+  if (agent.models && typeof agent.models === 'object' && Object.keys(agent.models).length) {
+    execContext.model_overrides = agent.models;
+  }
 
   try {
-    for await (const event of client.execute(fullInstruction, { cwd: process.cwd() })) {
+    for await (const event of client.execute(fullInstruction, execContext)) {
       renderEvent(event);
 
       if (event.type === 'content' || event.type === 'content_partial') {
         const text = event.data?.text || '';
-        if (text) assistantContent = text;
+        if (text) assistantContent += text;
       }
     }
   } catch (err) {
-    inPlace('');
     process.stderr.write(`  ${c.red('Agent error: ' + err.message)}\n`);
   }
 
   // Save to conversation history
   if (assistantContent) {
     session.history.push(
-      { role: 'user', content: `[${agent.name}] ${instruction}` },
+      { role: 'user', content: `[${agent.name}] ${userInstruction}` },
       { role: 'assistant', content: assistantContent }
     );
   }
 
   process.stderr.write('\n');
+}
+
+/**
+ * Run a built-in agent with the given instruction.
+ * @param {string} agentName - e.g. 'explore', 'review', 'architect'
+ * @param {string} instruction - User's instruction
+ * @param {Object} ctx - { auth, toolExecutor, approval }
+ * @param {Object} session - Session state
+ * @param {Function} renderEvent - Event renderer function
+ */
+export async function runAgent(agentName, instruction, ctx, session, renderEvent) {
+  const agent = findBuiltinAgent(agentName);
+  if (!agent) {
+    process.stderr.write(`  ${c.red('Unknown agent: ' + agentName)}\n`);
+    return;
+  }
+  return runAgentDefinition(agent, instruction, ctx, session, renderEvent);
 }

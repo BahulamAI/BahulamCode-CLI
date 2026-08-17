@@ -2,6 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const REDACTED = 'REDACTED';
+const MAX_ARG_LOG_CHARS = 4000;
+const MAX_PROMPT_SUBJECT_CHARS = 4000;
+const MAX_PROMPT_REASON_CHARS = 1200;
 const SENSITIVE_KEY_RE = /^(?:authorization|api[-_]?key|apikey|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|access[-_]?key|secret[-_]?access[-_]?key)$|(?:^|[-_])(?:api[-_]?key|apikey|token|secret|password|passwd|pwd|access[-_]?key|secret[-_]?access[-_]?key)(?:$|[-_])/i;
 const SENSITIVE_ASSIGNMENT_KEY = String.raw`[A-Z0-9_-]*(?:API[-_]?KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|ACCESS[-_]?KEY|SECRET[-_]?ACCESS[-_]?KEY)[A-Z0-9_-]*`;
 const SENSITIVE_JSON_KEY = String.raw`(?:authorization|api[-_]?key|apikey|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|access[-_]?key|secret[-_]?access[-_]?key|[A-Z0-9_-]*(?:API[-_]?KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|ACCESS[-_]?KEY|SECRET[-_]?ACCESS[-_]?KEY)[A-Z0-9_-]*)`;
@@ -48,15 +51,28 @@ function sanitizeForLog(value, depth = 0) {
 }
 
 function safeArgs(args) {
-  if (args?.command) return redactSensitive(String(args.command)).slice(0, 500);
-  if (args?.file_path || args?.path) return redactSensitive(String(args.file_path || args.path)).slice(0, 500);
-  try { return JSON.stringify(sanitizeForLog(args || {})).slice(0, 500); }
-  catch { return redactSensitive(String(args || '')).slice(0, 500); }
+  if (args?.command) return redactSensitive(String(args.command)).slice(0, MAX_ARG_LOG_CHARS);
+  if (args?.file_path || args?.path) return redactSensitive(String(args.file_path || args.path)).slice(0, MAX_ARG_LOG_CHARS);
+  try { return JSON.stringify(sanitizeForLog(args || {})).slice(0, MAX_ARG_LOG_CHARS); }
+  catch { return redactSensitive(String(args || '')).slice(0, MAX_ARG_LOG_CHARS); }
 }
 
 function safeText(value, max = 500) {
   if (!value) return undefined;
   return redactSensitive(String(value)).slice(0, max);
+}
+
+function safePrompt(prompt) {
+  if (!prompt || typeof prompt !== 'object') return undefined;
+  const out = {
+    title: safeText(prompt.title, 200),
+    subject: safeText(prompt.subject, MAX_PROMPT_SUBJECT_CHARS),
+    reason: safeText(prompt.reason, MAX_PROMPT_REASON_CHARS),
+  };
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined) delete out[key];
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export class ApprovalLog {
@@ -68,6 +84,7 @@ export class ApprovalLog {
   append(entry) {
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+      const prompt = safePrompt(entry.prompt);
       const line = JSON.stringify({
         ts: new Date().toISOString(),
         tier: entry.tier,
@@ -77,6 +94,7 @@ export class ApprovalLog {
         scope: entry.scope || 'once',
         rule_id: entry.rule_id || null,
         reason: safeText(entry.reason),
+        ...(prompt ? { prompt } : {}),
       });
       fs.appendFileSync(this.filePath, line + '\n', { mode: 0o600 });
       try { fs.chmodSync(this.filePath, 0o600); } catch {}
