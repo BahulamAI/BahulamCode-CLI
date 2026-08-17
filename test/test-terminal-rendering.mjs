@@ -413,7 +413,12 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes('function insertPromptText'));
   assert.ok(replSource.includes('_suppressBracketedPasteLines'));
+  assert.ok(replSource.includes('_promptHasInsertedPaste'));
+  assert.ok(replSource.includes("if (key.name === 'return' || key.name === 'enter') return;"));
+  assert.ok(replSource.includes('const submitInsertedPaste = _promptHasInsertedPaste'));
+  assert.ok(replSource.includes("process.stderr.write('\\r\\x1b[2K');"));
   assert.ok(replSource.includes('insertPromptText(payload || \'\','));
+  assert.ok(replSource.includes('fromPaste: true'));
   assert.ok(replSource.includes('replaceReadlineLine(text);'));
   assert.ok(replSource.includes('queueOrRunLine(line);'));
   assert.ok(replSource.includes('function executionInputPrefix()'));

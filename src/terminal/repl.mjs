@@ -134,6 +134,7 @@ import {
 } from '../ui/slash-commands.mjs';
 import { createOrbit } from '../state/orbit.mjs';
 import {
+  clearPinnedStatus,
   clearInputPrompt,
   focusDockInput,
   isInputDockMounted,
@@ -3001,6 +3002,7 @@ export async function startTerminalRepl() {
   let _suppressBracketedPasteLines = false;
   let _bracketedPasteStartLine = '';
   let _bracketedPasteStartCursor = 0;
+  let _promptHasInsertedPaste = false;
   const _pasteEndListeners = new Set();
   function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
   function isInBracketedPaste() { return _inBracketedPaste; }
@@ -3068,8 +3070,10 @@ export async function startTerminalRepl() {
 
   function printInputBottomRule() {
     if (isInputDockMounted()) {
+      clearPinnedStatus();
       clearInputPrompt();
       moveToContent();
+      if (process.stderr.isTTY && !term().plain) process.stderr.write('\r\x1b[2K');
       return;
     }
     if (term().plain) return;
@@ -3232,12 +3236,13 @@ export async function startTerminalRepl() {
     }
   }
 
-  function insertPromptText(text, { baseLine = rl.line || '', baseCursor = rl.cursor } = {}) {
+  function insertPromptText(text, { baseLine = rl.line || '', baseCursor = rl.cursor, fromPaste = false } = {}) {
     const payload = String(text || '');
     if (!payload) return;
     const line = String(baseLine || '');
     const cursor = typeof baseCursor === 'number' ? Math.max(0, Math.min(line.length, baseCursor)) : line.length;
     const next = `${line.slice(0, cursor)}${payload}${line.slice(cursor)}`;
+    if (fromPaste) _promptHasInsertedPaste = true;
     replaceReadlineLine(next, cursor + payload.length);
     renderIdleDockInput();
   }
@@ -3331,6 +3336,8 @@ export async function startTerminalRepl() {
     readline.emitKeypressEvents(process.stdin, rl);
     process.stdin.on('keypress', (_str, key = {}) => {
       if (!inputActive) return;
+      if (_inBracketedPaste || _suppressBracketedPasteLines) return;
+      if (key.name === 'return' || key.name === 'enter') return;
       if (key.name === 'f2') {
         clearSlashHint();
         if (isInputDockMounted()) moveToContent();
@@ -3340,6 +3347,7 @@ export async function startTerminalRepl() {
       }
       setImmediate(() => {
         if (!inputActive) return;
+        if (_inBracketedPaste || _suppressBracketedPasteLines) return;
         if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
         if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
         if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
@@ -3400,11 +3408,13 @@ export async function startTerminalRepl() {
     _pasteLines = [];
     if (pastedLines.length > 1 || trailing) {
       const text = [...pastedLines, trailing].join('\n');
+      _promptHasInsertedPaste = true;
       replaceReadlineLine(text);
       renderIdleDockInput();
       return;
     }
     const line = pastedLines.join('\n');
+    _promptHasInsertedPaste = false;
     queueOrRunLine(line);
   }
 
@@ -3430,8 +3440,13 @@ export async function startTerminalRepl() {
       }
       return;
     }
+    const submitInsertedPaste = _promptHasInsertedPaste || String(line || '').includes('\n');
     _pasteLines.push(line);
     if (_pasteFlushTimer) clearTimeout(_pasteFlushTimer);
+    if (submitInsertedPaste) {
+      flushPastedLines();
+      return;
+    }
     if (isInBracketedPaste()) {
       _pasteFlushTimer = null;
     } else {
@@ -3450,6 +3465,7 @@ export async function startTerminalRepl() {
     insertPromptText(payload || '', {
       baseLine: _bracketedPasteStartLine,
       baseCursor: _bracketedPasteStartCursor,
+      fromPaste: true,
     });
   });
 
