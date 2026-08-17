@@ -3861,6 +3861,15 @@ export async function startTerminalRepl() {
       approval.setExecutionHooks({
         onPause: () => { execListenerActive = false; },
         onResume: () => { execListenerActive = true; },
+        onApprovalPromptEnd: () => {
+          if (!isInputDockMounted()) return;
+          renderDockInput(executionInputPrefix(), executionInputBuffer, {
+            context: buildContextStrip(),
+            meta: buildDockMeta(),
+            tips: executionInputTips(),
+          });
+          moveToContent();
+        },
       });
 
       keypressCleanup = () => {

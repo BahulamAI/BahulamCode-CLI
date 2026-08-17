@@ -6,7 +6,7 @@ import { _setForTesting as _setTermForTesting } from '../src/ui/term.mjs';
 _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false });
 
 import { c, renderMarkdown, renderDiff, stripAnsi } from '../src/terminal/ansi.mjs';
-import { formatShellCommand, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
+import { formatShellCommand, shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../src/terminal/tool-display.mjs';
 import {
   isExploreTool as _isExploreTool,
   exploreCategory as _exploreCategory,
@@ -15,7 +15,7 @@ import {
 import { renderBanner } from '../src/ui/banner.mjs';
 import { renderMissionReport } from '../src/ui/mission-report.mjs';
 import { renderSubAgentOpen, resetSubAgents } from '../src/ui/sub-agent.mjs';
-import { renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
+import { renderApprovalDockPrompt, renderApprovalPrompt, renderInlinePrompt, renderTrustedApproval } from '../src/ui/approval.mjs';
 import { formatCard, formatCardHead, formatCompactFileDiff } from '../src/ui/tool-card.mjs';
 import { detailFor } from '../src/ui/tool-details.mjs';
 import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs';
@@ -179,7 +179,9 @@ test('renders shell commands with semantic syntax colors', () => {
 test('long shell tool heads wrap without hiding command text', () => {
   const command = 'cd "/Users/sree/Sites/Tarang Orca/appstak-platform" && pnpm run dev 2>&1 | head -80';
   const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 58, cwd: '/tmp' }));
+  assert.ok(rendered.includes('• shell ·'));
   assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('$'));
   assert.ok(rendered.includes('appstak-platform'));
   assert.ok(rendered.includes('pnpm run dev'));
   assert.ok(rendered.includes('2>&1 | head -80'));
@@ -189,7 +191,9 @@ test('long shell tool heads wrap without hiding command text', () => {
 
   const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
   const azRendered = stripAnsi(formatCardHead('shell', { command: azCommand }, { columns: 80, cwd: '/tmp' }));
+  assert.ok(azRendered.includes('• shell ·'));
   assert.ok(azRendered.includes('Running'));
+  assert.ok(azRendered.includes('$ az network nsg create'));
   assert.ok(azRendered.includes('az network nsg create'));
   assert.ok(azRendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
   assert.ok(azRendered.includes('codekepler-microvm-prod-02'));
@@ -205,6 +209,7 @@ test('long shell tool heads wrap without hiding command text', () => {
     cwd: '/tmp',
   }));
   assert.ok(full.includes('2>&1 | head -80'));
+  assert.ok(full.includes('result —'));
   assert.ok(full.includes('ready'));
 
   const observed = stripAnsi(formatCard({
@@ -233,9 +238,58 @@ test('shell card compacts leading cd wrappers', () => {
     cwd: '/Users/sree/Sites/Tarang Orca/codekepler-npm',
   }));
 
-  assert.ok(rendered.includes('Running git status --short'));
+  assert.ok(rendered.includes('• shell · Running $ git status --short'));
   assert.ok(rendered.includes('in tarang-ai-agent-framework/agent-framework-pypi'));
   assert.ok(!rendered.includes('cd /Users/sree'));
+});
+
+test('multiline shell commands compact instead of leaking left-aligned lines', () => {
+  const command = [
+    '# Check config-reader service',
+    'grep -n \\',
+    '  "workspace-backend\\|config-workspace-backend\\|loadConfig" \\',
+    '  /Users/sree/Sites/Tarang-Orca/codekepler-deploy-dashboard/dashboard/src/services/config-reader.ts \\',
+    '  | head -40',
+  ].join('\n');
+  const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 100, cwd: process.cwd() }));
+  const lines = rendered.split('\n').filter(Boolean);
+
+  assert.strictEqual(lines.length, 1);
+  assert.ok(rendered.includes('• shell · Running $ shell script'));
+  assert.ok(rendered.includes('details: Ctrl+D'));
+  assert.ok(!rendered.includes('\ngrep -n'));
+  assert.ok(lines.every(line => line.startsWith('  ')));
+});
+
+test('shell card compacts generated scripts and detail exposes command output', () => {
+  const command = [
+    "python3 <<'PY'",
+    'from pathlib import Path',
+    'Path("out.txt").write_text("ok")',
+    'print("done")',
+    'PY',
+  ].join('\n');
+  const profile = shellCommandProfile(command);
+  assert.strictEqual(profile.compact, true);
+  assert.strictEqual(profile.kind, 'python script');
+
+  const head = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
+  assert.ok(head.includes('• shell · Running $ python script'));
+  assert.ok(head.includes('details: Ctrl+D'));
+  assert.ok(!head.includes('Path("out.txt")'));
+
+  const detail = stripAnsi(detailFor({
+    id: 'shell-script',
+    tool: 'shell',
+    args: { command },
+    result: { success: true, output: 'done\n' },
+    durationMs: 500,
+  }));
+  assert.ok(detail.includes('command'));
+  assert.ok(detail.includes('script'));
+  assert.ok(detail.includes('Path("out.txt").write_text("ok")'));
+  assert.ok(detail.includes('stdout'));
+  assert.ok(detail.includes('done'));
 });
 
 test('search cards keep outcome inline by compacting long heads', () => {
@@ -647,11 +701,12 @@ test('approval prompt uses risk title and compact scoped menu', () => {
   assert.ok(!rendered.includes('re-plan'));
   assert.ok(rendered.includes('rm -rf node_modules'));
   assert.ok(!rendered.includes('┃'));
+  assert.ok(!rendered.includes('│'));
   assert.ok(!rendered.includes('▔'));
   assert.ok(!rendered.includes('────'));
 });
 
-test('approval prompt preserves shell cwd wrapper for auditability', () => {
+test('approval prompt separates shell cwd from command', () => {
   const command = [
     'cd /Users/sree/Sites/Tarang\\ Orca/tarang-ai-agent-framework &&',
     'git add agent-framework-pypi/src/pkg/requires.txt &&',
@@ -665,9 +720,10 @@ test('approval prompt preserves shell cwd wrapper for auditability', () => {
     width: 100,
   }));
 
-  assert.ok(rendered.includes('cd /Users/sree/Sites/Tarang'));
   assert.ok(rendered.includes('tarang-ai-agent-framework'));
   assert.ok(rendered.includes('git add agent-framework-pypi/src/pkg/requires.txt && git status'));
+  assert.ok(!rendered.includes('cd /Users/sree/Sites/Tarang'));
+  assert.ok(rendered.includes('d details'));
 });
 
 test('approval prompt compacts redundant shell approval reason', () => {
@@ -683,6 +739,57 @@ test('approval prompt compacts redundant shell approval reason', () => {
   assert.ok(rendered.includes(command));
   assert.ok(rendered.includes('reason Shell command requires approval.'));
   assert.ok(!rendered.includes(`reason Shell command requires approval: ${command}`));
+});
+
+test('approval prompt compacts generated shell scripts until details are requested', () => {
+  const command = [
+    "python3 <<'PY'",
+    'from pathlib import Path',
+    'for i in range(3):',
+    '    print(i)',
+    'PY',
+  ].join('\n');
+  const compact = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'Runs a generated helper script.',
+    width: 100,
+  }));
+  assert.ok(compact.includes('python script'));
+  assert.ok(compact.includes('3 lines'));
+  assert.ok(compact.includes('d details'));
+  assert.ok(!compact.includes('from pathlib import Path'));
+
+  const expanded = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'Runs a generated helper script.',
+    width: 100,
+    showDetails: true,
+  }));
+  assert.ok(expanded.includes('d hide details'));
+  assert.ok(expanded.includes('script'));
+  assert.ok(expanded.includes('from pathlib import Path'));
+  assert.ok(expanded.includes('print(i)'));
+});
+
+test('approval dock prompt is concise and separate from transcript framing', () => {
+  const dock = renderApprovalDockPrompt({
+    tool: 'shell',
+    args: { command: 'npm publish' },
+    tier: TIERS.SHELL_MEDIUM,
+    why: 'Publishes the package.',
+    width: 100,
+  });
+
+  assert.ok(dock.prefix.includes('approve'));
+  assert.ok(dock.value.includes('$ npm publish'));
+  assert.ok(dock.context.includes('APPROVAL · SHELL-MEDIUM · shell'));
+  assert.ok(dock.meta.includes('risk publish'));
+  assert.ok(dock.tips.includes('d details'));
+  assert.ok(!dock.value.includes('│'));
 });
 
 test('approval compatibility wrapper uses unified prompt', () => {

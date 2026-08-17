@@ -13,9 +13,10 @@
 
 import { paint } from './palette.mjs';
 import { icon, toolFamily } from './icons.mjs';
-import { toolDisplayLabel } from '../terminal/tool-display.mjs';
+import { shellCommandProfile, toolDisplayLabel } from '../terminal/tool-display.mjs';
 
 const MAX_DETAIL_LINES = 60;
+const MAX_SHELL_DETAIL_LINES = 220;
 const MAX_LINE_WIDTH = 220;
 
 // ── Dispatch ─────────────────────────────────────────────────────────────
@@ -96,6 +97,13 @@ function oneLineArgs(tool, args) {
 }
 
 function safeDetailArgs(tool, args) {
+  if (tool === 'shell') {
+    const profile = shellCommandProfile(args?.command || args?.cmd || '');
+    return {
+      command: profile.summary,
+      ...(profile.cwdLabel ? { cwd: profile.cwdLabel } : {}),
+    };
+  }
   if (tool === 'write_file') {
     const { content, ...rest } = args || {};
     return {
@@ -235,17 +243,37 @@ function detailDeleteFile(card) {
 // ── Shell / validators ──────────────────────────────────────────────────
 
 function detailShell(card) {
+  const command = String(card.args?.command || card.args?.cmd || '').trim();
   const stdout = String(card.result?.stdout ?? card.result?.output ?? '');
   const stderr = String(card.result?.stderr ?? '');
   const out = [];
+  if (command) {
+    const profile = shellCommandProfile(command);
+    if (profile.cwdLabel) {
+      out.push(paint.text.dim('    cwd'));
+      out.push(`    ${paint.brand.data(profile.cwdLabel)}`);
+      out.push('');
+    }
+
+    out.push(paint.text.dim('    command'));
+    if (profile.script?.body) {
+      out.push(`    ${paint.text.primary(profile.script.invocation || profile.command.split('\n')[0] || profile.command)}`);
+      out.push('');
+      out.push(paint.text.dim('    script'));
+      out.push(numbered(profile.script.body, 1, { maxLines: MAX_SHELL_DETAIL_LINES }));
+    } else {
+      out.push(clip(profile.command, paint.text.primary, { maxLines: MAX_SHELL_DETAIL_LINES }));
+    }
+  }
   if (stdout) {
+    if (out.length) out.push('');
     out.push(paint.text.dim('    stdout'));
-    out.push(clip(stdout));
+    out.push(clip(stdout, paint.text.primary, { maxLines: MAX_DETAIL_LINES }));
   }
   if (stderr) {
     if (out.length) out.push('');
     out.push(paint.state.warn('    stderr'));
-    out.push(clip(stderr, paint.state.danger));
+    out.push(clip(stderr, paint.state.danger, { maxLines: MAX_DETAIL_LINES }));
   }
   return out.length ? out.join('\n') : paint.text.dim('    (no output)');
 }
@@ -274,24 +302,24 @@ function detailGenericOutput(card) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function numbered(text, start) {
+function numbered(text, start, { maxLines = MAX_DETAIL_LINES } = {}) {
   const lines = String(text).split('\n');
   const total = lines.length;
   const width = String(start + total - 1).length;
-  return lines.slice(0, MAX_DETAIL_LINES).map((line, i) => {
+  return lines.slice(0, maxLines).map((line, i) => {
     const n = String(start + i).padStart(width);
     return `    ${paint.text.dim(n)} ${paint.text.primary(line.slice(0, MAX_LINE_WIDTH))}`;
-  }).join('\n') + (total > MAX_DETAIL_LINES
-    ? `\n    ${paint.text.dim(`… ${total - MAX_DETAIL_LINES} more line(s)`)}`
+  }).join('\n') + (total > maxLines
+    ? `\n    ${paint.text.dim(`… ${total - maxLines} more line(s)`)}`
     : '');
 }
 
-function clip(text, painter = paint.text.primary) {
+function clip(text, painter = paint.text.primary, { maxLines = MAX_DETAIL_LINES } = {}) {
   if (!text) return paint.text.dim('    (empty)');
   const lines = String(text).split('\n');
-  const head = lines.slice(0, MAX_DETAIL_LINES).map(l => `    ${painter(l.slice(0, MAX_LINE_WIDTH))}`);
-  if (lines.length > MAX_DETAIL_LINES) {
-    head.push(`    ${paint.text.dim(`… ${lines.length - MAX_DETAIL_LINES} more line(s)`)}`);
+  const head = lines.slice(0, maxLines).map(l => `    ${painter(l.slice(0, MAX_LINE_WIDTH))}`);
+  if (lines.length > maxLines) {
+    head.push(`    ${paint.text.dim(`… ${lines.length - maxLines} more line(s)`)}`);
   }
   return head.join('\n');
 }

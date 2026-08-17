@@ -185,6 +185,117 @@ export function shellCommandDisplay(command, { cwd = currentWorkingDirectory() }
   };
 }
 
+const COMPACT_SHELL_CHARS = 320;
+const COMPACT_SHELL_LINES = 2;
+
+export function shellCommandProfile(command, {
+  cwd = currentWorkingDirectory(),
+  compactChars = COMPACT_SHELL_CHARS,
+  compactLines = COMPACT_SHELL_LINES,
+} = {}) {
+  const original = String(command || '');
+  const display = shellCommandDisplay(original, { cwd });
+  const normalized = String(display.command || '').replace(/\r\n?/g, '\n');
+  const body = normalized || '(empty command)';
+  const lines = normalized ? normalized.split('\n') : [];
+  const commandLineCount = Math.max(1, lines.filter(line => line.trim()).length || lines.length);
+  const commandByteCount = byteLength(normalized || body);
+  const script = detectShellScript(normalized);
+  const lineCount = script?.body ? physicalLineCount(script.body) : commandLineCount;
+  const byteCount = script?.body ? byteLength(script.body) : commandByteCount;
+  const compact = Boolean(script)
+    || commandLineCount >= compactLines
+    || commandByteCount > compactChars;
+  const kind = script?.kind || (lineCount > 1 ? 'shell script' : 'shell command');
+  const summary = compact
+    ? `${kind} · ${lineCount} line${lineCount === 1 ? '' : 's'} · ${formatBytes(byteCount)}`
+    : body;
+
+  return {
+    original,
+    command: body,
+    cwdLabel: display.cwdLabel,
+    lineCount,
+    byteCount,
+    commandLineCount,
+    commandByteCount,
+    compact,
+    kind,
+    summary,
+    script,
+    detailHint: compact ? 'details: Ctrl+D' : '',
+  };
+}
+
+function detectShellScript(command) {
+  const text = String(command || '').replace(/\r\n?/g, '\n');
+  if (!text) return null;
+
+  const heredoc = text.match(/\b(python3?|node|ruby|perl|bash|sh)\b[^\n]*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n([\s\S]*?)\n\3(?:\s*$|\s)/);
+  if (heredoc) {
+    const invocation = text.slice(0, text.indexOf('\n')).trim();
+    return {
+      kind: interpreterKind(heredoc[1]),
+      interpreter: heredoc[1],
+      marker: heredoc[3],
+      invocation,
+      body: heredoc[4],
+    };
+  }
+
+  const inline = text.match(/\b(python3?|node|ruby|perl)\b\s+(?:-[A-Za-z]*[ce][A-Za-z]*|--command|--eval)\s+(['"])([\s\S]{120,})\2/);
+  if (inline) {
+    return {
+      kind: interpreterKind(inline[1]),
+      interpreter: inline[1],
+      invocation: text.slice(0, inline.index + inline[0].indexOf(inline[2])).trim(),
+      body: inline[3],
+    };
+  }
+
+  const tempScript = text.match(/\b(python3?|node|ruby|perl|bash|sh)\b\s+((?:\/(?:private\/)?tmp|\/private\/var\/folders|\/var\/folders)[^\s;&|]+\.(?:py|mjs|js|rb|pl|sh))\b/);
+  if (tempScript) {
+    return {
+      kind: interpreterKind(tempScript[1]),
+      interpreter: tempScript[1],
+      invocation: `${tempScript[1]} ${tempScript[2]}`,
+      path: tempScript[2],
+    };
+  }
+
+  return null;
+}
+
+function interpreterKind(value) {
+  const name = String(value || '').toLowerCase();
+  if (name.startsWith('python')) return 'python script';
+  if (name === 'node') return 'node script';
+  if (name === 'ruby') return 'ruby script';
+  if (name === 'perl') return 'perl script';
+  return 'shell script';
+}
+
+function byteLength(value) {
+  try {
+    return Buffer.byteLength(String(value || ''), 'utf8');
+  } catch {
+    return String(value || '').length;
+  }
+}
+
+function physicalLineCount(value) {
+  const text = String(value || '');
+  if (!text) return 0;
+  return text.split('\n').length;
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function formatShellCommand(command, colors) {
   const tokens = String(command || '').match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|&&|\|\||[|;<>]|[^\s]+|\s+/g) || [];
   let expectsCommand = true;

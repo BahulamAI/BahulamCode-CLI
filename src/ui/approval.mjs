@@ -17,7 +17,7 @@
 
 import { paint, width as visibleWidth } from './palette.mjs';
 import { icon } from './icons.mjs';
-import { shellCommandDisplay, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { shellCommandDisplay, shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/risk-tier.mjs';
 
 /**
@@ -72,7 +72,7 @@ export function defaultOptions(tier, { tool = '', args = {} } = {}) {
  */
 export function renderApprovalPrompt({
   tool, args = {}, tier, why = '', width,
-  options, selected = 0,
+  options, selected = 0, showDetails = false,
 } = {}) {
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const explicit = requiresExplicitApproval(tier);
@@ -83,18 +83,47 @@ export function renderApprovalPrompt({
   const lines = [
     blockHeader(title, accent),
     ...subjectRows(tool, args, cols, accent),
+    ...detailRows(tool, args, cols, accent, showDetails),
     ...riskRows(tool, args, tier, accent),
     ...reasonRows(tool, args, why, cols, accent),
     blockLine(accent),
     ...decisionRows(opts, selected, accent),
-    blockLine(accent, paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc cancel')),
+    blockLine(accent, paint.text.dim(approvalFooter(tool, showDetails))),
   ];
 
   return '\n' + lines.join('\n');
 }
 
+export function renderApprovalDockPrompt({
+  tool, args = {}, tier, why = '', width,
+  options, selected = 0, showDetails = false,
+} = {}) {
+  const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
+  const opts = options || defaultOptions(tier, { tool, args });
+  const subject = showDetails && tool === 'shell'
+    ? approvalDockDetails(tool, args, cols)
+    : subjectDetails(tool, args, toolDisplaySummary(tool, args, {}), Math.max(24, cols - 20)).join(' · ');
+  const risks = riskTerms(tool, args, tier);
+  const reason = compactReason(tool, args, why);
+  const optionText = opts
+    .map((option, index) => `${index === selected ? '▸' : ''}${option.key} ${option.label}`)
+    .join(' · ');
+
+  return {
+    prefix: '? approve › ',
+    value: truncateForDock(subject, showDetails ? 1200 : 220),
+    context: `${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`,
+    meta: [
+      risks.length ? `risk ${risks.join(', ')}` : '',
+      reason ? `reason ${truncate(reason, 90)}` : '',
+    ].filter(Boolean).join(' · '),
+    tips: `${optionText}${tool === 'shell' ? ` · d ${showDetails ? 'hide details' : 'details'}` : ''} · Esc cancel`,
+  };
+}
+
 function shellTrustHint(args = {}) {
-  const parts = String(args.command || args.cmd || '').trim().split(/\s+/).filter(Boolean);
+  const display = shellCommandDisplay(args.command || args.cmd || '');
+  const parts = String(display.command || '').trim().split(/\s+/).filter(Boolean);
   const shape = parts.slice(0, 2).join(' ');
   return shape ? `${shape}*` : 'similar shell commands';
 }
@@ -151,18 +180,18 @@ function approvalTitle(tier) {
 }
 
 function blockHeader(title, accent) {
-  return `  ${accent('╭─')} ${paint.bold(accent(title))}`;
+  return `  ${paint.bold(accent(title))}`;
 }
 
 function blockLine(accent, text = '') {
-  return `  ${accent('│')}${text ? ` ${text}` : ''}`;
+  return text ? `  ${text}` : '  ';
 }
 
 function subjectRows(tool, args, cols, accent) {
   const rows = [];
   const available = Math.max(24, cols - 5);
   const summary = toolDisplaySummary(tool, args, {});
-  const label = `${icon(tool)} ${paint.text.primary(toolDisplayLabel(tool))}`;
+  const label = subjectLabel(tool);
   const details = subjectDetails(tool, args, summary, Math.max(24, available - visibleWidth(label) - 1));
 
   if (details.length === 1 && visibleWidth(`${label} ${details[0]}`) <= available) {
@@ -175,6 +204,14 @@ function subjectRows(tool, args, cols, accent) {
     rows.push(blockLine(accent, `${paint.text.dim('  ')}${paint.text.primary(line)}`));
   }
   return rows;
+}
+
+function subjectLabel(tool) {
+  const label = toolDisplayLabel(tool);
+  if (tool === 'shell') {
+    return `${paint.text.dim('• shell ·')} ${paint.text.primary(label)}`;
+  }
+  return `${icon(tool)} ${paint.text.primary(label)}`;
 }
 
 function decisionRows(opts, selected, accent) {
@@ -258,8 +295,16 @@ function optionToken(option, selected, accent) {
 
 function subjectDetails(tool, args = {}, summary = '', available = 72) {
   if (tool === 'shell') {
-    const display = shellCommandDisplay(args.command || args.cmd || summary || '');
-    const lines = wrapText(display.command, available);
+    const command = args.command || args.cmd || summary || '';
+    const profile = shellCommandProfile(command);
+    if (profile.compact) {
+      const lines = [`$ ${profile.summary}`];
+      if (profile.cwdLabel) lines.push(`in ${profile.cwdLabel}`);
+      return lines;
+    }
+    const display = shellCommandDisplay(command);
+    const lines = wrapText(display.command, Math.max(20, available - 2))
+      .map((line, index) => `${index === 0 ? '$' : '>'} ${line}`);
     if (display.cwdLabel) lines.push(`in ${display.cwdLabel}`);
     return lines.length ? lines : ['(empty command)'];
   }
@@ -287,6 +332,53 @@ function subjectDetails(tool, args = {}, summary = '', available = 72) {
   return wrapText(summary || JSON.stringify(args || {}), available).slice(0, 4);
 }
 
+function detailRows(tool, args = {}, cols, accent, showDetails) {
+  if (!showDetails || tool !== 'shell') return [];
+  const profile = shellCommandProfile(args.command || args.cmd || '');
+  const rows = [];
+  const labelWidth = 9;
+  const textWidth = Math.max(28, cols - 5 - labelWidth);
+
+  if (profile.cwdLabel) {
+    rows.push(blockLine(accent, `${paint.text.dim('cwd    ')} ${paint.brand.data(profile.cwdLabel)}`));
+  }
+
+  rows.push(blockLine(accent, paint.text.dim('details')));
+  if (profile.script?.body) {
+    const invocation = profile.script.invocation || profile.command.split('\n')[0] || profile.command;
+    for (const line of wrapText(invocation, textWidth)) {
+      rows.push(blockLine(accent, `${paint.text.dim('cmd    ')} ${paint.text.primary(line)}`));
+    }
+    rows.push(blockLine(accent, paint.text.dim('script ')));
+    rows.push(...numberedRows(profile.script.body, cols, accent, 120));
+  } else {
+    rows.push(...wrappedLabeledRows('cmd    ', profile.command, cols, accent, 120));
+  }
+
+  return rows;
+}
+
+function approvalFooter(tool, showDetails) {
+  const details = tool === 'shell'
+    ? ` · d ${showDetails ? 'hide details' : 'details'}`
+    : '';
+  return `↑↓ move · Enter pick · letter shortcut${details} · Esc cancel`;
+}
+
+function approvalDockDetails(tool, args = {}, cols = 96) {
+  if (tool !== 'shell') return subjectDetails(tool, args, toolDisplaySummary(tool, args, {}), cols).join(' · ');
+  const profile = shellCommandProfile(args.command || args.cmd || '');
+  if (profile.script?.body) {
+    const invocation = profile.script.invocation || profile.command.split('\n')[0] || profile.command;
+    return [
+      `$ ${invocation}`,
+      ...profile.script.body.split(/\r?\n/).slice(0, 12).map((line, index) => `${index + 1} ${line}`),
+      ...(profile.script.body.split(/\r?\n/).length > 12 ? ['...'] : []),
+    ].join('\n');
+  }
+  return profile.command;
+}
+
 function approvalSubjectSummary(tool, args = {}) {
   const summary = toolDisplaySummary(tool, args, {});
   if (tool !== 'shell') return summary;
@@ -300,6 +392,48 @@ function hostFromUrl(url) {
   } catch {
     return '';
   }
+}
+
+function wrappedLabeledRows(label, text, cols, accent, maxLines = 120) {
+  const rows = [];
+  const labelText = paint.text.dim(label);
+  const firstWidth = Math.max(28, cols - 5 - visibleWidth(labelText) - 1);
+  const restWidth = Math.max(28, cols - 5 - visibleWidth(labelText) - 1);
+  const sourceLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  let emitted = 0;
+  for (const source of sourceLines) {
+    const wrapped = wrapText(source || ' ', emitted === 0 ? firstWidth : restWidth);
+    for (const line of wrapped) {
+      if (emitted >= maxLines) {
+        rows.push(blockLine(accent, `${paint.text.dim('       ')}${paint.text.dim('... detail truncated')}`));
+        return rows;
+      }
+      rows.push(blockLine(accent, `${emitted === 0 ? labelText : paint.text.dim('       ')} ${paint.text.primary(line)}`));
+      emitted++;
+    }
+  }
+  return rows;
+}
+
+function numberedRows(text, cols, accent, maxLines = 120) {
+  const rows = [];
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const width = String(Math.min(lines.length, maxLines)).length;
+  const textWidth = Math.max(28, cols - 5 - width - 2);
+  for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
+    const n = String(i + 1).padStart(width);
+    rows.push(blockLine(accent, `${paint.text.dim(`${n} `)}${paint.text.primary(truncate(lines[i], textWidth))}`));
+  }
+  if (lines.length > maxLines) {
+    rows.push(blockLine(accent, `${paint.text.dim(`... ${lines.length - maxLines} more line(s)`)}`));
+  }
+  return rows;
+}
+
+function truncateForDock(text, maxChars) {
+  const value = String(text || '').trim();
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 function wrapText(text, width) {

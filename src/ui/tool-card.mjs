@@ -29,6 +29,7 @@ import {
   toolDisplaySummary,
   formatShellCommand,
   shellCommandDisplay,
+  shellCommandProfile,
 } from '../terminal/tool-display.mjs';
 
 // ── Family → label colorizer ─────────────────────────────────────────────
@@ -50,8 +51,10 @@ function formatArgs(tool, args, cwd) {
   const summary = toolDisplaySummary(tool, args || {}, { cwd });
   if (!summary) return '';
   if (tool === 'shell') {
+    const profile = shellCommandProfile(summary, { cwd });
+    if (profile.compact) return compactShellProfile(profile);
     const display = shellCommandDisplay(summary, { cwd });
-    const command = formatShellCommand(display.command, paintShellAdapter);
+    const command = `${paint.text.dim('$')} ${formatShellCommand(display.command, paintShellAdapter)}`;
     return display.cwdLabel
       ? `${command} ${paint.text.dim('in')} ${paint.brand.data(display.cwdLabel)}`
       : command;
@@ -354,16 +357,26 @@ export function formatCardHead(tool, args, opts = {}) {
 
   const label     = toolDisplayLabel(tool);
   const argsText  = formatArgs(tool, args, cwd);
+  const leadText  = formatHeadLead(tool, label);
 
-  const leadVisible = visibleWidth(`${indent}${label}`);
+  const leadVisible = visibleWidth(`${indent}${leadText}`);
   const budget = Math.max(20, cols - leadVisible - 4);
+
+  if (tool === 'shell') {
+    const profile = shellCommandProfile(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
+    if (profile.compact) {
+      const argsTruncated = truncateMiddle(argsText, budget);
+      const head = `${indent}${leadText}`;
+      return argsTruncated ? `${head} ${argsTruncated}` : head;
+    }
+  }
 
   if (tool === 'shell' && visibleWidth(argsText) > budget) {
     const wrapWidth = Math.max(32, cols - visibleWidth(indent) - 4);
     const display = shellCommandDisplay(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
     const commandLines = wrapCommand(display.command, wrapWidth)
-      .map(line => `${indent}${paint.text.dim('  ')}${formatShellCommand(line, paintShellAdapter)}`);
-    const head = `${indent}${paintLabel(tool, label)}`;
+      .map((line, index) => `${indent}${paint.text.dim(index === 0 ? '$ ' : '> ')}${formatShellCommand(line, paintShellAdapter)}`);
+    const head = `${indent}${leadText}`;
     const cwdLine = display.cwdLabel
       ? `\n${indent}${paint.text.dim('  in ')}${paint.brand.data(display.cwdLabel)}`
       : '';
@@ -372,8 +385,20 @@ export function formatCardHead(tool, args, opts = {}) {
 
   const argsTruncated = truncateMiddle(argsText, budget);
 
-  const head = `${indent}${paintLabel(tool, label)}`;
+  const head = `${indent}${leadText}`;
   return argsTruncated ? `${head} ${argsTruncated}` : head;
+}
+
+function formatHeadLead(tool, label) {
+  if (tool !== 'shell') return paintLabel(tool, label);
+  return `${paint.text.dim('• shell ·')} ${paintLabel(tool, label)}`;
+}
+
+function compactShellProfile(profile) {
+  const parts = [`${paint.text.dim('$')} ${paint.text.primary(profile.summary)}`];
+  if (profile.cwdLabel) parts.push(`${paint.text.dim('in')} ${paint.brand.data(profile.cwdLabel)}`);
+  parts.push(paint.text.dim(profile.detailHint || 'details: Ctrl+D'));
+  return parts.join(' · ');
 }
 
 /**
@@ -393,7 +418,7 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
 
   if (!summary.text && !duration) return head;
 
-  const arrow = paint.text.dim('—');
+  const arrow = outcomeLead(tool);
   const body  = summary.text ? tone(summary.text, summary.tone) : '';
   // Hide the duration tail when the tool was effectively instant (<200ms).
   // For fast reads, "1ms" / "0ms" was noise that broke the prose feel.
@@ -421,6 +446,19 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
   return `${head}\n${gutterIndent}${arrow} ${body}${tail}`;
 }
 
+function outcomeLead(tool) {
+  return isShellOutcomeTool(tool)
+    ? `${paint.text.dim('result')} ${paint.text.dim('—')}`
+    : paint.text.dim('—');
+}
+
+function isShellOutcomeTool(tool) {
+  return [
+    'shell', 'run_tests', 'validate_build', 'lint_check',
+    'validate_file', 'validate_structure',
+  ].includes(String(tool || '').toLowerCase());
+}
+
 function isInlineOutcomeTool(tool) {
   return [
     'read_file', 'read_files', 'read_batch', 'get_file_info',
@@ -444,22 +482,25 @@ function wrapCommand(command, width) {
   const text = String(command || '');
   if (!text) return ['(empty command)'];
   const lines = [];
-  let line = '';
-  for (const token of text.match(/\S+\s*/g) || [text]) {
-    const next = line + token;
-    if (line && visibleWidth(next.trimEnd()) > width) {
-      lines.push(line.trimEnd());
-      line = token;
-      continue;
+  for (const physicalLine of text.replace(/\r\n?/g, '\n').split('\n')) {
+    let line = '';
+    for (const token of physicalLine.match(/\S+\s*/g) || [physicalLine]) {
+      const next = line + token;
+      if (line && visibleWidth(next.trimEnd()) > width) {
+        lines.push(line.trimEnd());
+        line = token;
+        continue;
+      }
+      if (!line && visibleWidth(token.trimEnd()) > width) {
+        lines.push(...chunkLongToken(token.trimEnd(), width));
+        line = '';
+        continue;
+      }
+      line = next;
     }
-    if (!line && visibleWidth(token.trimEnd()) > width) {
-      lines.push(...chunkLongToken(token.trimEnd(), width));
-      line = '';
-      continue;
-    }
-    line = next;
+    if (line.trimEnd()) lines.push(line.trimEnd());
+    else if (!physicalLine.trim()) lines.push('');
   }
-  if (line.trimEnd()) lines.push(line.trimEnd());
   return lines.length ? lines : ['(empty command)'];
 }
 

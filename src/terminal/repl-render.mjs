@@ -285,7 +285,9 @@ export function renderToolResult(data, eventType = 'tool_result') {
 
   const { text, tone: t } = summarizeResult(tool, data);
   // Em dash reads more like prose than a system arrow.
-  const arrow = paint.text.dim('—');
+  const arrow = shellResultTool(tool)
+    ? `${paint.text.dim('result')} ${paint.text.dim('—')}`
+    : paint.text.dim('—');
   const painter = t === 'success' ? paint.state.success
                 : t === 'warn'    ? paint.state.warn
                 : t === 'danger'  ? paint.state.danger
@@ -350,6 +352,13 @@ export function renderToolResult(data, eventType = 'tool_result') {
   if (hasLint) {
     process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
   }
+}
+
+function shellResultTool(tool) {
+  return [
+    'shell', 'run_tests', 'validate_build', 'lint_check',
+    'validate_file', 'validate_structure',
+  ].includes(String(tool || '').toLowerCase());
 }
 
 // ── Expand handler — `d`, `/last`, `/expand` ───────────────────────────

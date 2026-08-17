@@ -10,7 +10,7 @@
  * Shell commands are risk-assessed (safe/medium/high).
  */
 
-import { shellCommandDisplay, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { shellCommandDisplay, shellCommandProfile, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import {
   classify as classifyTier,
   TIERS,
@@ -20,10 +20,11 @@ import {
 } from './risk-tier.mjs';
 import {
   renderApprovalPrompt,
+  renderApprovalDockPrompt,
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
-import { isInputDockMounted, moveToContent } from '../ui/input-dock.mjs';
+import { clearInputPrompt, isInputDockMounted, moveToContent, renderDockInput } from '../ui/input-dock.mjs';
 import { validateShellCommand } from './safety.mjs';
 import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
@@ -121,9 +122,10 @@ export class ApprovalManager {
 
     setReadline(rl) { this._rl = rl; }
 
-    setExecutionHooks({ onPause, onResume } = {}) {
+    setExecutionHooks({ onPause, onResume, onApprovalPromptEnd } = {}) {
         this._execPause = onPause || null;
         this._execResume = onResume || null;
+        this._approvalPromptEnd = onApprovalPromptEnd || null;
     }
 
     revoke() {
@@ -218,21 +220,42 @@ export class ApprovalManager {
 
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
+        let showDetails = false;
 
-        // Approval must render ABOVE the fixed input dock (in the scrollable
-        // content area) so it doesn't collide with the "+ add instruction"
-        // prompt. Move cursor into content once; the in-place redraw below
-        // stays within that region because printedHeight tracks the anchor.
-        if (isInputDockMounted()) moveToContent();
+        const isInteractive = process.stdin.isTTY;
+
+        // In rich TTY mode approval lives in the fixed input dock, replacing
+        // "+ add instruction" until the user decides. Fallback/plain mode
+        // still renders in the transcript.
+        const useDockPrompt = isInteractive && isInputDockMounted();
+        if (!useDockPrompt && isInputDockMounted()) moveToContent();
 
         // For TTYs we redraw in place on every arrow key so the prompt feels
         // live. For non-TTYs / pipes we just print once and read a line.
-        const isInteractive = process.stdin.isTTY;
         if (!isInteractive) {
-            write(renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options }) + '\n');
+            write(renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options, showDetails }) + '\n');
         }
 
         const drawPrompt = () => {
+            if (useDockPrompt) {
+                const dock = renderApprovalDockPrompt({
+                    tool: toolName,
+                    args,
+                    tier,
+                    why,
+                    selected,
+                    options,
+                    showDetails,
+                    width: process.stderr.columns || process.stdout.columns || 96,
+                });
+                renderDockInput(dock.prefix, dock.value, {
+                    context: dock.context,
+                    meta: dock.meta,
+                    tips: dock.tips,
+                });
+                printedHeight = 0;
+                return;
+            }
             // Move up over the previous render before re-printing. Use a
             // bounded per-line clear instead of \x1b[J — a full clear-to-end
             // would wipe the input dock's bottom rule and tips row that live
@@ -245,7 +268,7 @@ export class ApprovalManager {
                 }
                 write(`\x1b[${printedHeight}F`); // back to the anchor row
             }
-            const block = renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options });
+            const block = renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options, showDetails });
             write(block + '\n');
             printedHeight = block.split('\n').length;
         };
@@ -277,6 +300,11 @@ export class ApprovalManager {
                 // Letter shortcut: match against option.key
                 if (typeof k === 'string' && k.length === 1) {
                     const lower = k.toLowerCase();
+                    if (lower === 'd' && toolName === 'shell') {
+                        showDetails = !showDetails;
+                        if (isInteractive) drawPrompt();
+                        continue;
+                    }
                     const idx = options.findIndex(o => o.key === lower);
                     if (idx >= 0) {
                         selected = idx;
@@ -289,6 +317,11 @@ export class ApprovalManager {
         };
 
         const value = await choose();
+        if (useDockPrompt) {
+            clearInputPrompt();
+            if (this._approvalPromptEnd) this._approvalPromptEnd();
+            moveToContent();
+        }
         const prompt = promptForLog(toolName, args, tier, why);
 
         switch (value) {
@@ -509,13 +542,19 @@ function approvalTitleForLog(tier) {
 }
 
 function writeApprovalConfirmation(tool, args, label) {
-    if (tool === 'shell' && label === 'approved once') {
-        write(`  ${GREEN}✓${RST}  ${DIM}${label}${RST}\n`);
+    if (tool === 'shell') {
+        write(`  ${GREEN}✓${RST}  ${DIM}${label} · shell ${shellApprovalSubject(args)}${RST}\n`);
         return;
     }
     const subject = approvalSummary(tool, args);
     const suffix = subject ? ` · ${truncateNote(subject)}` : '';
     write(`  ${GREEN}✓${RST}  ${DIM}${label}${suffix}${RST}\n\n`);
+}
+
+function shellApprovalSubject(args = {}) {
+    const profile = shellCommandProfile(args.command || args.cmd || '');
+    const subject = profile.compact ? profile.summary : profile.command;
+    return `$ ${truncateNote(subject)}`;
 }
 
 function writeSafetyBlock(reason) {
