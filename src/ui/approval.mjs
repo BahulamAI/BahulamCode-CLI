@@ -84,7 +84,7 @@ export function renderApprovalPrompt({
     blockHeader(title, accent),
     ...subjectRows(tool, args, cols, accent),
     ...riskRows(tool, args, tier, accent),
-    ...reasonRows(why, cols, accent),
+    ...reasonRows(tool, args, why, cols, accent),
     blockLine(accent),
     ...decisionRows(opts, selected, accent),
     blockLine(accent, paint.text.dim('↑↓ move · Enter pick · letter shortcut · Esc cancel')),
@@ -185,8 +185,8 @@ function decisionRows(opts, selected, accent) {
   return rows;
 }
 
-function reasonRows(why, cols, accent) {
-  const reason = String(why || '').replace(/\s+/g, ' ').trim();
+function reasonRows(tool, args, why, cols, accent) {
+  const reason = compactReason(tool, args, why);
   if (!reason) return [];
   const label = paint.text.dim('reason ');
   const firstWidth = Math.max(20, cols - 5 - visibleWidth(label));
@@ -203,6 +203,21 @@ function reasonRows(why, cols, accent) {
     }
   });
   return rows;
+}
+
+function compactReason(tool, args = {}, why = '') {
+  const reason = String(why || '').replace(/\s+/g, ' ').trim();
+  if (!reason || tool !== 'shell') return reason;
+
+  const redundantShellPrefix = reason.match(/^Shell command requires approval:\s*(.+)$/i);
+  if (!redundantShellPrefix) return reason;
+
+  const command = String(args.command || args.cmd || '').replace(/\s+/g, ' ').trim();
+  const repeated = redundantShellPrefix[1].replace(/\s+/g, ' ').trim();
+  if (!command || repeated === command || command.startsWith(repeated) || repeated.startsWith(command)) {
+    return 'Shell command requires approval.';
+  }
+  return reason;
 }
 
 function riskRows(tool, args = {}, tier, accent) {

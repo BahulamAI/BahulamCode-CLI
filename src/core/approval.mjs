@@ -509,6 +509,10 @@ function approvalTitleForLog(tier) {
 }
 
 function writeApprovalConfirmation(tool, args, label) {
+    if (tool === 'shell' && label === 'approved once') {
+        write(`  ${GREEN}✓${RST}  ${DIM}${label}${RST}\n`);
+        return;
+    }
     const subject = approvalSummary(tool, args);
     const suffix = subject ? ` · ${truncateNote(subject)}` : '';
     write(`  ${GREEN}✓${RST}  ${DIM}${label}${suffix}${RST}\n\n`);

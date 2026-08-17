@@ -212,7 +212,7 @@ await test('approval prompt shows action, target, risk, and reason', async () =>
         assert.ok(output.includes('npm publish'));
         assert.ok(/SHELL-(MEDIUM|DANGEROUS)/.test(output),
           'expected SHELL-MEDIUM or SHELL-DANGEROUS tier label');
-        assert.ok(output.includes('[t] always allow'));
+        assert.ok(output.includes('[t] allow similar'));
         assert.ok(output.includes('[n] cancel'));
         assert.ok(!output.includes('[?] why'));
         assert.ok(!output.includes('re-plan'));
@@ -237,8 +237,8 @@ await test('approval approve once does not print duplicate confirmation', async 
         const result = await mgr.check('shell', { command: 'npm publish' });
         assert.strictEqual(result.approved, true);
         assert.ok(output.includes('Decision'));
-        assert.ok(!output.includes('✓'));
-        assert.ok(!output.includes('npm publish\n\n'));
+        assert.ok(output.includes('approved once'));
+        assert.ok(!output.includes('approved once · npm publish'));
     } finally {
         process.stderr.write = originalWrite;
     }

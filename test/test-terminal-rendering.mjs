@@ -424,6 +424,28 @@ test('legacy formatter wraps full shell commands without ellipsis', () => {
   assert.ok(!rendered.includes('…'));
 });
 
+test('shell JSON endpoint output summarizes sync diff status', () => {
+  const command = 'curl -sS localhost:4501/api/profiles/prod-v2/diff/mcp-context-forge 2>&1';
+  const rendered = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command },
+    result: {
+      success: true,
+      output: JSON.stringify({
+        service: 'mcp-context-forge',
+        profile: 'prod-v2',
+        inSync: false,
+        diff: [{ key: 'PORT' }, { key: 'HOST' }],
+      }),
+      duration_ms: 992,
+    },
+    columns: 140,
+  }));
+
+  assert.ok(rendered.includes('mcp-context-forge out of sync · prod-v2 · 2 diffs'));
+  assert.ok(!rendered.includes('{"service"'));
+});
+
 test('renders Markdown pipe tables as aligned terminal tables', () => {
   const rendered = stripAnsi(renderMarkdown([
     '| Name | Status |',
@@ -646,6 +668,21 @@ test('approval prompt preserves shell cwd wrapper for auditability', () => {
   assert.ok(rendered.includes('cd /Users/sree/Sites/Tarang'));
   assert.ok(rendered.includes('tarang-ai-agent-framework'));
   assert.ok(rendered.includes('git add agent-framework-pypi/src/pkg/requires.txt && git status'));
+});
+
+test('approval prompt compacts redundant shell approval reason', () => {
+  const command = 'curl -sS localhost:4501/api/profiles/prod-v2/diff/mcp-context-forge 2>&1';
+  const rendered = stripAnsi(renderApprovalPrompt({
+    tool: 'shell',
+    args: { command },
+    tier: TIERS.SHELL_MEDIUM,
+    why: `Shell command requires approval: ${command}`,
+    width: 100,
+  }));
+
+  assert.ok(rendered.includes(command));
+  assert.ok(rendered.includes('reason Shell command requires approval.'));
+  assert.ok(!rendered.includes(`reason Shell command requires approval: ${command}`));
 });
 
 test('approval compatibility wrapper uses unified prompt', () => {

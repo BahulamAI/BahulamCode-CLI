@@ -150,6 +150,10 @@ export function summarizeResult(tool, data) {
       if (exit != null && exit !== 0) {
         return { text: `exit ${exit}`, tone: 'danger' };
       }
+      if (tool === 'shell') {
+        const structured = structuredOutputSummary(data.output_preview || data.output);
+        if (structured) return structured;
+      }
       const head = firstOutputLine(data).slice(0, 100);
       return { text: head || 'ok', tone: 'success' };
     }
@@ -177,6 +181,49 @@ export function summarizeResult(tool, data) {
       return { text: head || 'done', tone: 'success' };
     }
   }
+}
+
+function structuredOutputSummary(output) {
+  const raw = String(output || '').trim();
+  if (!raw || !/^[\[{]/.test(raw)) return null;
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    const first = raw.split('\n').find(line => /^[\[{]/.test(line.trim()));
+    if (!first) return null;
+    try { value = JSON.parse(first.trim()); } catch { return null; }
+  }
+  return summarizeJsonOutput(value);
+}
+
+function summarizeJsonOutput(value) {
+  if (Array.isArray(value)) {
+    return { text: `json array · ${value.length} item${value.length === 1 ? '' : 's'}`, tone: 'success' };
+  }
+  if (!value || typeof value !== 'object') return null;
+
+  if ('service' in value && 'profile' in value && 'inSync' in value) {
+    const service = String(value.service || 'service');
+    const profile = value.profile ? ` · ${value.profile}` : '';
+    const status = value.inSync === true ? 'in sync'
+      : value.inSync === false ? 'out of sync'
+      : 'sync status unknown';
+    const diffs = Array.isArray(value.diff) ? value.diff
+      : Array.isArray(value.diffs) ? value.diffs
+      : [];
+    const diffText = diffs.length ? ` · ${diffs.length} diff${diffs.length === 1 ? '' : 's'}` : '';
+    return {
+      text: `${service} ${status}${profile}${diffText}`,
+      tone: value.inSync === false ? 'warn' : 'success',
+    };
+  }
+
+  const keys = Object.keys(value).slice(0, 4);
+  return {
+    text: keys.length ? `json · ${keys.join(', ')}` : 'json object',
+    tone: 'success',
+  };
 }
 
 export function formatCompactFileDiff(result, {
