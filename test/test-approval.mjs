@@ -53,6 +53,35 @@ await test('sensitive reads prompt instead of auto-approving', async () => {
     }
 });
 
+await test('sensitive config writes prompt and redact edit values', async () => {
+    const mgr = new ApprovalManager();
+    mgr._readKey = async () => 'n';
+
+    const originalWrite = process.stderr.write;
+    let output = '';
+    process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+
+    try {
+        const r = await mgr.check('edit_file', {
+            file_path: '.env.local',
+            search: 'API_KEY=old-secret',
+            replace: 'API_KEY=new-secret',
+        });
+        assert.strictEqual(r.approved, false);
+        assert.ok(output.includes('PROTECTED-EDIT'));
+        assert.ok(output.includes('.env.local'));
+        assert.ok(output.includes('match: [redacted]'));
+        assert.ok(output.includes('replace: [redacted]'));
+        assert.ok(!output.includes('old-secret'));
+        assert.ok(!output.includes('new-secret'));
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+});
+
 await test('list_files auto-approves', async () => {
     const mgr = new ApprovalManager();
     const r = await mgr.check('list_files', { pattern: '*' });

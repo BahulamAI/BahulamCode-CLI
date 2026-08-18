@@ -231,32 +231,47 @@ function summarizeJsonOutput(value) {
 
 export function formatCompactFileDiff(result, {
   indent = '  ',
-  maxLines = 14,
-  maxFiles = 2,
+  maxLines = Infinity,
+  maxFiles = Infinity,
   columns = term().columns || 120,
+  showFileHeader = false,
 } = {}) {
-  const diffs = fileDiffs(result).filter(diff => diff?.hunks?.length);
+  const diffs = fileDiffs(result)
+    .map(normalizeFileDiff)
+    .filter(diff => diff && (diff.redacted || diff?.hunks?.length));
   if (!diffs.length) return '';
 
   const out = [];
   let shown = 0;
   let truncated = false;
+  const lineLimit = Number.isFinite(maxLines) ? Math.max(0, Math.floor(maxLines)) : Infinity;
+  const fileLimit = Number.isFinite(maxFiles) ? Math.max(0, Math.floor(maxFiles)) : diffs.length;
   const lineBudget = Math.max(40, columns - visibleWidth(indent) - 4);
 
-  for (const diff of diffs.slice(0, maxFiles)) {
-    if (diffs.length > 1) {
-      if (shown >= maxLines) { truncated = true; break; }
+  for (const diff of diffs.slice(0, fileLimit)) {
+    if (showFileHeader || diffs.length > 1) {
+      if (shown >= lineLimit) { truncated = true; break; }
       out.push(`${indent}${paint.brand.primary(diff.relative_path || diff.path || 'file')} ${paint.text.dim(diffDelta(diff))}`);
       shown++;
     }
 
+    if (diff.redacted) {
+      if (shown >= lineLimit) { truncated = true; break; }
+      const subject = (showFileHeader || diffs.length > 1)
+        ? ''
+        : `${[diff.relative_path || diff.path || 'file', diffDelta(diff)].filter(Boolean).join(' ')} · `;
+      out.push(`${indent}${paint.text.dim(`${subject}diff redacted for sensitive config`)}`);
+      shown++;
+      continue;
+    }
+
     for (const hunk of diff.hunks || []) {
-      if (shown >= maxLines) { truncated = true; break; }
+      if (shown >= lineLimit) { truncated = true; break; }
       out.push(`${indent}${paint.text.dim(`@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`)}`);
       shown++;
 
       for (const line of hunk.lines || []) {
-        if (shown >= maxLines) { truncated = true; break; }
+        if (shown >= lineLimit) { truncated = true; break; }
         out.push(`${indent}${paintDiffLine(line, lineBudget)}`);
         shown++;
       }
@@ -265,7 +280,7 @@ export function formatCompactFileDiff(result, {
     if (truncated) break;
   }
 
-  if (diffs.length > maxFiles) truncated = true;
+  if (diffs.length > fileLimit) truncated = true;
   if (truncated) out.push(`${indent}${paint.text.dim('… diff preview truncated; use /last to expand')}`);
   return out.join('\n');
 }
@@ -274,7 +289,110 @@ function fileDiffs(result) {
   if (!result) return [];
   if (Array.isArray(result.file_diffs)) return result.file_diffs;
   if (result.file_diff) return [result.file_diff];
+  if (result.type === 'file_diff' || result.hunks || result.unified) return [result];
   return [];
+}
+
+function normalizeFileDiff(diff) {
+  if (!diff) return null;
+  return {
+    ...diff,
+    hunks: normalizeHunks(diff),
+  };
+}
+
+function normalizeHunks(diff) {
+  if (Array.isArray(diff?.hunks) && diff.hunks.length) {
+    return diff.hunks.map(normalizeHunk).filter(hunk => hunk.lines.length);
+  }
+  if (diff?.unified) return parseUnifiedHunks(diff.unified);
+  return [];
+}
+
+function normalizeHunk(hunk = {}) {
+  const lines = Array.isArray(hunk.lines)
+    ? hunk.lines.map(normalizeDiffLine).filter(Boolean)
+    : typeof hunk.body === 'string'
+      ? parseDiffBody(hunk.body)
+      : [];
+  const oldCount = hunk.old_count ?? hunk.old_lines ?? hunk.oldCount ?? countDiffLines(lines, 'old');
+  const newCount = hunk.new_count ?? hunk.new_lines ?? hunk.newCount ?? countDiffLines(lines, 'new');
+  return {
+    ...hunk,
+    old_start: hunk.old_start ?? hunk.oldStart ?? 1,
+    old_count: oldCount,
+    new_start: hunk.new_start ?? hunk.newStart ?? 1,
+    new_count: newCount,
+    lines,
+  };
+}
+
+function normalizeDiffLine(line) {
+  if (typeof line === 'string') return parseUnifiedLine(line);
+  if (!line || typeof line !== 'object') return null;
+  const rawType = String(line.type || line.kind || '').toLowerCase();
+  const text = String(line.text ?? line.content ?? line.value ?? '');
+  if (rawType === 'add' || rawType === 'added' || rawType === '+') return { ...line, type: 'add', text };
+  if (rawType === 'remove' || rawType === 'removed' || rawType === 'delete' || rawType === '-') return { ...line, type: 'remove', text };
+  if (rawType === 'context' || rawType === 'same' || rawType === ' ') return { ...line, type: 'context', text };
+  return parseUnifiedLine(text);
+}
+
+function parseDiffBody(body) {
+  return String(body || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .filter(line => line && !line.startsWith('@@'))
+    .map(parseUnifiedLine)
+    .filter(Boolean);
+}
+
+function parseUnifiedHunks(unified) {
+  const hunks = [];
+  let current = null;
+  for (const raw of String(unified || '').replace(/\r\n?/g, '\n').split('\n')) {
+    if (raw.startsWith('--- ') || raw.startsWith('+++ ')) continue;
+    const header = raw.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    if (header) {
+      current = {
+        old_start: Number(header[1]) || 1,
+        old_count: Number(header[2] || 1),
+        new_start: Number(header[3]) || 1,
+        new_count: Number(header[4] || 1),
+        lines: [],
+      };
+      hunks.push(current);
+      continue;
+    }
+    if (!current) {
+      if (!raw || (!raw.startsWith('+') && !raw.startsWith('-') && !raw.startsWith(' '))) continue;
+      current = { old_start: 1, old_count: 0, new_start: 1, new_count: 0, lines: [] };
+      hunks.push(current);
+    }
+    const line = parseUnifiedLine(raw);
+    if (line) current.lines.push(line);
+  }
+  for (const hunk of hunks) {
+    if (!hunk.old_count) hunk.old_count = countDiffLines(hunk.lines, 'old');
+    if (!hunk.new_count) hunk.new_count = countDiffLines(hunk.lines, 'new');
+  }
+  return hunks.filter(hunk => hunk.lines.length);
+}
+
+function parseUnifiedLine(raw) {
+  const line = String(raw ?? '');
+  if (!line && raw !== '') return null;
+  if (line.startsWith('+') && !line.startsWith('+++')) return { type: 'add', text: line.slice(1) };
+  if (line.startsWith('-') && !line.startsWith('---')) return { type: 'remove', text: line.slice(1) };
+  if (line.startsWith(' ')) return { type: 'context', text: line.slice(1) };
+  return { type: 'context', text: line };
+}
+
+function countDiffLines(lines, side) {
+  return lines.filter(line => {
+    if (side === 'old') return line.type !== 'add';
+    return line.type !== 'remove';
+  }).length;
 }
 
 function paintDiffLine(line, maxWidth) {
@@ -365,8 +483,19 @@ export function formatCardHead(tool, args, opts = {}) {
   if (tool === 'shell') {
     const profile = shellCommandProfile(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
     if (profile.compact) {
-      const argsTruncated = truncateMiddle(argsText, budget);
       const head = `${indent}${leadText}`;
+      if (profile.preview) {
+        const fullArgs = compactShellProfile(profile);
+        if (visibleWidth(fullArgs) <= budget) return `${head} ${fullArgs}`;
+        const previewTail = `${paint.text.dim(' · preview:')} ${paint.text.primary(profile.preview)}`;
+        const baseArgs = compactShellProfile(profile, { includePreview: false, includeDetails: false });
+        const baseBudget = budget - visibleWidth(previewTail);
+        if (baseBudget >= 12) {
+          const baseTruncated = truncateEndVisible(baseArgs, baseBudget);
+          return `${head} ${baseTruncated}${previewTail}`;
+        }
+      }
+      const argsTruncated = truncateMiddle(argsText, budget);
       return argsTruncated ? `${head} ${argsTruncated}` : head;
     }
   }
@@ -394,10 +523,15 @@ function formatHeadLead(tool, label) {
   return `${paint.text.dim('• shell ·')} ${paintLabel(tool, label)}`;
 }
 
-function compactShellProfile(profile) {
-  const parts = [`${paint.text.dim('$')} ${paint.text.primary(profile.summary)}`];
+function compactShellProfile(profile, { includePreview = true, includeDetails = true } = {}) {
+  const previewSuffix = profile.preview ? ` · preview: ${profile.preview}` : '';
+  const summary = previewSuffix && profile.summary.endsWith(previewSuffix)
+    ? profile.summary.slice(0, -previewSuffix.length)
+    : profile.summary;
+  const parts = [`${paint.text.dim('$')} ${paint.text.primary(summary)}`];
   if (profile.cwdLabel) parts.push(`${paint.text.dim('in')} ${paint.brand.data(profile.cwdLabel)}`);
-  parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
+  if (includeDetails) parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
+  if (includePreview && profile.preview) parts.push(`${paint.text.dim('preview:')} ${paint.text.primary(profile.preview)}`);
   return parts.join(' · ');
 }
 
@@ -476,6 +610,15 @@ function truncateMiddle(text, max) {
   const head = plain.slice(0, Math.floor(keep / 2));
   const tail = plain.slice(plain.length - Math.ceil(keep / 2));
   return paint.text.muted(`${head}…${tail}`);
+}
+
+function truncateEndVisible(text, max) {
+  if (!text) return '';
+  if (visibleWidth(text) <= max) return text;
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  const limit = Math.max(1, Math.floor(max));
+  if (limit <= 1) return '';
+  return paint.text.muted(`${plain.slice(0, limit - 1)}…`);
 }
 
 function wrapCommand(command, width) {

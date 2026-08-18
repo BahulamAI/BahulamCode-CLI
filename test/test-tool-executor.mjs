@@ -434,6 +434,27 @@ await test('write_file + delete_file round-trip', async () => {
     assert.ok(!fs.existsSync(testPath));
 });
 
+await test('write_file allows sensitive config with redacted diff', async () => {
+    const dir = '__test_sensitive_env_write__';
+    const testPath = path.join(dir, '.env.local');
+    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+        const result = await executor.execute('write_file', {
+            path: testPath,
+            content: 'API_KEY=secret-before\n',
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.file_diff?.redacted, true);
+        assert.strictEqual(result.file_diff?.unified, '');
+        assert.ok(result.output.includes('Diff redacted'));
+        assert.ok(!result.output.includes('secret-before'));
+        assert.ok(!JSON.stringify(result.file_diff).includes('secret-before'));
+        assert.ok(fs.existsSync(testPath));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 // Test 8: unknown tool returns error
 await test('unknown tool returns error', async () => {
     const result = await executor.execute('nonexistent_tool', {});

@@ -128,6 +128,13 @@ test('uses concise structured tool summaries', () => {
     }, { cwd: '/repo' }),
     'src/main.js · match "const oldValue = true;"',
   );
+  const envSummary = toolDisplaySummary('edit_file', {
+    file_path: '/repo/.env.local',
+    search: 'API_KEY=secret',
+  }, { cwd: '/repo' });
+  assert.ok(envSummary.includes('.env.local'));
+  assert.ok(envSummary.includes('[redacted]'));
+  assert.ok(!envSummary.includes('secret'));
   assert.strictEqual(
     toolDisplaySummary('read_batch', {
       items: [
@@ -315,11 +322,17 @@ test('shell card compacts generated scripts and detail exposes command output', 
   const profile = shellCommandProfile(command);
   assert.strictEqual(profile.compact, true);
   assert.strictEqual(profile.kind, 'python script');
+  assert.strictEqual(profile.preview, 'from pathlib import…');
 
-  const head = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
+  const head = stripAnsi(formatCardHead('shell', { command }, { columns: 120, cwd: process.cwd() }));
   assert.ok(head.includes('• shell · Running $ python script'));
+  assert.ok(head.includes('preview: from pathlib import…'));
   assert.ok(head.includes('details: F2 or /last'));
   assert.ok(!head.includes('Path("out.txt")'));
+  const narrowHead = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
+  assert.ok(narrowHead.includes('python script'));
+  assert.ok(narrowHead.includes('preview: from pathlib import…'));
+  assert.ok(!narrowHead.includes('Path("out.txt")'));
 
   const detail = stripAnsi(detailFor({
     id: 'shell-script',
@@ -380,8 +393,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function thinkingPrefix(text)'));
   assert.ok(renderSource.includes('Thinking · ${kind}'));
   assert.ok(renderSource.includes('function clippedThinking(text, limit = 200)'));
-  assert.ok(replSource.includes("renderBlockBoundary('content')")
-         || renderSource.includes("renderBlockBoundary('content')"));
+  assert.ok(replSource.includes("renderBlockBoundary('content', { compactSame: true })")
+         || renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
   assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
   assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
@@ -400,6 +413,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
+  assert.ok(renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
+  assert.ok(renderSource.includes('function transcriptRenderableLines(rendered)'));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -410,7 +425,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes("inputRule({ label: 'message' });"));
   assert.ok(!replSource.includes('paint.inverse(c.brand(` ${label} `))'));
   assert.ok(replSource.includes("from '../ui/input-dock.mjs'"));
-  assert.ok(replSource.includes('mountInputDock()'));
+  assert.ok(replSource.includes('mountInputDock({'));
+  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
+  assert.ok(replSource.includes('initialContentCol: dockCursor.col'));
   assert.ok(!replSource.includes("from '../ui/status-bar.mjs'"));
   assert.ok(!replSource.includes('attachOrbit('));
   assert.ok(replSource.includes("return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;"));
@@ -419,14 +436,19 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('printInputBottomRule();'));
   assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes('function printExecutionInstruction(instruction)'));
+  assert.ok(replSource.includes("paint.text.dim('follow-up')"));
   assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(!replSource.includes("startContentStream();\n      process.stderr.write(`\\n${transcriptHeader('bahulam', { tone: 'assistant' })}\\n`);"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));
   assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
+  assert.ok(replSource.includes("case 'file_diff':"));
+  assert.ok(replSource.includes('renderFileDiffEvent(data)'));
   assert.ok(replSource.includes('if (!inputActive)'));
   assert.ok(replSource.includes('_pasteLines = [];'));
   assert.ok(replSource.includes("case '/exit':"));
@@ -490,6 +512,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("key.name === 'f2'"));
   assert.ok(replSource.includes('isF2Sequence(text2)'));
   assert.ok(!replSource.includes('Ctrl+D'));
+});
+
+test('REPL seeds dock transcript cursor from startup output before first input', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('function trackStartupOutput(chunk)'));
+  assert.ok(replSource.includes('const stopStartupOutputTracking = startStartupOutputTracking();'));
+  assert.ok(replSource.includes('dockCursor = startupCursorSeed();'));
+  assert.ok(replSource.includes('stopStartupOutputTracking();'));
+  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
 });
 
 test('resume preview avoids circular renderEvent import during repl split', () => {
@@ -728,6 +759,111 @@ test('renders compact file diff previews for writes', () => {
   assert.ok(!detail.includes('large content omitted'));
 });
 
+test('renders direct and legacy file diff payloads', () => {
+  const direct = stripAnsi(formatCompactFileDiff({
+    type: 'file_diff',
+    relative_path: 'src/direct.js',
+    lines_added: 1,
+    lines_removed: 1,
+    hunks: [
+      {
+        old_start: 4,
+        old_count: 1,
+        new_start: 4,
+        new_count: 1,
+        lines: [
+          { type: 'remove', text: 'oldValue();' },
+          { type: 'add', text: 'newValue();' },
+        ],
+      },
+    ],
+  }, { indent: '  ', columns: 100, showFileHeader: true }));
+  assert.ok(direct.includes('src/direct.js +1 −1'));
+  assert.ok(direct.includes('@@ -4,1 +4,1 @@'));
+  assert.ok(direct.includes('- oldValue();'));
+  assert.ok(direct.includes('+ newValue();'));
+
+  const legacyDiff = {
+    relative_path: 'src/legacy.js',
+    hunks: [
+      {
+        old_start: 2,
+        old_lines: 1,
+        new_start: 2,
+        new_lines: 2,
+        body: ' unchanged\n-oldThing();\n+newThing();\n+nextThing();',
+      },
+    ],
+  };
+  const legacy = stripAnsi(formatCompactFileDiff({
+    file_diff: legacyDiff,
+    lines_added: 2,
+    lines_removed: 1,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(legacy.includes('@@ -2,1 +2,2 @@'));
+  assert.ok(legacy.includes('- oldThing();'));
+  assert.ok(legacy.includes('+ newThing();'));
+  assert.ok(legacy.includes('+ nextThing();'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'write_file',
+    args: { file_path: 'src/legacy.js' },
+    result: { file_diff: legacyDiff },
+  }));
+  assert.ok(detail.includes('--- a/src/legacy.js'));
+  assert.ok(detail.includes('+newThing();'));
+});
+
+test('redacts sensitive config diff previews and details', () => {
+  const redactedDiff = {
+    type: 'file_diff',
+    relative_path: '.env.local',
+    lines_added: 1,
+    lines_removed: 1,
+    redacted: true,
+    sensitive: true,
+    hunks: [],
+    unified: '',
+  };
+
+  const preview = stripAnsi(formatCompactFileDiff({
+    file_diff: redactedDiff,
+    lines_added: 1,
+    lines_removed: 1,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(preview.includes('.env.local +1 −1'));
+  assert.ok(preview.includes('diff redacted for sensitive config'));
+  assert.ok(!preview.includes('API_KEY'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'edit_file',
+    args: {
+      file_path: '.env.local',
+      search: 'API_KEY=old-secret',
+      replace: 'API_KEY=new-secret',
+    },
+    result: { file_diff: redactedDiff, lines_added: 1, lines_removed: 1 },
+  }));
+  assert.ok(detail.includes('diff redacted for sensitive config'));
+  assert.ok(!detail.includes('old-secret'));
+  assert.ok(!detail.includes('new-secret'));
+
+  const prompt = stripAnsi(renderApprovalPrompt({
+    tool: 'edit_file',
+    args: {
+      file_path: '.env.local',
+      search: 'API_KEY=old-secret',
+      replace: 'API_KEY=new-secret',
+    },
+    tier: TIERS.PROTECTED_EDIT,
+    why: 'review required',
+  }));
+  assert.ok(prompt.includes('PROTECTED-EDIT'));
+  assert.ok(prompt.includes('match: [redacted]'));
+  assert.ok(!prompt.includes('old-secret'));
+  assert.ok(!prompt.includes('new-secret'));
+});
+
 test('mission report omits old title and keeps tools/time on one line', () => {
   const rendered = stripAnsi(renderMissionReport({
     task: 'fix auth',
@@ -768,6 +904,14 @@ test('approval prompt uses risk title and compact scoped menu', () => {
   assert.ok(!rendered.includes('│'));
   assert.ok(!rendered.includes('▔'));
   assert.ok(!rendered.includes('────'));
+});
+
+test('approval prompt gates execution input while a decision is active', () => {
+  const approvalSource = fs.readFileSync(new URL('../src/core/approval.mjs', import.meta.url), 'utf-8');
+  assert.ok(approvalSource.includes('_beginApprovalInput()'));
+  assert.ok(approvalSource.includes('_endApprovalInput()'));
+  assert.ok(approvalSource.includes('this._approvalPromptActive = true'));
+  assert.ok(approvalSource.includes('const managesInput = !this._approvalPromptActive'));
 });
 
 test('approval prompt separates shell cwd from command', () => {
@@ -822,6 +966,7 @@ test('approval prompt compacts generated shell scripts until details are request
   }));
   assert.ok(compact.includes('python script'));
   assert.ok(compact.includes('3 lines'));
+  assert.ok(compact.includes('preview: from pathlib import…'));
   assert.ok(compact.includes('d details'));
   assert.ok(!compact.includes('from pathlib import Path'));
 
@@ -1010,28 +1155,48 @@ test('Phase 4d: failed shell command keeps actionable error visible', () => {
     `expected actionable error line in card: ${JSON.stringify(plain)}`);
 });
 
-test('Phase 4d: large diff shows compact preview + full available via detail', () => {
-  // 40-line write should show a bounded compact preview in the card and the
-  // full diff via detailFor. Cap tolerated to prevent transcript spam.
-  const lines = Array.from({ length: 40 }, (_, i) => `+ line ${i + 1}`).join('\n');
-  const card = formatCard({
-    tool: 'write_file',
-    args: { file_path: 'src/big.mjs' },
-    result: {
-      success: true,
-      lines_added: 40,
-      lines_removed: 0,
-      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
-    },
-    durationMs: 45,
-    columns: 120,
-  });
-  const cardLines = stripAnsi(card).split('\n').filter(Boolean);
-  // The card body (post-header) must not dump all 40 diff lines — cap ~20.
-  assert.ok(cardLines.length <= 20,
-    `compact card grew to ${cardLines.length} lines — should stay bounded`);
+test('Phase 4d: live diff preview shows all changed lines and files', () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `+line ${i + 1}`).join('\n');
+  const preview = stripAnsi(formatCompactFileDiff({
+    file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    lines_added: 40,
+    lines_removed: 0,
+  }, { indent: '  ', columns: 120 }));
+  const previewLines = preview.split('\n').filter(Boolean);
+  assert.ok(preview.includes('+ line 1'));
+  assert.ok(preview.includes('+ line 40'));
+  assert.ok(!preview.includes('diff preview truncated'));
+  assert.strictEqual(previewLines.filter(line => line.includes('+ line ')).length, 40);
 
-  // Detail view is the escape hatch: gives the model/user access to more.
+  const multiFile = stripAnsi(formatCompactFileDiff({
+    file_diffs: Array.from({ length: 4 }, (_, i) => ({
+      relative_path: `src/file-${i + 1}.mjs`,
+      lines_added: 1,
+      lines_removed: 0,
+      hunks: [{
+        old_start: 1,
+        old_count: 0,
+        new_start: 1,
+        new_count: 1,
+        lines: [{ type: 'add', text: `export const n = ${i + 1};` }],
+      }],
+    })),
+  }, { indent: '  ', columns: 120 }));
+  assert.ok(!multiFile.includes('diff preview truncated'));
+  for (let i = 1; i <= 4; i++) {
+    assert.ok(multiFile.includes(`src/file-${i}.mjs`));
+    assert.ok(multiFile.includes(`+ export const n = ${i};`));
+  }
+
+  const generated = buildFileDiff({
+    filePath: '/repo/src/generated.mjs',
+    cwd: '/repo',
+    before: '',
+    after: Array.from({ length: 450 }, (_, i) => `line ${i + 1}`).join('\n'),
+  });
+  assert.strictEqual(generated.truncated, false);
+  assert.strictEqual(generated.hunks[0].lines.length, 450);
+
   const detail = detailFor({
     id: 'x',
     tool: 'write_file',
@@ -1044,8 +1209,7 @@ test('Phase 4d: large diff shows compact preview + full available via detail', (
     },
   });
   const detailLines = stripAnsi(detail).split('\n').filter(Boolean);
-  assert.ok(detailLines.length > cardLines.length,
-    'detail should expose more than the compact preview');
+  assert.ok(detailLines.length >= previewLines.length);
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

@@ -39,6 +39,7 @@ export const runtime = {
   pendingHead: null,          // { callId, head, indent } buffered until result arrives
   lastRenderedBlock: null,    // 'tool' | 'content' | 'thinking' | 'status' | 'plan' | null
   renderedToolResults: new Set(),
+  renderedFileDiffPreviews: new Set(),
 
   // Explore-run collapse (read/list/search/index bursts as concise progress).
   exploreRun: { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 },

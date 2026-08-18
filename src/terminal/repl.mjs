@@ -84,12 +84,14 @@ import {
   isInlineOutcomeTool,
   renderBlockBoundary,
   renderExploreRun,
+  renderFileDiffEvent,
   renderStagnation,
   renderToolCall,
   renderToolResult,
   startContentStream,
   startSpinner,
   stopSpinner,
+  transcriptRenderableLines,
   thinkingPrefix,
   updateSpinner,
 } from './repl-render.mjs';
@@ -1099,17 +1101,20 @@ function renderEvent(event) {
         }
       }
       if (text) {
-        renderBlockBoundary('content');
-        if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
-          runtime.contentHeaderPrinted = true;
-        }
         const rendered = renderMarkdown(text);
-        for (const line of rendered.split('\n')) {
-          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
+        const lines = transcriptRenderableLines(rendered);
+        if (lines.length) {
+          renderBlockBoundary('content', { compactSame: true });
+          if (!runtime.contentHeaderPrinted) {
+            process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
+            runtime.contentHeaderPrinted = true;
+          }
+          for (const line of lines) {
+            process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
+          }
+          runtime.renderedContentThisTurn = true;
+          runtime.lastRenderedBlock = 'content';
         }
-        runtime.renderedContentThisTurn = true;
-        runtime.lastRenderedBlock = 'content';
       }
       break;
     }
@@ -1226,6 +1231,14 @@ function renderEvent(event) {
         break;
       }
       renderToolResult(data, type);
+      break;
+    }
+
+    case 'file_diff': {
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderFileDiffEvent(data);
       break;
     }
 
@@ -1474,17 +1487,20 @@ function renderEvent(event) {
 
       const summary = data?.summary || '';
       if (summary && !runtime.renderedContentThisTurn) {
-        renderBlockBoundary('content');
-        if (!runtime.contentHeaderPrinted) {
-          process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
-          runtime.contentHeaderPrinted = true;
-        }
         const rendered = renderMarkdown(summary);
-        for (const line of rendered.split('\n')) {
-          process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
+        const lines = transcriptRenderableLines(rendered);
+        if (lines.length) {
+          renderBlockBoundary('content', { compactSame: true });
+          if (!runtime.contentHeaderPrinted) {
+            process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
+            runtime.contentHeaderPrinted = true;
+          }
+          for (const line of lines) {
+            process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
+          }
+          runtime.renderedContentThisTurn = true;
+          runtime.lastRenderedBlock = 'content';
         }
-        runtime.renderedContentThisTurn = true;
-        runtime.lastRenderedBlock = 'content';
       }
 
       // Update session token counts
@@ -2784,6 +2800,54 @@ export async function startTerminalRepl() {
 
   const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
 
+  let startupOutputRow = 1;
+  let startupOutputCol = 1;
+
+  function trackStartupOutput(chunk) {
+    if (!process.stderr.isTTY || term().plain) return;
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+    if (!text) return;
+    const clean = text
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[()][A-Za-z0-9]/g, '');
+    const width = Math.max(1, process.stderr.columns || process.stdout.columns || 80);
+    for (const ch of clean) {
+      if (ch === '\r') {
+        startupOutputCol = 1;
+        continue;
+      }
+      if (ch === '\n') {
+        startupOutputRow++;
+        startupOutputCol = 1;
+        continue;
+      }
+      startupOutputCol++;
+      if (startupOutputCol > width) {
+        startupOutputRow++;
+        startupOutputCol = 1;
+      }
+    }
+  }
+
+  function startStartupOutputTracking() {
+    if (!process.stderr.isTTY || term().plain) return () => {};
+    const originalWrite = process.stderr.write;
+    function trackedStartupWrite(chunk, ...args) {
+      trackStartupOutput(chunk);
+      return originalWrite.call(this, chunk, ...args);
+    }
+    process.stderr.write = trackedStartupWrite;
+    return () => {
+      if (process.stderr.write === trackedStartupWrite) {
+        process.stderr.write = originalWrite;
+      }
+    };
+  }
+
+  function startupCursorSeed() {
+    return { row: startupOutputRow, col: startupOutputCol };
+  }
+
   async function startNewSession({ announce = true } = {}) {
     stopSpinner();
     flushContent();
@@ -3103,57 +3167,67 @@ export async function startTerminalRepl() {
   // ── Print banner + preflight + init BEFORE mounting the status bar ──
   // The status bar shrinks the scroll region; if it mounts first, the
   // banner scrolls off-screen before the user ever sees it.
-  printBanner(auth);
+  const stopStartupOutputTracking = startStartupOutputTracking();
+  let dockCursor = startupCursorSeed();
+  try {
+    printBanner(auth);
 
-  // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
-  // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
-  if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.freeswim) {
-    try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
-    catch { /* preflight is best-effort */ }
-  }
-
-  // ── Initialization ──
-  process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
-  await fetchUser(ctx);
-
-  // Clear the spinner line
-  process.stderr.write(`\r${' '.repeat(60)}\r`);
-  process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
-  if (session.user) {
-    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
-  }
-  // ── Resume previous session ──
-  if (cliArgs.resume) {
-    const lastSession = cliArgs.resumeSessionId
-        ? { sessionId: cliArgs.resumeSessionId }
-        : sessionMgr.getLastSession();
-
-    if (lastSession) {
-      const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
-      if (resumed.ok) {
-        process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
-        process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
-        process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
-        if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
-        if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
-        if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
-        process.stderr.write('\n');
-        renderResumePreview(resumed, { renderEvent });
-      } else {
-        process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
-      }
-    } else {
-      process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
+    // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
+    // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
+    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.freeswim) {
+      try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
+      catch { /* preflight is best-effort */ }
     }
-  }
 
-  process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
+    // ── Initialization ──
+    process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
+    await fetchUser(ctx);
+
+    // Clear the spinner line
+    process.stderr.write(`\r${' '.repeat(60)}\r`);
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
+    if (session.user) {
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
+    }
+    // ── Resume previous session ──
+    if (cliArgs.resume) {
+      const lastSession = cliArgs.resumeSessionId
+          ? { sessionId: cliArgs.resumeSessionId }
+          : sessionMgr.getLastSession();
+
+      if (lastSession) {
+        const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
+        if (resumed.ok) {
+          process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
+          process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
+          process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
+          if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
+          if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
+          if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
+          process.stderr.write('\n');
+          renderResumePreview(resumed, { renderEvent });
+        } else {
+          process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
+        }
+      } else {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
+      }
+    }
+
+    process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
+  } finally {
+    dockCursor = startupCursorSeed();
+    stopStartupOutputTracking();
+  }
 
   // Keep one bottom-reserved UI surface: the fixed input dock. The older
   // status bar used the same terminal scroll-region primitive, so mounting
   // both would make prompt placement unpredictable.
   orbitRef.current = createOrbit();
-  const inputDockActive = mountInputDock();
+  const inputDockActive = mountInputDock({
+    initialContentRow: dockCursor.row,
+    initialContentCol: dockCursor.col,
+  });
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
     process.on('exit',       unmountInputDock);
@@ -3851,6 +3925,21 @@ export async function startTerminalRepl() {
     }
     runtime.afterContentFlush = focusExecutionInput;
 
+    function printExecutionInstruction(instruction) {
+      if (isInputDockMounted()) {
+        clearInputPrompt();
+        moveToContent();
+      } else if (executionInputVisible) {
+        process.stderr.write('\n');
+      }
+      renderBlockBoundary('user', { compactSame: true });
+      process.stderr.write(`${transcriptHeader('you', { tone: 'user' })} ${paint.text.dim('follow-up')}\n`);
+      for (const line of String(instruction || '').split('\n')) {
+        process.stderr.write(`${transcriptLine(line, { tone: 'user' })}\n`);
+      }
+      runtime.lastRenderedBlock = 'user';
+    }
+
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
       executionInputBuffer = '';
@@ -3869,18 +3958,14 @@ export async function startTerminalRepl() {
         executionInputVisible = false;
         return;
       }
+      printExecutionInstruction(instruction);
       if (isInputDockMounted()) {
-        clearInputPrompt();
-        moveToContent();
-        process.stderr.write(`${executionInputPrefix()}${instruction}\n`);
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),
           meta: buildDockMeta(),
           tips: executionInputTips(),
         });
         moveToContent();
-      } else if (executionInputVisible) {
-        process.stderr.write('\n');
       }
       executionInputVisible = false;
       // Live steering (PRD-081 §5.2): submit through the dedicated
@@ -3906,18 +3991,26 @@ export async function startTerminalRepl() {
       });
 
       if (status === 'accepted') {
+        renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.green('↳')} ${c.dim('sent to running agent')}\n`);
+        runtime.lastRenderedBlock = 'status';
       } else if (status === 'duplicate') {
+        renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.dim('↳ already sent (idempotent)')}\n`);
+        runtime.lastRenderedBlock = 'status';
       } else if (status === 'queued_next_turn') {
         _queuedLines.push(instruction);
+        renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.yellow('↳')} ${c.dim('task ended — queued for next turn')}\n`);
+        runtime.lastRenderedBlock = 'status';
       } else {
         // no_task, error, or unknown — fall back to next-turn queue so the
         // user's text is never silently lost.
         _queuedLines.push(instruction);
         const errBits = result && result.error ? ` ${c.dim(`(${String(result.error).slice(0, 80)})`)}` : '';
+        renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued for next turn')}${errBits}\n`);
+        runtime.lastRenderedBlock = 'status';
       }
     }
 
@@ -4147,8 +4240,6 @@ export async function startTerminalRepl() {
         moveToContent();
       }
       startContentStream();
-      process.stderr.write(`\n${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
-      runtime.contentHeaderPrinted = true;
 
       // Immediate feedback so the screen isn't blank between submit and the
       // first backend event. The first `status`, `thinking`, or `content_*`

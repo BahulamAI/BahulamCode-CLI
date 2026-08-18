@@ -96,6 +96,27 @@ test('append redacts nested args and reason before writing approvals.log', () =>
   assert.ok(serialized.includes('REDACTED'));
 });
 
+test('append redacts sensitive config content in write_project args', () => {
+  const cwd = tempProject();
+  const log = new ApprovalLog({ cwd });
+  log.append({
+    tier: 'PROTECTED-EDIT',
+    tool: 'write_project',
+    args: {
+      files: [
+        { path: '.env.local', content: 'BACKEND_API_URL=http://backend-api:8000\nFEATURE=true\n' },
+        { path: 'src/app.mjs', content: 'export const visible = true;\n' },
+      ],
+    },
+    decision: 'approve',
+  });
+
+  const serialized = JSON.stringify(readLog(cwd));
+  assert.ok(!serialized.includes('backend-api:8000'));
+  assert.ok(serialized.includes('[redacted sensitive config]'));
+  assert.ok(serialized.includes('export const visible = true'));
+});
+
 test('approvals.log is created with user-only permissions where supported', () => {
   const cwd = tempProject();
   const log = new ApprovalLog({ cwd });
