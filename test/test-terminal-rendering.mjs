@@ -1091,28 +1091,48 @@ test('Phase 4d: failed shell command keeps actionable error visible', () => {
     `expected actionable error line in card: ${JSON.stringify(plain)}`);
 });
 
-test('Phase 4d: large diff shows compact preview + full available via detail', () => {
-  // 40-line write should show a bounded compact preview in the card and the
-  // full diff via detailFor. Cap tolerated to prevent transcript spam.
-  const lines = Array.from({ length: 40 }, (_, i) => `+ line ${i + 1}`).join('\n');
-  const card = formatCard({
-    tool: 'write_file',
-    args: { file_path: 'src/big.mjs' },
-    result: {
-      success: true,
-      lines_added: 40,
-      lines_removed: 0,
-      file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
-    },
-    durationMs: 45,
-    columns: 120,
-  });
-  const cardLines = stripAnsi(card).split('\n').filter(Boolean);
-  // The card body (post-header) must not dump all 40 diff lines — cap ~20.
-  assert.ok(cardLines.length <= 20,
-    `compact card grew to ${cardLines.length} lines — should stay bounded`);
+test('Phase 4d: live diff preview shows all changed lines and files', () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `+line ${i + 1}`).join('\n');
+  const preview = stripAnsi(formatCompactFileDiff({
+    file_diff: { hunks: [{ old_start: 1, old_lines: 0, new_start: 1, new_lines: 40, body: lines }] },
+    lines_added: 40,
+    lines_removed: 0,
+  }, { indent: '  ', columns: 120 }));
+  const previewLines = preview.split('\n').filter(Boolean);
+  assert.ok(preview.includes('+ line 1'));
+  assert.ok(preview.includes('+ line 40'));
+  assert.ok(!preview.includes('diff preview truncated'));
+  assert.strictEqual(previewLines.filter(line => line.includes('+ line ')).length, 40);
 
-  // Detail view is the escape hatch: gives the model/user access to more.
+  const multiFile = stripAnsi(formatCompactFileDiff({
+    file_diffs: Array.from({ length: 4 }, (_, i) => ({
+      relative_path: `src/file-${i + 1}.mjs`,
+      lines_added: 1,
+      lines_removed: 0,
+      hunks: [{
+        old_start: 1,
+        old_count: 0,
+        new_start: 1,
+        new_count: 1,
+        lines: [{ type: 'add', text: `export const n = ${i + 1};` }],
+      }],
+    })),
+  }, { indent: '  ', columns: 120 }));
+  assert.ok(!multiFile.includes('diff preview truncated'));
+  for (let i = 1; i <= 4; i++) {
+    assert.ok(multiFile.includes(`src/file-${i}.mjs`));
+    assert.ok(multiFile.includes(`+ export const n = ${i};`));
+  }
+
+  const generated = buildFileDiff({
+    filePath: '/repo/src/generated.mjs',
+    cwd: '/repo',
+    before: '',
+    after: Array.from({ length: 450 }, (_, i) => `line ${i + 1}`).join('\n'),
+  });
+  assert.strictEqual(generated.truncated, false);
+  assert.strictEqual(generated.hunks[0].lines.length, 450);
+
   const detail = detailFor({
     id: 'x',
     tool: 'write_file',
@@ -1125,8 +1145,7 @@ test('Phase 4d: large diff shows compact preview + full available via detail', (
     },
   });
   const detailLines = stripAnsi(detail).split('\n').filter(Boolean);
-  assert.ok(detailLines.length > cardLines.length,
-    'detail should expose more than the compact preview');
+  assert.ok(detailLines.length >= previewLines.length);
 });
 
 console.log(`\n  ${passed} passed, 0 failed\n`);

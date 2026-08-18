@@ -231,8 +231,8 @@ function summarizeJsonOutput(value) {
 
 export function formatCompactFileDiff(result, {
   indent = '  ',
-  maxLines = 14,
-  maxFiles = 2,
+  maxLines = Infinity,
+  maxFiles = Infinity,
   columns = term().columns || 120,
   showFileHeader = false,
 } = {}) {
@@ -242,22 +242,24 @@ export function formatCompactFileDiff(result, {
   const out = [];
   let shown = 0;
   let truncated = false;
+  const lineLimit = Number.isFinite(maxLines) ? Math.max(0, Math.floor(maxLines)) : Infinity;
+  const fileLimit = Number.isFinite(maxFiles) ? Math.max(0, Math.floor(maxFiles)) : diffs.length;
   const lineBudget = Math.max(40, columns - visibleWidth(indent) - 4);
 
-  for (const diff of diffs.slice(0, maxFiles)) {
+  for (const diff of diffs.slice(0, fileLimit)) {
     if (showFileHeader || diffs.length > 1) {
-      if (shown >= maxLines) { truncated = true; break; }
+      if (shown >= lineLimit) { truncated = true; break; }
       out.push(`${indent}${paint.brand.primary(diff.relative_path || diff.path || 'file')} ${paint.text.dim(diffDelta(diff))}`);
       shown++;
     }
 
     for (const hunk of diff.hunks || []) {
-      if (shown >= maxLines) { truncated = true; break; }
+      if (shown >= lineLimit) { truncated = true; break; }
       out.push(`${indent}${paint.text.dim(`@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`)}`);
       shown++;
 
       for (const line of hunk.lines || []) {
-        if (shown >= maxLines) { truncated = true; break; }
+        if (shown >= lineLimit) { truncated = true; break; }
         out.push(`${indent}${paintDiffLine(line, lineBudget)}`);
         shown++;
       }
@@ -266,7 +268,7 @@ export function formatCompactFileDiff(result, {
     if (truncated) break;
   }
 
-  if (diffs.length > maxFiles) truncated = true;
+  if (diffs.length > fileLimit) truncated = true;
   if (truncated) out.push(`${indent}${paint.text.dim('… diff preview truncated; use /last to expand')}`);
   return out.join('\n');
 }
