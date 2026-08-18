@@ -8,7 +8,7 @@ export function buildFileDiff({
   after = '',
   cwd = process.cwd(),
   context = 3,
-  maxDiffLines = 400,
+  maxDiffLines = Infinity,
 } = {}) {
   const oldText = before == null ? '' : String(before);
   const newText = after == null ? '' : String(after);

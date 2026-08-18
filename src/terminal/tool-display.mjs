@@ -1,5 +1,7 @@
 // Present-progressive verbs — read more conversationally than "Read file":
 // "Reading auth.py  — 47 lines" reads like the agent narrating, not a log.
+import { isSensitiveConfigPath } from '../core/safety.mjs';
+
 const TOOL_LABELS = Object.freeze({
   shell: 'Running',
   read_file: 'Reading',
@@ -129,6 +131,7 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
         .join(', ') || 'Project files';
     case 'edit_file': {
       const filePath = shortPath(args.file_path || args.path, cwd);
+      if (isSensitiveConfigPath(filePath)) return `${filePath} · match [redacted]`;
       const search = String(args.search || '').trim();
       return search ? `${filePath} · match "${search.slice(0, 40)}${search.length > 40 ? '...' : ''}"` : filePath;
     }
@@ -229,8 +232,12 @@ export function shellCommandProfile(command, {
     || commandLineCount >= compactLines
     || commandByteCount > compactChars;
   const kind = script?.kind || (lineCount > 1 ? 'shell script' : 'shell command');
+  const preview = script?.body ? scriptBodyPreview(script.body) : '';
   const summary = compact
-    ? `${kind} · ${lineCount} line${lineCount === 1 ? '' : 's'} · ${formatBytes(byteCount)}`
+    ? [
+        `${kind} · ${lineCount} line${lineCount === 1 ? '' : 's'} · ${formatBytes(byteCount)}`,
+        preview ? `preview: ${preview}` : '',
+      ].filter(Boolean).join(' · ')
     : body;
 
   return {
@@ -244,6 +251,7 @@ export function shellCommandProfile(command, {
     compact,
     kind,
     summary,
+    preview,
     script,
     detailHint: compact ? 'details: F2 or /last' : '',
   };
@@ -295,6 +303,17 @@ function interpreterKind(value) {
   if (name === 'ruby') return 'ruby script';
   if (name === 'perl') return 'perl script';
   return 'shell script';
+}
+
+function scriptBodyPreview(body, maxChars = 20) {
+  const line = String(body || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(value => value.trim())
+    .find(Boolean) || '';
+  const compact = line.replace(/\s+/g, ' ');
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 function byteLength(value) {

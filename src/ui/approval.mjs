@@ -19,6 +19,7 @@ import { paint, width as visibleWidth } from './palette.mjs';
 import { icon } from './icons.mjs';
 import { shellCommandDisplay, shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/risk-tier.mjs';
+import { isSensitiveConfigPath } from '../core/safety.mjs';
 
 /**
  * Default option set per tier. Caller can override via `opts.options`.
@@ -158,6 +159,7 @@ export { TIERS };
 function tierTitle(tier) {
   switch (tier) {
     case TIERS.SENSITIVE_READ: return 'SENSITIVE';
+    case TIERS.PROTECTED_EDIT: return 'PROTECTED';
     case TIERS.SHELL_DANGEROUS: return 'DANGEROUS';
     case TIERS.DESTRUCTIVE: return 'DESTRUCTIVE';
     case TIERS.SHELL_MEDIUM: return 'MEDIUM';
@@ -172,6 +174,7 @@ function tierTitle(tier) {
 function approvalTitle(tier) {
   switch (tier) {
     case TIERS.SENSITIVE_READ:
+    case TIERS.PROTECTED_EDIT:
     case TIERS.SHELL_DANGEROUS:
     case TIERS.DESTRUCTIVE:
       return tierTitle(tier);
@@ -286,6 +289,7 @@ function riskTerms(tool, args = {}, tier) {
     }
   }
   if (tier === TIERS.SENSITIVE_READ) terms.push('sensitive read');
+  if (tier === TIERS.PROTECTED_EDIT) terms.push('protected edit');
   if (tier === TIERS.DESTRUCTIVE) terms.push('destructive');
   return [...new Set(terms)].slice(0, 3);
 }
@@ -315,11 +319,18 @@ function subjectDetails(tool, args = {}, summary = '', available = 72) {
   }
   if (tool === 'write_file') {
     const file = args.file_path || args.path || summary || '';
+    if (isSensitiveConfigPath(file)) return [`${file} · content redacted`];
     const lineCount = typeof args.content === 'string' ? args.content.split('\n').length : null;
     return [`${file}${lineCount ? ` · ${lineCount} lines` : ''}`];
   }
   if (tool === 'edit_file') {
     const file = args.file_path || args.path || '';
+    if (isSensitiveConfigPath(file)) {
+      const details = [`${file || summary}`];
+      if (args.search || args.old_string) details.push('match: [redacted]');
+      if (args.replace || args.new_string) details.push('replace: [redacted]');
+      return details;
+    }
     const search = String(args.search || args.old_string || '').trim();
     const replacement = String(args.replace || args.new_string || '').trim();
     const details = [`${file || summary}`];

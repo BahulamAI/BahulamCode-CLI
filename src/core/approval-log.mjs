@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isSensitiveConfigPath } from './safety.mjs';
 
 const REDACTED = 'REDACTED';
 const MAX_ARG_LOG_CHARS = 4000;
@@ -53,8 +54,30 @@ function sanitizeForLog(value, depth = 0) {
 function safeArgs(args) {
   if (args?.command) return redactSensitive(String(args.command)).slice(0, MAX_ARG_LOG_CHARS);
   if (args?.file_path || args?.path) return redactSensitive(String(args.file_path || args.path)).slice(0, MAX_ARG_LOG_CHARS);
+  if (Array.isArray(args?.files)) {
+    try {
+      const { files, ...rest } = args;
+      return JSON.stringify({
+        ...sanitizeForLog(rest),
+        files: files.slice(0, 100).map(file => sanitizeProjectFileArg(file)),
+      }).slice(0, MAX_ARG_LOG_CHARS);
+    } catch {
+      return '[files omitted]';
+    }
+  }
   try { return JSON.stringify(sanitizeForLog(args || {})).slice(0, MAX_ARG_LOG_CHARS); }
   catch { return redactSensitive(String(args || '')).slice(0, MAX_ARG_LOG_CHARS); }
+}
+
+function sanitizeProjectFileArg(file) {
+  if (typeof file === 'string') return redactSensitive(file);
+  if (!file || typeof file !== 'object') return sanitizeForLog(file);
+  const out = sanitizeForLog(file);
+  const filePath = file.path || file.file_path || '';
+  if (isSensitiveConfigPath(filePath) && typeof out.content === 'string') {
+    out.content = '[redacted sensitive config]';
+  }
+  return out;
 }
 
 function safeText(value, max = 500) {

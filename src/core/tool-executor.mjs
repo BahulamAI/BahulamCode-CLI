@@ -10,7 +10,7 @@
 
 import { createToolRegistry } from '../tools/registry.mjs';
 import { detectCommandType, filterOutput } from './output-filter.mjs';
-import { validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
+import { isSensitiveConfigPath, validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
 import { classifyCommand, isExitCodeError } from '../permissions/command-classifier.mjs';
 import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
@@ -366,18 +366,35 @@ export function createToolExecutor({
         return result;
     }
 
+    function buildResultFileDiff(filePath, before, after) {
+        const diff = buildFileDiff({
+            filePath,
+            before,
+            after,
+            cwd: projectRootFor(filePath),
+        });
+        if (!isSensitiveConfigPath(filePath)) return diff;
+        return {
+            ...diff,
+            hunks: [],
+            unified: '',
+            redacted: true,
+            sensitive: true,
+            redaction_reason: 'Sensitive config diff redacted',
+        };
+    }
+
     function attachFileDiff(result, filePath, before, after) {
         try {
-            const diff = buildFileDiff({
-                filePath,
-                before,
-                after,
-                cwd: projectRootFor(filePath),
-            });
+            const diff = buildResultFileDiff(filePath, before, after);
             result.file_diff = diff;
             result.diff = diff.unified;
             result.lines_added = diff.lines_added;
             result.lines_removed = diff.lines_removed;
+            if (diff.redacted) {
+                result.output = `File updated: ${diff.relative_path || filePath}\nDiff redacted for sensitive config file.`;
+                result.redacted = true;
+            }
         } catch { /* best effort */ }
         return result;
     }
@@ -821,12 +838,7 @@ export function createToolExecutor({
 
                     await occRegistry.call('Write', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
-                    diffs.push(buildFileDiff({
-                        filePath,
-                        before,
-                        after,
-                        cwd: projectRootFor(filePath),
-                    }));
+                    diffs.push(buildResultFileDiff(filePath, before, after));
                     updateProjectIndex(filePath);
                     results.push(rawPath);
                 } catch (err) {

@@ -28,6 +28,18 @@ const PROTECTED_NAMES = new Set([
   'go.sum',
 ]);
 
+const APPROVAL_REQUIRED_WRITE_NAMES = new Set([
+  '.env',
+  '.env.local',
+  '.env.production',
+  'package.json',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'Cargo.lock',
+  'go.sum',
+]);
+
 /** Directory names that indicate a source root — never delete the dir itself. */
 const SOURCE_DIRS = new Set([
   'src',
@@ -80,13 +92,35 @@ const HIGH_RISK_COMMANDS = [
 
 // ── Validation Functions ─────────────────────────────────────
 
+function basenameFor(filePath = '') {
+  return path.basename(String(filePath || '').replace(/\\/g, '/'));
+}
+
+function isEnvLikeName(name = '') {
+  return /^\.env(?:\.|$)/.test(String(name || ''));
+}
+
+function isProtectedName(name = '') {
+  return PROTECTED_NAMES.has(name) || isEnvLikeName(name);
+}
+
+export function isSensitiveConfigPath(filePath = '') {
+  return isEnvLikeName(basenameFor(filePath));
+}
+
+export function isApprovalRequiredWritePath(filePath = '') {
+  const basename = basenameFor(filePath);
+  return isSensitiveConfigPath(filePath) || APPROVAL_REQUIRED_WRITE_NAMES.has(basename);
+}
+
 /**
  * Check if a path is protected (should not be deleted/overwritten entirely).
  * @param {string} filePath - Absolute path
  * @param {string} cwd - Current working directory
- * @returns {{ safe: boolean, reason?: string }}
+ * @param {{ allowApprovalRequiredWrite?: boolean }} options
+ * @returns {{ safe: boolean, reason?: string, requiresApproval?: boolean, sensitive?: boolean, protected?: boolean }}
  */
-export function validatePath(filePath, cwd = process.cwd()) {
+export function validatePath(filePath, cwd = process.cwd(), options = {}) {
   if (!filePath) return { safe: false, reason: 'Empty path' };
 
   const resolved = path.resolve(cwd, filePath);
@@ -100,7 +134,16 @@ export function validatePath(filePath, cwd = process.cwd()) {
   }
 
   // Block protected file names at any level
-  if (PROTECTED_NAMES.has(basename) && !resolved.includes('node_modules/')) {
+  if (isProtectedName(basename) && !resolved.includes('node_modules/')) {
+    if (options.allowApprovalRequiredWrite && isApprovalRequiredWritePath(resolved)) {
+      return {
+        safe: true,
+        reason: `Approval required for protected path: ${basename}`,
+        requiresApproval: true,
+        protected: true,
+        sensitive: isSensitiveConfigPath(resolved),
+      };
+    }
     return { safe: false, reason: `Protected path: ${basename}` };
   }
 
@@ -172,14 +215,27 @@ export function validateShellCommand(command) {
  * @returns {{ safe: boolean, reason?: string }}
  */
 export function validateWrite(filePath, content, cwd = process.cwd()) {
-  const pathCheck = validatePath(filePath, cwd);
+  const pathCheck = validatePath(filePath, cwd, { allowApprovalRequiredWrite: true });
   if (!pathCheck.safe) return pathCheck;
 
   const resolved = path.resolve(cwd, filePath);
+  const basename = path.basename(resolved);
 
   // Don't allow overwriting .git internals
   if (resolved.includes('/.git/')) {
     return { safe: false, reason: 'Cannot write to .git directory' };
+  }
+
+  if (pathCheck.requiresApproval) {
+    return {
+      safe: true,
+      reason: pathCheck.sensitive
+        ? `Sensitive config write requires approval: ${basename}`
+        : `Protected file write requires approval: ${basename}`,
+      requiresApproval: true,
+      protected: true,
+      sensitive: pathCheck.sensitive,
+    };
   }
 
   // Warn if writing a very large file (> 1MB)
@@ -196,6 +252,7 @@ export function validateWrite(filePath, content, cwd = process.cwd()) {
 export function getSafetyRules() {
   return {
     protectedNames: [...PROTECTED_NAMES],
+    approvalRequiredWriteNames: [...APPROVAL_REQUIRED_WRITE_NAMES],
     sourceDirs: [...SOURCE_DIRS],
     blockedPatterns: DANGEROUS_SHELL_PATTERNS.length,
     highRiskPatterns: HIGH_RISK_COMMANDS.length,

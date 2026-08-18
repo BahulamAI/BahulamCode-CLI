@@ -2,7 +2,7 @@
  * Tests for safety guardrails.
  */
 
-import { validatePath, validateDelete, validateShellCommand, validateWrite } from '../src/core/safety.mjs';
+import { isApprovalRequiredWritePath, isSensitiveConfigPath, validatePath, validateDelete, validateShellCommand, validateWrite } from '../src/core/safety.mjs';
 import assert from 'node:assert';
 
 const cwd = process.cwd();
@@ -41,6 +41,11 @@ test('blocks .env', () => {
   assert.strictEqual(validatePath('.env', cwd).safe, false);
 });
 
+test('blocks .env variants for generic path access', () => {
+  assert.strictEqual(validatePath('.env.local', cwd).safe, false);
+  assert.strictEqual(validatePath('.env.development', cwd).safe, false);
+});
+
 test('blocks package.json', () => {
   assert.strictEqual(validatePath('package.json', cwd).safe, false);
 });
@@ -57,6 +62,10 @@ test('blocks deleting test directory', () => {
 
 test('allows deleting a regular file', () => {
   assert.strictEqual(validateDelete('src/foo/bar.tmp', cwd).safe, true);
+});
+
+test('blocks deleting sensitive config files', () => {
+  assert.strictEqual(validateDelete('.env.local', cwd).safe, false);
 });
 
 // ── validateShellCommand ──
@@ -121,8 +130,28 @@ test('blocks writing to .git directory', () => {
   assert.strictEqual(validateWrite(`${cwd}/.git/config`, 'x').safe, false);
 });
 
+test('allows sensitive config writes only with approval metadata', () => {
+  const result = validateWrite(`${cwd}/.env.local`, 'API_KEY=value');
+  assert.strictEqual(result.safe, true);
+  assert.strictEqual(result.requiresApproval, true);
+  assert.strictEqual(result.sensitive, true);
+});
+
+test('allows protected manifest writes only with approval metadata', () => {
+  const result = validateWrite(`${cwd}/package.json`, '{"name":"x"}');
+  assert.strictEqual(result.safe, true);
+  assert.strictEqual(result.requiresApproval, true);
+  assert.strictEqual(result.sensitive, false);
+});
+
 test('allows normal file writes', () => {
   assert.strictEqual(validateWrite(`${cwd}/src/foo.mjs`, 'const x = 1;').safe, true);
+});
+
+test('detects sensitive and approval-required write paths', () => {
+  assert.strictEqual(isSensitiveConfigPath('.env.production'), true);
+  assert.strictEqual(isApprovalRequiredWritePath('package-lock.json'), true);
+  assert.strictEqual(isApprovalRequiredWritePath('src/app.mjs'), false);
 });
 
 // ── Summary ──

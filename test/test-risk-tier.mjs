@@ -33,6 +33,7 @@ test('read_file → READ', () => {
 });
 test('sensitive read paths require explicit approval', () => {
   assert.equal(classify('read_file', { path: '.env' }), TIERS.SENSITIVE_READ);
+  assert.equal(classify('read_file', { path: '.env.local' }), TIERS.SENSITIVE_READ);
   assert.equal(classify('read_file', { path: 'certs/client.pem' }), TIERS.SENSITIVE_READ);
   assert.equal(classify('read_file', { path: 'secrets/api-key.txt' }), TIERS.SENSITIVE_READ);
   assert.equal(classify('read_files', { paths: ['src/a.js', 'secrets/token.txt'] }), TIERS.SENSITIVE_READ);
@@ -55,6 +56,12 @@ test('edit_file → LOCAL_EDIT', () => {
 });
 test('write_file → LOCAL_EDIT', () => {
   assert.equal(classify('write_file', { file_path: 'b.ts' }), TIERS.LOCAL_EDIT);
+});
+test('protected writes → PROTECTED_EDIT', () => {
+  assert.equal(classify('edit_file', { file_path: '.env.local', search: 'A', replace: 'B' }), TIERS.PROTECTED_EDIT);
+  assert.equal(classify('write_file', { file_path: 'package.json', content: '{}' }), TIERS.PROTECTED_EDIT);
+  assert.equal(classify('write_project', { files: [{ path: '.env.production', content: 'X=1' }] }), TIERS.PROTECTED_EDIT);
+  assert.equal(requiresExplicitApproval(TIERS.PROTECTED_EDIT), true);
 });
 test('skill install/update → LOCAL_EDIT', () => {
   assert.equal(classify('skill_install', { source: './skills', scope: 'project' }), TIERS.LOCAL_EDIT);
@@ -241,6 +248,10 @@ test('behavior(READ) === auto', () => {
 test('behavior(SENSITIVE_READ) === prompt-explicit', () => {
   assert.equal(behavior(TIERS.SENSITIVE_READ), 'prompt-explicit');
   assert.equal(label(TIERS.SENSITIVE_READ), 'SENSITIVE-READ');
+});
+test('behavior(PROTECTED_EDIT) === prompt-explicit', () => {
+  assert.equal(behavior(TIERS.PROTECTED_EDIT), 'prompt-explicit');
+  assert.equal(label(TIERS.PROTECTED_EDIT), 'PROTECTED-EDIT');
 });
 test('behavior(SHELL_DANGEROUS) === prompt-explicit', () => {
   assert.equal(behavior(TIERS.SHELL_DANGEROUS), 'prompt-explicit');

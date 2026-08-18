@@ -25,7 +25,7 @@ import {
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
 import { clearInputPrompt, isInputDockMounted, moveToContent, renderDockOverlay } from '../ui/input-dock.mjs';
-import { validateShellCommand } from './safety.mjs';
+import { isApprovalRequiredWritePath, isSensitiveConfigPath, validateShellCommand } from './safety.mjs';
 import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
 import { TrustStore } from './trust.mjs';
@@ -46,9 +46,19 @@ const WRITE_TOOLS = new Set([
 
 function defaultWhy(tier, tool, args) {
     const subject = approvalSummary(tool, args);
+    const protectedTarget = protectedWriteTarget(tool, args);
+    if (protectedTarget) {
+        const target = protectedTarget.path;
+        if (protectedTarget.sensitive) {
+            return `Edits sensitive environment config (${target}). Confirm before writing; values stay redacted in summaries and diffs.`;
+        }
+        return `Edits protected project file (${subject || target}). Confirm before writing.`;
+    }
     switch (tier) {
         case TIERS.SENSITIVE_READ:
             return `Reads a sensitive path (${subject || 'secret-like file'}). Confirm before exposing its contents to the agent.`;
+        case TIERS.PROTECTED_EDIT:
+            return `Edits a protected project file. Confirm before writing.`;
         case TIERS.SHELL_DANGEROUS:
             return `Shell command matches a high-risk pattern (rm -rf, sudo, force push, etc.). Confirm before running.`;
         case TIERS.DESTRUCTIVE:
@@ -60,6 +70,26 @@ function defaultWhy(tier, tool, args) {
         default:
             return '';
     }
+}
+
+function protectedWriteTarget(tool, args = {}) {
+    const paths = writeTargetPaths(tool, args);
+    const path = paths.find(isApprovalRequiredWritePath);
+    if (!path) return null;
+    return { path, sensitive: isSensitiveConfigPath(path) };
+}
+
+function writeTargetPaths(tool, args = {}) {
+    const key = String(tool || '').toLowerCase();
+    if (key === 'write_file' || key === 'edit_file') {
+        return [args.file_path || args.path].filter(Boolean);
+    }
+    if (key === 'write_project') {
+        return (args.files || [])
+            .map(file => typeof file === 'string' ? file : file?.path || file?.file_path)
+            .filter(Boolean);
+    }
+    return [];
 }
 
 function approvalSummary(tool, args = {}) {
@@ -118,6 +148,8 @@ export class ApprovalManager {
         this.history = [];
         this.rejectionHints = [];
         this._rl = null;
+        this._approvalPromptActive = false;
+        this._approvalPromptWasRaw = false;
     }
 
     setReadline(rl) { this._rl = rl; }
@@ -126,6 +158,29 @@ export class ApprovalManager {
         this._execPause = onPause || null;
         this._execResume = onResume || null;
         this._approvalPromptEnd = onApprovalPromptEnd || null;
+    }
+
+    _beginApprovalInput() {
+        if (this._approvalPromptActive || !process.stdin.isTTY) return false;
+        this._approvalPromptActive = true;
+        this._approvalPromptWasRaw = process.stdin.isRaw;
+        if (this._execPause) this._execPause();
+        if (this._rl) this._rl.pause();
+        if (typeof process.stdin.setRawMode === 'function') {
+            process.stdin.setRawMode(true);
+        }
+        process.stdin.resume();
+        return true;
+    }
+
+    _endApprovalInput() {
+        if (!this._approvalPromptActive) return;
+        if (typeof process.stdin.setRawMode === 'function') {
+            process.stdin.setRawMode(this._approvalPromptWasRaw || false);
+        }
+        if (this._rl) this._rl.resume();
+        if (this._execResume) this._execResume();
+        this._approvalPromptActive = false;
     }
 
     revoke() {
@@ -275,6 +330,9 @@ export class ApprovalManager {
             printedHeight = block.split('\n').length;
         };
 
+        const ownsApprovalInput = isInteractive ? this._beginApprovalInput() : false;
+
+        try {
         if (isInteractive) drawPrompt();
 
         // ── Input loop ─────────────────────────────────────────────────
@@ -334,7 +392,7 @@ export class ApprovalManager {
                 return { approved: true, tier };
 
             case 'allow-session': {
-                if (!this.policy.hitl?.allowSessionTrust) return this._prompt(toolName, args, context);
+                if (!this.policy.hitl?.allowSessionTrust) return await this._prompt(toolName, args, context);
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'SESSION' });
                 write(`  ${GREEN}✓${RST}  ${DIM}trusted for this session: ${rule.pattern}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'session-trust', tier, time: Date.now(), rule_id: rule.id });
@@ -343,7 +401,7 @@ export class ApprovalManager {
             }
 
             case 'allow-project': {
-                if (!this.policy.hitl?.allowProjectTrust) return this._prompt(toolName, args, context);
+                if (!this.policy.hitl?.allowProjectTrust) return await this._prompt(toolName, args, context);
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'PROJECT' });
                 write(`  ${GREEN}✓${RST}  ${DIM}trusted for this project: ${rule.pattern}${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'project-trust', tier, time: Date.now(), rule_id: rule.id });
@@ -362,7 +420,7 @@ export class ApprovalManager {
             }
 
             case 'allow-all':
-                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return await this._prompt(toolName, args, context);
                 this.approveAll = true;
                 write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
@@ -370,7 +428,7 @@ export class ApprovalManager {
                 return { approved: true, tier };
 
             case 'allow-type':
-                if (requiresExplicitApproval(tier)) return this._prompt(toolName, args, context);
+                if (requiresExplicitApproval(tier)) return await this._prompt(toolName, args, context);
                 this.approvedToolTypes.add(toolName);
                 this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session', prompt });
@@ -380,7 +438,7 @@ export class ApprovalManager {
             case 'why':
                 write(`\n  ${DIM}${(context.reason || why).slice(0, 400)}${RST}\n\n`);
                 printedHeight = 0;
-                return this._prompt(toolName, args, context);
+                return await this._prompt(toolName, args, context);
 
             case 'edit':
             case 'replan':
@@ -395,7 +453,10 @@ export class ApprovalManager {
             }
 
             default:
-                return this._prompt(toolName, args, context);
+                return await this._prompt(toolName, args, context);
+        }
+        } finally {
+            if (ownsApprovalInput) this._endApprovalInput();
         }
     }
 
@@ -406,16 +467,25 @@ export class ApprovalManager {
                 return;
             }
 
-            if (this._execPause) this._execPause();
-            if (this._rl) this._rl.pause();
+            const managesInput = !this._approvalPromptActive;
+            if (managesInput) {
+                if (this._execPause) this._execPause();
+                if (this._rl) this._rl.pause();
+            }
 
             const wasRaw = process.stdin.isRaw;
-            process.stdin.setRawMode(true);
+            if (managesInput && typeof process.stdin.setRawMode === 'function') {
+                process.stdin.setRawMode(true);
+            }
             process.stdin.resume();
             process.stdin.once('data', (data) => {
-                process.stdin.setRawMode(wasRaw || false);
-                if (this._rl) this._rl.resume();
-                if (this._execResume) this._execResume();
+                if (managesInput) {
+                    if (typeof process.stdin.setRawMode === 'function') {
+                        process.stdin.setRawMode(wasRaw || false);
+                    }
+                    if (this._rl) this._rl.resume();
+                    if (this._execResume) this._execResume();
+                }
 
                 const bytes = [...data];
                 const str = data.toString();
@@ -444,8 +514,11 @@ export class ApprovalManager {
                 return;
             }
 
-            if (this._execPause) this._execPause();
-            if (this._rl) this._rl.pause();
+            const managesInput = !this._approvalPromptActive;
+            if (managesInput) {
+                if (this._execPause) this._execPause();
+                if (this._rl) this._rl.pause();
+            }
 
             const wasRaw = process.stdin.isRaw;
             if (typeof process.stdin.setRawMode === 'function') {
@@ -460,8 +533,10 @@ export class ApprovalManager {
                 if (typeof process.stdin.setRawMode === 'function') {
                     process.stdin.setRawMode(wasRaw || false);
                 }
-                if (this._rl) this._rl.resume();
-                if (this._execResume) this._execResume();
+                if (managesInput) {
+                    if (this._rl) this._rl.resume();
+                    if (this._execResume) this._execResume();
+                }
             };
             const finish = () => {
                 cleanup();
@@ -535,6 +610,7 @@ function promptForLog(tool, args, tier, why) {
 function approvalTitleForLog(tier) {
     switch (tier) {
         case TIERS.SENSITIVE_READ:
+        case TIERS.PROTECTED_EDIT:
         case TIERS.SHELL_DANGEROUS:
         case TIERS.DESTRUCTIVE:
             return 'EXPLICIT APPROVAL';
