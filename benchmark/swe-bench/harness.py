@@ -351,7 +351,7 @@ def run_instance(instance: dict, model: str, timeout: int = 600, debug: bool = F
     }
 
     if not kepler_result["success"]:
-        result.update({"status": "kepler_failed", "error": kepler_result["stderr"][:200]})
+        result.update({"status": "bahulam_failed", "error": kepler_result["stderr"][:200]})
         return result
 
     # 4. Collect patch
@@ -384,8 +384,8 @@ def normalize_result(result: dict) -> dict:
     """Migrate pre-Kepler result entries when resuming an existing output file."""
     if "kepler" not in result and "orca" in result:
         result["kepler"] = result.pop("orca")
-    if result.get("status") == "orca_failed":
-        result["status"] = "kepler_failed"
+    if result.get("status") in ("orca_failed", "kepler_failed"):
+        result["status"] = "bahulam_failed"
     if result.get("error") == "Orca made no file changes":
         result["error"] = "Kepler made no file changes"
     return result
@@ -394,7 +394,7 @@ def normalize_result(result: dict) -> dict:
 def summarize_results(results: list[dict]) -> tuple[int, int, int]:
     passed = sum(result.get("status") == "patched" for result in results)
     errors = sum(
-        result.get("status") in ("error", "kepler_failed", "no_changes")
+        result.get("status") in ("error", "bahulam_failed", "kepler_failed", "no_changes")
         for result in results
     )
     failed = len(results) - passed - errors
@@ -502,7 +502,7 @@ def main():
 
                 if status == "patched":
                     passed += 1
-                elif status in ("error", "kepler_failed", "no_changes"):
+                elif status in ("error", "bahulam_failed", "kepler_failed", "no_changes"):
                     errors += 1
                 else:
                     failed += 1
@@ -517,7 +517,7 @@ def main():
 
             if result["status"] == "patched":
                 passed += 1
-            elif result["status"] in ("error", "kepler_failed", "no_changes"):
+            elif result["status"] in ("error", "bahulam_failed", "kepler_failed", "no_changes"):
                 errors += 1
             else:
                 failed += 1

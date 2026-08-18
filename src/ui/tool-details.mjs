@@ -213,7 +213,10 @@ function detailListFiles(card) {
 // ── Write / edit ────────────────────────────────────────────────────────
 
 function detailEditFile(card) {
-  const diff = card.result?.file_diff?.unified || card.result?.diff || card.result?.patch || card.result?.output;
+  const diff = unifiedForFileDiff(card.result?.file_diff)
+    || card.result?.diff
+    || card.result?.patch
+    || card.result?.output;
   if (diff) return renderDiff(String(diff));
 
   const before = card.args?.search;
@@ -228,7 +231,7 @@ function detailEditFile(card) {
 }
 
 function detailWriteFile(card) {
-  const diff = card.result?.file_diff?.unified || card.result?.diff;
+  const diff = unifiedForFileDiff(card.result?.file_diff) || card.result?.diff;
   if (diff) return renderDiff(String(diff));
   const content = card.args?.content;
   if (!content) return paint.text.dim('    (no content)');
@@ -238,7 +241,7 @@ function detailWriteFile(card) {
 function detailWriteProject(card) {
   const diffs = card.result?.file_diffs || [];
   if (diffs.length) {
-    return renderDiff(diffs.map(diff => diff.unified).filter(Boolean).join('\n'));
+    return renderDiff(diffs.map(unifiedForFileDiff).filter(Boolean).join('\n'));
   }
   const files = card.args?.files || [];
   if (!files.length) return paint.text.dim('    (no files)');
@@ -403,6 +406,52 @@ function renderDiff(text) {
     if (line.startsWith('-'))                             return `    ${paint.state.danger(line)}`;
     return `    ${paint.text.dim(line)}`;
   }).join('\n');
+}
+
+function unifiedForFileDiff(diff) {
+  if (!diff) return '';
+  if (diff.unified) return String(diff.unified);
+  const hunks = Array.isArray(diff.hunks) ? diff.hunks : [];
+  if (!hunks.length) return '';
+  const file = diff.relative_path || diff.path || 'file';
+  const out = [`--- a/${file}`, `+++ b/${file}`];
+  for (const hunk of hunks) {
+    const lines = hunkLines(hunk);
+    if (!lines.length) continue;
+    const oldCount = hunk.old_count ?? hunk.old_lines ?? countLinesForSide(lines, 'old');
+    const newCount = hunk.new_count ?? hunk.new_lines ?? countLinesForSide(lines, 'new');
+    out.push(`@@ -${hunk.old_start ?? 1},${oldCount} +${hunk.new_start ?? 1},${newCount} @@`);
+    for (const line of lines) out.push(toUnifiedLine(line));
+  }
+  return out.length > 2 ? out.join('\n') : '';
+}
+
+function hunkLines(hunk = {}) {
+  if (Array.isArray(hunk.lines)) return hunk.lines;
+  if (typeof hunk.body !== 'string') return [];
+  return hunk.body.replace(/\r\n?/g, '\n').split('\n').filter(line => line && !line.startsWith('@@'));
+}
+
+function toUnifiedLine(line) {
+  if (typeof line === 'string') {
+    if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) return line;
+    return ` ${line}`;
+  }
+  const type = String(line?.type || '').toLowerCase();
+  const text = String(line?.text ?? line?.content ?? '');
+  if (type === 'add' || type === 'added') return `+${text}`;
+  if (type === 'remove' || type === 'removed' || type === 'delete') return `-${text}`;
+  return ` ${text}`;
+}
+
+function countLinesForSide(lines, side) {
+  return lines.filter(line => {
+    const type = typeof line === 'string'
+      ? (line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : 'context')
+      : String(line?.type || 'context').toLowerCase();
+    if (side === 'old') return type !== 'add' && type !== 'added';
+    return type !== 'remove' && type !== 'removed' && type !== 'delete';
+  }).length;
 }
 
 function formatDuration(ms) {

@@ -279,6 +279,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
   const tool = data.tool || data._tool || '';
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
   recordReadActivity(tool, data.args || {});
+  recordWriteActivity(tool, data.args || {}, data);
 
   // Update the card buffer so /last and `d` can find it.
   if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
@@ -324,7 +325,10 @@ export function renderToolResult(data, eventType = 'tool_result') {
     const combined = `${runtime.pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
-      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
+      if (diffPreview) {
+        process.stderr.write(`${diffPreview}\n`);
+        rememberFileDiffPreview(data);
+      }
       runtime.lastRenderedBlock = 'tool';
       runtime.pendingHead = null;
       return;
@@ -332,7 +336,10 @@ export function renderToolResult(data, eventType = 'tool_result') {
     if (isInlineOutcomeTool(tool)) {
       const compactHead = compactHeadForOutcome(runtime.pendingHead.head, outcome, cols);
       process.stderr.write(`${compactHead}  ${outcome}\n`);
-      if (diffPreview) process.stderr.write(`${diffPreview}\n`);
+      if (diffPreview) {
+        process.stderr.write(`${diffPreview}\n`);
+        rememberFileDiffPreview(data);
+      }
       runtime.lastRenderedBlock = 'tool';
       runtime.pendingHead = null;
       return;
@@ -347,13 +354,68 @@ export function renderToolResult(data, eventType = 'tool_result') {
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
   process.stderr.write(`${gutter}${outcome}\n`);
-  if (diffPreview) process.stderr.write(`${diffPreview}\n`);
+  if (diffPreview) {
+    process.stderr.write(`${diffPreview}\n`);
+    rememberFileDiffPreview(data);
+  }
   runtime.lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
   if (hasLint) {
     process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
   }
+}
+
+function fileDiffKey(data = {}) {
+  return fileDiffKeys(data)[0] || '';
+}
+
+function fileDiffKeys(data = {}) {
+  const keys = [];
+  const callId = data.call_id || data._callId || data.request_id || data.id;
+  if (callId) keys.push(`call:${callId}`);
+  const diff = Array.isArray(data.file_diffs) ? data.file_diffs[0]
+    : data.file_diff ? data.file_diff
+    : data.type === 'file_diff' ? data
+    : null;
+  const file = diff?.relative_path || diff?.path || data.relative_path || data.path || '';
+  if (file) {
+    const added = diff?.lines_added ?? data.lines_added ?? '';
+    const removed = diff?.lines_removed ?? data.lines_removed ?? '';
+    keys.push(`file:${file}:${added}:${removed}`);
+  }
+  return keys;
+}
+
+function rememberFileDiffPreview(data = {}) {
+  for (const key of fileDiffKeys(data)) {
+    runtime.renderedFileDiffPreviews.add(key);
+  }
+}
+
+export function renderFileDiffEvent(data = {}) {
+  const keys = fileDiffKeys(data);
+  if (keys.some(key => runtime.renderedFileDiffPreviews.has(key))) return false;
+
+  const indent = subAgentIndent();
+  const gutter = `${indent}${paint.text.dim('⎿')}  `;
+  const diffPreview = formatCompactFileDiff({
+    file_diff: data,
+    lines_added: data.lines_added,
+    lines_removed: data.lines_removed,
+  }, {
+    indent: gutter,
+    columns: process.stderr.columns || 120,
+    showFileHeader: true,
+  });
+  if (!diffPreview) return false;
+
+  renderBlockBoundary('tool', { compactSame: true });
+  process.stderr.write(`${diffPreview}\n`);
+  for (const key of keys) runtime.renderedFileDiffPreviews.add(key);
+  rememberChangedFile(data.relative_path || data.path);
+  runtime.lastRenderedBlock = 'tool';
+  return true;
 }
 
 function shellResultTool(tool) {
@@ -415,6 +477,11 @@ export function rememberReadFile(filePath) {
   if (file && !session.filesRead.includes(file)) session.filesRead.push(file);
 }
 
+export function rememberChangedFile(filePath) {
+  const file = shortPath(String(filePath || '').trim());
+  if (file && !session.filesChanged.includes(file)) session.filesChanged.push(file);
+}
+
 export function recordReadActivity(tool, args = {}) {
   const normalized = String(tool || '').toLowerCase();
   if (normalized === 'read_file' || normalized === 'read') {
@@ -426,6 +493,26 @@ export function recordReadActivity(tool, args = {}) {
     for (const file of Array.isArray(files) ? files : []) {
       rememberReadFile(typeof file === 'string' ? file : file?.file_path || file?.path);
     }
+  }
+}
+
+export function recordWriteActivity(tool, args = {}, result = {}) {
+  const normalized = String(tool || '').toLowerCase();
+  if (!['write_file', 'edit_file', 'delete_file', 'write_project'].includes(normalized)) return;
+
+  if (normalized === 'write_project') {
+    const files = Array.isArray(args.files) ? args.files : [];
+    for (const file of files) {
+      rememberChangedFile(file?.file_path || file?.path);
+    }
+  }
+
+  rememberChangedFile(args.file_path || args.path || result.file_path || result.path);
+  const diffs = Array.isArray(result.file_diffs)
+    ? result.file_diffs
+    : result.file_diff ? [result.file_diff] : [];
+  for (const diff of diffs) {
+    rememberChangedFile(diff.relative_path || diff.path);
   }
 }
 
@@ -511,6 +598,7 @@ export function startContentStream() {
   runtime.streamBuffer = '';
   runtime.streamedPartialText = '';
   runtime.renderedToolResults.clear();
+  runtime.renderedFileDiffPreviews.clear();
   runtime.exploreRun = { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 };
   runtime.renderedContentThisTurn = false;
   runtime.contentHeaderPrinted = false;
@@ -535,25 +623,34 @@ export function flushContent() {
   if (runtime.streamTimer) { clearTimeout(runtime.streamTimer); runtime.streamTimer = null; }
   if (!runtime.streamBuffer) return;
 
+  const rendered = renderMarkdown(runtime.streamBuffer);
+  const lines = transcriptRenderableLines(rendered);
+  runtime.streamBuffer = '';
+  if (!lines.length) return;
+
   if (isInputDockMounted()) moveToContent();
   stopSpinner();
   // Any buffered tool head needs to land BEFORE this content so the order
   // is preserved on screen.
   flushPendingHead();
   flushCompactReadRun();
-  renderBlockBoundary('content');
+  renderBlockBoundary('content', { compactSame: true });
   if (!runtime.contentHeaderPrinted) {
     process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
     runtime.contentHeaderPrinted = true;
   }
-  const rendered = renderMarkdown(runtime.streamBuffer);
-  for (const line of rendered.split('\n')) {
+  for (const line of lines) {
     process.stdout.write(`${transcriptLine(line, { tone: 'assistant' })}\n`);
   }
-  runtime.streamBuffer = '';
   runtime.renderedContentThisTurn = true;
   runtime.lastRenderedBlock = 'content';
   if (typeof runtime.afterContentFlush === 'function') runtime.afterContentFlush();
+}
+
+export function transcriptRenderableLines(rendered) {
+  const lines = String(rendered ?? '').replace(/\r\n?/g, '\n').split('\n');
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines;
 }
 
 export function renderStagnation(data = {}) {

@@ -74,8 +74,22 @@ let unsubResize = null;
 let lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null, overlayLines: null };
 let resetting = false;
 let lastGeometry = null;
+let contentCursorRow = 1;
+let contentCursorCol = 1;
+let contentTrackingActive = false;
+let suppressWriteTracking = 0;
+let originalStdoutWrite = null;
+let originalStderrWrite = null;
 
-function write(s) { try { OUT.write(s); } catch {} }
+function write(s) {
+  try {
+    suppressWriteTracking++;
+    OUT.write(s);
+  } catch {
+  } finally {
+    suppressWriteTracking = Math.max(0, suppressWriteTracking - 1);
+  }
+}
 function setScrollRegion(top, bottom) { write(`${ESC}${top};${bottom}r`); }
 function clearScrollRegion() { write(`${ESC}r`); }
 function saveCursor() { write(`${ESC}s`); }
@@ -100,6 +114,69 @@ function drawableColumns() {
 
 function contentBottomRow() {
   return Math.max(1, rows() - reservedRows);
+}
+
+function clampContentCursor() {
+  const bottom = contentBottomRow();
+  contentCursorRow = Math.max(1, Math.min(bottom, contentCursorRow || 1));
+  contentCursorCol = Math.max(1, Math.min(cols(), contentCursorCol || 1));
+}
+
+function resetContentCursor(row = 1, col = 1) {
+  contentCursorRow = Math.max(1, Math.min(contentBottomRow(), Math.floor(row || 1)));
+  contentCursorCol = Math.max(1, Math.min(cols(), Math.floor(col || 1)));
+}
+
+function trackContentWrite(chunk) {
+  if (!mounted || !contentTrackingActive || suppressWriteTracking > 0) return;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+  if (!text) return;
+  const clean = text
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[()][A-Za-z0-9]/g, '');
+  const bottom = contentBottomRow();
+  const width = Math.max(1, drawableColumns());
+  for (const ch of clean) {
+    if (ch === '\r') {
+      contentCursorCol = 1;
+      continue;
+    }
+    if (ch === '\n') {
+      contentCursorRow = Math.min(bottom, contentCursorRow + 1);
+      contentCursorCol = 1;
+      continue;
+    }
+    contentCursorCol++;
+    if (contentCursorCol > width) {
+      contentCursorRow = Math.min(bottom, contentCursorRow + 1);
+      contentCursorCol = 1;
+    }
+  }
+}
+
+function patchOutputTracking() {
+  if (originalStdoutWrite || originalStderrWrite) return;
+  originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stdout.write = function trackedStdoutWrite(chunk, ...args) {
+    trackContentWrite(chunk);
+    return originalStdoutWrite(chunk, ...args);
+  };
+  process.stderr.write = function trackedStderrWrite(chunk, ...args) {
+    trackContentWrite(chunk);
+    return originalStderrWrite(chunk, ...args);
+  };
+}
+
+function unpatchOutputTracking() {
+  if (originalStdoutWrite) {
+    process.stdout.write = originalStdoutWrite;
+    originalStdoutWrite = null;
+  }
+  if (originalStderrWrite) {
+    process.stderr.write = originalStderrWrite;
+    originalStderrWrite = null;
+  }
 }
 
 // Row map (top → bottom of the reserved region).
@@ -250,6 +327,7 @@ function applyLayout({ clearPrevious = false } = {}) {
   const bottom = contentBottomRow();
   setScrollRegion(1, bottom);
   renderFrame(lastFrame);
+  clampContentCursor();
   // On (re)mount and resize, park at input if we have one; otherwise sit at
   // the bottom of the content region so any pending content writes flush
   // above the dock rather than into a stale mid-frame position.
@@ -385,7 +463,11 @@ export function isInputDockMounted() {
   return mounted;
 }
 
-export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
+export function mountInputDock({
+  inputRowsMax: requestedMax,
+  initialContentRow = 1,
+  initialContentCol = 1,
+} = {}) {
   const t = term();
   if (!t.isTTY || t.plain) return false;
   if (t.ttyMode !== 'rich' || t.fixedInput === false) return false;
@@ -395,7 +477,10 @@ export function mountInputDock({ inputRowsMax: requestedMax } = {}) {
   inputRowsMax = resolveMaxInputRows(requestedMax);
   inputRows = MIN_INPUT_ROWS;
   reservedRows = FIXED_ROWS + inputRows;
+  resetContentCursor(initialContentRow, initialContentCol);
+  contentTrackingActive = false;
   mounted = true;
+  patchOutputTracking();
   applyLayout();
 
   unsubResize = onResize(() => applyLayout({ clearPrevious: true }));
@@ -415,6 +500,8 @@ export function unmountInputDock() {
     if (unsubResize) { unsubResize(); unsubResize = null; }
   } finally {
     mounted = false;
+    contentTrackingActive = false;
+    unpatchOutputTracking();
     resetting = false;
     lastGeometry = null;
   }
@@ -424,17 +511,19 @@ function safeUnmount() { try { unmountInputDock(); } catch {} }
 
 export function moveToContent() {
   if (!mounted) return false;
-  moveTo(contentBottomRow(), 1);
+  clampContentCursor();
+  contentTrackingActive = true;
+  moveTo(contentCursorRow, contentCursorCol);
   return true;
 }
 
-// One row above the bottom of the scroll region. Writes here won't trigger
-// the scroll-on-LF that happens when writing '\n' at the region's bottom row —
-// exactly what the persistent explore/spinner line needs to overwrite in place
-// without piling copies of itself into scrollback.
+// The next transcript row. Spinner/status overlays live next to the latest
+// content instead of near the scroll-region bottom; otherwise sparse agent
+// events leave large blank holes between visible lines.
 export function pinnedStatusRow() {
   if (!mounted) return null;
-  return Math.max(1, contentBottomRow() - 1);
+  clampContentCursor();
+  return Math.max(1, Math.min(contentBottomRow(), contentCursorRow));
 }
 
 export function drawPinnedStatus(line) {
@@ -466,6 +555,7 @@ export function clearPinnedStatus() {
 // clearing their overlay.
 export function redrawDockFrame() {
   if (!mounted) return false;
+  contentTrackingActive = false;
   renderFrame(lastFrame);
   parkCursorAtInput();
   return true;
@@ -473,6 +563,7 @@ export function redrawDockFrame() {
 
 export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) {
   if (!mounted) return false;
+  contentTrackingActive = false;
   setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
   renderFrame({ context, tips, meta, prefix: '', value: '', overlayLines: null });
@@ -482,6 +573,7 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
 
 export function clearInputPrompt() {
   if (!mounted) return false;
+  contentTrackingActive = false;
   clearInputRows();
   lastFrame.value = '';
   lastFrame.overlayLines = null;
@@ -492,6 +584,7 @@ export function clearInputPrompt() {
 
 export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null } = {}) {
   if (!mounted) return false;
+  contentTrackingActive = false;
   setInputRowsTo(computeInputRowsForBuffer(prefix, value));
   renderFrame({ context, tips, meta, prefix, value, cursor, overlayLines: null });
   const layout = layoutInput(prefix, value);
@@ -508,6 +601,7 @@ export function renderDockOverlay({
   maxRows = 8,
 } = {}) {
   if (!mounted) return false;
+  contentTrackingActive = false;
   const sourceLines = Array.isArray(lines) ? lines : String(lines || '').split('\n');
   const wrapped = layoutOverlayLines(sourceLines);
   const rowCap = Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, Math.max(inputRowsMax, maxRows)));
@@ -537,6 +631,7 @@ export function renderDockOverlay({
  */
 export function focusDockInput(prefix, value = '', cursorInValue = null) {
   if (!mounted) return false;
+  contentTrackingActive = false;
   const layout = layoutInput(prefix, value);
   const valueStr = String(value || '');
   const rawCursor = cursorInValue == null
@@ -570,6 +665,8 @@ export function _internals() {
     bottomRuleLine,
     padLine,
     drawableColumns,
+    resetContentCursor,
+    contentCursor: () => ({ row: contentCursorRow, col: contentCursorCol, active: contentTrackingActive }),
     FIXED_ROWS,
     BRAND_LABEL,
   };

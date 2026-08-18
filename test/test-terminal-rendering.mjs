@@ -380,8 +380,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function thinkingPrefix(text)'));
   assert.ok(renderSource.includes('Thinking · ${kind}'));
   assert.ok(renderSource.includes('function clippedThinking(text, limit = 200)'));
-  assert.ok(replSource.includes("renderBlockBoundary('content')")
-         || renderSource.includes("renderBlockBoundary('content')"));
+  assert.ok(replSource.includes("renderBlockBoundary('content', { compactSame: true })")
+         || renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
   assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
   assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
@@ -400,6 +400,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(renderSource.includes("transcriptLine(line, { tone: 'assistant' })"));
   assert.ok(renderSource.includes("runtime.lastRenderedBlock = 'content';"));
+  assert.ok(renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
+  assert.ok(renderSource.includes('function transcriptRenderableLines(rendered)'));
 });
 
 test('REPL prompt keeps a small bottom cushion', () => {
@@ -410,7 +412,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes("inputRule({ label: 'message' });"));
   assert.ok(!replSource.includes('paint.inverse(c.brand(` ${label} `))'));
   assert.ok(replSource.includes("from '../ui/input-dock.mjs'"));
-  assert.ok(replSource.includes('mountInputDock()'));
+  assert.ok(replSource.includes('mountInputDock({'));
+  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
+  assert.ok(replSource.includes('initialContentCol: dockCursor.col'));
   assert.ok(!replSource.includes("from '../ui/status-bar.mjs'"));
   assert.ok(!replSource.includes('attachOrbit('));
   assert.ok(replSource.includes("return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;"));
@@ -419,14 +423,19 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('printInputBottomRule();'));
   assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
+  assert.ok(replSource.includes('function printExecutionInstruction(instruction)'));
+  assert.ok(replSource.includes("paint.text.dim('follow-up')"));
   assert.ok(replSource.includes("transcriptHeader('you', { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptLine(line, { tone: 'user' })"));
   assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
+  assert.ok(!replSource.includes("startContentStream();\n      process.stderr.write(`\\n${transcriptHeader('bahulam', { tone: 'assistant' })}\\n`);"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));
   assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
+  assert.ok(replSource.includes("case 'file_diff':"));
+  assert.ok(replSource.includes('renderFileDiffEvent(data)'));
   assert.ok(replSource.includes('if (!inputActive)'));
   assert.ok(replSource.includes('_pasteLines = [];'));
   assert.ok(replSource.includes("case '/exit':"));
@@ -490,6 +499,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("key.name === 'f2'"));
   assert.ok(replSource.includes('isF2Sequence(text2)'));
   assert.ok(!replSource.includes('Ctrl+D'));
+});
+
+test('REPL seeds dock transcript cursor from startup output before first input', () => {
+  const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
+  assert.ok(replSource.includes('function trackStartupOutput(chunk)'));
+  assert.ok(replSource.includes('const stopStartupOutputTracking = startStartupOutputTracking();'));
+  assert.ok(replSource.includes('dockCursor = startupCursorSeed();'));
+  assert.ok(replSource.includes('stopStartupOutputTracking();'));
+  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
 });
 
 test('resume preview avoids circular renderEvent import during repl split', () => {
@@ -728,6 +746,61 @@ test('renders compact file diff previews for writes', () => {
   assert.ok(!detail.includes('large content omitted'));
 });
 
+test('renders direct and legacy file diff payloads', () => {
+  const direct = stripAnsi(formatCompactFileDiff({
+    type: 'file_diff',
+    relative_path: 'src/direct.js',
+    lines_added: 1,
+    lines_removed: 1,
+    hunks: [
+      {
+        old_start: 4,
+        old_count: 1,
+        new_start: 4,
+        new_count: 1,
+        lines: [
+          { type: 'remove', text: 'oldValue();' },
+          { type: 'add', text: 'newValue();' },
+        ],
+      },
+    ],
+  }, { indent: '  ', columns: 100, showFileHeader: true }));
+  assert.ok(direct.includes('src/direct.js +1 −1'));
+  assert.ok(direct.includes('@@ -4,1 +4,1 @@'));
+  assert.ok(direct.includes('- oldValue();'));
+  assert.ok(direct.includes('+ newValue();'));
+
+  const legacyDiff = {
+    relative_path: 'src/legacy.js',
+    hunks: [
+      {
+        old_start: 2,
+        old_lines: 1,
+        new_start: 2,
+        new_lines: 2,
+        body: ' unchanged\n-oldThing();\n+newThing();\n+nextThing();',
+      },
+    ],
+  };
+  const legacy = stripAnsi(formatCompactFileDiff({
+    file_diff: legacyDiff,
+    lines_added: 2,
+    lines_removed: 1,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(legacy.includes('@@ -2,1 +2,2 @@'));
+  assert.ok(legacy.includes('- oldThing();'));
+  assert.ok(legacy.includes('+ newThing();'));
+  assert.ok(legacy.includes('+ nextThing();'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'write_file',
+    args: { file_path: 'src/legacy.js' },
+    result: { file_diff: legacyDiff },
+  }));
+  assert.ok(detail.includes('--- a/src/legacy.js'));
+  assert.ok(detail.includes('+newThing();'));
+});
+
 test('mission report omits old title and keeps tools/time on one line', () => {
   const rendered = stripAnsi(renderMissionReport({
     task: 'fix auth',
@@ -768,6 +841,14 @@ test('approval prompt uses risk title and compact scoped menu', () => {
   assert.ok(!rendered.includes('│'));
   assert.ok(!rendered.includes('▔'));
   assert.ok(!rendered.includes('────'));
+});
+
+test('approval prompt gates execution input while a decision is active', () => {
+  const approvalSource = fs.readFileSync(new URL('../src/core/approval.mjs', import.meta.url), 'utf-8');
+  assert.ok(approvalSource.includes('_beginApprovalInput()'));
+  assert.ok(approvalSource.includes('_endApprovalInput()'));
+  assert.ok(approvalSource.includes('this._approvalPromptActive = true'));
+  assert.ok(approvalSource.includes('const managesInput = !this._approvalPromptActive'));
 });
 
 test('approval prompt separates shell cwd from command', () => {
