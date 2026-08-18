@@ -14,6 +14,7 @@
 import { paint } from './palette.mjs';
 import { icon, toolFamily } from './icons.mjs';
 import { shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
+import { isSensitiveConfigPath } from '../core/safety.mjs';
 
 const MAX_DETAIL_LINES = 60;
 const MAX_SHELL_DETAIL_LINES = 220;
@@ -136,6 +137,12 @@ function safeDetailArgs(tool, args) {
   }
   if (tool === 'edit_file') {
     const next = { ...args };
+    if (isSensitiveConfigPath(next.file_path || next.path)) {
+      for (const key of ['search', 'replace', 'old_string', 'new_string']) {
+        if (typeof next[key] === 'string') next[key] = '[redacted]';
+      }
+      return next;
+    }
     for (const key of ['search', 'replace', 'old_string', 'new_string']) {
       if (typeof next[key] === 'string' && next[key].length > 80) {
         next[key] = `[${next[key].split('\n').length} lines omitted]`;
@@ -213,6 +220,12 @@ function detailListFiles(card) {
 // ── Write / edit ────────────────────────────────────────────────────────
 
 function detailEditFile(card) {
+  const redacted = redactedFileDiff(card.result?.file_diff)
+    || (isSensitiveConfigPath(card.args?.file_path || card.args?.path)
+      ? sensitiveFallbackDiff(card)
+      : null);
+  if (redacted) return renderRedactedDiff(redacted);
+
   const diff = unifiedForFileDiff(card.result?.file_diff)
     || card.result?.diff
     || card.result?.patch
@@ -231,6 +244,12 @@ function detailEditFile(card) {
 }
 
 function detailWriteFile(card) {
+  const redacted = redactedFileDiff(card.result?.file_diff)
+    || (isSensitiveConfigPath(card.args?.file_path || card.args?.path)
+      ? sensitiveFallbackDiff(card)
+      : null);
+  if (redacted) return renderRedactedDiff(redacted);
+
   const diff = unifiedForFileDiff(card.result?.file_diff) || card.result?.diff;
   if (diff) return renderDiff(String(diff));
   const content = card.args?.content;
@@ -241,7 +260,12 @@ function detailWriteFile(card) {
 function detailWriteProject(card) {
   const diffs = card.result?.file_diffs || [];
   if (diffs.length) {
-    return renderDiff(diffs.map(unifiedForFileDiff).filter(Boolean).join('\n'));
+    return diffs.map(diff => {
+      const redacted = redactedFileDiff(diff);
+      if (redacted) return renderRedactedDiff(redacted);
+      const unified = unifiedForFileDiff(diff);
+      return unified ? renderDiff(unified) : '';
+    }).filter(Boolean).join('\n');
   }
   const files = card.args?.files || [];
   if (!files.length) return paint.text.dim('    (no files)');
@@ -250,6 +274,26 @@ function detailWriteProject(card) {
     const lines = typeof f.content === 'string' ? f.content.split('\n').length : '?';
     return `    ${paint.brand.primary(p)} ${paint.text.dim(`(${lines} lines)`)}`;
   }).join('\n');
+}
+
+function redactedFileDiff(diff) {
+  return diff?.redacted ? diff : null;
+}
+
+function sensitiveFallbackDiff(card) {
+  return {
+    relative_path: card.args?.file_path || card.args?.path || 'sensitive config',
+    lines_added: card.result?.lines_added,
+    lines_removed: card.result?.lines_removed,
+    redacted: true,
+  };
+}
+
+function renderRedactedDiff(diff = {}) {
+  const file = diff.relative_path || diff.path || 'sensitive config';
+  const add = diff.lines_added ?? 0;
+  const rem = diff.lines_removed ?? 0;
+  return `    ${paint.brand.primary(file)} ${paint.text.dim(`+${add} −${rem}`)}\n    ${paint.text.dim('diff redacted for sensitive config')}`;
 }
 
 function detailDeleteFile(card) {

@@ -96,11 +96,13 @@ export class TrustStore {
       }
     }
     if ((reask.on_risk_increase ?? this.policy.hitl?.reaskOnRiskIncrease) && rule.tier && tier) {
-      const order = [TIERS.READ, TIERS.SHELL_SAFE, TIERS.LOCAL_EDIT, TIERS.SHELL_MEDIUM, TIERS.NETWORK, TIERS.SHELL_DANGEROUS, TIERS.DESTRUCTIVE];
+      const order = [TIERS.READ, TIERS.SHELL_SAFE, TIERS.LOCAL_EDIT, TIERS.PROTECTED_EDIT, TIERS.SHELL_MEDIUM, TIERS.NETWORK, TIERS.SHELL_DANGEROUS, TIERS.DESTRUCTIVE];
       if (order.indexOf(tier) > order.indexOf(rule.tier)) return 'risk tier increased';
     }
-    if ((this.policy.hitl?.alwaysAskForDangerous ?? true) && (tier === TIERS.SHELL_DANGEROUS || tier === TIERS.DESTRUCTIVE)) {
-      return 'dangerous tier requires fresh approval';
+    if ((this.policy.hitl?.alwaysAskForDangerous ?? true) && (tier === TIERS.SHELL_DANGEROUS || tier === TIERS.DESTRUCTIVE || tier === TIERS.PROTECTED_EDIT)) {
+      return tier === TIERS.PROTECTED_EDIT
+        ? 'protected edit requires fresh approval'
+        : 'dangerous tier requires fresh approval';
     }
     if ((reask.on_command_shape_change ?? this.policy.hitl?.reaskOnCommandShapeChange) && rule.command_shape && args.command) {
       if (rule.command_shape !== commandShape(args.command)) return 'command shape changed';

@@ -14,12 +14,15 @@
  * intent can't be hidden behind a friendly description.
  */
 
+import { isApprovalRequiredWritePath, isSensitiveConfigPath } from './safety.mjs';
+
 // ── Tier enum ────────────────────────────────────────────────────────────
 
 export const TIERS = Object.freeze({
   READ:            'read',
   SENSITIVE_READ:  'sensitive-read',
   LOCAL_EDIT:      'local-edit',
+  PROTECTED_EDIT:  'protected-edit',
   SHELL_SAFE:      'shell-safe',
   SHELL_MEDIUM:    'shell-medium',
   SHELL_DANGEROUS: 'shell-dangerous',
@@ -38,6 +41,7 @@ export const BEHAVIOR = Object.freeze({
   [TIERS.READ]:            'auto',
   [TIERS.SENSITIVE_READ]:  'prompt-explicit',
   [TIERS.LOCAL_EDIT]:      'auto-with-undo',
+  [TIERS.PROTECTED_EDIT]:  'prompt-explicit',
   [TIERS.SHELL_SAFE]:      'auto',
   [TIERS.SHELL_MEDIUM]:    'prompt-safe',
   [TIERS.SHELL_DANGEROUS]: 'prompt-explicit',
@@ -76,6 +80,14 @@ const LOCAL_EDIT_TOOLS = new Set([
   'agent_create', 'agent_sync',
   'workflow_create_multi', 'workflow_sync_multi',
 ]);
+
+const WRITE_PATH_KEYS = [
+  'path', 'file_path', 'file', 'target',
+];
+
+const WRITE_PATH_ARRAY_KEYS = [
+  'paths', 'file_paths', 'targets',
+];
 
 const DESTRUCTIVE_TOOLS = new Set([
   'delete_file', 'skill_remove',
@@ -219,6 +231,7 @@ const TIER_ORDER = [
   TIERS.SENSITIVE_READ,
   TIERS.SHELL_SAFE,
   TIERS.LOCAL_EDIT,
+  TIERS.PROTECTED_EDIT,
   TIERS.NETWORK,
   TIERS.SHELL_MEDIUM,
   TIERS.DESTRUCTIVE,
@@ -243,7 +256,9 @@ export function classify(tool, args = {}) {
   if (READ_TOOLS.has(tool)) {
     return isSensitiveRead(args) ? TIERS.SENSITIVE_READ : TIERS.READ;
   }
-  if (LOCAL_EDIT_TOOLS.has(tool))  return TIERS.LOCAL_EDIT;
+  if (LOCAL_EDIT_TOOLS.has(tool)) {
+    return isApprovalRequiredWrite(args) ? TIERS.PROTECTED_EDIT : TIERS.LOCAL_EDIT;
+  }
   if (DESTRUCTIVE_TOOLS.has(tool)) return TIERS.DESTRUCTIVE;
   if (NETWORK_TOOLS.has(tool))     return TIERS.NETWORK;
 
@@ -273,6 +288,7 @@ export function label(tier) {
     case TIERS.READ:            return 'READ';
     case TIERS.SENSITIVE_READ:  return 'SENSITIVE-READ';
     case TIERS.LOCAL_EDIT:      return 'LOCAL-EDIT';
+    case TIERS.PROTECTED_EDIT:  return 'PROTECTED-EDIT';
     case TIERS.SHELL_SAFE:      return 'SHELL-SAFE';
     case TIERS.SHELL_MEDIUM:    return 'SHELL-MEDIUM';
     case TIERS.SHELL_DANGEROUS: return 'SHELL-DANGEROUS';
@@ -310,9 +326,13 @@ export function isSensitiveReadPath(filePath = '') {
 
   const parts = normalized.split('/').filter(Boolean);
   const base = parts[parts.length - 1] || normalized;
-  if (base === '.env') return true;
+  if (isSensitiveConfigPath(base)) return true;
   if (/\.pem$/i.test(base)) return true;
   return parts.includes('secrets');
+}
+
+export function isApprovalRequiredWrite(args = {}) {
+  return extractWritePaths(args).some(isApprovalRequiredWritePath);
 }
 
 function extractReadPaths(args = {}) {
@@ -328,6 +348,37 @@ function extractReadPaths(args = {}) {
         paths.push(item);
       } else if (item && typeof item === 'object') {
         for (const nestedKey of READ_PATH_KEYS) {
+          if (typeof item[nestedKey] === 'string') paths.push(item[nestedKey]);
+        }
+      }
+    }
+  }
+  return paths;
+}
+
+function extractWritePaths(args = {}) {
+  const paths = [];
+  for (const key of WRITE_PATH_KEYS) {
+    if (typeof args[key] === 'string') paths.push(args[key]);
+  }
+  for (const key of WRITE_PATH_ARRAY_KEYS) {
+    const value = args[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (typeof item === 'string') {
+        paths.push(item);
+      } else if (item && typeof item === 'object') {
+        for (const nestedKey of WRITE_PATH_KEYS) {
+          if (typeof item[nestedKey] === 'string') paths.push(item[nestedKey]);
+        }
+      }
+    }
+  }
+  if (Array.isArray(args.files)) {
+    for (const item of args.files) {
+      if (typeof item === 'string') paths.push(item);
+      else if (item && typeof item === 'object') {
+        for (const nestedKey of WRITE_PATH_KEYS) {
           if (typeof item[nestedKey] === 'string') paths.push(item[nestedKey]);
         }
       }

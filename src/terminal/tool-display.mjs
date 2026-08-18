@@ -1,5 +1,7 @@
 // Present-progressive verbs — read more conversationally than "Read file":
 // "Reading auth.py  — 47 lines" reads like the agent narrating, not a log.
+import { isSensitiveConfigPath } from '../core/safety.mjs';
+
 const TOOL_LABELS = Object.freeze({
   shell: 'Running',
   read_file: 'Reading',
@@ -129,6 +131,7 @@ export function toolDisplaySummary(tool, args = {}, { cwd } = {}) {
         .join(', ') || 'Project files';
     case 'edit_file': {
       const filePath = shortPath(args.file_path || args.path, cwd);
+      if (isSensitiveConfigPath(filePath)) return `${filePath} · match [redacted]`;
       const search = String(args.search || '').trim();
       return search ? `${filePath} · match "${search.slice(0, 40)}${search.length > 40 ? '...' : ''}"` : filePath;
     }

@@ -128,6 +128,13 @@ test('uses concise structured tool summaries', () => {
     }, { cwd: '/repo' }),
     'src/main.js · match "const oldValue = true;"',
   );
+  const envSummary = toolDisplaySummary('edit_file', {
+    file_path: '/repo/.env.local',
+    search: 'API_KEY=secret',
+  }, { cwd: '/repo' });
+  assert.ok(envSummary.includes('.env.local'));
+  assert.ok(envSummary.includes('[redacted]'));
+  assert.ok(!envSummary.includes('secret'));
   assert.strictEqual(
     toolDisplaySummary('read_batch', {
       items: [
@@ -805,6 +812,56 @@ test('renders direct and legacy file diff payloads', () => {
   }));
   assert.ok(detail.includes('--- a/src/legacy.js'));
   assert.ok(detail.includes('+newThing();'));
+});
+
+test('redacts sensitive config diff previews and details', () => {
+  const redactedDiff = {
+    type: 'file_diff',
+    relative_path: '.env.local',
+    lines_added: 1,
+    lines_removed: 1,
+    redacted: true,
+    sensitive: true,
+    hunks: [],
+    unified: '',
+  };
+
+  const preview = stripAnsi(formatCompactFileDiff({
+    file_diff: redactedDiff,
+    lines_added: 1,
+    lines_removed: 1,
+  }, { indent: '  ', columns: 100 }));
+  assert.ok(preview.includes('.env.local +1 −1'));
+  assert.ok(preview.includes('diff redacted for sensitive config'));
+  assert.ok(!preview.includes('API_KEY'));
+
+  const detail = stripAnsi(detailFor({
+    tool: 'edit_file',
+    args: {
+      file_path: '.env.local',
+      search: 'API_KEY=old-secret',
+      replace: 'API_KEY=new-secret',
+    },
+    result: { file_diff: redactedDiff, lines_added: 1, lines_removed: 1 },
+  }));
+  assert.ok(detail.includes('diff redacted for sensitive config'));
+  assert.ok(!detail.includes('old-secret'));
+  assert.ok(!detail.includes('new-secret'));
+
+  const prompt = stripAnsi(renderApprovalPrompt({
+    tool: 'edit_file',
+    args: {
+      file_path: '.env.local',
+      search: 'API_KEY=old-secret',
+      replace: 'API_KEY=new-secret',
+    },
+    tier: TIERS.PROTECTED_EDIT,
+    why: 'review required',
+  }));
+  assert.ok(prompt.includes('PROTECTED-EDIT'));
+  assert.ok(prompt.includes('match: [redacted]'));
+  assert.ok(!prompt.includes('old-secret'));
+  assert.ok(!prompt.includes('new-secret'));
 });
 
 test('mission report omits old title and keeps tools/time on one line', () => {

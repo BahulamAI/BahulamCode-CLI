@@ -236,7 +236,9 @@ export function formatCompactFileDiff(result, {
   columns = term().columns || 120,
   showFileHeader = false,
 } = {}) {
-  const diffs = fileDiffs(result).map(normalizeFileDiff).filter(diff => diff?.hunks?.length);
+  const diffs = fileDiffs(result)
+    .map(normalizeFileDiff)
+    .filter(diff => diff && (diff.redacted || diff?.hunks?.length));
   if (!diffs.length) return '';
 
   const out = [];
@@ -251,6 +253,16 @@ export function formatCompactFileDiff(result, {
       if (shown >= lineLimit) { truncated = true; break; }
       out.push(`${indent}${paint.brand.primary(diff.relative_path || diff.path || 'file')} ${paint.text.dim(diffDelta(diff))}`);
       shown++;
+    }
+
+    if (diff.redacted) {
+      if (shown >= lineLimit) { truncated = true; break; }
+      const subject = (showFileHeader || diffs.length > 1)
+        ? ''
+        : `${[diff.relative_path || diff.path || 'file', diffDelta(diff)].filter(Boolean).join(' ')} · `;
+      out.push(`${indent}${paint.text.dim(`${subject}diff redacted for sensitive config`)}`);
+      shown++;
+      continue;
     }
 
     for (const hunk of diff.hunks || []) {
