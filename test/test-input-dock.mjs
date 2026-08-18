@@ -256,6 +256,23 @@ test('renderDockOverlay accepts stacked approval lines', () => {
     'renderDockOverlay should render through the overlay frame path');
 });
 
+test('renderDockOverlay sizes from overlay content, not the input growth cap', () => {
+  const source = dock.renderDockOverlay.toString();
+  const { overlayRowsForWrapped, MAX_INPUT_ROWS_CAP } = dock._internals();
+  assert.ok(!source.includes('Math.max(inputRowsMax, maxRows)'),
+    'approval overlays should not inherit the normal input row cap');
+  assert.strictEqual(overlayRowsForWrapped(3, 8), 3);
+  assert.strictEqual(overlayRowsForWrapped(0, 8), 1);
+  assert.strictEqual(overlayRowsForWrapped(10, 6), 6);
+  assert.strictEqual(overlayRowsForWrapped(20, 99), MAX_INPUT_ROWS_CAP);
+});
+
+test('clearInputPrompt collapses expanded overlays before transcript writes resume', () => {
+  const source = dock.clearInputPrompt.toString();
+  assert.ok(source.includes('setInputRowsTo(MIN_INPUT_ROWS)'),
+    'clearInputPrompt should shrink the dock back to one input row');
+});
+
 test('dock status overlays follow transcript cursor instead of bottom row', () => {
   const pinnedSource = dock.pinnedStatusRow.toString();
   const moveSource = dock.moveToContent.toString();

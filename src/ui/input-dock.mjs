@@ -52,6 +52,7 @@ const INPUT_RIGHT_PAD = 2;
 const META_INDENT = 4;
 
 const DEFAULT_MAX_INPUT_ROWS = 6;
+const DEFAULT_OVERLAY_MAX_ROWS = 8;
 const MIN_INPUT_ROWS = 1;
 const MAX_INPUT_ROWS_CAP = 12;
 
@@ -200,6 +201,18 @@ function resolveMaxInputRows(requested) {
   const n = Number.parseInt(String(raw), 10);
   if (!Number.isFinite(n)) return DEFAULT_MAX_INPUT_ROWS;
   return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
+}
+
+function resolveOverlayRowCap(requested = DEFAULT_OVERLAY_MAX_ROWS) {
+  const n = Number.parseInt(String(requested), 10);
+  if (!Number.isFinite(n)) return DEFAULT_OVERLAY_MAX_ROWS;
+  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
+}
+
+function overlayRowsForWrapped(wrappedLength, requestedMaxRows = DEFAULT_OVERLAY_MAX_ROWS) {
+  const rowCap = resolveOverlayRowCap(requestedMaxRows);
+  const wanted = Math.max(MIN_INPUT_ROWS, Math.floor(Number(wrappedLength) || 0));
+  return Math.min(rowCap, wanted);
 }
 
 // How many input rows does this (prefix + value) buffer need? Wrapped line
@@ -574,9 +587,10 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
 export function clearInputPrompt() {
   if (!mounted) return false;
   contentTrackingActive = false;
-  clearInputRows();
   lastFrame.value = '';
   lastFrame.overlayLines = null;
+  setInputRowsTo(MIN_INPUT_ROWS);
+  clearInputRows();
   renderFrame(lastFrame);
   parkCursorAtInput();
   return true;
@@ -598,14 +612,14 @@ export function renderDockOverlay({
   lines = [],
   meta = '',
   tips = '',
-  maxRows = 8,
+  maxRows = DEFAULT_OVERLAY_MAX_ROWS,
 } = {}) {
   if (!mounted) return false;
   contentTrackingActive = false;
   const sourceLines = Array.isArray(lines) ? lines : String(lines || '').split('\n');
   const wrapped = layoutOverlayLines(sourceLines);
-  const rowCap = Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, Math.max(inputRowsMax, maxRows)));
-  setInputRowsTo(Math.min(rowCap, Math.max(MIN_INPUT_ROWS, wrapped.length)), { maxRows: rowCap });
+  const rowCap = resolveOverlayRowCap(maxRows);
+  setInputRowsTo(overlayRowsForWrapped(wrapped.length, rowCap), { maxRows: rowCap });
   const tail = tailWithEllipsis(wrapped, inputRows);
   renderFrame({
     context,
@@ -667,7 +681,10 @@ export function _internals() {
     drawableColumns,
     resetContentCursor,
     contentCursor: () => ({ row: contentCursorRow, col: contentCursorCol, active: contentTrackingActive }),
+    overlayRowsForWrapped,
     FIXED_ROWS,
+    MAX_INPUT_ROWS_CAP,
+    DEFAULT_OVERLAY_MAX_ROWS,
     BRAND_LABEL,
   };
 }
