@@ -315,11 +315,17 @@ test('shell card compacts generated scripts and detail exposes command output', 
   const profile = shellCommandProfile(command);
   assert.strictEqual(profile.compact, true);
   assert.strictEqual(profile.kind, 'python script');
+  assert.strictEqual(profile.preview, 'from pathlib import…');
 
-  const head = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
+  const head = stripAnsi(formatCardHead('shell', { command }, { columns: 120, cwd: process.cwd() }));
   assert.ok(head.includes('• shell · Running $ python script'));
+  assert.ok(head.includes('preview: from pathlib import…'));
   assert.ok(head.includes('details: F2 or /last'));
   assert.ok(!head.includes('Path("out.txt")'));
+  const narrowHead = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
+  assert.ok(narrowHead.includes('python script'));
+  assert.ok(narrowHead.includes('preview: from pathlib import…'));
+  assert.ok(!narrowHead.includes('Path("out.txt")'));
 
   const detail = stripAnsi(detailFor({
     id: 'shell-script',
@@ -903,6 +909,7 @@ test('approval prompt compacts generated shell scripts until details are request
   }));
   assert.ok(compact.includes('python script'));
   assert.ok(compact.includes('3 lines'));
+  assert.ok(compact.includes('preview: from pathlib import…'));
   assert.ok(compact.includes('d details'));
   assert.ok(!compact.includes('from pathlib import Path'));
 

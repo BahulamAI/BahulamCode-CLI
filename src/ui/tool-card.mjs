@@ -471,8 +471,19 @@ export function formatCardHead(tool, args, opts = {}) {
   if (tool === 'shell') {
     const profile = shellCommandProfile(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
     if (profile.compact) {
-      const argsTruncated = truncateMiddle(argsText, budget);
       const head = `${indent}${leadText}`;
+      if (profile.preview) {
+        const fullArgs = compactShellProfile(profile);
+        if (visibleWidth(fullArgs) <= budget) return `${head} ${fullArgs}`;
+        const previewTail = `${paint.text.dim(' · preview:')} ${paint.text.primary(profile.preview)}`;
+        const baseArgs = compactShellProfile(profile, { includePreview: false, includeDetails: false });
+        const baseBudget = budget - visibleWidth(previewTail);
+        if (baseBudget >= 12) {
+          const baseTruncated = truncateEndVisible(baseArgs, baseBudget);
+          return `${head} ${baseTruncated}${previewTail}`;
+        }
+      }
+      const argsTruncated = truncateMiddle(argsText, budget);
       return argsTruncated ? `${head} ${argsTruncated}` : head;
     }
   }
@@ -500,10 +511,15 @@ function formatHeadLead(tool, label) {
   return `${paint.text.dim('• shell ·')} ${paintLabel(tool, label)}`;
 }
 
-function compactShellProfile(profile) {
-  const parts = [`${paint.text.dim('$')} ${paint.text.primary(profile.summary)}`];
+function compactShellProfile(profile, { includePreview = true, includeDetails = true } = {}) {
+  const previewSuffix = profile.preview ? ` · preview: ${profile.preview}` : '';
+  const summary = previewSuffix && profile.summary.endsWith(previewSuffix)
+    ? profile.summary.slice(0, -previewSuffix.length)
+    : profile.summary;
+  const parts = [`${paint.text.dim('$')} ${paint.text.primary(summary)}`];
   if (profile.cwdLabel) parts.push(`${paint.text.dim('in')} ${paint.brand.data(profile.cwdLabel)}`);
-  parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
+  if (includeDetails) parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
+  if (includePreview && profile.preview) parts.push(`${paint.text.dim('preview:')} ${paint.text.primary(profile.preview)}`);
   return parts.join(' · ');
 }
 
@@ -582,6 +598,15 @@ function truncateMiddle(text, max) {
   const head = plain.slice(0, Math.floor(keep / 2));
   const tail = plain.slice(plain.length - Math.ceil(keep / 2));
   return paint.text.muted(`${head}…${tail}`);
+}
+
+function truncateEndVisible(text, max) {
+  if (!text) return '';
+  if (visibleWidth(text) <= max) return text;
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  const limit = Math.max(1, Math.floor(max));
+  if (limit <= 1) return '';
+  return paint.text.muted(`${plain.slice(0, limit - 1)}…`);
 }
 
 function wrapCommand(command, width) {
