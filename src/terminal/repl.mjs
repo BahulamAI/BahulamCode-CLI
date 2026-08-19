@@ -42,6 +42,7 @@ import {
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
+import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
@@ -72,8 +73,10 @@ import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
 import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
+import * as rqueue from '../ui/render-queue.mjs';
 import {
   appendContent,
+  bumpSpinnerProgress,
   clearPendingHead,
   clippedThinking,
   expandIndex,
@@ -88,6 +91,7 @@ import {
   renderStagnation,
   renderToolCall,
   renderToolResult,
+  setSubAgentWindowActive,
   startContentStream,
   startSpinner,
   stopSpinner,
@@ -634,8 +638,10 @@ function commandCompletions(line) {
   const top = ['/help', '/status', '/plan', '/tasks', '/history', '/settings', '/why'];
   const namespaced = HELP_GROUPS.flatMap(g => g.commands.map(([name]) => name.split(/\s+/)[0]));
   const all = [...new Set([...top, ...namespaced, ...Object.keys(COMMANDS), '/quit'])].sort();
-  const hits = all.filter(cmd => cmd.startsWith(line));
-  return hits.length ? hits : all;
+  // No fallback-to-all: a non-matching prefix ("/Users/...", a pasted
+  // path) must yield NOTHING so the hint overlay hides, not the full
+  // catalog. Bare "/" still matches every command via startsWith.
+  return all.filter(cmd => cmd.startsWith(line));
 }
 
 function slashCommandSuggestions(line, limit = 5) {
@@ -1081,7 +1087,10 @@ function renderEvent(event) {
           runtime.lastRenderedBlock = 'thinking';
           session._lastEmittedThinking = text;
         }
-        startSpinner(text.slice(0, 80));
+        // Shared 'thinking' phase — the elapsed clock keeps counting
+        // across successive thinking events instead of resetting per
+        // thought, so the user sees "… · 24s" during long reasoning.
+        startSpinner(text.slice(0, 80), { phase: 'thinking' });
         // Capture reasoning so /why can replay it.
         session.lastReasoning = text;
       }
@@ -1348,7 +1357,12 @@ function renderEvent(event) {
       runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
-      startSpinner(`${agentType}: working...`);
+      // Fixed-height live tool window under the spinner (queue mode):
+      // inner tool calls stream here instead of flooding the transcript.
+      setSubAgentWindowActive(true);
+      // Phase per sub-agent run: the status line counts elapsed time and
+      // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
+      startSpinner(`${agentType} agent`, { phase: `sub:${agentType}:${Date.now()}` });
       break;
     }
 
@@ -1363,11 +1377,14 @@ function renderEvent(event) {
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
       // spinner would flip-flop between the two texts and read as blank.
       if (runtime.exploreRun.lineActive && isExploreTool(tool)) break;
+      // Same phase → clock keeps counting; the counter shows progress.
+      bumpSpinnerProgress();
       updateSpinner(`${agentType} → ${tool}`);
       break;
     }
 
     case 'sub_agent_complete': {
+      setSubAgentWindowActive(false);
       stopSpinner();
       clearPendingHead();
       flushFoldedSubAgentTools();
@@ -1479,6 +1496,8 @@ function renderEvent(event) {
     }
 
     case 'complete': {
+      // Fire first_answer on the first turn's completion
+      if (session.turns === 1 && session.user) telemetry.track('first_answer', {});
       stopSpinner();
       flushContent();
       flushFoldedSubAgentTools();
@@ -2029,8 +2048,10 @@ async function handleCommand(input, ctx) {
 
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
+      telemetry.track('login_shown', { method: 'repl_command' });
       try {
         await ctx.auth.login();
+        telemetry.track('login_completed', { method: 'repl_command' });
         process.stderr.write(`${c.green('✓ Login successful!')}\n`);
         await fetchUser(ctx);
       } catch (err) {
@@ -2533,6 +2554,67 @@ async function handleCommand(input, ctx) {
       } else {
         process.stderr.write(`  ${c.gray('No auto-approvals were active.')}\n`);
       }
+      return;
+    }
+
+    case '/auto': {
+      // Session autopilot for long-running jobs: auto-approve routine
+      // writes/shell while STILL prompting for dangerous tiers (rm,
+      // force-push, command substitution, …) and never overriding hard
+      // safety blocks. Distinct from the launch-time --freeswim flag,
+      // which approves everything including dangerous tiers.
+      const sub = (rest || '').trim().toLowerCase();
+      if (sub === 'off') {
+        ctx.approval.approveAll = false;
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto mode off — approvals prompt again.')}\n`);
+        return;
+      }
+      if (sub === '' || sub === 'on') {
+        ctx.approval.approveAll = true;
+        process.stderr.write(`  ${c.green('✓')} ${c.bold('Auto mode on')} ${c.dim('— routine tool calls auto-approve this session.')}\n`);
+        process.stderr.write(`    ${c.dim('Still prompts: dangerous shell (rm/force-push/substitution), protected files.')}\n`);
+        process.stderr.write(`    ${c.dim('Hard safety blocks stay enforced. Disable with /auto off · inspect with /approvals.')}\n`);
+        process.stderr.write(`    ${c.dim('Tip: start your message with #auto to switch the backend agent into autonomous mode too.')}\n`);
+        return;
+      }
+      // status / anything else → show current mode
+      process.stderr.write(`  ${c.dim('Approval mode:')} ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.dim('Usage: /auto [on|off|status]')}\n`);
+      return;
+    }
+
+    case '/approvals': {
+      const parts = (rest || '').trim().split(/\s+/).filter(Boolean);
+      const action = (parts[0] || 'list').toLowerCase();
+      if (action === 'clear') {
+        const wasActive = ctx.approval.revoke();
+        process.stderr.write(wasActive
+          ? `  ${c.green('✓')} ${c.dim('All session approvals cleared.')}\n`
+          : `  ${c.gray('No session approvals were active.')}\n`);
+        return;
+      }
+      if (action === 'allow' && parts[1]) {
+        const tool = parts[1];
+        ctx.approval.approvedToolTypes.add(tool);
+        process.stderr.write(`  ${c.green('✓')} ${c.dim(`Auto-approving ${tool} for this session (dangerous tiers still prompt).`)}\n`);
+        return;
+      }
+      if (action === 'remove' && parts[1]) {
+        const removed = ctx.approval.approvedToolTypes.delete(parts[1]);
+        process.stderr.write(removed
+          ? `  ${c.green('✓')} ${c.dim(`${parts[1]} will prompt again.`)}\n`
+          : `  ${c.gray(`${parts[1]} had no session grant.`)}\n`);
+        return;
+      }
+      // list (default)
+      const s = ctx.approval.getSummary();
+      process.stderr.write(`\n  ${c.bold('Session approvals')}\n`);
+      process.stderr.write(`  ${c.dim('Mode')}         ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.dim('Allow-all')}    ${s.autoApproveAll ? c.green('on') : c.dim('off')}\n`);
+      process.stderr.write(`  ${c.dim('Tool grants')}  ${s.autoApprovedTypes.length ? s.autoApprovedTypes.join(', ') : c.dim('none')}\n`);
+      process.stderr.write(`  ${c.dim('Trust rules')}  ${c.dim(`${s.trust.sessionRules || 0} session · ${s.trust.projectRules || 0} project`)}\n`);
+      process.stderr.write(`  ${c.dim('Decisions')}    ${c.dim(`${s.approved} approved · ${s.denied} denied`)}\n`);
+      process.stderr.write(`  ${c.dim('Edit: /approvals allow <tool> · /approvals remove <tool> · /approvals clear · /auto [on|off]')}\n\n`);
       return;
     }
 
@@ -3412,50 +3494,92 @@ export async function startTerminalRepl() {
     readline.cursorTo(process.stderr, col);
   }
 
-  function renderSlashHint(line = '', { preserveSelection = false } = {}) {
+  // Hint frames must NOT go through the patched std streams — under the
+  // render queue, redirected writes are sanitized (cursor CSI stripped)
+  // and serialized into the transcript. That's exactly the "pasted a
+  // path, command list flooded the message area" bug. queue.raw() is the
+  // serialized trusted channel for cursor-addressed frame writes;
+  // readline helpers are the legacy no-queue path.
+  function writeHintFrame(frame) {
+    if (rqueue.isActive()) {
+      rqueue.raw(frame);
+      return;
+    }
+    process.stderr.write(frame);
+  }
+
+  let slashHintTimer = null;
+
+  function renderSlashHintNow(line = '', { preserveSelection = false } = {}) {
     if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
     const rows = promptBottomPaddingLines();
     const suggestions = slashCommandSuggestions(line, Math.min(5, rows));
+    // Nothing matches (pasted path, typo) → hide instead of rendering
+    // an empty/robotic frame.
+    if (!suggestions.length) {
+      if (slashHintVisible) clearSlashHint();
+      return;
+    }
     const cols = process.stdout.columns || 80;
     if (!preserveSelection || line !== slashHintLine) slashHintSelected = 0;
     slashHintItems = suggestions;
     slashHintLine = line;
     if (slashHintSelected >= slashHintItems.length) slashHintSelected = Math.max(0, slashHintItems.length - 1);
 
-    readline.moveCursor(process.stderr, 0, 1);
+    // Compose the whole frame as ONE write: down a row, paint each hint
+    // row (clear + text), then back up to the input row.
+    let frame = '\x1b[1B';
     for (let i = 0; i < rows; i++) {
-      readline.clearLine(process.stderr, 0);
-      readline.cursorTo(process.stderr, 0);
+      frame += '\x1b[2K\x1b[G';
       const item = suggestions[i];
       if (item) {
         const marker = i === slashHintSelected ? c.brand('›') : c.dim(' ');
         const command = item.command.padEnd(13);
         const maxDesc = Math.max(0, cols - 21);
         const desc = truncateHintText(item.description, maxDesc);
-        process.stderr.write(`  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`);
+        frame += `  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`;
       }
-      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+      if (i < rows - 1) frame += '\x1b[1B';
     }
-    readline.moveCursor(process.stderr, 0, -rows);
+    frame += `\x1b[${rows}A`;
+    writeHintFrame(frame);
     restoreReadlineCursor();
-    slashHintVisible = suggestions.length > 0;
+    slashHintVisible = true;
     slashHintRowsVisible = rows;
   }
 
+  // Debounced entry point: a bracketed paste delivers the buffer as many
+  // rapid input events — rendering per event is what turned one paste
+  // into dozens of hint frames. Selection-preserving calls (arrow keys)
+  // stay immediate for responsiveness.
+  function renderSlashHint(line = '', opts = {}) {
+    if (opts.preserveSelection) {
+      if (slashHintTimer) { clearTimeout(slashHintTimer); slashHintTimer = null; }
+      renderSlashHintNow(line, opts);
+      return;
+    }
+    if (slashHintTimer) clearTimeout(slashHintTimer);
+    slashHintTimer = setTimeout(() => {
+      slashHintTimer = null;
+      renderSlashHintNow(typeof rl?.line === 'string' ? rl.line : line, opts);
+    }, 24);
+  }
+
   function clearSlashHint({ restoreCursor: shouldRestoreCursor = true } = {}) {
+    if (slashHintTimer) { clearTimeout(slashHintTimer); slashHintTimer = null; }
     if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
       slashHintVisible = false;
       slashHintRowsVisible = 0;
       return;
     }
     const rows = slashHintRowsVisible || promptBottomPaddingLines() || 1;
-    readline.moveCursor(process.stderr, 0, 1);
+    let frame = '\x1b[1B';
     for (let i = 0; i < rows; i++) {
-      readline.clearLine(process.stderr, 0);
-      readline.cursorTo(process.stderr, 0);
-      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+      frame += '\x1b[2K\x1b[G';
+      if (i < rows - 1) frame += '\x1b[1B';
     }
-    readline.moveCursor(process.stderr, 0, -rows);
+    frame += `\x1b[${rows}A`;
+    writeHintFrame(frame);
     // The dock's bottom rule + tips row live in the rows we just cleared.
     // Repaint the frame (input row untouched) so they reappear.
     if (isInputDockMounted()) redrawDockFrame();
@@ -3852,6 +3976,9 @@ export async function startTerminalRepl() {
     session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
+    // Fire first_prompt on user's first turn
+    if (session.turns === 1) telemetry.track('first_prompt', {});
+
     session.toolCalls = 0;
     session.subAgentToolCalls = 0;
     session.lastTask = originalInput;
