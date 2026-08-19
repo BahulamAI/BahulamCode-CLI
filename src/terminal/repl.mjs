@@ -345,23 +345,37 @@ const NAMED_MODEL_MODES_LIST = ['fast', 'thinking', 'extra', 'max'];
 const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
 
 let _modelCatalogCache = null;
+let _modelCatalogError = null;
 
 async function fetchModelCatalog(ctx) {
   if (_modelCatalogCache) return _modelCatalogCache;
   try {
     const creds = ctx?.auth?.loadCredentials?.();
-    if (!creds?.backendUrl) return null;
-    const headers = creds.token ? { 'Authorization': `Bearer ${creds.token}` } : {};
+    if (!creds?.backendUrl) {
+      _modelCatalogError = 'not logged in (no backend url)';
+      return null;
+    }
+    const headers = { 'X-Product': 'bahulam' };
+    if (creds.token) headers['Authorization'] = `Bearer ${creds.token}`;
     const resp = await fetch(`${creds.backendUrl}/api/models`, {
       headers,
       signal: AbortSignal.timeout(3000),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      _modelCatalogError = `backend returned ${resp.status}`;
+      return null;
+    }
     const data = await resp.json();
     const models = Array.isArray(data?.models) ? data.models : null;
-    if (models) _modelCatalogCache = models;
+    if (models) {
+      _modelCatalogCache = models;
+      _modelCatalogError = models.length ? null : 'catalog is empty';
+    } else {
+      _modelCatalogError = 'unexpected response shape';
+    }
     return models;
-  } catch {
+  } catch (err) {
+    _modelCatalogError = err?.name === 'TimeoutError' ? 'backend timeout (3s)' : 'backend unreachable';
     return null;
   }
 }
@@ -392,7 +406,7 @@ async function warnIfNotCurated(model, ctx) {
 async function printModelCatalog(ctx) {
   const catalog = await fetchModelCatalog(ctx);
   if (!catalog) {
-    process.stderr.write(`  ${c.yellow('!')} ${c.dim('Model catalog unavailable (offline or backend unreachable).')}\n`);
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Model catalog unavailable — ${_modelCatalogError || 'unknown error'}.`)}\n`);
     return;
   }
   const curated = catalog.filter(m => m?.harness_validated);
@@ -511,7 +525,20 @@ async function openModelForm(ctx) {
     defaultLabel: defaultsByRole[role] || null,
   }));
   const catalog = await fetchModelCatalog(ctx);
-  const result = await pickModelOverridesForm({ rl: ctx?._rl || null, roles, catalog: catalog || [] });
+  // No curated catalog (backend down, empty table, …): fall back to the
+  // distinct models the backend already reported for this session so the
+  // form is still navigable instead of a dead single-option row.
+  const fallbackIds = [...new Set([
+    ...Object.values(limits).map(l => l?.model),
+    ...Object.values(session.modelOverrides || {}),
+  ].filter(Boolean))];
+  const result = await pickModelOverridesForm({
+    rl: ctx?._rl || null,
+    roles,
+    catalog: catalog || [],
+    fallbackIds,
+    unavailableNote: catalog ? null : (_modelCatalogError || 'backend unreachable'),
+  });
   if (!result) {
     process.stderr.write(`  ${c.dim('No model changes.')}\n`);
     return;

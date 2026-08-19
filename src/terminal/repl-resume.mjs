@@ -30,6 +30,7 @@ import {
   resumeModeLabel,
   resumeTailTurnCount,
   startResumeProgress,
+  writeOverlayFrame,
 } from './repl-format.mjs';
 import { TarangStreamClient } from '../core/stream-client.mjs';
 import { getRecentSessions, getSessionDetail, buildResumeHistory, combineResumeSummaries } from '../core/local-store.mjs';
@@ -86,9 +87,6 @@ export async function pickResumableSession(resumable, ctx) {
     let renderedLines = 0;
 
     const renderMenu = () => {
-      if (renderedLines > 0) {
-        process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
-      }
       if (selected < offset) offset = selected;
       if (selected >= offset + pageSize) offset = selected - pageSize + 1;
 
@@ -119,7 +117,7 @@ export async function pickResumableSession(resumable, ctx) {
         `  ${c.dim(`↑↓ move  ·  Enter resume  ·  P preview  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`,
         cols - 1
       ));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
@@ -183,7 +181,6 @@ export async function chooseThresholdMode(ctx, decision) {
     let renderedLines = 0;
 
     const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
       const cols = Math.max(60, process.stderr.columns || 120);
       const pct = Math.round(decision.usageRatio * 100);
       const projected = formatCtxTokens(decision.projected);
@@ -221,7 +218,7 @@ export async function chooseThresholdMode(ctx, decision) {
       }
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/s/1/2 shortcut  ·  Esc cancel')}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
@@ -281,7 +278,6 @@ export async function previewResumeSession(session, ctx) {
     let scrollOffset = 0;
 
     const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
       const cols = Math.max(60, process.stderr.columns || 120);
       const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
       const contentLines = (history.summary || '').split('\n');
@@ -305,7 +301,7 @@ export async function previewResumeSession(session, ctx) {
       }
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/s/1/2 switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 

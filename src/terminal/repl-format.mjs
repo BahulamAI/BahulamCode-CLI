@@ -25,6 +25,26 @@ function transientLine(text) {
   inPlace(text);
 }
 
+/**
+ * Atomic repaint writer for raw-stdin overlays (resume picker, /model form).
+ *
+ * While the render queue is active, plain process.stderr.write is REDIRECTED
+ * into transcript content with cursor codes stripped — an overlay's
+ * "cursor-up N + erase" repaint becomes "append another copy" (the form-
+ * replication bug). Each repaint therefore goes through rqueue.raw() as one
+ * frame. On the first paint the frame's rows are reserved with newlines so
+ * painting near the bottom (input dock) scrolls once up-front and the
+ * cursor-relative repaint math stays stable afterwards.
+ */
+export function writeOverlayFrame(erasePrev, lines) {
+  const body = lines.join('\n') + '\n';
+  if (erasePrev > 0) {
+    rqueue.raw(`\x1b[${erasePrev}F\r\x1b[J` + body);
+  } else {
+    rqueue.raw('\n'.repeat(lines.length) + `\x1b[${lines.length}A` + body);
+  }
+}
+
 // ── One-liners ───────────────────────────────────────────────────────
 
 export function messageCountLabel(count) {

@@ -119,6 +119,14 @@ export function renderApprovalDockPrompt({
     ...opts.map((option, index) => optionToken(option, index === selected, explicitAccent(tier))),
   ];
 
+  // Show the WHOLE script when it fits — a partial script (…lines cut at
+  // the top) makes blind approval the default. Cap at half the terminal
+  // so the dock never eats the whole screen. Non-detail approvals keep
+  // the tight 8-row cap.
+  const termRows = Math.max(12, Number(process.stderr.rows) || 24);
+  const detailCap = Math.max(12, Math.floor(termRows / 2));
+  const maxRows = detailView ? Math.min(detailCap, Math.max(12, lines.length + 1)) : 8;
+
   return {
     prefix: '? approve › ',
     value: truncateForDock(subject, detailView ? 1200 : 220),
@@ -126,7 +134,7 @@ export function renderApprovalDockPrompt({
     meta: '',
     tips: approvalFooter(tool, detailView),
     lines,
-    maxRows: detailView ? 12 : 8,
+    maxRows,
   };
 }
 

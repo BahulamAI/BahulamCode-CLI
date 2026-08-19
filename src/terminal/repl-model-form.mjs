@@ -9,7 +9,7 @@
  */
 
 import { c } from './ansi.mjs';
-import { fitAnsiLine } from './repl-format.mjs';
+import { fitAnsiLine, writeOverlayFrame } from './repl-format.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
 
@@ -25,14 +25,20 @@ function creditBadge(row) {
  * @param {object|null} opts.rl        readline instance to pause/resume
  * @param {Array}  opts.roles          [{ role, label, current, defaultLabel }]
  * @param {Array}  opts.catalog        raw /api/models rows (may be empty)
+ * @param {Array}  [opts.fallbackIds]  model ids to cycle when no curated catalog
+ * @param {string} [opts.unavailableNote] why the catalog is missing (shown in header)
  * @returns {Promise<{overrides: Record<string,string>}|null>} null = cancelled
  */
-export async function pickModelOverridesForm({ rl, roles, catalog }) {
+export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, unavailableNote }) {
   if (!process.stdin.isTTY) return null;
   if (rl) rl.pause();
 
   const curated = (catalog || []).filter(m => m?.harness_validated && m?.id);
-  const baseOptions = [DEFAULT_SENTINEL, ...curated.map(m => m.id)];
+  const usingFallback = curated.length === 0;
+  const optionIds = usingFallback
+    ? [...new Set((fallbackIds || []).filter(Boolean))]
+    : curated.map(m => m.id);
+  const baseOptions = [DEFAULT_SENTINEL, ...optionIds];
   const byId = new Map(curated.map(m => [m.id, m]));
 
   // Per-row option list; a current override that isn't in the curated list
@@ -64,17 +70,19 @@ export async function pickModelOverridesForm({ rl, roles, catalog }) {
       }
       const meta = byId.get(value);
       const badge = meta ? creditBadge(meta) : '';
-      const flag = meta ? '' : c.yellow(' (uncurated)');
+      // Only flag uncurated picks when a curated catalog actually loaded —
+      // in fallback mode every option is a known backend model, not a stray.
+      const flag = meta || usingFallback ? '' : c.yellow(' (uncurated)');
       return `${c.brand(value)}${badge ? ` ${c.dim(badge)}` : ''}${flag}`;
     };
 
     const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
       const cols = Math.max(60, process.stderr.columns || 120);
       const lines = [];
       lines.push(`  ${c.bold('Models')} ${c.dim('· session overrides · curated platform catalog')}`);
-      if (!curated.length) {
-        lines.push(`  ${c.dim('(catalog unavailable — only defaults and current overrides shown)')}`);
+      if (usingFallback) {
+        const why = unavailableNote ? ` — ${unavailableNote}` : '';
+        lines.push(`  ${c.yellow('!')} ${c.dim(`catalog unavailable${why}; showing this session's backend models`)}`);
       }
       lines.push('');
       rows.forEach((row, i) => {
@@ -85,7 +93,7 @@ export async function pickModelOverridesForm({ rl, roles, catalog }) {
       });
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim('↑↓ role · ←→ model · Enter apply · c defaults · Esc cancel')}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
