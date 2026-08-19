@@ -364,6 +364,18 @@ export function isRuntimeInstalled() {
   return fs.existsSync(_runtimeBin());
 }
 
+/**
+ * Absolute path to the shipped model catalog snapshot inside the runtime
+ * bundle. Backend edits `app/services/model_catalog_snapshot.json` as the
+ * canonical source (admin dashboard publishes it to Supabase);
+ * stage-runtime-app.sh copies that same file into every runtime wheel at
+ * `runtime/app/services/model_catalog_snapshot.json`. The CLI reads from
+ * there so there is no third copy to keep in sync.
+ */
+export function runtimeSnapshotPath() {
+  return path.join(_runtimeRoot(), 'runtime', 'app', 'services', 'model_catalog_snapshot.json');
+}
+
 /** Diagnostic snapshot for `bahulam doctor`. */
 export function runtimeInfo() {
   return {

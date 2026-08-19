@@ -29,6 +29,7 @@ import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
+import { readShippedCatalog } from '../config/model-catalog.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -331,7 +332,7 @@ function printModelCommandUsage() {
   process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
   process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
-  process.stderr.write(`         /model list · status · clear [role]\n`);
+  process.stderr.write(`         /model list · status · refresh · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
 }
 
@@ -346,14 +347,46 @@ const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
 
 let _modelCatalogCache = null;
 let _modelCatalogError = null;
+let _modelCatalogSource = null;   // 'snapshot' | 'backend'
+let _backendRefreshInFlight = null;
 
 async function fetchModelCatalog(ctx) {
+  // Seed from the shipped snapshot so /model list, /model form and the
+  // curation warnings work offline. The backend refresh below overlays
+  // any drift without blocking the UI.
+  if (!_modelCatalogCache) {
+    const shipped = readShippedCatalog();
+    if (shipped && shipped.length) {
+      _modelCatalogCache = shipped;
+      _modelCatalogSource = 'snapshot';
+      _modelCatalogError = null;
+    }
+  }
+
+  // Kick off a background backend refresh at most once per REPL session.
+  // Snapshot already served the caller — this only matters for the *next*
+  // /model list. Skip entirely when offline mode is forced.
+  if (!_backendRefreshInFlight && _modelCatalogSource !== 'backend' &&
+      process.env.BAHULAM_MODEL_CATALOG_OFFLINE !== '1') {
+    _backendRefreshInFlight = refreshCatalogFromBackend(ctx).finally(() => {
+      _backendRefreshInFlight = null;
+    });
+  }
+
   if (_modelCatalogCache) return _modelCatalogCache;
+
+  // Snapshot missing (shouldn't happen in a shipped package) — fall back
+  // to whatever the backend refresh produces.
+  await _backendRefreshInFlight;
+  return _modelCatalogCache;
+}
+
+async function refreshCatalogFromBackend(ctx) {
   try {
     const creds = ctx?.auth?.loadCredentials?.();
     if (!creds?.backendUrl) {
-      _modelCatalogError = 'not logged in (no backend url)';
-      return null;
+      if (!_modelCatalogCache) _modelCatalogError = 'not logged in (no backend url)';
+      return;
     }
     const headers = { 'X-Product': 'bahulam' };
     if (creds.token) headers['Authorization'] = `Bearer ${creds.token}`;
@@ -362,26 +395,46 @@ async function fetchModelCatalog(ctx) {
       signal: AbortSignal.timeout(3000),
     });
     if (!resp.ok) {
-      _modelCatalogError = `backend returned ${resp.status}`;
-      return null;
+      if (!_modelCatalogCache) _modelCatalogError = `backend returned ${resp.status}`;
+      return;
     }
     const data = await resp.json();
     const models = Array.isArray(data?.models) ? data.models : null;
-    if (models) {
+    if (models && models.length) {
       _modelCatalogCache = models;
-      _modelCatalogError = models.length ? null : 'catalog is empty';
-    } else {
-      _modelCatalogError = 'unexpected response shape';
+      _modelCatalogSource = 'backend';
+      _modelCatalogError = null;
+    } else if (!_modelCatalogCache) {
+      _modelCatalogError = models ? 'catalog is empty' : 'unexpected response shape';
     }
-    return models;
   } catch (err) {
-    _modelCatalogError = err?.name === 'TimeoutError' ? 'backend timeout (3s)' : 'backend unreachable';
-    return null;
+    if (!_modelCatalogCache) {
+      _modelCatalogError = err?.name === 'TimeoutError' ? 'backend timeout (3s)' : 'backend unreachable';
+    }
   }
 }
 
 function isByokModelRoute() {
   return session.routePreference === 'byok' || (!session.routePreference && session.isByok);
+}
+
+// PRD-076 W7b: mirror session model state into ~/.bahulam/config.json so
+// picks survive restarts and the bundled Python runtime — which already
+// reads `model_config` via read_local_model_config() — sees them without
+// requiring a live backend fetch.
+function persistSessionModelState(ctx) {
+  try {
+    const auth = ctx?.auth;
+    if (!auth?.saveCredentials) return;
+    auth.saveCredentials({
+      model_config: { ...(session.modelOverrides || {}) },
+      model_mode: session.modelMode || null,
+      route_preference: session.routePreference || null,
+    });
+  } catch {
+    // Persistence is best-effort — never break the /model command over
+    // a config write failure.
+  }
 }
 
 function modelCreditBadge(model) {
@@ -550,6 +603,7 @@ async function openModelForm(ctx) {
   Object.assign(next, result.overrides);
   session.modelOverrides = next;
   if (result.overrides.reasoning) session.model = result.overrides.reasoning;
+  persistSessionModelState(ctx);
   const chosen = Object.entries(result.overrides);
   if (!chosen.length) {
     process.stderr.write(`  ${c.green('✓')} ${c.dim('All roles back to backend defaults.')}\n`);
@@ -586,8 +640,34 @@ async function handleModelCommand(rest = '', ctx) {
     return;
   }
 
+  if (parts[0] === 'refresh') {
+    // Bust the in-process catalog and pull a fresh /api/models. This only
+    // touches the in-memory cache — persisted /model picks in
+    // ~/.bahulam/config.json (model_config, model_mode, route_preference)
+    // are untouched, so session overrides survive the refresh.
+    _modelCatalogCache = null;
+    _modelCatalogError = null;
+    _modelCatalogSource = null;
+    _backendRefreshInFlight = null;
+    process.stderr.write(`  ${c.dim('Refreshing model catalog…')}\n`);
+    await refreshCatalogFromBackend(ctx);
+    if (_modelCatalogSource !== 'backend') {
+      // Backend fetch failed — restore the shipped snapshot so subsequent
+      // /model commands still see a catalog.
+      const shipped = readShippedCatalog();
+      if (shipped && shipped.length) {
+        _modelCatalogCache = shipped;
+        _modelCatalogSource = 'snapshot';
+      }
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Backend refresh failed — ${_modelCatalogError || 'unknown error'}. Showing shipped snapshot.`)}\n`);
+    }
+    await printModelCatalog(ctx);
+    return;
+  }
+
   if (parts.length === 1 && NAMED_MODEL_MODES.has(parts[0].toLowerCase())) {
     session.modelMode = parts[0].toLowerCase();
+    persistSessionModelState(ctx);
     process.stderr.write(`  ${c.green('✓')} ${c.dim('Session model mode:')} ${c.brand(session.modelMode)}\n`);
     process.stderr.write(`  ${c.dim('The platform maps this mode to pinned models. Use /model clear to reset.')}\n`);
     return;
@@ -597,6 +677,7 @@ async function handleModelCommand(rest = '', ctx) {
     if (parts.length === 1) {
       session.modelOverrides = {};
       session.modelMode = null;
+      persistSessionModelState(ctx);
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared all session model overrides.')}\n`);
       return;
     }
@@ -607,6 +688,7 @@ async function handleModelCommand(rest = '', ctx) {
       return;
     }
     delete session.modelOverrides[role];
+    persistSessionModelState(ctx);
     process.stderr.write(`  ${c.green('✓')} ${c.dim(`Cleared ${MODEL_ROLE_LABELS[role] || role} model override.`)}\n`);
     return;
   }
@@ -626,6 +708,7 @@ async function handleModelCommand(rest = '', ctx) {
 
   session.modelOverrides = { ...(session.modelOverrides || {}), [role]: model };
   if (role === 'reasoning') session.model = model;
+  persistSessionModelState(ctx);
   process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
   process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
   await warnIfNotCurated(model, ctx);
@@ -2138,6 +2221,7 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
     if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
   }
   if (session.modelMode) execContext.model_mode = session.modelMode;
+  if (session.routePreference) execContext.model_route = session.routePreference;
   return execContext;
 }
 
@@ -3504,6 +3588,20 @@ export async function startTerminalRepl() {
     // Clear the spinner line
     process.stderr.write(`\r${' '.repeat(60)}\r`);
     process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
+
+    // PRD-076 W7b: restore persisted /model picks from ~/.bahulam/config.json
+    // before applying CLI-flag overrides, so `bahulam-code` alone re-uses
+    // last session's choices and `bahulam-code --model foo` still wins.
+    try {
+      const persisted = auth.loadCredentials();
+      if (persisted?.modelConfig && Object.keys(persisted.modelConfig).length) {
+        session.modelOverrides = { ...persisted.modelConfig };
+        if (persisted.modelConfig.reasoning) session.model = persisted.modelConfig.reasoning;
+      }
+      if (persisted?.modelMode) session.modelMode = persisted.modelMode;
+      if (persisted?.routePreference) session.routePreference = persisted.routePreference;
+    } catch { /* best-effort restore */ }
+
     // --model / --route launch overrides (after fetchUser so they win
     // over the profile default; catalog validation is fail-open).
     if (cliArgs.model || cliArgs.route) {
@@ -4663,6 +4761,7 @@ export async function startTerminalRepl() {
         if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
       }
       if (session.modelMode) execContext.model_mode = session.modelMode;
+      if (session.routePreference) execContext.model_route = session.routePreference;
       // PRD-071: seed work_scope from CLI so the backend has a byte-stable
       // scope block from turn 1. Uses projectResources already gathered by
       // the envelope above.
