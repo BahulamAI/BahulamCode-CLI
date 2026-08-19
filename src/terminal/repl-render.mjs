@@ -27,6 +27,23 @@ import {
   isInputDockMounted,
   moveToContent,
 } from '../ui/input-dock.mjs';
+import * as queue from '../ui/render-queue.mjs';
+
+// Single seam for the transient spinner/status line. Rich mode (render
+// queue active) → coalesced last-wins status that can never interleave
+// with content. Legacy dock path and bare-TTY inPlace stay as fallbacks
+// until their write-sites migrate onto the queue too.
+function presentStatus(rendered) {
+  if (queue.isActive()) { queue.status(rendered); return; }
+  if (isInputDockMounted()) { drawPinnedStatus(rendered); return; }
+  inPlace(rendered);
+}
+
+function erasePresentedStatus() {
+  if (queue.isActive()) { queue.clearStatus(); return; }
+  if (isInputDockMounted()) { clearPinnedStatus(); moveToContent(); return; }
+  inPlace('');
+}
 import {
   formatCardHead,
   formatCompactFileDiff,
@@ -157,11 +174,11 @@ export function renderExploreRun() {
   // picks up exploreSummary() text instead of any stale label.
   runtime.exploreRun.lineActive = true;
 
-  if (isInputDockMounted()) {
-    // Docked terminals reserve a bottom input area. Keeping explore progress
-    // as an animated bottom overlay creates visible gaps between the sub-agent
-    // transcript and the current tool. Emit bounded snapshots into the
-    // transcript instead; every hidden call remains available through /expand.
+  if (!queue.isActive() && isInputDockMounted()) {
+    // Legacy docked path (queue not engaged): an animated bottom overlay
+    // created visible gaps, so emit bounded snapshots into the transcript
+    // instead. With the render queue active this branch is skipped — the
+    // coalesced status line can animate safely in dock mode.
     if (runtime.spinInterval) {
       clearInterval(runtime.spinInterval);
       runtime.spinInterval = null;
@@ -183,8 +200,7 @@ export function renderExploreRun() {
       const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
       runtime.spinFrame++;
       const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-      if (isInputDockMounted()) moveToContent();
-      inPlace(rendered);
+      presentStatus(rendered);
     }, 80);
   }
   runtime.lastRenderedBlock = 'tool';
@@ -200,9 +216,10 @@ export function flushExploreRun() {
     if (wasActive) {
       if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
       runtime.spinText = '';
-      if (!isInputDockMounted()) inPlace('');
+      if (queue.isActive()) queue.clearStatus();
+      else if (!isInputDockMounted()) inPlace('');
     }
-    if (!isInputDockMounted() || summary !== runtime.exploreRun.lastPrintedSummary) {
+    if (queue.isActive() || !isInputDockMounted() || summary !== runtime.exploreRun.lastPrintedSummary) {
       writeExploreSnapshot(summary);
     }
   }
@@ -544,7 +561,7 @@ export const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 export function startSpinner(text) {
   runtime.spinText = text;
   runtime.spinFrame = 0;
-  if (runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
+  if (!queue.isActive() && runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
   if (runtime.spinInterval) return; // already running
   runtime.spinInterval = setInterval(() => {
     // While an explore run is active, its live counts own the spinner
@@ -556,14 +573,10 @@ export function startSpinner(text) {
     const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
     runtime.spinFrame++;
     const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-    if (isExploreActive && isInputDockMounted()) {
+    if (!queue.isActive() && isExploreActive && isInputDockMounted()) {
       return;
     }
-    if (isInputDockMounted()) {
-      drawPinnedStatus(rendered);
-      return;
-    }
-    inPlace(rendered);
+    presentStatus(rendered);
   }, 80);
 }
 
@@ -578,12 +591,7 @@ export function stopSpinner() {
   if (runtime.exploreRun && runtime.exploreRun.lineActive) return;
   if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
   runtime.spinText = '';
-  if (isInputDockMounted()) {
-    clearPinnedStatus();
-    moveToContent();
-    return;
-  }
-  inPlace('');
+  erasePresentedStatus();
 }
 
 // ── Content Streaming Display ──
