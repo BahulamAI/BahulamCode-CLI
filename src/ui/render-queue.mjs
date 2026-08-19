@@ -37,7 +37,7 @@ const ESC = '\x1b[';
 // CSI (incl. private + intermediate bytes), OSC (BEL or ST terminated),
 // charset selection, and simple ESC-letter sequences.
 const ANSI_RE = new RegExp([
-  '\\x1b\\[[0-9;?]*[ -/]*[@-~]',        // CSI
+  '\\x1b\\[[0-?]*[ -/]*[@-~]',          // CSI
   '\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)', // OSC ... BEL|ST
   '\\x1b[()][A-Za-z0-9]',               // charset
   '\\x1b[@-Z\\\\-_]',                   // 2-byte ESC sequences
@@ -107,6 +107,7 @@ let statusLine = '';          // current transient status ('' = none)
 let statusVisible = false;
 let parked = null;            // {row, col} where input echo expects the cursor
 let inTransaction = 0;        // reentrancy guard for queue-internal writes
+let contentEscapeCarry = '';  // incomplete ESC sequence crossing write chunks
 
 function rawWrite(s) {
   // Always bypass the redirect patch for queue-internal writes.
@@ -197,6 +198,7 @@ export function deactivate() {
   statusLine = '';
   statusVisible = false;
   parked = null;
+  contentEscapeCarry = '';
 }
 
 export function isActive() { return active; }
@@ -219,15 +221,76 @@ function redirectedWrite(chunk, encoding, cb) {
 // stripped — a content writer that embeds CUU/ED/DECSTBM would move the
 // real cursor without tracking following (the old approval-redraw gap
 // bug). Positioning belongs to the queue alone.
-const NON_SGR_CSI_RE = new RegExp([
-  '\\x1b\\[[0-9;?]*[ -/]*[@-ln-~]',            // CSI not ending in 'm'
-  '\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)', // OSC
-  '\\x1b[()][A-Za-z0-9]',                      // charset
-  '\\x1b[@-Z\\\\-_]',                          // 2-byte ESC
-].join('|'), 'g');
-
 function sanitizeContent(s) {
-  return s.replace(NON_SGR_CSI_RE, '');
+  const input = contentEscapeCarry + String(s ?? '');
+  contentEscapeCarry = '';
+  let out = '';
+
+  for (let i = 0; i < input.length;) {
+    const ch = input[i];
+    if (ch !== '\x1b') {
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (i + 1 >= input.length) {
+      contentEscapeCarry = input.slice(i);
+      break;
+    }
+
+    const next = input[i + 1];
+
+    // CSI: ESC [ params/intermediates final. Preserve only SGR (`m`).
+    if (next === '[') {
+      let j = i + 2;
+      while (j < input.length) {
+        const code = input.charCodeAt(j);
+        if (code >= 0x40 && code <= 0x7e) break;
+        j++;
+      }
+      if (j >= input.length) {
+        contentEscapeCarry = input.slice(i);
+        break;
+      }
+      const seqText = input.slice(i, j + 1);
+      if (input[j] === 'm') out += seqText;
+      i = j + 1;
+      continue;
+    }
+
+    // OSC: ESC ] ... BEL or ST. Strip, buffering incomplete sequences.
+    if (next === ']') {
+      let j = i + 2;
+      let completeAt = -1;
+      while (j < input.length) {
+        if (input[j] === '\x07') { completeAt = j; break; }
+        if (input[j] === '\x1b' && input[j + 1] === '\\') { completeAt = j + 1; break; }
+        j++;
+      }
+      if (completeAt < 0) {
+        contentEscapeCarry = input.slice(i);
+        break;
+      }
+      i = completeAt + 1;
+      continue;
+    }
+
+    // Charset selection: ESC ( X / ESC ) X. Strip, buffering if split.
+    if (next === '(' || next === ')') {
+      if (i + 2 >= input.length) {
+        contentEscapeCarry = input.slice(i);
+        break;
+      }
+      i += 3;
+      continue;
+    }
+
+    // Other two-byte ESC commands. Strip the ESC command byte too.
+    i += 2;
+  }
+
+  return out;
 }
 
 /**
@@ -372,5 +435,6 @@ export function _internals() {
     advance,
     cellWidth,
     stripSequences,
+    sanitizeContent,
   };
 }
