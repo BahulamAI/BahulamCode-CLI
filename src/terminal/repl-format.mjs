@@ -9,6 +9,21 @@
 
 import * as path from 'node:path';
 import { c, stripAnsi, formatElapsed, inPlace } from './ansi.mjs';
+import * as rqueue from '../ui/render-queue.mjs';
+
+// Transient one-line status writer that is safe under the render queue.
+// Raw inPlace() writes get REDIRECTED into transcript content when the
+// queue is active (cursor codes stripped) — that leaked one line per
+// spinner frame during resume summarization. queue.status() coalesces
+// and overwrites in place; inPlace stays as the no-queue fallback.
+function transientLine(text) {
+  if (rqueue.isActive()) {
+    if (text) rqueue.status(text);
+    else rqueue.clearStatus();
+    return;
+  }
+  inPlace(text);
+}
 
 // ── One-liners ───────────────────────────────────────────────────────
 
@@ -182,7 +197,7 @@ export function startResumeProgress(mode = 'full') {
     if (!active) return;
     const glyph = frames[frame % frames.length];
     frame++;
-    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
+    transientLine(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
   };
 
   render();
@@ -198,7 +213,7 @@ export function startResumeProgress(mode = 'full') {
       if (!active) return;
       active = false;
       clearInterval(timer);
-      inPlace('');
+      transientLine('');
     },
   };
 }

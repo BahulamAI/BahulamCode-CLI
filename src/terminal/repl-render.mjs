@@ -684,6 +684,14 @@ export function startSpinner(text, { phase = null } = {}) {
 
 export function updateSpinner(text) {
   runtime.spinText = text;
+  // Self-healing: a content flush stops the spinner (clears the
+  // interval), but long-running work — sub-agent runs especially —
+  // keeps sending updates afterwards. Without reviving the interval
+  // those updates write into a dead timer and the user sees a frozen
+  // "▸ running" with no progress at all. Same phase → clock continues.
+  if (!runtime.spinInterval && text) {
+    startSpinner(text, { phase: runtime.spinPhase || undefined });
+  }
 }
 
 /** Bump the per-phase progress counter (sub-agent tool calls). */

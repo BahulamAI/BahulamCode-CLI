@@ -50,6 +50,7 @@ import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgent
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
+import { pickModelOverridesForm } from './repl-model-form.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
@@ -85,6 +86,7 @@ import {
   flushExploreRun,
   flushPendingHead,
   isInlineOutcomeTool,
+  pushSubAgentWindowLine,
   renderBlockBoundary,
   renderExploreRun,
   renderFileDiffEvent,
@@ -325,16 +327,145 @@ function sessionModelOverrideEntries() {
 }
 
 function printModelCommandUsage() {
-  process.stderr.write(`  ${c.gray('Usage:')} /model [model]\n`);
+  process.stderr.write(`  ${c.gray('Usage:')} /model              interactive per-role form\n`);
+  process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
-  process.stderr.write(`         /model clear [role]\n`);
+  process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
+  process.stderr.write(`         /model list · status · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
+}
+
+// ── W7: curated platform catalog (PRD-076) ──
+// Platform-route model overrides are validated against the backend's
+// curated catalog (harness_validated models only). BYOK route skips
+// validation entirely — the user's key, the user's models. Fail-open:
+// if the catalog can't be fetched, the backend remains the enforcer.
+
+const NAMED_MODEL_MODES_LIST = ['fast', 'thinking', 'extra', 'max'];
+const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
+
+let _modelCatalogCache = null;
+
+async function fetchModelCatalog(ctx) {
+  if (_modelCatalogCache) return _modelCatalogCache;
+  try {
+    const creds = ctx?.auth?.loadCredentials?.();
+    if (!creds?.backendUrl) return null;
+    const headers = creds.token ? { 'Authorization': `Bearer ${creds.token}` } : {};
+    const resp = await fetch(`${creds.backendUrl}/api/models`, {
+      headers,
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const models = Array.isArray(data?.models) ? data.models : null;
+    if (models) _modelCatalogCache = models;
+    return models;
+  } catch {
+    return null;
+  }
+}
+
+function isByokModelRoute() {
+  return session.routePreference === 'byok' || (!session.routePreference && session.isByok);
+}
+
+function modelCreditBadge(model) {
+  const usd = Number(model?.input_cost_usd_per_m);
+  if (!Number.isFinite(usd) || usd <= 0) return '';
+  const credits = usd * 200; // credits = provider cost × 2 × 100/USD
+  return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
+}
+
+async function warnIfNotCurated(model, ctx) {
+  if (isByokModelRoute()) return;
+  const catalog = await fetchModelCatalog(ctx);
+  if (!catalog) return;
+  const row = catalog.find(m => m?.id === model);
+  if (!row) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not in the platform catalog — the backend may reject it. See /model list.`)}\n`);
+  } else if (row.harness_validated === false) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not harness-validated for the platform route — cost/quality untuned. See /model list.`)}\n`);
+  }
+}
+
+async function printModelCatalog(ctx) {
+  const catalog = await fetchModelCatalog(ctx);
+  if (!catalog) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim('Model catalog unavailable (offline or backend unreachable).')}\n`);
+    return;
+  }
+  const curated = catalog.filter(m => m?.harness_validated);
+  process.stderr.write(`\n  ${c.bold('Platform catalog')} ${c.dim('(harness-validated, credit-priced)')}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(64))}\n`);
+  if (!curated.length) {
+    process.stderr.write(`  ${c.dim('(none published yet)')}\n`);
+  }
+  for (const m of curated) {
+    const badge = modelCreditBadge(m);
+    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
+      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
+      : '';
+    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+  }
+  const rest = catalog.length - curated.length;
+  if (rest > 0) {
+    process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function applyLaunchModelArgs(cliArgs, ctx) {
+  const route = String(cliArgs.route || '').trim().toLowerCase();
+  if (route) {
+    if (route === 'platform' || route === 'byok') {
+      session.routePreference = route;
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Model route:')} ${c.brand(route)}\n`);
+    } else {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown --route ${cliArgs.route} (expected platform|byok)`)}\n`);
+    }
+  }
+
+  const value = String(cliArgs.model || '').trim();
+  if (!value) return Promise.resolve();
+
+  if (NAMED_MODEL_MODES.has(value.toLowerCase())) {
+    session.modelMode = value.toLowerCase();
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Session model mode:')} ${c.brand(session.modelMode)}\n`);
+    return Promise.resolve();
+  }
+
+  const pending = [];
+  for (const part of value.split(',').map(s => s.trim()).filter(Boolean)) {
+    const eq = part.indexOf('=');
+    let role = 'reasoning';
+    let model = part;
+    if (eq > 0) {
+      const maybeRole = normalizeModelRole(part.slice(0, eq));
+      if (!maybeRole) {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model role in --model: ${part.slice(0, eq)}`)}\n`);
+        continue;
+      }
+      role = maybeRole;
+      model = part.slice(eq + 1).trim();
+    }
+    if (!model) continue;
+    session.modelOverrides = { ...(session.modelOverrides || {}), [role]: model };
+    if (role === 'reasoning') session.model = model;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model:`)} ${c.brand(model)}\n`);
+    pending.push(warnIfNotCurated(model, ctx));
+  }
+  return Promise.all(pending);
 }
 
 function printModelStatus() {
   process.stderr.write(`\n  ${c.bold('Models')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   process.stderr.write(`  ${c.gray('Active coding')} ${session.model || 'backend default'}\n`);
+  process.stderr.write(`  ${c.gray('Route        ')} ${session.routePreference || (session.isByok ? 'byok' : 'platform')}\n`);
+  if (session.modelMode) {
+    process.stderr.write(`  ${c.gray('Mode         ')} ${session.modelMode}\n`);
+  }
 
   const limits = session.modelLimits || {};
   const rows = [
@@ -362,16 +493,83 @@ function printModelStatus() {
   printModelCommandUsage();
 }
 
-function handleModelCommand(rest = '') {
+const MODEL_FORM_ROLES = ['reasoning', 'fast', 'orchestrator', 'explore', 'plan'];
+
+async function openModelForm(ctx) {
+  const limits = session.modelLimits || {};
+  const defaultsByRole = {
+    reasoning: limits.coder?.model,
+    fast: limits.explorer?.model,
+    orchestrator: limits.orchestrator?.model,
+    explore: limits.explorer?.model,
+    plan: limits.orchestrator?.model,
+  };
+  const roles = MODEL_FORM_ROLES.map(role => ({
+    role,
+    label: MODEL_ROLE_LABELS[role] || role,
+    current: (session.modelOverrides || {})[role] || null,
+    defaultLabel: defaultsByRole[role] || null,
+  }));
+  const catalog = await fetchModelCatalog(ctx);
+  const result = await pickModelOverridesForm({ rl: ctx?._rl || null, roles, catalog: catalog || [] });
+  if (!result) {
+    process.stderr.write(`  ${c.dim('No model changes.')}\n`);
+    return;
+  }
+  // Merge: form rows replace their roles; overrides on roles the form
+  // doesn't show (verify/debug/…) are left untouched.
+  const next = { ...(session.modelOverrides || {}) };
+  for (const role of MODEL_FORM_ROLES) delete next[role];
+  Object.assign(next, result.overrides);
+  session.modelOverrides = next;
+  if (result.overrides.reasoning) session.model = result.overrides.reasoning;
+  const chosen = Object.entries(result.overrides);
+  if (!chosen.length) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('All roles back to backend defaults.')}\n`);
+    return;
+  }
+  for (const [role, model] of chosen) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`${MODEL_ROLE_LABELS[role] || role}:`)} ${c.brand(model)}\n`);
+  }
+}
+
+async function handleModelCommand(rest = '', ctx) {
   const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
+    if (process.stdin.isTTY) {
+      await openModelForm(ctx);
+    } else {
+      printModelStatus();
+    }
+    return;
+  }
+
+  if (parts[0] === 'status') {
     printModelStatus();
+    return;
+  }
+
+  if (parts[0] === 'form') {
+    await openModelForm(ctx);
+    return;
+  }
+
+  if (parts[0] === 'list' || parts[0] === 'catalog') {
+    await printModelCatalog(ctx);
+    return;
+  }
+
+  if (parts.length === 1 && NAMED_MODEL_MODES.has(parts[0].toLowerCase())) {
+    session.modelMode = parts[0].toLowerCase();
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Session model mode:')} ${c.brand(session.modelMode)}\n`);
+    process.stderr.write(`  ${c.dim('The platform maps this mode to pinned models. Use /model clear to reset.')}\n`);
     return;
   }
 
   if (parts[0] === 'clear' || parts[0] === 'reset') {
     if (parts.length === 1) {
       session.modelOverrides = {};
+      session.modelMode = null;
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared all session model overrides.')}\n`);
       return;
     }
@@ -403,6 +601,7 @@ function handleModelCommand(rest = '') {
   if (role === 'reasoning') session.model = model;
   process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
   process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
+  await warnIfNotCurated(model, ctx);
 }
 
 function stripPathQuotes(value) {
@@ -1372,6 +1571,11 @@ function renderEvent(event) {
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
       if (!tool) break;
+      // Feed the live window from THIS event — it always fires (55/55 in
+      // observed runs), unlike the inner tool_call render path which
+      // diverts for explore-category tools and folded verbosity modes.
+      // Dedup-consecutive inside the push keeps repeat tools quiet.
+      pushSubAgentWindowLine(`→ ${tool}`);
       // Don't clobber an active explore-run spinner. "exploring · 5 read ·
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
@@ -1906,6 +2110,7 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
     execContext.model_overrides = modelOverrides;
     if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
   }
+  if (session.modelMode) execContext.model_mode = session.modelMode;
   return execContext;
 }
 
@@ -2492,7 +2697,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/model': {
-      handleModelCommand(rest);
+      await handleModelCommand(rest, ctx);
       return;
     }
 
@@ -2944,6 +3149,8 @@ export async function startTerminalRepl() {
       model: session.model,
       modelLimits: session.modelLimits,
       modelOverrides: session.modelOverrides,
+      modelMode: session.modelMode,
+      routePreference: session.routePreference,
       isByok: session.isByok,
       subscriptionTier: session.subscriptionTier,
       creditsTotal: session.creditsTotal,
@@ -2986,6 +3193,8 @@ export async function startTerminalRepl() {
       model: preserved.model,
       modelLimits: preserved.modelLimits,
       modelOverrides: preserved.modelOverrides,
+      modelMode: preserved.modelMode,
+      routePreference: preserved.routePreference,
       blockedOps: 0,
       delegations: [],
       phases: [],
@@ -3268,6 +3477,11 @@ export async function startTerminalRepl() {
     // Clear the spinner line
     process.stderr.write(`\r${' '.repeat(60)}\r`);
     process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
+    // --model / --route launch overrides (after fetchUser so they win
+    // over the profile default; catalog validation is fail-open).
+    if (cliArgs.model || cliArgs.route) {
+      try { await applyLaunchModelArgs(cliArgs, ctx); } catch {}
+    }
     if (session.user) {
       process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
     }
@@ -4421,6 +4635,7 @@ export async function startTerminalRepl() {
         execContext.model_overrides = modelOverrides;
         if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
       }
+      if (session.modelMode) execContext.model_mode = session.modelMode;
       // PRD-071: seed work_scope from CLI so the backend has a byte-stable
       // scope block from turn 1. Uses projectResources already gathered by
       // the envelope above.

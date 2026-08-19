@@ -103,6 +103,8 @@ export const session = {
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
   modelOverrides: {},  // session-local role -> model overrides sent to backend
+  modelMode: null,     // named mode (fast|thinking|extra|max) sent as model_mode
+  routePreference: null, // --route platform|byok; controls catalog validation only
   isByok: false,       // set from session_info; hides cost + credits when true
   // ── Subscription / credit state (server-authoritative; set from
   //    session_info + complete events) ──
