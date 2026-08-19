@@ -132,6 +132,32 @@ function containsUnquotedExpansion(command) {
 /**
  * Detect command substitution patterns.
  */
+/**
+ * Extract the inner text of every `$( … )` (nesting-aware) and
+ * `` ` … ` `` region so each body can be classified on its own.
+ */
+function extractSubstitutionBodies(command) {
+    const bodies = [];
+    const s = String(command || '');
+    for (const m of s.match(/`([^`]*)`/g) || []) {
+        bodies.push(m.slice(1, -1));
+    }
+    for (let i = 0; i < s.length; i++) {
+        if (s[i] === '$' && s[i + 1] === '(') {
+            let depth = 1;
+            let j = i + 2;
+            while (j < s.length && depth > 0) {
+                if (s[j] === '(') depth++;
+                else if (s[j] === ')') depth--;
+                j++;
+            }
+            bodies.push(s.slice(i + 2, depth === 0 ? j - 1 : j));
+            i = j - 1;
+        }
+    }
+    return bodies.map(b => b.trim()).filter(Boolean);
+}
+
 function containsCommandSubstitution(command) {
     // Backticks
     if (/`/.test(command)) return true;
@@ -505,9 +531,31 @@ export function classifyCommand(command) {
         }
     }
 
-    // ── Step 2: Check for command substitution / injection ──
+    // ── Step 2: Command substitution → approval-gated, not hard-blocked ──
+    // Backticks / $() are legitimate shell (lsof -ti:8000 | xargs kill,
+    // $(git rev-parse HEAD), etc). Hard-blocking them forced the model
+    // into awkward multi-step workarounds even after the user approved.
+    // The substitution BODY is classified recursively — `echo $(rm -rf /)`
+    // stays hard-blocked because the inner command is; a benign body
+    // surfaces as an explicit HITL approval (contained + highRisk), same
+    // as process cleanup above. (Step 1's whole-string regexes alone are
+    // not enough: `rm -rf /` inside $() terminates with `)` which the
+    // \s|$ terminators never match.)
     if (containsCommandSubstitution(trimmed)) {
-        return { classification: 'blocked', reason: 'Contains command substitution (backticks or $())' };
+        for (const inner of extractSubstitutionBodies(trimmed)) {
+            const innerResult = classifyCommand(inner);
+            if (innerResult.classification === 'blocked') {
+                return {
+                    classification: 'blocked',
+                    reason: `Substitution body is blocked: ${inner.slice(0, 50)}`,
+                };
+            }
+        }
+        return {
+            classification: 'contained',
+            reason: 'Uses command substitution (backticks or $()); requires approval',
+            highRisk: true,
+        };
     }
 
     if (containsUnsafeOutputRedirection(trimmed)) {

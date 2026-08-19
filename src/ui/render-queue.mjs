@@ -103,7 +103,8 @@ let rawStdoutWrite = null;
 let row = 1;                  // tracked content cursor (1-based)
 let col = 1;
 let regionBottom = null;      // scroll-region bottom (content area)
-let statusLine = '';          // current transient status ('' = none)
+let statusLines = [];         // current transient status block ([] = none)
+let statusPaintedRows = 0;    // rows painted by the last paintStatus()
 let statusVisible = false;
 let parked = null;            // {row, col} where input echo expects the cursor
 let inTransaction = 0;        // reentrancy guard for queue-internal writes
@@ -149,17 +150,61 @@ function advance(text) {
 
 function eraseStatus() {
   if (!statusVisible) return;
-  moveTo(Math.min(bottom(), row), 1);
-  clearLine();
+  const anchor = Math.min(bottom(), row);
+  const count = Math.max(1, statusPaintedRows);
+  for (let i = 0; i < count && anchor + i <= bottom(); i++) {
+    moveTo(anchor + i, 1);
+    clearLine();
+  }
+  statusPaintedRows = 0;
   statusVisible = false;
 }
 
+// ANSI-aware truncation to N terminal cells. Escape sequences pass
+// through at zero width; printable chars accumulate cell width until the
+// budget is hit. A trailing reset prevents color bleed on truncation.
+const TOKEN_RE = new RegExp(`(${ANSI_RE.source})|([\\s\\S])`, 'g');
+
+export function fitCells(text, maxCells) {
+  const s = String(text ?? '');
+  let out = '';
+  let w = 0;
+  let truncated = false;
+  TOKEN_RE.lastIndex = 0;
+  let m;
+  while ((m = TOKEN_RE.exec(s)) !== null) {
+    if (m[1] !== undefined) { out += m[1]; continue; }
+    const ch = m[2];
+    const cp = ch.codePointAt(0);
+    if (cp < 0x20 || cp === 0x7f) continue;      // control chars never printable here
+    const cw = isZeroWidth(cp) ? 0 : (isWide(cp) ? 2 : 1);
+    if (w + cw > maxCells - 1) { truncated = true; break; }
+    out += ch;
+    w += cw;
+  }
+  if (truncated) out += '…\x1b[0m';
+  return out;
+}
+
 function paintStatus() {
-  if (!statusLine) return;
-  moveTo(Math.min(bottom(), row), 1);
-  clearLine();
-  rawWrite(statusLine);
-  statusVisible = true;
+  if (!statusLines.length) return;
+  const anchor = Math.min(bottom(), row);
+  const width = Math.max(8, cols() - 1);
+  let painted = 0;
+  for (const line of statusLines) {
+    const r = anchor + painted;
+    if (r > bottom()) break;
+    moveTo(r, 1);
+    clearLine();
+    // Clamp to the drawable width — a status line that reaches the final
+    // column triggers terminal autowrap, which scrolls the region and
+    // turns the "transient" line into permanent transcript content (one
+    // leaked line per animation frame). Newlines are equally forbidden.
+    rawWrite(fitCells(String(line).replace(/[\r\n]+/g, ' '), width));
+    painted++;
+  }
+  statusPaintedRows = painted;
+  statusVisible = painted > 0;
 }
 
 function repark() {
@@ -195,7 +240,8 @@ export function deactivate() {
   if (rawStderrWrite) { process.stderr.write = rawStderrWrite; rawStderrWrite = null; }
   active = false;
   regionBottom = null;
-  statusLine = '';
+  statusLines = [];
+  statusPaintedRows = 0;
   statusVisible = false;
   parked = null;
   contentEscapeCarry = '';
@@ -318,24 +364,38 @@ export function content(text) {
 }
 
 /**
- * Set / update the transient status (spinner) line. Last-wins; a repaint
- * happens only when the rendered string actually changed.
+ * Set / update the transient status block. Last-wins; a repaint happens
+ * only when the rendered content actually changed. Single-line callers
+ * use status(line); multi-line (sub-agent tool window) use
+ * statusBlock(lines). Rows are clamped to the space between the content
+ * cursor and the region bottom.
  */
-export function status(line) {
-  const s = String(line ?? '');
+export function statusBlock(lines) {
   if (!active) return;
-  if (s === statusLine && statusVisible) return;
+  const next = (Array.isArray(lines) ? lines : [lines])
+    .map(l => String(l ?? ''))
+    .filter((l, i) => l !== '' || i === 0);
+  const isEmpty = !next.length || (next.length === 1 && !next[0]);
+  const same = statusVisible
+    && next.length === statusLines.length
+    && next.every((l, i) => l === statusLines[i]);
+  if (same) return;
   inTransaction++;
   try {
-    statusLine = s;
-    if (!s) { eraseStatus(); } else { paintStatus(); }
+    eraseStatus();
+    statusLines = isEmpty ? [] : next;
+    if (!isEmpty) paintStatus();
     repark();
   } finally {
     inTransaction--;
   }
 }
 
-export function clearStatus() { status(''); }
+export function status(line) {
+  statusBlock([String(line ?? '')]);
+}
+
+export function clearStatus() { statusBlock([]); }
 
 /**
  * Absolute-positioned write for dock frame rows. Does NOT touch content
@@ -431,7 +491,7 @@ export function seed({ row: r = 1, col: c = 1, bottom: b = null } = {}) {
 // Test-only accessors.
 export function _internals() {
   return {
-    state: () => ({ active, row, col, regionBottom, statusLine, statusVisible, parked }),
+    state: () => ({ active, row, col, regionBottom, statusLines, statusPaintedRows, statusVisible, parked }),
     advance,
     cellWidth,
     stripSequences,

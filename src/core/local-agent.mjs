@@ -21,11 +21,11 @@ const MAX_ITERATIONS = 50;
 const TOOL_SCHEMAS = [
     {
         name: 'shell',
-        description: 'Run one non-interactive shell command and return stdout/stderr. Do not use command substitution, backticks, or $(); run separate simple shell calls instead.',
+        description: 'Run one non-interactive shell command and return stdout/stderr. Command substitution (backticks, $()) is allowed but triggers a user-approval prompt; prefer plain commands when equivalent.',
         input_schema: {
             type: 'object',
             properties: {
-                command: { type: 'string', description: 'The command to execute. Avoid backticks and $(); split dependent checks into separate commands.' },
+                command: { type: 'string', description: 'The command to execute. Backticks/$() are allowed (user approval required); use them when splitting would be awkward.' },
                 timeout: { type: 'number', description: 'Timeout in milliseconds (default: 120000)' },
             },
             required: ['command'],
@@ -478,7 +478,7 @@ export class LocalAgent {
             'You are Bahulam Code, Bahulam\'s AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
             'Use tools to accomplish the user\'s request. Be concise and direct.',
-            'For shell tools, never use command substitution, backticks, or $(). Run separate simple commands and carry values forward in text.',
+            'Shell command substitution (backticks, $()) is allowed but requires user approval — use it when it is the natural expression; otherwise prefer plain commands.',
         ];
         if (context.cwd) parts.push(`Working directory: ${context.cwd}`);
         if (context.gitBranch) parts.push(`Git branch: ${context.gitBranch}`);

@@ -53,6 +53,20 @@ export function subAgentIndent(extraDepth = 0) {
  *
  * @returns {string} ANSI-styled multi-line block (no trailing newline).
  */
+/**
+ * Reduce a sub-agent query to its human-readable core. Handoff envelopes
+ * ([User intent], ## Work Scope, Schema:, Active roots:) are machine
+ * context — printing them flooded the transcript with 15+ lines per
+ * spawn. Full text stays available via /expand on the recorded card.
+ */
+export function displayQuery(query, max = 140) {
+  let s = String(query || '');
+  const cut = s.search(/\n\s*(?:\[User intent\]|##\s*Work Scope|Schema:\s*kepler\.|Active roots:)/);
+  if (cut >= 0) s = s.slice(0, cut);
+  s = s.replace(/^\[Thoroughness:\s*[^\]]*\]\s*/i, '').replace(/\s+/g, ' ').trim();
+  return truncate(s, max);
+}
+
 export function renderSubAgentOpen({ id, type, query, parentDepth } = {}) {
   const t = type || 'sub-agent';
   const depthBefore = _stack.length;
@@ -60,10 +74,11 @@ export function renderSubAgentOpen({ id, type, query, parentDepth } = {}) {
 
   const indent = ' '.repeat(2 + depthBefore * 3);
   const iconChar = SUB_ICONS[t] || icons.subAgent;
-  const head = `${indent}${iconChar} ${paint.brand.data(t)} ${paint.text.dim(`"${query || ''}"`)}`;
+  const shown = displayQuery(query);
+  const head = `${indent}${iconChar} ${paint.brand.data(t)} ${paint.text.dim(`"${shown}"`)}`;
   const tag1 = paint.text.dim('▸ running');
 
-  return query
+  return shown
     ? `\n${head}  ${tag1}`
     : `\n${indent}${iconChar} ${paint.brand.data(t)}  ${tag1}`;
 }

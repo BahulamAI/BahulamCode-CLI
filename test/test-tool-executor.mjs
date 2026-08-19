@@ -323,12 +323,20 @@ await test('shell runs echo', async () => {
     assert.ok(result.output.includes('hello_tarang'));
 });
 
-await test('shell blocked command substitution returns retry guidance', async () => {
+await test('shell command substitution is approval-gated, not blocked', async () => {
+    // Reclassified 2026-08-19: backticks/$() → contained + highRisk
+    // (explicit approval) instead of hard-blocked. Dangerous payloads
+    // inside the substitution still hard-block via BLOCKED_PATTERNS.
     const result = await executor.execute('shell', { command: 'echo `whoami`' });
+    assert.strictEqual(result.success, true);
+    assert.notStrictEqual(result._blocked, true);
+    assert.ok(String(result.output || '').trim().length > 0);
+});
+
+await test('shell substitution with dangerous payload stays blocked', async () => {
+    const result = await executor.execute('shell', { command: 'echo $(rm -rf /)' });
     assert.strictEqual(result.success, false);
     assert.strictEqual(result._blocked, true);
-    assert.ok(result.output.includes('Contains command substitution'));
-    assert.ok(result.output.includes('Retry with separate simple shell commands'));
 });
 
 await test('shell rm with tilde target runs after approval path', async () => {
