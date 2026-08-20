@@ -29,6 +29,7 @@ export function parseArgs(args) {
         timeout: null,
         allowedTools: null,
         disallowedTools: null,
+        route: null,
         resume: false,
         resumeSessionId: null,
         headless: false,
@@ -47,6 +48,10 @@ export function parseArgs(args) {
             case '--model':
             case '-m':
                 result.model = args[++i];
+                break;
+
+            case '--route':
+                result.route = args[++i];
                 break;
 
             case '--permission-mode':
@@ -169,7 +174,8 @@ export function getUsageText() {
 Usage: occ [options] [prompt]
 
 Options:
-  --model, -m <model>        Model to use (default: claude-sonnet-4-6)
+  --model, -m <id|role=id>   Session model override (also named modes: fast|thinking|extra|max)
+  --route <platform|byok>    Model route; platform validates against the curated catalog
   --permission-mode <mode>   Permission mode (bypassPermissions, acceptEdits, plan, auto, dontAsk)
   --print, -p <prompt>       Non-interactive mode: run prompt and exit
   --output-format <fmt>      Output format: text, json, stream-json

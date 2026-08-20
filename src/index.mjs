@@ -35,7 +35,7 @@ import { printBanner, printProjectInfo, printHints, printAuthStatus, printStyled
 import { ContextRetriever } from './context/retriever.mjs';
 import { loadSettings } from './config/settings.mjs';
 
-const VERSION = '2.6.15';
+const VERSION = '2.6.16';
 
 // ── Arg Parsing (consolidated from index.mjs + cli-args.mjs) ──
 
@@ -50,6 +50,7 @@ function parseArgs(argv) {
         // Config subcommand flags
         showConfig: false, openRouterKey: null, anthropicKey: null,
         backendUrl: null, mode: null,
+        model: null, route: null,
         // Extended flags (from cli-args.mjs)
         permissionMode: null,
         outputFormat: null,
@@ -96,7 +97,8 @@ function parseArgs(argv) {
             case '--google-key': args.googleKey = argv[++i]; break;
             case '--gateway': args.gateway = argv[++i]; break;
             // --backend-url removed: use TARANG_ENV
-            // --model removed: use tarang configure (web settings)
+            case '--model': case '-m': args.model = argv[++i]; break;
+            case '--route': args.route = argv[++i]; break;
             // Extended flags
             case '--permission-mode': args.permissionMode = argv[++i]; break;
             case '--print': case '-p': case '--instruction': case '--input': args.instruction = argv[++i]; break;
@@ -175,9 +177,11 @@ function printUsage() {
     process.stderr.write(`  ${D}(default: auto-select based on task complexity)${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}MODEL FLAGS${R}\n`);
+    process.stderr.write(`  ${G}--model, -m <id|role=id>${R}     Session model override ${D}(also: fast|thinking|extra|max)${R}\n`);
+    process.stderr.write(`  ${G}--route <platform|byok>${R}      Model route ${D}(platform validates against curated catalog)${R}\n`);
     process.stderr.write(`  ${G}--system-prompt <text>${R}       Override system prompt\n`);
     process.stderr.write(`  ${G}--max-turns <n>${R}              Maximum conversation turns\n`);
-    process.stderr.write(`  ${D}Models are configured via: bahulam configure${R}\n`);
+    process.stderr.write(`  ${D}Persistent defaults are configured via: bahulam configure${R}\n`);
     process.stderr.write('\n');
     process.stderr.write(`${B}PERMISSION FLAGS${R}\n`);
     process.stderr.write(`  ${G}--yes, -y${R}                    Auto-approve all operations\n`);

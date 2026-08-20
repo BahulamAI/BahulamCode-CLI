@@ -27,6 +27,51 @@ import {
   isInputDockMounted,
   moveToContent,
 } from '../ui/input-dock.mjs';
+import * as queue from '../ui/render-queue.mjs';
+
+// Single seam for the transient spinner/status line. Rich mode (render
+// queue active) → coalesced last-wins status that can never interleave
+// with content. Legacy dock path and bare-TTY inPlace stay as fallbacks
+// until their write-sites migrate onto the queue too.
+// Max inner-tool lines shown under the spinner during a sub-agent run.
+const SUB_AGENT_WINDOW_ROWS = 7;
+
+function presentStatus(rendered) {
+  if (queue.isActive()) {
+    const win = runtime.subAgentWindow;
+    if (win?.active && win.lines.length) {
+      queue.statusBlock([
+        rendered,
+        ...win.lines.slice(-SUB_AGENT_WINDOW_ROWS).map(l => `    ${c.dim(l)}`),
+      ]);
+      return;
+    }
+    queue.status(rendered);
+    return;
+  }
+  if (isInputDockMounted()) { drawPinnedStatus(rendered); return; }
+  inPlace(rendered);
+}
+
+/** Push a line into the live sub-agent tool window (dedup consecutive). */
+export function pushSubAgentWindowLine(line) {
+  const win = runtime.subAgentWindow;
+  if (!win?.active) return;
+  const text = String(line || '').trim();
+  if (!text || win.lines[win.lines.length - 1] === text) return;
+  win.lines.push(text);
+  if (win.lines.length > 24) win.lines.splice(0, win.lines.length - 24);
+}
+
+export function setSubAgentWindowActive(active) {
+  runtime.subAgentWindow = { active: Boolean(active), lines: [] };
+}
+
+function erasePresentedStatus() {
+  if (queue.isActive()) { queue.clearStatus(); return; }
+  if (isInputDockMounted()) { clearPinnedStatus(); moveToContent(); return; }
+  inPlace('');
+}
 import {
   formatCardHead,
   formatCompactFileDiff,
@@ -157,11 +202,11 @@ export function renderExploreRun() {
   // picks up exploreSummary() text instead of any stale label.
   runtime.exploreRun.lineActive = true;
 
-  if (isInputDockMounted()) {
-    // Docked terminals reserve a bottom input area. Keeping explore progress
-    // as an animated bottom overlay creates visible gaps between the sub-agent
-    // transcript and the current tool. Emit bounded snapshots into the
-    // transcript instead; every hidden call remains available through /expand.
+  if (!queue.isActive() && isInputDockMounted()) {
+    // Legacy docked path (queue not engaged): an animated bottom overlay
+    // created visible gaps, so emit bounded snapshots into the transcript
+    // instead. With the render queue active this branch is skipped — the
+    // coalesced status line can animate safely in dock mode.
     if (runtime.spinInterval) {
       clearInterval(runtime.spinInterval);
       runtime.spinInterval = null;
@@ -183,8 +228,7 @@ export function renderExploreRun() {
       const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
       runtime.spinFrame++;
       const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-      if (isInputDockMounted()) moveToContent();
-      inPlace(rendered);
+      presentStatus(rendered);
     }, 80);
   }
   runtime.lastRenderedBlock = 'tool';
@@ -200,9 +244,10 @@ export function flushExploreRun() {
     if (wasActive) {
       if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
       runtime.spinText = '';
-      if (!isInputDockMounted()) inPlace('');
+      if (queue.isActive()) queue.clearStatus();
+      else if (!isInputDockMounted()) inPlace('');
     }
-    if (!isInputDockMounted() || summary !== runtime.exploreRun.lastPrintedSummary) {
+    if (queue.isActive() || !isInputDockMounted() || summary !== runtime.exploreRun.lastPrintedSummary) {
       writeExploreSnapshot(summary);
     }
   }
@@ -238,6 +283,17 @@ export function renderToolCall(data) {
     return;
   }
 
+  // Sub-agent live window (queue mode): inner tool calls stream into the
+  // fixed-height status block instead of appending transcript lines. The
+  // card is still recorded so /expand, /last, and `d` show full detail.
+  if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
+    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
+    const label = readToolLabel(tool, { args });
+    pushSubAgentWindowLine(label ? `→ ${tool} · ${label}` : `→ ${tool}`);
+    return; // the spinner tick paints the window block
+  }
+
   flushExploreRun();
   renderBlockBoundary('tool', { compactSame: tool !== 'shell' });
 
@@ -251,8 +307,12 @@ export function renderToolCall(data) {
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   runtime.pendingHead = { callId, head, indent };
   runtime.lastRenderedBlock = 'tool';
-  // Spinner shows what's running until the result arrives.
-  startSpinner(`${tool}…`);
+  // Spinner shows what's running until the result arrives. Per-call phase
+  // gives each tool its own elapsed clock — long shell runs count up live.
+  const spinLabel = tool === 'shell' && args.command
+    ? `shell: ${String(args.command).split('\n')[0].slice(0, 48)}`
+    : `${tool}…`;
+  startSpinner(spinLabel, { phase: `tool:${callId}` });
 }
 
 /**
@@ -316,6 +376,12 @@ export function renderToolResult(data, eventType = 'tool_result') {
     return;
   }
 
+  // Sub-agent live window: the call line is already streaming in the
+  // status block; the result stays card-only (close card summarizes).
+  if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
+    return;
+  }
+
   // ── Single-line combined emit ──
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
@@ -329,6 +395,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
         process.stderr.write(`${diffPreview}\n`);
         rememberFileDiffPreview(data);
       }
+      renderPlanBody(tool, data);
       runtime.lastRenderedBlock = 'tool';
       runtime.pendingHead = null;
       return;
@@ -340,6 +407,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
         process.stderr.write(`${diffPreview}\n`);
         rememberFileDiffPreview(data);
       }
+      renderPlanBody(tool, data);
       runtime.lastRenderedBlock = 'tool';
       runtime.pendingHead = null;
       return;
@@ -358,12 +426,36 @@ export function renderToolResult(data, eventType = 'tool_result') {
     process.stderr.write(`${diffPreview}\n`);
     rememberFileDiffPreview(data);
   }
+  renderPlanBody(tool, data);
   runtime.lastRenderedBlock = 'tool';
 
   // Lint warnings stay visible alongside writes.
   if (hasLint) {
     process.stderr.write(`${gutter}${paint.state.warn('⚠ ' + String(data.lint).split('\n')[0].slice(0, 80))}\n`);
   }
+}
+
+// The plan sub-agent's output is the one peer result the USER needs to
+// see, not just the model — it's the execution contract for the turn.
+// Render the body as a bordered block (capped; full text stays on the
+// card via /last). All other peer verbs keep the one-line summary.
+const PLAN_BODY_MAX_LINES = 30;
+
+function renderPlanBody(tool, data) {
+  if (String(tool || '').toLowerCase() !== 'plan') return;
+  const text = String(data?.output ?? data?.result ?? '').trim();
+  if (!text) return;
+  const indent = subAgentIndent();
+  const lines = transcriptRenderableLines(renderMarkdown(text));
+  if (!lines.length) return;
+  const shown = lines.slice(0, PLAN_BODY_MAX_LINES);
+  process.stderr.write(`${indent}${paint.text.dim('┌ plan')}\n`);
+  for (const line of shown) {
+    process.stderr.write(`${indent}${paint.text.dim('│')} ${line}\n`);
+  }
+  process.stderr.write(lines.length > shown.length
+    ? `${indent}${paint.text.dim(`└ … ${lines.length - shown.length} more lines · /last to expand`)}\n`
+    : `${indent}${paint.text.dim('└')}\n`);
 }
 
 function fileDiffKey(data = {}) {
@@ -541,10 +633,37 @@ export const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 // (declaration moved to repl-state.mjs runtime.*)
 // (declaration moved to repl-state.mjs runtime.*)
 
-export function startSpinner(text) {
+// Compose the status label with live phase telemetry: elapsed seconds
+// (shown once a phase runs ≥3s — quick tools stay clean) and the
+// per-phase tool-call counter (sub-agent progress). The 80ms tick calls
+// this every frame, so elapsed counts up without any extra timer.
+function composeStatusLabel(label) {
+  const parts = [label];
+  if (runtime.spinStartedAt) {
+    const elapsedS = Math.floor((Date.now() - runtime.spinStartedAt) / 1000);
+    if (runtime.spinToolCalls > 0) {
+      parts.push(`${runtime.spinToolCalls} call${runtime.spinToolCalls === 1 ? '' : 's'}`);
+    }
+    if (elapsedS >= 3) parts.push(`${elapsedS}s`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * Start (or re-label) the spinner. `phase` scopes the elapsed clock:
+ * a phase change resets it, same-phase updates keep it counting. Callers
+ * that don't pass a phase get a generic per-call reset (old behavior).
+ */
+export function startSpinner(text, { phase = null } = {}) {
+  const nextPhase = phase || `generic:${text}`;
+  if (runtime.spinPhase !== nextPhase) {
+    runtime.spinPhase = nextPhase;
+    runtime.spinStartedAt = Date.now();
+    runtime.spinToolCalls = 0;
+  }
   runtime.spinText = text;
   runtime.spinFrame = 0;
-  if (runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
+  if (!queue.isActive() && runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
   if (runtime.spinInterval) return; // already running
   runtime.spinInterval = setInterval(() => {
     // While an explore run is active, its live counts own the spinner
@@ -555,20 +674,29 @@ export function startSpinner(text) {
     if (!label) return;
     const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
     runtime.spinFrame++;
-    const rendered = `  ${c.brand(frame)} ${c.dim(label)}`;
-    if (isExploreActive && isInputDockMounted()) {
+    const rendered = `  ${c.brand(frame)} ${c.dim(composeStatusLabel(label))}`;
+    if (!queue.isActive() && isExploreActive && isInputDockMounted()) {
       return;
     }
-    if (isInputDockMounted()) {
-      drawPinnedStatus(rendered);
-      return;
-    }
-    inPlace(rendered);
+    presentStatus(rendered);
   }, 80);
 }
 
 export function updateSpinner(text) {
   runtime.spinText = text;
+  // Self-healing: a content flush stops the spinner (clears the
+  // interval), but long-running work — sub-agent runs especially —
+  // keeps sending updates afterwards. Without reviving the interval
+  // those updates write into a dead timer and the user sees a frozen
+  // "▸ running" with no progress at all. Same phase → clock continues.
+  if (!runtime.spinInterval && text) {
+    startSpinner(text, { phase: runtime.spinPhase || undefined });
+  }
+}
+
+/** Bump the per-phase progress counter (sub-agent tool calls). */
+export function bumpSpinnerProgress() {
+  runtime.spinToolCalls++;
 }
 
 export function stopSpinner() {
@@ -578,12 +706,10 @@ export function stopSpinner() {
   if (runtime.exploreRun && runtime.exploreRun.lineActive) return;
   if (runtime.spinInterval) { clearInterval(runtime.spinInterval); runtime.spinInterval = null; }
   runtime.spinText = '';
-  if (isInputDockMounted()) {
-    clearPinnedStatus();
-    moveToContent();
-    return;
-  }
-  inPlace('');
+  runtime.spinPhase = null;
+  runtime.spinStartedAt = 0;
+  runtime.spinToolCalls = 0;
+  erasePresentedStatus();
 }
 
 // ── Content Streaming Display ──

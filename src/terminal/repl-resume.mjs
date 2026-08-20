@@ -30,6 +30,8 @@ import {
   resumeModeLabel,
   resumeTailTurnCount,
   startResumeProgress,
+  writeOverlayFrame,
+  eraseOverlayFrame,
 } from './repl-format.mjs';
 import { TarangStreamClient } from '../core/stream-client.mjs';
 import { getRecentSessions, getSessionDetail, buildResumeHistory, combineResumeSummaries } from '../core/local-store.mjs';
@@ -86,9 +88,6 @@ export async function pickResumableSession(resumable, ctx) {
     let renderedLines = 0;
 
     const renderMenu = () => {
-      if (renderedLines > 0) {
-        process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
-      }
       if (selected < offset) offset = selected;
       if (selected >= offset + pageSize) offset = selected - pageSize + 1;
 
@@ -119,13 +118,19 @@ export async function pickResumableSession(resumable, ctx) {
         `  ${c.dim(`↑↓ move  ·  Enter resume  ·  P preview  ·  Esc cancel  ·  ${selected + 1}/${resumable.length}`)}`,
         cols - 1
       ));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      // Collapse the list to one line: picked → which session; preview →
+      // erase only (preview overlay paints next); cancel → caller reports.
+      const picked = value?.action === 'resume' ? value.session : null;
+      eraseOverlayFrame(renderedLines, picked
+        ? `  ${c.green('↺')} ${c.brand(picked.project || '(unknown)')} ${c.dim(`· ${picked.messageCount} msgs · resuming…`)}`
+        : '');
       if (rl) rl.resume();
       resolve(value);
     };
@@ -183,7 +188,6 @@ export async function chooseThresholdMode(ctx, decision) {
     let renderedLines = 0;
 
     const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
       const cols = Math.max(60, process.stderr.columns || 120);
       const pct = Math.round(decision.usageRatio * 100);
       const projected = formatCtxTokens(decision.projected);
@@ -221,13 +225,16 @@ export async function chooseThresholdMode(ctx, decision) {
       }
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim('↑↓ move  ·  Enter pick  ·  f/s/1/2 shortcut  ·  Esc cancel')}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      eraseOverlayFrame(renderedLines, value
+        ? `  ${c.dim('mode:')} ${c.brand(resumeModeLabel(value))}`
+        : '');
       if (rl) rl.resume();
       resolve(value);
     };
@@ -281,7 +288,6 @@ export async function previewResumeSession(session, ctx) {
     let scrollOffset = 0;
 
     const render = () => {
-      if (renderedLines > 0) process.stderr.write(`\x1b[${renderedLines}F\r\x1b[J`);
       const cols = Math.max(60, process.stderr.columns || 120);
       const rows = Math.max(10, Math.min((process.stderr.rows || 30) - 6, 20));
       const contentLines = (history.summary || '').split('\n');
@@ -305,13 +311,14 @@ export async function previewResumeSession(session, ctx) {
       }
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim(`↑↓/PgUp/PgDn scroll  ·  f/s/1/2 switch mode  ·  Enter resume this  ·  q back  ·  ${scrollOffset + 1}-${Math.min(scrollOffset + rows, totalLines)}/${totalLines}`)}`, cols - 1));
-      process.stderr.write(lines.join('\n') + '\n');
+      writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      eraseOverlayFrame(renderedLines);
       if (rl) rl.resume();
       resolve(value);
     };
@@ -343,9 +350,12 @@ export async function previewResumeSession(session, ctx) {
  */
 export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
   if (!process.stdin.isTTY) return 'switch';
-  process.stderr.write(`\n  ${c.dim('This session lives in another repo:')}\n`);
-  process.stderr.write(`  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}\n`);
-  process.stderr.write(`  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel  `);
+  const frame = [
+    `  ${c.dim('This session lives in another repo:')}`,
+    `  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}`,
+    `  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel`,
+  ];
+  writeOverlayFrame(0, frame);
   const rl = ctx._rl || null;
   if (rl) rl.pause();
   return await new Promise((resolve) => {
@@ -353,8 +363,13 @@ export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      const summary = value === 'switch'
+        ? `  ${c.dim('cwd →')} ${c.brand(savedPath)}`
+        : value === 'stay'
+          ? `  ${c.dim(`staying in ${currentPath}`)}`
+          : '';
+      eraseOverlayFrame(frame.length, summary);
       if (rl) rl.resume();
-      process.stderr.write('\n');
       resolve(value);
     };
     const onData = (data) => {

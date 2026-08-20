@@ -101,7 +101,14 @@ export function renderApprovalDockPrompt({
 } = {}) {
   const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
   const opts = options || defaultOptions(tier, { tool, args });
-  const subject = approvalDockSubject(tool, args, cols, showDetails);
+  // Multi-line shell/python scripts auto-expand: the user cannot approve
+  // what they cannot see. "shell script · 5 lines · 309 B" as the only
+  // subject made blind approval the default. After execution the script
+  // collapses back to the one-line tool card (details stay on /last).
+  const isScriptCommand = tool === 'shell'
+    && /\n/.test(String(args.command || args.cmd || ''));
+  const detailView = showDetails || isScriptCommand;
+  const subject = approvalDockSubject(tool, args, cols, detailView);
   const risks = riskTerms(tool, args, tier);
   const reason = compactReason(tool, args, why);
   const lines = [
@@ -112,14 +119,22 @@ export function renderApprovalDockPrompt({
     ...opts.map((option, index) => optionToken(option, index === selected, explicitAccent(tier))),
   ];
 
+  // Show the WHOLE script when it fits — a partial script (…lines cut at
+  // the top) makes blind approval the default. Cap at half the terminal
+  // so the dock never eats the whole screen. Non-detail approvals keep
+  // the tight 8-row cap.
+  const termRows = Math.max(12, Number(process.stderr.rows) || 24);
+  const detailCap = Math.max(12, Math.floor(termRows / 2));
+  const maxRows = detailView ? Math.min(detailCap, Math.max(12, lines.length + 1)) : 8;
+
   return {
     prefix: '? approve › ',
-    value: truncateForDock(subject, showDetails ? 1200 : 220),
+    value: truncateForDock(subject, detailView ? 1200 : 220),
     context: `${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`,
     meta: '',
-    tips: approvalFooter(tool, showDetails),
+    tips: approvalFooter(tool, detailView),
     lines,
-    maxRows: showDetails ? 12 : 8,
+    maxRows,
   };
 }
 
@@ -408,9 +423,11 @@ function approvalDockSubject(tool, args = {}, cols = 96, showDetails = false) {
 function approvalDockSubjectRows(subject) {
   const lines = String(subject || '').split('\n');
   const first = lines.shift() || '';
+  // 12 continuation rows matches approvalDockDetails' script cap — a
+  // 12-line script renders fully in the approval prompt.
   return [
     `${paint.text.dim('? approve ›')} ${paint.text.primary(truncate(first, 160))}`,
-    ...lines.slice(0, 6).map(line => `${paint.text.dim('           ')}${paint.text.primary(truncate(line, 160))}`),
+    ...lines.slice(0, 12).map(line => `${paint.text.dim('           ')}${paint.text.primary(truncate(line, 160))}`),
   ];
 }
 

@@ -37,6 +37,7 @@
 import { paint, width as visibleWidth } from './palette.mjs';
 import { term, onResize } from './term.mjs';
 import { wrapToLines, tailWithEllipsis, cursorPositionInLines } from './text-layout.mjs';
+import * as queue from './render-queue.mjs';
 
 const ESC = '\x1b[';
 const OUT = process.stderr;
@@ -83,6 +84,14 @@ let originalStdoutWrite = null;
 let originalStderrWrite = null;
 
 function write(s) {
+  // All dock frame bytes flow through the render queue's serialized raw
+  // channel when it is active — bypassing the content redirect so frame
+  // paints never land in the transcript. Legacy fallback writes straight
+  // to stderr with the old suppress-tracking guard.
+  if (queue.isActive()) {
+    queue.raw(s);
+    return;
+  }
   try {
     suppressWriteTracking++;
     OUT.write(s);
@@ -91,8 +100,16 @@ function write(s) {
     suppressWriteTracking = Math.max(0, suppressWriteTracking - 1);
   }
 }
-function setScrollRegion(top, bottom) { write(`${ESC}${top};${bottom}r`); }
-function clearScrollRegion() { write(`${ESC}r`); }
+function setScrollRegion(top, bottom) {
+  // Keep the queue's notion of the content region in sync — its content
+  // cursor clamps to this bottom.
+  if (queue.isActive()) { queue.setRegion(top, bottom); return; }
+  write(`${ESC}${top};${bottom}r`);
+}
+function clearScrollRegion() {
+  if (queue.isActive()) { queue.clearRegion(); return; }
+  write(`${ESC}r`);
+}
 function saveCursor() { write(`${ESC}s`); }
 function restoreCursor() { write(`${ESC}u`); }
 function moveTo(row, col) { write(`${ESC}${row};${col}H`); }
@@ -206,7 +223,12 @@ function resolveMaxInputRows(requested) {
 function resolveOverlayRowCap(requested = DEFAULT_OVERLAY_MAX_ROWS) {
   const n = Number.parseInt(String(requested), 10);
   if (!Number.isFinite(n)) return DEFAULT_OVERLAY_MAX_ROWS;
-  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
+  // Overlays (approval scripts) may need more rows than the typing cap —
+  // the user cannot approve what they cannot see. Allow up to half the
+  // terminal so the transcript stays visible; typing input keeps the
+  // tight MAX_INPUT_ROWS_CAP via normalizeInputRows above.
+  const dynamicCap = Math.max(MAX_INPUT_ROWS_CAP, Math.floor((rows() || 24) / 2));
+  return Math.max(MIN_INPUT_ROWS, Math.min(dynamicCap, n));
 }
 
 function overlayRowsForWrapped(wrappedLength, requestedMaxRows = DEFAULT_OVERLAY_MAX_ROWS) {
@@ -326,6 +348,10 @@ function parkCursorAtInput() {
   const prefix = lastFrame.prefix || '';
   const value = lastFrame.value || '';
   if (!prefix && !value) {
+    if (queue.isActive()) {
+      queue.park(inputRowStart(), INPUT_INDENT + 1);
+      return;
+    }
     moveTo(inputRowStart(), INPUT_INDENT + 1);
     return;
   }
@@ -493,10 +519,26 @@ export function mountInputDock({
   resetContentCursor(initialContentRow, initialContentCol);
   contentTrackingActive = false;
   mounted = true;
-  patchOutputTracking();
+  // Render queue becomes the sole writer + exact cursor tracker. The
+  // legacy simulate-by-parsing patch only engages if activation is
+  // refused (shouldn't happen — mount gating matches activate gating).
+  const queued = queue.activate({
+    initialRow: contentCursorRow,
+    initialCol: contentCursorCol,
+    bottom: contentBottomRow(),
+  });
+  if (!queued) patchOutputTracking();
   applyLayout();
 
-  unsubResize = onResize(() => applyLayout({ clearPrevious: true }));
+  unsubResize = onResize(() => {
+    if (queue.isActive()) {
+      // Terminal reflow makes any tracked position fiction — hard
+      // re-anchor to the new content-region bottom before repainting.
+      queue.reanchor({ row: contentBottomRow(), col: 1, bottom: contentBottomRow() });
+      resetContentCursor(contentBottomRow(), 1);
+    }
+    applyLayout({ clearPrevious: true });
+  });
   process.once('exit', safeUnmount);
   process.once('SIGTERM', () => { safeUnmount(); process.exit(143); });
   return true;
@@ -514,6 +556,7 @@ export function unmountInputDock() {
   } finally {
     mounted = false;
     contentTrackingActive = false;
+    queue.deactivate();
     unpatchOutputTracking();
     resetting = false;
     lastGeometry = null;
@@ -524,6 +567,10 @@ function safeUnmount() { try { unmountInputDock(); } catch {} }
 
 export function moveToContent() {
   if (!mounted) return false;
+  if (queue.isActive()) {
+    // Content self-positions through queue.content(); nothing to do.
+    return true;
+  }
   clampContentCursor();
   contentTrackingActive = true;
   moveTo(contentCursorRow, contentCursorCol);
@@ -541,6 +588,11 @@ export function pinnedStatusRow() {
 
 export function drawPinnedStatus(line) {
   if (!mounted) return false;
+  if (queue.isActive()) {
+    // Coalesced, serialized, no VT100 save-slot involvement.
+    queue.status(String(line || ''));
+    return true;
+  }
   const row = pinnedStatusRow();
   if (row == null) return false;
   saveCursor();
@@ -553,6 +605,10 @@ export function drawPinnedStatus(line) {
 
 export function clearPinnedStatus() {
   if (!mounted) return false;
+  if (queue.isActive()) {
+    queue.clearStatus();
+    return true;
+  }
   const row = pinnedStatusRow();
   if (row == null) return false;
   saveCursor();
@@ -660,6 +716,12 @@ export function focusDockInput(prefix, value = '', cursorInValue = null) {
   );
   const row = inputRowStart() + visibleRowIdx;
   const col = Math.min(cols(), INPUT_INDENT + 1 + Math.max(0, pos.col));
+  if (queue.isActive()) {
+    // Record the park position — every queue op re-parks here so readline
+    // echoes always land in the input row, even mid-stream.
+    queue.park(row, col);
+    return true;
+  }
   moveTo(row, col);
   return true;
 }

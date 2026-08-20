@@ -9,6 +9,58 @@
 
 import * as path from 'node:path';
 import { c, stripAnsi, formatElapsed, inPlace } from './ansi.mjs';
+import * as rqueue from '../ui/render-queue.mjs';
+
+// Transient one-line status writer that is safe under the render queue.
+// Raw inPlace() writes get REDIRECTED into transcript content when the
+// queue is active (cursor codes stripped) — that leaked one line per
+// spinner frame during resume summarization. queue.status() coalesces
+// and overwrites in place; inPlace stays as the no-queue fallback.
+function transientLine(text) {
+  if (rqueue.isActive()) {
+    if (text) rqueue.status(text);
+    else rqueue.clearStatus();
+    return;
+  }
+  inPlace(text);
+}
+
+/**
+ * Atomic repaint writer for raw-stdin overlays (resume picker, /model form).
+ *
+ * While the render queue is active, plain process.stderr.write is REDIRECTED
+ * into transcript content with cursor codes stripped — an overlay's
+ * "cursor-up N + erase" repaint becomes "append another copy" (the form-
+ * replication bug). Each repaint therefore goes through rqueue.raw() as one
+ * frame. On the first paint the frame's rows are reserved with newlines so
+ * painting near the bottom (input dock) scrolls once up-front and the
+ * cursor-relative repaint math stays stable afterwards.
+ */
+export function writeOverlayFrame(erasePrev, lines) {
+  const body = lines.join('\n') + '\n';
+  if (erasePrev > 0) {
+    rqueue.raw(`\x1b[${erasePrev}F\r\x1b[J` + body);
+  } else {
+    rqueue.raw('\n'.repeat(lines.length) + `\x1b[${lines.length}A` + body);
+  }
+}
+
+/**
+ * Erase the previously drawn overlay frame (rows lines tall) so the next
+ * prompt / transcript output starts on a clean line. Call from every
+ * overlay's cleanup path — without this, picker frames stack on screen
+ * when a follow-up prompt (cwd confirm, next overlay) writes below them.
+ */
+export function eraseOverlayFrame(rows, summaryLine = '') {
+  if (!rows || rows <= 0) {
+    if (summaryLine) rqueue.raw(summaryLine + '\n');
+    return;
+  }
+  // Collapse the frame to a compact one-line summary (or nothing). A pure
+  // erase leaves a blank void mid-screen because the input dock parks the
+  // cursor at the bottom before the next plain write lands.
+  rqueue.raw(`\x1b[${rows}F\r\x1b[J` + (summaryLine ? summaryLine + '\n' : ''));
+}
 
 // ── One-liners ───────────────────────────────────────────────────────
 
@@ -182,23 +234,31 @@ export function startResumeProgress(mode = 'full') {
     if (!active) return;
     const glyph = frames[frame % frames.length];
     frame++;
-    inPlace(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
+    transientLine(`  ${c.brand(glyph)} ${c.dim(label)}  ${resumeProgressBar(percent)}  ${c.dim(formatElapsed(started))}`);
   };
 
   render();
-  const timer = setInterval(render, 100);
+  let timer = setInterval(render, 100);
   return {
+    // Self-healing: the resume flow stops the progress line to show the
+    // cwd-confirm overlay, then keeps reporting phases ('rebuilding local
+    // session state', …). A dead update() silently dropped every cue after
+    // that prompt — revive the ticker instead (same pattern as
+    // updateSpinner in repl-render.mjs).
     update(nextLabel, nextPercent) {
-      if (!active) return;
       if (nextLabel) label = nextLabel;
       if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
+      if (!active) {
+        active = true;
+        timer = setInterval(render, 100);
+      }
       render();
     },
     stop() {
       if (!active) return;
       active = false;
       clearInterval(timer);
-      inPlace('');
+      transientLine('');
     },
   };
 }

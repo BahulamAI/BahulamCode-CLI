@@ -4,6 +4,8 @@
  * Zero React. Zero Ink. Zero flickering.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { startTerminalRepl } from './repl.mjs';
 import {
   runSessionsCommand,
@@ -11,6 +13,9 @@ import {
   runHistoryCommand,
 } from './analytics.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
+import * as telemetry from '../telemetry/index.mjs';
+import { bahulamHome } from '../core/paths.mjs';
+import { TarangAuth as Auth } from '../auth/tarang-auth.mjs';
 
 // ── Subcommands ──
 
@@ -83,7 +88,40 @@ function parseKeplerSubcommandArgs(command, argv) {
   return parsed;
 }
 
+function detectInstallFirstRun() {
+  const markerPath = path.join(bahulamHome(), '.install_marker');
+  try {
+    if (fs.existsSync(markerPath)) return false;
+    fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+    return true;
+  } catch { return false; }
+}
+
 async function main() {
+  // ── Telemetry bootstrap ──
+  const _auth = new Auth();
+  const _creds = _auth.loadCredentials();
+  telemetry.configure(_creds.backendUrl, _creds.token);
+
+  // Fire install_first_run on first ever CLI invocation
+  if (detectInstallFirstRun()) {
+    telemetry.track('install_first_run', { version: process.env.npm_package_version || '' });
+  }
+
+  // Check day7_return — fire once per install
+  const configDir_ = bahulamHome();
+  const installMarker_ = path.join(configDir_, '.install_marker');
+  const returnFiredPath_ = path.join(configDir_, '.return_fired');
+  try {
+    if (fs.existsSync(installMarker_) && !fs.existsSync(returnFiredPath_)) {
+      const installTime = parseInt(fs.readFileSync(installMarker_, 'utf-8').trim(), 10);
+      if (!isNaN(installTime) && Date.now() - installTime >= 7 * 24 * 60 * 60 * 1000) {
+        telemetry.track('day7_return', {});
+        fs.writeFileSync(returnFiredPath_, '1', { mode: 0o600 });
+      }
+    }
+  } catch {}
+
   if (subcommand === 'dashboard') {
     // Launch Bahulam Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
@@ -134,7 +172,9 @@ async function main() {
     const { TarangAuth } = await import('../auth/tarang-auth.mjs');
     const auth = new TarangAuth();
     try {
+      telemetry.track('login_shown', { method: 'cli_subcommand' });
       await auth.login();
+      telemetry.track('login_completed', { method: 'cli_subcommand' });
       process.stderr.write('\x1b[32m✓ Login successful!\x1b[0m\n');
       return;
     } catch (err) {

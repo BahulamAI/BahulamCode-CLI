@@ -50,6 +50,8 @@ export const COMMANDS = {
   '/review':      'Code review agent',
   '/architect':   'Feature architect agent',
   '/safety':      'Show safety guardrail status',
+  '/auto':        'Session autopilot: auto-approve routine tools (dangerous still prompts)',
+  '/approvals':   'List or edit session approval grants',
   '/revoke':      'Revoke auto-approvals',
   '/resume':      'Resume a previous session',
   '/sessions':    'List resumable sessions',

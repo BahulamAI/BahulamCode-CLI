@@ -29,6 +29,7 @@ import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
+import { readShippedCatalog } from '../config/model-catalog.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -42,6 +43,7 @@ import {
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
+import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
@@ -49,6 +51,7 @@ import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgent
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
+import { pickModelOverridesForm } from './repl-model-form.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
@@ -72,8 +75,10 @@ import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
 import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
+import * as rqueue from '../ui/render-queue.mjs';
 import {
   appendContent,
+  bumpSpinnerProgress,
   clearPendingHead,
   clippedThinking,
   expandIndex,
@@ -82,12 +87,14 @@ import {
   flushExploreRun,
   flushPendingHead,
   isInlineOutcomeTool,
+  pushSubAgentWindowLine,
   renderBlockBoundary,
   renderExploreRun,
   renderFileDiffEvent,
   renderStagnation,
   renderToolCall,
   renderToolResult,
+  setSubAgentWindowActive,
   startContentStream,
   startSpinner,
   stopSpinner,
@@ -321,16 +328,211 @@ function sessionModelOverrideEntries() {
 }
 
 function printModelCommandUsage() {
-  process.stderr.write(`  ${c.gray('Usage:')} /model [model]\n`);
+  process.stderr.write(`  ${c.gray('Usage:')} /model              interactive per-role form\n`);
+  process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
-  process.stderr.write(`         /model clear [role]\n`);
+  process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
+  process.stderr.write(`         /model list · status · refresh · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
+}
+
+// ── W7: curated platform catalog (PRD-076) ──
+// Platform-route model overrides are validated against the backend's
+// curated catalog (harness_validated models only). BYOK route skips
+// validation entirely — the user's key, the user's models. Fail-open:
+// if the catalog can't be fetched, the backend remains the enforcer.
+
+const NAMED_MODEL_MODES_LIST = ['fast', 'thinking', 'extra', 'max'];
+const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
+
+let _modelCatalogCache = null;
+let _modelCatalogError = null;
+let _modelCatalogSource = null;   // 'snapshot' | 'backend'
+let _backendRefreshInFlight = null;
+
+async function fetchModelCatalog(ctx) {
+  // Seed from the shipped snapshot so /model list, /model form and the
+  // curation warnings work offline. The backend refresh below overlays
+  // any drift without blocking the UI.
+  if (!_modelCatalogCache) {
+    const shipped = readShippedCatalog();
+    if (shipped && shipped.length) {
+      _modelCatalogCache = shipped;
+      _modelCatalogSource = 'snapshot';
+      _modelCatalogError = null;
+    }
+  }
+
+  // Kick off a background backend refresh at most once per REPL session.
+  // Snapshot already served the caller — this only matters for the *next*
+  // /model list. Skip entirely when offline mode is forced.
+  if (!_backendRefreshInFlight && _modelCatalogSource !== 'backend' &&
+      process.env.BAHULAM_MODEL_CATALOG_OFFLINE !== '1') {
+    _backendRefreshInFlight = refreshCatalogFromBackend(ctx).finally(() => {
+      _backendRefreshInFlight = null;
+    });
+  }
+
+  if (_modelCatalogCache) return _modelCatalogCache;
+
+  // Snapshot missing (shouldn't happen in a shipped package) — fall back
+  // to whatever the backend refresh produces.
+  await _backendRefreshInFlight;
+  return _modelCatalogCache;
+}
+
+async function refreshCatalogFromBackend(ctx) {
+  try {
+    const creds = ctx?.auth?.loadCredentials?.();
+    if (!creds?.backendUrl) {
+      if (!_modelCatalogCache) _modelCatalogError = 'not logged in (no backend url)';
+      return;
+    }
+    const headers = { 'X-Product': 'bahulam' };
+    if (creds.token) headers['Authorization'] = `Bearer ${creds.token}`;
+    const resp = await fetch(`${creds.backendUrl}/api/models`, {
+      headers,
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) {
+      if (!_modelCatalogCache) _modelCatalogError = `backend returned ${resp.status}`;
+      return;
+    }
+    const data = await resp.json();
+    const models = Array.isArray(data?.models) ? data.models : null;
+    if (models && models.length) {
+      _modelCatalogCache = models;
+      _modelCatalogSource = 'backend';
+      _modelCatalogError = null;
+    } else if (!_modelCatalogCache) {
+      _modelCatalogError = models ? 'catalog is empty' : 'unexpected response shape';
+    }
+  } catch (err) {
+    if (!_modelCatalogCache) {
+      _modelCatalogError = err?.name === 'TimeoutError' ? 'backend timeout (3s)' : 'backend unreachable';
+    }
+  }
+}
+
+function isByokModelRoute() {
+  return session.routePreference === 'byok' || (!session.routePreference && session.isByok);
+}
+
+// PRD-076 W7b: mirror session model state into ~/.bahulam/config.json so
+// picks survive restarts and the bundled Python runtime — which already
+// reads `model_config` via read_local_model_config() — sees them without
+// requiring a live backend fetch.
+function persistSessionModelState(ctx) {
+  try {
+    const auth = ctx?.auth;
+    if (!auth?.saveCredentials) return;
+    auth.saveCredentials({
+      model_config: { ...(session.modelOverrides || {}) },
+      model_mode: session.modelMode || null,
+      route_preference: session.routePreference || null,
+    });
+  } catch {
+    // Persistence is best-effort — never break the /model command over
+    // a config write failure.
+  }
+}
+
+function modelCreditBadge(model) {
+  const usd = Number(model?.input_cost_usd_per_m);
+  if (!Number.isFinite(usd) || usd <= 0) return '';
+  const credits = usd * 200; // credits = provider cost × 2 × 100/USD
+  return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
+}
+
+async function warnIfNotCurated(model, ctx) {
+  if (isByokModelRoute()) return;
+  const catalog = await fetchModelCatalog(ctx);
+  if (!catalog) return;
+  const row = catalog.find(m => m?.id === model);
+  if (!row) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not in the platform catalog — the backend may reject it. See /model list.`)}\n`);
+  } else if (row.harness_validated === false) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not harness-validated for the platform route — cost/quality untuned. See /model list.`)}\n`);
+  }
+}
+
+async function printModelCatalog(ctx) {
+  const catalog = await fetchModelCatalog(ctx);
+  if (!catalog) {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Model catalog unavailable — ${_modelCatalogError || 'unknown error'}.`)}\n`);
+    return;
+  }
+  const curated = catalog.filter(m => m?.harness_validated);
+  process.stderr.write(`\n  ${c.bold('Platform catalog')} ${c.dim('(harness-validated, credit-priced)')}\n`);
+  process.stderr.write(`  ${c.gray('─'.repeat(64))}\n`);
+  if (!curated.length) {
+    process.stderr.write(`  ${c.dim('(none published yet)')}\n`);
+  }
+  for (const m of curated) {
+    const badge = modelCreditBadge(m);
+    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
+      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
+      : '';
+    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+  }
+  const rest = catalog.length - curated.length;
+  if (rest > 0) {
+    process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
+  }
+  process.stderr.write('\n');
+}
+
+function applyLaunchModelArgs(cliArgs, ctx) {
+  const route = String(cliArgs.route || '').trim().toLowerCase();
+  if (route) {
+    if (route === 'platform' || route === 'byok') {
+      session.routePreference = route;
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Model route:')} ${c.brand(route)}\n`);
+    } else {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown --route ${cliArgs.route} (expected platform|byok)`)}\n`);
+    }
+  }
+
+  const value = String(cliArgs.model || '').trim();
+  if (!value) return Promise.resolve();
+
+  if (NAMED_MODEL_MODES.has(value.toLowerCase())) {
+    session.modelMode = value.toLowerCase();
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Session model mode:')} ${c.brand(session.modelMode)}\n`);
+    return Promise.resolve();
+  }
+
+  const pending = [];
+  for (const part of value.split(',').map(s => s.trim()).filter(Boolean)) {
+    const eq = part.indexOf('=');
+    let role = 'reasoning';
+    let model = part;
+    if (eq > 0) {
+      const maybeRole = normalizeModelRole(part.slice(0, eq));
+      if (!maybeRole) {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model role in --model: ${part.slice(0, eq)}`)}\n`);
+        continue;
+      }
+      role = maybeRole;
+      model = part.slice(eq + 1).trim();
+    }
+    if (!model) continue;
+    session.modelOverrides = { ...(session.modelOverrides || {}), [role]: model };
+    if (role === 'reasoning') session.model = model;
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model:`)} ${c.brand(model)}\n`);
+    pending.push(warnIfNotCurated(model, ctx));
+  }
+  return Promise.all(pending);
 }
 
 function printModelStatus() {
   process.stderr.write(`\n  ${c.bold('Models')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   process.stderr.write(`  ${c.gray('Active coding')} ${session.model || 'backend default'}\n`);
+  process.stderr.write(`  ${c.gray('Route        ')} ${session.routePreference || (session.isByok ? 'byok' : 'platform')}\n`);
+  if (session.modelMode) {
+    process.stderr.write(`  ${c.gray('Mode         ')} ${session.modelMode}\n`);
+  }
 
   const limits = session.modelLimits || {};
   const rows = [
@@ -358,16 +560,124 @@ function printModelStatus() {
   printModelCommandUsage();
 }
 
-function handleModelCommand(rest = '') {
+const MODEL_FORM_ROLES = ['reasoning', 'fast', 'orchestrator', 'explore', 'plan'];
+
+async function openModelForm(ctx) {
+  const limits = session.modelLimits || {};
+  const defaultsByRole = {
+    reasoning: limits.coder?.model,
+    fast: limits.explorer?.model,
+    orchestrator: limits.orchestrator?.model,
+    explore: limits.explorer?.model,
+    plan: limits.orchestrator?.model,
+  };
+  const roles = MODEL_FORM_ROLES.map(role => ({
+    role,
+    label: MODEL_ROLE_LABELS[role] || role,
+    current: (session.modelOverrides || {})[role] || null,
+    defaultLabel: defaultsByRole[role] || null,
+  }));
+  const catalog = await fetchModelCatalog(ctx);
+  // No curated catalog (backend down, empty table, …): fall back to the
+  // distinct models the backend already reported for this session so the
+  // form is still navigable instead of a dead single-option row.
+  const fallbackIds = [...new Set([
+    ...Object.values(limits).map(l => l?.model),
+    ...Object.values(session.modelOverrides || {}),
+  ].filter(Boolean))];
+  const result = await pickModelOverridesForm({
+    rl: ctx?._rl || null,
+    roles,
+    catalog: catalog || [],
+    fallbackIds,
+    unavailableNote: catalog ? null : (_modelCatalogError || 'backend unreachable'),
+  });
+  if (!result) {
+    process.stderr.write(`  ${c.dim('No model changes.')}\n`);
+    return;
+  }
+  // Merge: form rows replace their roles; overrides on roles the form
+  // doesn't show (verify/debug/…) are left untouched.
+  const next = { ...(session.modelOverrides || {}) };
+  for (const role of MODEL_FORM_ROLES) delete next[role];
+  Object.assign(next, result.overrides);
+  session.modelOverrides = next;
+  if (result.overrides.reasoning) session.model = result.overrides.reasoning;
+  persistSessionModelState(ctx);
+  const chosen = Object.entries(result.overrides);
+  if (!chosen.length) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('All roles back to backend defaults.')}\n`);
+    return;
+  }
+  for (const [role, model] of chosen) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`${MODEL_ROLE_LABELS[role] || role}:`)} ${c.brand(model)}\n`);
+  }
+}
+
+async function handleModelCommand(rest = '', ctx) {
   const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
+    if (process.stdin.isTTY) {
+      await openModelForm(ctx);
+    } else {
+      printModelStatus();
+    }
+    return;
+  }
+
+  if (parts[0] === 'status') {
     printModelStatus();
+    return;
+  }
+
+  if (parts[0] === 'form') {
+    await openModelForm(ctx);
+    return;
+  }
+
+  if (parts[0] === 'list' || parts[0] === 'catalog') {
+    await printModelCatalog(ctx);
+    return;
+  }
+
+  if (parts[0] === 'refresh') {
+    // Bust the in-process catalog and pull a fresh /api/models. This only
+    // touches the in-memory cache — persisted /model picks in
+    // ~/.bahulam/config.json (model_config, model_mode, route_preference)
+    // are untouched, so session overrides survive the refresh.
+    _modelCatalogCache = null;
+    _modelCatalogError = null;
+    _modelCatalogSource = null;
+    _backendRefreshInFlight = null;
+    process.stderr.write(`  ${c.dim('Refreshing model catalog…')}\n`);
+    await refreshCatalogFromBackend(ctx);
+    if (_modelCatalogSource !== 'backend') {
+      // Backend fetch failed — restore the shipped snapshot so subsequent
+      // /model commands still see a catalog.
+      const shipped = readShippedCatalog();
+      if (shipped && shipped.length) {
+        _modelCatalogCache = shipped;
+        _modelCatalogSource = 'snapshot';
+      }
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Backend refresh failed — ${_modelCatalogError || 'unknown error'}. Showing shipped snapshot.`)}\n`);
+    }
+    await printModelCatalog(ctx);
+    return;
+  }
+
+  if (parts.length === 1 && NAMED_MODEL_MODES.has(parts[0].toLowerCase())) {
+    session.modelMode = parts[0].toLowerCase();
+    persistSessionModelState(ctx);
+    process.stderr.write(`  ${c.green('✓')} ${c.dim('Session model mode:')} ${c.brand(session.modelMode)}\n`);
+    process.stderr.write(`  ${c.dim('The platform maps this mode to pinned models. Use /model clear to reset.')}\n`);
     return;
   }
 
   if (parts[0] === 'clear' || parts[0] === 'reset') {
     if (parts.length === 1) {
       session.modelOverrides = {};
+      session.modelMode = null;
+      persistSessionModelState(ctx);
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Cleared all session model overrides.')}\n`);
       return;
     }
@@ -378,6 +688,7 @@ function handleModelCommand(rest = '') {
       return;
     }
     delete session.modelOverrides[role];
+    persistSessionModelState(ctx);
     process.stderr.write(`  ${c.green('✓')} ${c.dim(`Cleared ${MODEL_ROLE_LABELS[role] || role} model override.`)}\n`);
     return;
   }
@@ -397,8 +708,10 @@ function handleModelCommand(rest = '') {
 
   session.modelOverrides = { ...(session.modelOverrides || {}), [role]: model };
   if (role === 'reasoning') session.model = model;
+  persistSessionModelState(ctx);
   process.stderr.write(`  ${c.green('✓')} ${c.dim(`Session ${MODEL_ROLE_LABELS[role] || role} model override:`)} ${c.brand(model)}\n`);
   process.stderr.write(`  ${c.dim('Use /model clear or /model clear <role> to return to backend settings.')}\n`);
+  await warnIfNotCurated(model, ctx);
 }
 
 function stripPathQuotes(value) {
@@ -634,8 +947,10 @@ function commandCompletions(line) {
   const top = ['/help', '/status', '/plan', '/tasks', '/history', '/settings', '/why'];
   const namespaced = HELP_GROUPS.flatMap(g => g.commands.map(([name]) => name.split(/\s+/)[0]));
   const all = [...new Set([...top, ...namespaced, ...Object.keys(COMMANDS), '/quit'])].sort();
-  const hits = all.filter(cmd => cmd.startsWith(line));
-  return hits.length ? hits : all;
+  // No fallback-to-all: a non-matching prefix ("/Users/...", a pasted
+  // path) must yield NOTHING so the hint overlay hides, not the full
+  // catalog. Bare "/" still matches every command via startsWith.
+  return all.filter(cmd => cmd.startsWith(line));
 }
 
 function slashCommandSuggestions(line, limit = 5) {
@@ -1081,7 +1396,10 @@ function renderEvent(event) {
           runtime.lastRenderedBlock = 'thinking';
           session._lastEmittedThinking = text;
         }
-        startSpinner(text.slice(0, 80));
+        // Shared 'thinking' phase — the elapsed clock keeps counting
+        // across successive thinking events instead of resetting per
+        // thought, so the user sees "… · 24s" during long reasoning.
+        startSpinner(text.slice(0, 80), { phase: 'thinking' });
         // Capture reasoning so /why can replay it.
         session.lastReasoning = text;
       }
@@ -1348,7 +1666,12 @@ function renderEvent(event) {
       runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
-      startSpinner(`${agentType}: working...`);
+      // Fixed-height live tool window under the spinner (queue mode):
+      // inner tool calls stream here instead of flooding the transcript.
+      setSubAgentWindowActive(true);
+      // Phase per sub-agent run: the status line counts elapsed time and
+      // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
+      startSpinner(`${agentType} agent`, { phase: `sub:${agentType}:${Date.now()}` });
       break;
     }
 
@@ -1358,16 +1681,24 @@ function renderEvent(event) {
       const agentType = data?.type || 'sub-agent';
       const tool = data?.tool || '';
       if (!tool) break;
+      // Feed the live window from THIS event — it always fires (55/55 in
+      // observed runs), unlike the inner tool_call render path which
+      // diverts for explore-category tools and folded verbosity modes.
+      // Dedup-consecutive inside the push keeps repeat tools quiet.
+      pushSubAgentWindowLine(`→ ${tool}`);
       // Don't clobber an active explore-run spinner. "exploring · 5 read ·
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
       // spinner would flip-flop between the two texts and read as blank.
       if (runtime.exploreRun.lineActive && isExploreTool(tool)) break;
+      // Same phase → clock keeps counting; the counter shows progress.
+      bumpSpinnerProgress();
       updateSpinner(`${agentType} → ${tool}`);
       break;
     }
 
     case 'sub_agent_complete': {
+      setSubAgentWindowActive(false);
       stopSpinner();
       clearPendingHead();
       flushFoldedSubAgentTools();
@@ -1479,6 +1810,8 @@ function renderEvent(event) {
     }
 
     case 'complete': {
+      // Fire first_answer on the first turn's completion
+      if (session.turns === 1 && session.user) telemetry.track('first_answer', {});
       stopSpinner();
       flushContent();
       flushFoldedSubAgentTools();
@@ -1887,6 +2220,8 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
     execContext.model_overrides = modelOverrides;
     if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
   }
+  if (session.modelMode) execContext.model_mode = session.modelMode;
+  if (session.routePreference) execContext.model_route = session.routePreference;
   return execContext;
 }
 
@@ -2029,8 +2364,10 @@ async function handleCommand(input, ctx) {
 
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
+      telemetry.track('login_shown', { method: 'repl_command' });
       try {
         await ctx.auth.login();
+        telemetry.track('login_completed', { method: 'repl_command' });
         process.stderr.write(`${c.green('✓ Login successful!')}\n`);
         await fetchUser(ctx);
       } catch (err) {
@@ -2471,7 +2808,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/model': {
-      handleModelCommand(rest);
+      await handleModelCommand(rest, ctx);
       return;
     }
 
@@ -2533,6 +2870,67 @@ async function handleCommand(input, ctx) {
       } else {
         process.stderr.write(`  ${c.gray('No auto-approvals were active.')}\n`);
       }
+      return;
+    }
+
+    case '/auto': {
+      // Session autopilot for long-running jobs: auto-approve routine
+      // writes/shell while STILL prompting for dangerous tiers (rm,
+      // force-push, command substitution, …) and never overriding hard
+      // safety blocks. Distinct from the launch-time --freeswim flag,
+      // which approves everything including dangerous tiers.
+      const sub = (rest || '').trim().toLowerCase();
+      if (sub === 'off') {
+        ctx.approval.approveAll = false;
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto mode off — approvals prompt again.')}\n`);
+        return;
+      }
+      if (sub === '' || sub === 'on') {
+        ctx.approval.approveAll = true;
+        process.stderr.write(`  ${c.green('✓')} ${c.bold('Auto mode on')} ${c.dim('— routine tool calls auto-approve this session.')}\n`);
+        process.stderr.write(`    ${c.dim('Still prompts: dangerous shell (rm/force-push/substitution), protected files.')}\n`);
+        process.stderr.write(`    ${c.dim('Hard safety blocks stay enforced. Disable with /auto off · inspect with /approvals.')}\n`);
+        process.stderr.write(`    ${c.dim('Tip: start your message with #auto to switch the backend agent into autonomous mode too.')}\n`);
+        return;
+      }
+      // status / anything else → show current mode
+      process.stderr.write(`  ${c.dim('Approval mode:')} ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.dim('Usage: /auto [on|off|status]')}\n`);
+      return;
+    }
+
+    case '/approvals': {
+      const parts = (rest || '').trim().split(/\s+/).filter(Boolean);
+      const action = (parts[0] || 'list').toLowerCase();
+      if (action === 'clear') {
+        const wasActive = ctx.approval.revoke();
+        process.stderr.write(wasActive
+          ? `  ${c.green('✓')} ${c.dim('All session approvals cleared.')}\n`
+          : `  ${c.gray('No session approvals were active.')}\n`);
+        return;
+      }
+      if (action === 'allow' && parts[1]) {
+        const tool = parts[1];
+        ctx.approval.approvedToolTypes.add(tool);
+        process.stderr.write(`  ${c.green('✓')} ${c.dim(`Auto-approving ${tool} for this session (dangerous tiers still prompt).`)}\n`);
+        return;
+      }
+      if (action === 'remove' && parts[1]) {
+        const removed = ctx.approval.approvedToolTypes.delete(parts[1]);
+        process.stderr.write(removed
+          ? `  ${c.green('✓')} ${c.dim(`${parts[1]} will prompt again.`)}\n`
+          : `  ${c.gray(`${parts[1]} had no session grant.`)}\n`);
+        return;
+      }
+      // list (default)
+      const s = ctx.approval.getSummary();
+      process.stderr.write(`\n  ${c.bold('Session approvals')}\n`);
+      process.stderr.write(`  ${c.dim('Mode')}         ${ctx.approval.getModeLabel()}\n`);
+      process.stderr.write(`  ${c.dim('Allow-all')}    ${s.autoApproveAll ? c.green('on') : c.dim('off')}\n`);
+      process.stderr.write(`  ${c.dim('Tool grants')}  ${s.autoApprovedTypes.length ? s.autoApprovedTypes.join(', ') : c.dim('none')}\n`);
+      process.stderr.write(`  ${c.dim('Trust rules')}  ${c.dim(`${s.trust.sessionRules || 0} session · ${s.trust.projectRules || 0} project`)}\n`);
+      process.stderr.write(`  ${c.dim('Decisions')}    ${c.dim(`${s.approved} approved · ${s.denied} denied`)}\n`);
+      process.stderr.write(`  ${c.dim('Edit: /approvals allow <tool> · /approvals remove <tool> · /approvals clear · /auto [on|off]')}\n\n`);
       return;
     }
 
@@ -2862,6 +3260,8 @@ export async function startTerminalRepl() {
       model: session.model,
       modelLimits: session.modelLimits,
       modelOverrides: session.modelOverrides,
+      modelMode: session.modelMode,
+      routePreference: session.routePreference,
       isByok: session.isByok,
       subscriptionTier: session.subscriptionTier,
       creditsTotal: session.creditsTotal,
@@ -2904,6 +3304,8 @@ export async function startTerminalRepl() {
       model: preserved.model,
       modelLimits: preserved.modelLimits,
       modelOverrides: preserved.modelOverrides,
+      modelMode: preserved.modelMode,
+      routePreference: preserved.routePreference,
       blockedOps: 0,
       delegations: [],
       phases: [],
@@ -3186,6 +3588,25 @@ export async function startTerminalRepl() {
     // Clear the spinner line
     process.stderr.write(`\r${' '.repeat(60)}\r`);
     process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
+
+    // PRD-076 W7b: restore persisted /model picks from ~/.bahulam/config.json
+    // before applying CLI-flag overrides, so `bahulam-code` alone re-uses
+    // last session's choices and `bahulam-code --model foo` still wins.
+    try {
+      const persisted = auth.loadCredentials();
+      if (persisted?.modelConfig && Object.keys(persisted.modelConfig).length) {
+        session.modelOverrides = { ...persisted.modelConfig };
+        if (persisted.modelConfig.reasoning) session.model = persisted.modelConfig.reasoning;
+      }
+      if (persisted?.modelMode) session.modelMode = persisted.modelMode;
+      if (persisted?.routePreference) session.routePreference = persisted.routePreference;
+    } catch { /* best-effort restore */ }
+
+    // --model / --route launch overrides (after fetchUser so they win
+    // over the profile default; catalog validation is fail-open).
+    if (cliArgs.model || cliArgs.route) {
+      try { await applyLaunchModelArgs(cliArgs, ctx); } catch {}
+    }
     if (session.user) {
       process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
     }
@@ -3412,50 +3833,92 @@ export async function startTerminalRepl() {
     readline.cursorTo(process.stderr, col);
   }
 
-  function renderSlashHint(line = '', { preserveSelection = false } = {}) {
+  // Hint frames must NOT go through the patched std streams — under the
+  // render queue, redirected writes are sanitized (cursor CSI stripped)
+  // and serialized into the transcript. That's exactly the "pasted a
+  // path, command list flooded the message area" bug. queue.raw() is the
+  // serialized trusted channel for cursor-addressed frame writes;
+  // readline helpers are the legacy no-queue path.
+  function writeHintFrame(frame) {
+    if (rqueue.isActive()) {
+      rqueue.raw(frame);
+      return;
+    }
+    process.stderr.write(frame);
+  }
+
+  let slashHintTimer = null;
+
+  function renderSlashHintNow(line = '', { preserveSelection = false } = {}) {
     if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
     const rows = promptBottomPaddingLines();
     const suggestions = slashCommandSuggestions(line, Math.min(5, rows));
+    // Nothing matches (pasted path, typo) → hide instead of rendering
+    // an empty/robotic frame.
+    if (!suggestions.length) {
+      if (slashHintVisible) clearSlashHint();
+      return;
+    }
     const cols = process.stdout.columns || 80;
     if (!preserveSelection || line !== slashHintLine) slashHintSelected = 0;
     slashHintItems = suggestions;
     slashHintLine = line;
     if (slashHintSelected >= slashHintItems.length) slashHintSelected = Math.max(0, slashHintItems.length - 1);
 
-    readline.moveCursor(process.stderr, 0, 1);
+    // Compose the whole frame as ONE write: down a row, paint each hint
+    // row (clear + text), then back up to the input row.
+    let frame = '\x1b[1B';
     for (let i = 0; i < rows; i++) {
-      readline.clearLine(process.stderr, 0);
-      readline.cursorTo(process.stderr, 0);
+      frame += '\x1b[2K\x1b[G';
       const item = suggestions[i];
       if (item) {
         const marker = i === slashHintSelected ? c.brand('›') : c.dim(' ');
         const command = item.command.padEnd(13);
         const maxDesc = Math.max(0, cols - 21);
         const desc = truncateHintText(item.description, maxDesc);
-        process.stderr.write(`  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`);
+        frame += `  ${marker} ${c.brand(command)}${desc ? c.dim(desc) : ''}`;
       }
-      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+      if (i < rows - 1) frame += '\x1b[1B';
     }
-    readline.moveCursor(process.stderr, 0, -rows);
+    frame += `\x1b[${rows}A`;
+    writeHintFrame(frame);
     restoreReadlineCursor();
-    slashHintVisible = suggestions.length > 0;
+    slashHintVisible = true;
     slashHintRowsVisible = rows;
   }
 
+  // Debounced entry point: a bracketed paste delivers the buffer as many
+  // rapid input events — rendering per event is what turned one paste
+  // into dozens of hint frames. Selection-preserving calls (arrow keys)
+  // stay immediate for responsiveness.
+  function renderSlashHint(line = '', opts = {}) {
+    if (opts.preserveSelection) {
+      if (slashHintTimer) { clearTimeout(slashHintTimer); slashHintTimer = null; }
+      renderSlashHintNow(line, opts);
+      return;
+    }
+    if (slashHintTimer) clearTimeout(slashHintTimer);
+    slashHintTimer = setTimeout(() => {
+      slashHintTimer = null;
+      renderSlashHintNow(typeof rl?.line === 'string' ? rl.line : line, opts);
+    }, 24);
+  }
+
   function clearSlashHint({ restoreCursor: shouldRestoreCursor = true } = {}) {
+    if (slashHintTimer) { clearTimeout(slashHintTimer); slashHintTimer = null; }
     if (!slashHintVisible || !process.stderr.isTTY || term().plain) {
       slashHintVisible = false;
       slashHintRowsVisible = 0;
       return;
     }
     const rows = slashHintRowsVisible || promptBottomPaddingLines() || 1;
-    readline.moveCursor(process.stderr, 0, 1);
+    let frame = '\x1b[1B';
     for (let i = 0; i < rows; i++) {
-      readline.clearLine(process.stderr, 0);
-      readline.cursorTo(process.stderr, 0);
-      if (i < rows - 1) readline.moveCursor(process.stderr, 0, 1);
+      frame += '\x1b[2K\x1b[G';
+      if (i < rows - 1) frame += '\x1b[1B';
     }
-    readline.moveCursor(process.stderr, 0, -rows);
+    frame += `\x1b[${rows}A`;
+    writeHintFrame(frame);
     // The dock's bottom rule + tips row live in the rows we just cleared.
     // Repaint the frame (input row untouched) so they reappear.
     if (isInputDockMounted()) redrawDockFrame();
@@ -3852,6 +4315,9 @@ export async function startTerminalRepl() {
     session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
+    // Fire first_prompt on user's first turn
+    if (session.turns === 1) telemetry.track('first_prompt', {});
+
     session.toolCalls = 0;
     session.subAgentToolCalls = 0;
     session.lastTask = originalInput;
@@ -4294,6 +4760,8 @@ export async function startTerminalRepl() {
         execContext.model_overrides = modelOverrides;
         if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
       }
+      if (session.modelMode) execContext.model_mode = session.modelMode;
+      if (session.routePreference) execContext.model_route = session.routePreference;
       // PRD-071: seed work_scope from CLI so the backend has a byte-stable
       // scope block from turn 1. Uses projectResources already gathered by
       // the envelope above.

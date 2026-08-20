@@ -49,6 +49,19 @@ export const runtime = {
   spinInterval: null,
   spinText: '',
   spinFrame: 0,
+  // Activity phase tracking — elapsed time + progress counters on the
+  // status line. spinPhase changes reset spinStartedAt; text updates
+  // within the same phase keep the clock running so "thinking · 14s"
+  // and "explore agent · 32s · 12 calls" count up live.
+  spinPhase: null,        // 'thinking' | 'status' | `tool:<id>` | `sub:<type>` | null
+  spinStartedAt: 0,       // Date.now() when the current phase began
+  spinToolCalls: 0,       // per-phase tool-call counter (sub-agents)
+
+  // Sub-agent live tool window: while a sub-agent runs (queue active),
+  // its inner tool calls stream into a fixed-height status block (last
+  // N lines under the spinner) instead of appending to the transcript.
+  // Full detail stays on the recorded cards (/expand, /last, `d`).
+  subAgentWindow: { active: false, lines: [] },
 };
 
 // Full session state for the current CLI process. Set by the REPL loop
@@ -90,6 +103,8 @@ export const session = {
   totalCost: 0,        // accumulated session cost (USD)
   costAccurate: false, // true if backend provides per-model breakdown
   modelOverrides: {},  // session-local role -> model overrides sent to backend
+  modelMode: null,     // named mode (fast|thinking|extra|max) sent as model_mode
+  routePreference: null, // --route platform|byok; controls catalog validation only
   isByok: false,       // set from session_info; hides cost + credits when true
   // ── Subscription / credit state (server-authoritative; set from
   //    session_info + complete events) ──

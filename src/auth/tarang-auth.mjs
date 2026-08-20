@@ -76,6 +76,12 @@ export class TarangAuth {
             models: this._config.models || {},
             configuredProviders: this._config.configured_providers || [],
             gatewayConfig: this._config.gateway_config || {},
+            // PRD-076 W7: persisted /model picks. `modelConfig` mirrors the
+            // Python-side key read_local_model_config() looks for; keep the
+            // snake_case JSON key so the runtime picks it up unchanged.
+            modelConfig: this._config.model_config || {},
+            modelMode: this._config.model_mode || null,
+            routePreference: this._config.route_preference || null,
         };
     }
 
