@@ -1710,6 +1710,23 @@ function renderEvent(event) {
       // diverts for explore-category tools and folded verbosity modes.
       // Dedup-consecutive inside the push keeps repeat tools quiet.
       pushSubAgentWindowLine(`→ ${tool}`);
+      // Rich-mode fallback: when the render queue isn't active (bare TTY,
+      // --plain, or before the input dock mounts), the live window under
+      // the spinner is invisible — pushSubAgentWindowLine feeds into a
+      // status block that never renders. Guarantee sub-agent tool activity
+      // is visible by emitting a small dim transcript line too, dedup'd
+      // per (agentType, tool). Queue-active mode keeps its clean spinner
+      // + window; the fallback line is only for the "otherwise blind"
+      // case that surfaced in 2.6.17 reports.
+      if (!rqueue.isActive()) {
+        const label = data?.label || '';
+        const hint = label ? ` · ${label}` : '';
+        const key = `${agentType}:${tool}:${label}`;
+        if (session._lastSubAgentInlineKey !== key) {
+          session._lastSubAgentInlineKey = key;
+          process.stderr.write(`    ${c.dim(`→ ${agentType} · ${tool}${hint}`)}\n`);
+        }
+      }
       // Don't clobber an active explore-run spinner. "exploring · 5 read ·
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
