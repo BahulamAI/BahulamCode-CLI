@@ -1438,22 +1438,25 @@ function renderEvent(event) {
     }
 
     case 'summarize': {
-      // Backend collapsed older replay history into one summary exchange
-      // to keep context under the economic threshold. Fires 1-3 times
-      // per long session at ~160k est tokens (v3_sse.py hook). Users
-      // couldn't previously tell whether their session was auto-collapsing
-      // or growing unbounded — this line makes it visible.
+      // Backend collapsed older history into a summary. Two phases:
+      //   pre_turn  — fires at the start of a new turn before hydration
+      //   mid_turn  — fires between iterations during a long autonomous run
+      // Both share the same env threshold (BAHULAM_SUMMARIZE_THRESHOLD,
+      // default 160k est tokens). One cache miss per fire; each fires at
+      // most once per turn.
       stopSpinner();
       flushContent();
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
+      const phase = String(data?.phase || 'pre_turn');
+      const phaseTag = phase === 'mid_turn' ? 'mid-turn' : 'pre-turn';
       const collapsed = Number(data?.collapsed_messages || 0);
       const kept = Number(data?.kept_recent || 0);
       const before = Number(data?.before_est_tokens || 0);
       const beforeK = before ? ` · ~${Math.round(before / 1000)}k est tokens` : '';
       const keptPart = kept ? ` · kept last ${kept}` : '';
       const preview = String(data?.summary_preview || '').trim();
-      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
       if (preview) {
         process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
       }
