@@ -251,12 +251,16 @@ export function formatAgentErrorGuidance(data = {}) {
     lines.push('Upgrade your plan for a larger 5-hour message window, or switch to BYOK if available.');
     if (pricingUrl) lines.push(`Open ${pricingUrl} to upgrade.`);
   } else if (phase === 'gateway' || code.includes('gateway')) {
-    const label = providerGuidance?.label || 'provider';
-    lines.push(`The ${label} gateway failed before the agent could respond.`);
-    if (providerGuidance) {
+    // Generic first: on the platform route the user has NO provider key —
+    // telling them to "check your DeepSeek API key" is wrong and alarming.
+    // Provider-key guidance only applies when we know the route is BYOK.
+    const label = providerGuidance?.label || compact(data.provider) || 'model provider';
+    lines.push(`The upstream ${label} request failed before the agent could respond — usually a transient provider-side error.`);
+    lines.push('Retry the turn. If it persists, switch models with /model and try again.');
+    if (compact(data.route) === 'byok' && providerGuidance) {
       lines.push(...providerGuidance.lines);
     } else {
-      lines.push('Check the selected provider, model, and BYOK credentials in settings, then retry.');
+      lines.push('Using your own key (BYOK)? Verify it is saved and active in settings, then run /login so provider settings sync.');
     }
   } else if (/authentication|token/i.test(message)) {
     lines.push('Run /login to re-authenticate.');
