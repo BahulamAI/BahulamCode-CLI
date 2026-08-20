@@ -385,8 +385,11 @@ export function renderToolResult(data, eventType = 'tool_result') {
   // ── Single-line combined emit ──
   // If the head for this call is still buffered (no interleaving content
   // landed), and the combined line fits the terminal width, emit ONE line
-  // and skip the gutter entirely.
-  if (runtime.pendingHead && runtime.pendingHead.callId === callId && !hasLint && !runtime.pendingHead.head.includes('\n')) {
+  // and skip the gutter entirely. Multi-line result text (shell preview
+  // with rows + "+ N more" tail) skips this path — a wrapped multi-line
+  // block needs its own real estate.
+  const outcomeIsMultiLine = outcome.includes('\n');
+  if (runtime.pendingHead && runtime.pendingHead.callId === callId && !hasLint && !runtime.pendingHead.head.includes('\n') && !outcomeIsMultiLine) {
     const cols = process.stderr.columns || 120;
     const combined = `${runtime.pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
@@ -421,7 +424,15 @@ export function renderToolResult(data, eventType = 'tool_result') {
   }
 
   // Two-line shape: gutter under the (already-printed or just-flushed) head.
-  process.stderr.write(`${gutter}${outcome}\n`);
+  // Multi-line outcome (shell preview with rows + "+ N more" tail): prepend
+  // the gutter to each line so the block stays aligned instead of ragged.
+  if (outcomeIsMultiLine) {
+    for (const line of outcome.split('\n')) {
+      process.stderr.write(`${gutter}${line}\n`);
+    }
+  } else {
+    process.stderr.write(`${gutter}${outcome}\n`);
+  }
   if (diffPreview) {
     process.stderr.write(`${diffPreview}\n`);
     rememberFileDiffPreview(data);
