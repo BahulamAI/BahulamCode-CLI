@@ -1437,6 +1437,30 @@ function renderEvent(event) {
       break;
     }
 
+    case 'summarize': {
+      // Backend collapsed older replay history into one summary exchange
+      // to keep context under the economic threshold. Fires 1-3 times
+      // per long session at ~160k est tokens (v3_sse.py hook). Users
+      // couldn't previously tell whether their session was auto-collapsing
+      // or growing unbounded — this line makes it visible.
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const collapsed = Number(data?.collapsed_messages || 0);
+      const kept = Number(data?.kept_recent || 0);
+      const before = Number(data?.before_est_tokens || 0);
+      const beforeK = before ? ` · ~${Math.round(before / 1000)}k est tokens` : '';
+      const keptPart = kept ? ` · kept last ${kept}` : '';
+      const preview = String(data?.summary_preview || '').trim();
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
+      if (preview) {
+        process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
+      }
+      runtime.lastRenderedBlock = 'status';
+      break;
+    }
+
     case 'reconnecting': {
       stopSpinner();
       flushContent();
