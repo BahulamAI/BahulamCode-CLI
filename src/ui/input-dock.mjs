@@ -223,7 +223,12 @@ function resolveMaxInputRows(requested) {
 function resolveOverlayRowCap(requested = DEFAULT_OVERLAY_MAX_ROWS) {
   const n = Number.parseInt(String(requested), 10);
   if (!Number.isFinite(n)) return DEFAULT_OVERLAY_MAX_ROWS;
-  return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
+  // Overlays (approval scripts) may need more rows than the typing cap —
+  // the user cannot approve what they cannot see. Allow up to half the
+  // terminal so the transcript stays visible; typing input keeps the
+  // tight MAX_INPUT_ROWS_CAP via normalizeInputRows above.
+  const dynamicCap = Math.max(MAX_INPUT_ROWS_CAP, Math.floor((rows() || 24) / 2));
+  return Math.max(MIN_INPUT_ROWS, Math.min(dynamicCap, n));
 }
 
 function overlayRowsForWrapped(wrappedLength, requestedMaxRows = DEFAULT_OVERLAY_MAX_ROWS) {
