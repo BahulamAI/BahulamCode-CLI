@@ -40,6 +40,7 @@ import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import * as net from 'node:net';
 import * as http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 const DEV_RUNTIME_ROOT = path.join(os.homedir(), '.bahulam', 'runtime', 'current');
 const READY_TIMEOUT_MS = 30_000;
@@ -72,7 +73,14 @@ function _runtimeRoot() {
   const arch = process.arch;       // 'arm64' | 'x64' | ...
   const siblingName = `@bahulam/runtime-${plat}-${arch}`;
   try {
-    const here = path.dirname(new URL(import.meta.url).pathname);
+    // fileURLToPath handles the Windows quirk where new URL(...).pathname
+    // returns '/C:/Users/...' with a leading slash — that broken path
+    // makes path.join produce '/C:/Users/.../node_modules/...' which
+    // fs.existsSync always returns false for, so the sibling walk fails
+    // silently and DEV_RUNTIME_ROOT is returned even when the runtime IS
+    // installed alongside. On POSIX fileURLToPath returns the plain
+    // pathname, so this is a no-op there.
+    const here = path.dirname(fileURLToPath(import.meta.url));
     // Walk up looking for node_modules containing @bahulam/runtime-<plat>-<arch>
     let dir = here;
     for (let i = 0; i < 6; i++) {
