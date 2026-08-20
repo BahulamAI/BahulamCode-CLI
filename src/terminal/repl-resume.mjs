@@ -31,6 +31,7 @@ import {
   resumeTailTurnCount,
   startResumeProgress,
   writeOverlayFrame,
+  eraseOverlayFrame,
 } from './repl-format.mjs';
 import { TarangStreamClient } from '../core/stream-client.mjs';
 import { getRecentSessions, getSessionDetail, buildResumeHistory, combineResumeSummaries } from '../core/local-store.mjs';
@@ -124,6 +125,12 @@ export async function pickResumableSession(resumable, ctx) {
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      // Collapse the list to one line: picked → which session; preview →
+      // erase only (preview overlay paints next); cancel → caller reports.
+      const picked = value?.action === 'resume' ? value.session : null;
+      eraseOverlayFrame(renderedLines, picked
+        ? `  ${c.green('↺')} ${c.brand(picked.project || '(unknown)')} ${c.dim(`· ${picked.messageCount} msgs · resuming…`)}`
+        : '');
       if (rl) rl.resume();
       resolve(value);
     };
@@ -225,6 +232,9 @@ export async function chooseThresholdMode(ctx, decision) {
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      eraseOverlayFrame(renderedLines, value
+        ? `  ${c.dim('mode:')} ${c.brand(resumeModeLabel(value))}`
+        : '');
       if (rl) rl.resume();
       resolve(value);
     };
@@ -308,6 +318,7 @@ export async function previewResumeSession(session, ctx) {
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      eraseOverlayFrame(renderedLines);
       if (rl) rl.resume();
       resolve(value);
     };
@@ -339,9 +350,12 @@ export async function previewResumeSession(session, ctx) {
  */
 export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
   if (!process.stdin.isTTY) return 'switch';
-  process.stderr.write(`\n  ${c.dim('This session lives in another repo:')}\n`);
-  process.stderr.write(`  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}\n`);
-  process.stderr.write(`  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel  `);
+  const frame = [
+    `  ${c.dim('This session lives in another repo:')}`,
+    `  ${c.dim('→')} ${c.brand(savedPath)}  ${c.dim(`(current cwd: ${currentPath})`)}`,
+    `  ${c.dim('[Enter]')} switch cwd and resume · ${c.dim('[s]')} stay here and resume anyway · ${c.dim('[n]')} cancel`,
+  ];
+  writeOverlayFrame(0, frame);
   const rl = ctx._rl || null;
   if (rl) rl.pause();
   return await new Promise((resolve) => {
@@ -349,8 +363,13 @@ export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      const summary = value === 'switch'
+        ? `  ${c.dim('cwd →')} ${c.brand(savedPath)}`
+        : value === 'stay'
+          ? `  ${c.dim(`staying in ${currentPath}`)}`
+          : '';
+      eraseOverlayFrame(frame.length, summary);
       if (rl) rl.resume();
-      process.stderr.write('\n');
       resolve(value);
     };
     const onData = (data) => {

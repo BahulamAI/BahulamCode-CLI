@@ -45,6 +45,23 @@ export function writeOverlayFrame(erasePrev, lines) {
   }
 }
 
+/**
+ * Erase the previously drawn overlay frame (rows lines tall) so the next
+ * prompt / transcript output starts on a clean line. Call from every
+ * overlay's cleanup path — without this, picker frames stack on screen
+ * when a follow-up prompt (cwd confirm, next overlay) writes below them.
+ */
+export function eraseOverlayFrame(rows, summaryLine = '') {
+  if (!rows || rows <= 0) {
+    if (summaryLine) rqueue.raw(summaryLine + '\n');
+    return;
+  }
+  // Collapse the frame to a compact one-line summary (or nothing). A pure
+  // erase leaves a blank void mid-screen because the input dock parks the
+  // cursor at the bottom before the next plain write lands.
+  rqueue.raw(`\x1b[${rows}F\r\x1b[J` + (summaryLine ? summaryLine + '\n' : ''));
+}
+
 // ── One-liners ───────────────────────────────────────────────────────
 
 export function messageCountLabel(count) {
@@ -221,12 +238,20 @@ export function startResumeProgress(mode = 'full') {
   };
 
   render();
-  const timer = setInterval(render, 100);
+  let timer = setInterval(render, 100);
   return {
+    // Self-healing: the resume flow stops the progress line to show the
+    // cwd-confirm overlay, then keeps reporting phases ('rebuilding local
+    // session state', …). A dead update() silently dropped every cue after
+    // that prompt — revive the ticker instead (same pattern as
+    // updateSpinner in repl-render.mjs).
     update(nextLabel, nextPercent) {
-      if (!active) return;
       if (nextLabel) label = nextLabel;
       if (Number.isFinite(nextPercent)) percent = Math.max(percent, Math.min(98, nextPercent));
+      if (!active) {
+        active = true;
+        timer = setInterval(render, 100);
+      }
       render();
     },
     stop() {

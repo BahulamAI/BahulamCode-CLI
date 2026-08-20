@@ -9,7 +9,7 @@
  */
 
 import { c } from './ansi.mjs';
-import { fitAnsiLine, writeOverlayFrame } from './repl-format.mjs';
+import { fitAnsiLine, writeOverlayFrame, eraseOverlayFrame } from './repl-format.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
 
@@ -100,6 +100,7 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
     const cleanup = (value) => {
       process.stdin.removeListener('data', onData);
       process.stdin.setRawMode(wasRaw || false);
+      eraseOverlayFrame(renderedLines);
       if (rl) rl.resume();
       resolve(value);
     };
