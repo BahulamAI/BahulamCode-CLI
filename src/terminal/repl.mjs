@@ -2922,8 +2922,9 @@ async function handleCommand(input, ctx) {
       // Session autopilot for long-running jobs: auto-approve routine
       // writes/shell while STILL prompting for dangerous tiers (rm,
       // force-push, command substitution, …) and never overriding hard
-      // safety blocks. Distinct from the launch-time --freeswim flag,
-      // which approves everything including dangerous tiers.
+      // safety blocks. Distinct from the launch-time
+      // --dangerously-skip-permissions flag, which approves everything
+      // including dangerous tiers.
       const sub = (rest || '').trim().toLowerCase();
       if (sub === 'off') {
         ctx.approval.approveAll = false;
@@ -3250,7 +3251,7 @@ export async function startTerminalRepl() {
   };
 
   let toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
-  const skipPerms = cliArgs.freeswim;
+  const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
   // Session manager — persists conversation messages to .bahulam/conversations/
@@ -3643,7 +3644,7 @@ export async function startTerminalRepl() {
 
     // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
     // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
-    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.freeswim) {
+    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
       try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
       catch { /* preflight is best-effort */ }
     }
@@ -4781,7 +4782,10 @@ export async function startTerminalRepl() {
       startSpinner('thinking…');
 
       const execContext = { cwd: safeCwd() };
-      if (skipPerms) execContext.freeswim = true;
+      if (skipPerms) {
+        execContext.skip_permissions = true;
+        execContext.freeswim = true; // legacy wire alias — drop after cloud backend 2.7 rollout
+      }
       effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
       approval.policy = effectivePolicy.policy;
       if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
@@ -4821,7 +4825,10 @@ export async function startTerminalRepl() {
       ctx.latestProjectContext = latestProjectContext;
       ctx.latestEnvelope = latestEnvelope;
       Object.assign(execContext, latestEnvelope);
-      if (skipPerms) execContext.freeswim = true;
+      if (skipPerms) {
+        execContext.skip_permissions = true;
+        execContext.freeswim = true; // legacy wire alias — drop after cloud backend 2.7 rollout
+      }
       const modelOverrides = Object.fromEntries(sessionModelOverrideEntries());
       if (Object.keys(modelOverrides).length > 0) {
         execContext.model_overrides = modelOverrides;
