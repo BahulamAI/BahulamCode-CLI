@@ -662,9 +662,20 @@ export function createToolExecutor({
                     _tool: 'read_attachment',
                 };
             }
-            const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
-            if (!fs.existsSync(abs)) {
-                return { success: false, output: `File not found: ${abs}`, _tool: 'read_attachment' };
+            // Route through projectRegistry.resolvePath — the same helper
+            // read_file/edit_file use. This handles:
+            //   - shell-escape unescaping ('Tarang\ Orca/foo.pdf' → 'Tarang Orca/foo.pdf')
+            //   - LLM-quoting normalization
+            //   - external-file registration for paths outside registered
+            //     project roots (attachments in ~/Downloads/, /tmp/, etc.
+            //     are legitimate; the LLM shouldn't need to first register
+            //     the user's home as a project just to read an attachment)
+            //   - clear "Path not found" vs "Path outside roots" errors
+            let abs;
+            try {
+                abs = await resolvePath(rawPath, args, { allowExternalFileRead: true });
+            } catch (err) {
+                return { success: false, output: String(err?.message || err), _tool: 'read_attachment' };
             }
             const stat = fs.statSync(abs);
             if (!stat.isFile()) {
