@@ -67,6 +67,19 @@ export function setSubAgentWindowActive(active) {
   runtime.subAgentWindow = { active: Boolean(active), lines: [] };
 }
 
+/**
+ * Replace the entire sub-agent live window with these lines. Called by
+ * repl.mjs's fold-* functions on every sub-agent tool_call and tool_result
+ * so the window shows RICH per-tool progress (same '• tool — outcome'
+ * format as the final summary) live during the sub-agent run instead of
+ * a bare '→ tool' spinner text or nothing at all.
+ */
+export function rebuildSubAgentWindow(lines) {
+  const win = runtime.subAgentWindow;
+  if (!win?.active) return;
+  win.lines = Array.isArray(lines) ? lines.slice() : [];
+}
+
 function erasePresentedStatus() {
   if (queue.isActive()) { queue.clearStatus(); return; }
   if (isInputDockMounted()) { clearPinnedStatus(); moveToContent(); return; }

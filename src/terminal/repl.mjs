@@ -89,6 +89,7 @@ import {
   flushPendingHead,
   isInlineOutcomeTool,
   pushSubAgentWindowLine,
+  rebuildSubAgentWindow,
   renderBlockBoundary,
   renderExploreRun,
   renderFileDiffEvent,
@@ -1287,6 +1288,13 @@ function foldSubAgentToolCall(data = {}) {
   recordCard({ id: callId, tool, args, startedAt: entry.startedAt });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   startSpinner(`${agentType} → ${tool}`);
+  // Live sub-agent window: rebuild from the accumulating fold entries so
+  // the same rich '• tool head — outcome' bullets that appear in the
+  // final summary render live during the run. Users previously saw only
+  // spinner text and were blind to per-tool progress across long
+  // sub-agent runs (2min+ explores). SUB_AGENT_WINDOW_ROWS caps the
+  // visible portion so tall stacks tail-window naturally.
+  _syncSubAgentWindow(fold);
 }
 
 function foldSubAgentToolResult(data = {}) {
@@ -1319,6 +1327,27 @@ function foldSubAgentToolResult(data = {}) {
   entry.tone = summary.tone || 'dim';
   if (data._blocked) session.blockedOps++;
   recordCard({ id: callId, tool, args: entry.args, result: data, durationMs, startedAt: entry.startedAt });
+  // Same live-window sync on result — updates the '• tool' line into
+  // '• tool — outcome' as each result lands, without waiting for the
+  // whole sub-agent to complete.
+  _syncSubAgentWindow(fold);
+}
+
+/**
+ * Rebuild the sub-agent live window from the last N folded entries so
+ * the window shows RICH progress lines instead of stale spinner text.
+ * Uses the same foldedToolLine formatter as the completion summary for
+ * consistency.
+ */
+function _syncSubAgentWindow(fold) {
+  if (!fold || !Array.isArray(fold.entries)) return;
+  const cols = process.stderr.columns || 120;
+  // Reserve column budget for the '    ' indent the window applies in
+  // presentStatus so we don't wrap.
+  const lines = fold.entries.slice(-7).map(entry =>
+    foldedToolLine(entry, '', Math.max(40, cols - 4)).trimStart()
+  );
+  rebuildSubAgentWindow(lines);
 }
 
 function foldedOutcome(entry) {
@@ -4433,22 +4462,6 @@ export async function startTerminalRepl() {
     session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
-
-    // Echo the user's prompt into the visible transcript. The input dock
-    // captures typing internally but doesn't persist a scrollback line on
-    // submit — screens end up looking like agent-response → approval →
-    // tool → response with no visible user turn between them. That's
-    // confusing (users saw approvals that looked like they came out of
-    // nowhere) and made cache-hit debugging harder because the render
-    // and the actual model payload didn't line up. First 200 chars only;
-    // long prompts get an ellipsis.
-    const echo = String(originalInput || input || '').replace(/\s+/g, ' ').trim();
-    if (echo) {
-      const capped = echo.length > 200 ? echo.slice(0, 197) + '…' : echo;
-      renderBlockBoundary('user', { compactSame: false });
-      process.stderr.write(`  ${c.brand('›')} ${c.bold(capped)}\n\n`);
-      runtime.lastRenderedBlock = 'user';
-    }
     // Fire first_prompt on user's first turn
     if (session.turns === 1) telemetry.track('first_prompt', {});
     // Fire first_prompt on user's first turn
