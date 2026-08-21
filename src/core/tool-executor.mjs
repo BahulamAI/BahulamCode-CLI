@@ -50,6 +50,23 @@ export function createToolExecutor({
         cwd: process.cwd(),
         homeDir: skillsLoader.homeDir || os.homedir(),
     });
+
+    // ── Auto-register the current working directory as a project ──
+    // Without this, shell / list_files / read_attachment fail with
+    // "No projects registered. Call get_project_overview first." on
+    // any fresh folder — including a legitimate user CWD they just
+    // cd'd into to start work. The model then has to spend a turn
+    // registering before it can do anything, which is a poor first-run
+    // UX. Fire-and-forget: if registration fails (permissions, weird
+    // FS), the model can still call get_project_overview explicitly.
+    // bypassProjectMarkers=true because we don't require a .git etc.
+    // for the current directory to be usable — the user chose to be here.
+    // Opt out via BAHULAM_SKIP_AUTO_REGISTER=true for tests or headless
+    // scripts that want a truly empty registry.
+    if (process.env.BAHULAM_SKIP_AUTO_REGISTER !== 'true') {
+        projectRegistry.register(process.cwd(), { bypassProjectMarkers: true })
+            .catch(() => { /* silent — model can register explicitly */ });
+    }
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
     let _readOnlyCacheGeneration = 0;
     const readOnlyResultCache = new Map();
