@@ -1437,6 +1437,33 @@ function renderEvent(event) {
       break;
     }
 
+    case 'summarize': {
+      // Backend collapsed older history into a summary. Two phases:
+      //   pre_turn  — fires at the start of a new turn before hydration
+      //   mid_turn  — fires between iterations during a long autonomous run
+      // Both share the same env threshold (BAHULAM_SUMMARIZE_THRESHOLD,
+      // default 160k est tokens). One cache miss per fire; each fires at
+      // most once per turn.
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const phase = String(data?.phase || 'pre_turn');
+      const phaseTag = phase === 'mid_turn' ? 'mid-turn' : 'pre-turn';
+      const collapsed = Number(data?.collapsed_messages || 0);
+      const kept = Number(data?.kept_recent || 0);
+      const before = Number(data?.before_est_tokens || 0);
+      const beforeK = before ? ` · ~${Math.round(before / 1000)}k est tokens` : '';
+      const keptPart = kept ? ` · kept last ${kept}` : '';
+      const preview = String(data?.summary_preview || '').trim();
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
+      if (preview) {
+        process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
+      }
+      runtime.lastRenderedBlock = 'status';
+      break;
+    }
+
     case 'reconnecting': {
       stopSpinner();
       flushContent();
@@ -1686,6 +1713,23 @@ function renderEvent(event) {
       // diverts for explore-category tools and folded verbosity modes.
       // Dedup-consecutive inside the push keeps repeat tools quiet.
       pushSubAgentWindowLine(`→ ${tool}`);
+      // Rich-mode fallback: when the render queue isn't active (bare TTY,
+      // --plain, or before the input dock mounts), the live window under
+      // the spinner is invisible — pushSubAgentWindowLine feeds into a
+      // status block that never renders. Guarantee sub-agent tool activity
+      // is visible by emitting a small dim transcript line too, dedup'd
+      // per (agentType, tool). Queue-active mode keeps its clean spinner
+      // + window; the fallback line is only for the "otherwise blind"
+      // case that surfaced in 2.6.17 reports.
+      if (!rqueue.isActive()) {
+        const label = data?.label || '';
+        const hint = label ? ` · ${label}` : '';
+        const key = `${agentType}:${tool}:${label}`;
+        if (session._lastSubAgentInlineKey !== key) {
+          session._lastSubAgentInlineKey = key;
+          process.stderr.write(`    ${c.dim(`→ ${agentType} · ${tool}${hint}`)}\n`);
+        }
+      }
       // Don't clobber an active explore-run spinner. "exploring · 5 read ·
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
