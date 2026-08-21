@@ -970,14 +970,64 @@ function slashCommandSuggestions(line, limit = 5) {
 // ── Banner ──
 
 function printBanner(auth) {
-  // The visual block itself lives in the branded banner module. The trailing
-  // status line stays here because it needs `auth`.
+  // The visual block itself lives in the branded banner module.
   printBrandedBanner(VERSION);
 
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
-  const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
-  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n\n`);
+
+  if (creds.token) {
+    // Authenticated: single quiet status line right under the banner.
+    process.stderr.write(`  ${c.dim(env)}  ${c.green('authenticated')}\n\n`);
+  } else {
+    // Unauthenticated: the /login prompt used to be crammed onto the same
+    // line as the env label directly under the ASCII banner — users
+    // reported not noticing it. Break it out into its own bordered block
+    // one blank line below so it can't be missed.
+    process.stderr.write(`  ${c.dim(env)}  ${c.dim('not authenticated')}\n`);
+    process.stderr.write('\n');
+    const line = c.yellow('  ┃  ');
+    process.stderr.write(`${line}${c.bold(c.yellow('Not logged in.'))} ${c.dim('The agent cannot run without auth.')}\n`);
+    process.stderr.write(`${line}${c.dim('Type')} ${c.bold(c.green('/login'))} ${c.dim('to authenticate ')}${c.dim('(opens browser)')}${c.dim('.')}\n`);
+    process.stderr.write('\n');
+  }
+
+  // Fire-and-forget upgrade check — checks npm registry for a newer
+  // version of the CLI package and, if one exists, prints an unobtrusive
+  // banner after the auth status. Silent on failure (no network, npm
+  // registry down, etc.) — must never block session start.
+  _checkForUpgradeAndAnnounce().catch(() => { /* silent */ });
+}
+
+/** Non-blocking check of npm registry for a newer bahulam version. */
+async function _checkForUpgradeAndAnnounce() {
+  if (process.env.BAHULAM_SKIP_UPGRADE_CHECK === 'true') return;
+  const currentPkg = __require('../../package.json');
+  const pkgName = currentPkg.name || 'bahulam';
+  const current = currentPkg.version;
+  const url = `https://registry.npmjs.org/${encodeURIComponent(pkgName)}/latest`;
+  let latest;
+  try {
+    // Node 18+ has global fetch. 3-second timeout keeps banner snappy.
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return;
+    const body = await res.json();
+    latest = String(body?.version || '');
+  } catch { return; }
+  if (!latest || latest === current) return;
+  // Semver-aware "newer than current" — split and compare number tuples.
+  // Anything unparseable is treated as newer (rare pre-release names) to
+  // err on the side of nudging the user.
+  const asTuple = v => String(v).split('.').map(x => parseInt(x, 10));
+  const [a, b, c1] = asTuple(latest);
+  const [x, y, z] = asTuple(current);
+  const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
+  if (!newer) return;
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('New version available:')} ${c.bold(c.green(latest))} ${c.dim(`(current ${current})`)}\n`);
+  process.stderr.write(`  ${c.dim('  Upgrade:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
 }
 
 // ── Prompt Chrome ──
