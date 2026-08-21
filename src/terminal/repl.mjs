@@ -30,6 +30,7 @@ import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
+import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -3226,7 +3227,29 @@ export async function startTerminalRepl() {
   let latestProjectContext = null;
   let latestEnvelope = null;
   let hookRunner = new HookRunner({ cwd: safeCwd() });
-  let toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+
+  // ask_user tool → interactive overlay form (repl-ask-form.mjs). `ctx` is
+  // declared below; the arrow only dereferences it at call time (mid-turn),
+  // so the lazy reference is safe. Stop the spinner and flush streamed
+  // content first so the overlay doesn't fight the render queue.
+  const askUserInteraction = async (req) => {
+    stopSpinner();
+    flushContent();
+    const res = await askUserForm({
+      rl: ctx?._rl || null,
+      question: req?.question || '',
+      options: Array.isArray(req?.options) ? req.options : [],
+      context: req?.context || '',
+    });
+    if (res?.answer) {
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('answered:')} ${c.brand(res.answer)}\n`);
+    } else {
+      process.stderr.write(`  ${c.dim('Question declined — agent proceeds with its own judgment.')}\n`);
+    }
+    return res;
+  };
+
+  let toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
   const skipPerms = cliArgs.freeswim;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
@@ -3320,7 +3343,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd() });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -3500,7 +3523,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());

@@ -41,6 +41,7 @@ export function createToolExecutor({
     skillInstaller = null,
     checkpoints = null,
     hookRunner = null,
+    interactionHandler = null,
 } = {}) {
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
@@ -595,6 +596,45 @@ export function createToolExecutor({
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
+        // 0. ask_user → interactive direction question (client-executed).
+        // The UI form is injected by the REPL via `interactionHandler`;
+        // headless/piped sessions have none and get the best-judgment
+        // fallback so the agent is never blocked on a missing human.
+        ask_user: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const question = String(args?.question || '').trim();
+            const choices = Array.isArray(args?.options)
+                ? args.options.map(o => String(o || '').trim()).filter(Boolean)
+                : [];
+            if (!question) {
+                return { success: false, output: 'ask_user requires a question.', _tool: 'ask_user' };
+            }
+            if (choices.length < 2 || choices.length > 4) {
+                return { success: false, output: 'ask_user requires 2-4 options.', _tool: 'ask_user' };
+            }
+            if (!interactionHandler || !process.stdin.isTTY) {
+                return {
+                    success: true,
+                    output: 'No interactive user is available in this session. Proceed with your best judgment and state the assumption you made.',
+                    _tool: 'ask_user',
+                };
+            }
+            const res = await interactionHandler({ question, options: choices, context: args?.context });
+            throwIfAborted(options.signal);
+            if (!res || !res.answer) {
+                return {
+                    success: true,
+                    output: 'The user declined to answer. Proceed with your best judgment and state the assumption you made.',
+                    _tool: 'ask_user',
+                };
+            }
+            return {
+                success: true,
+                output: `User answered: ${res.answer}${res.source === 'free_text' ? ' (typed answer, not one of the offered options)' : ''}`,
+                _tool: 'ask_user',
+            };
+        },
+
         // 1. shell → Bash + classification + smart output filtering
         shell: async (args, options = {}) => {
             throwIfAborted(options.signal);
