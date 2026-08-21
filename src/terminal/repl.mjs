@@ -4433,6 +4433,24 @@ export async function startTerminalRepl() {
     session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
+
+    // Echo the user's prompt into the visible transcript. The input dock
+    // captures typing internally but doesn't persist a scrollback line on
+    // submit — screens end up looking like agent-response → approval →
+    // tool → response with no visible user turn between them. That's
+    // confusing (users saw approvals that looked like they came out of
+    // nowhere) and made cache-hit debugging harder because the render
+    // and the actual model payload didn't line up. First 200 chars only;
+    // long prompts get an ellipsis.
+    const echo = String(originalInput || input || '').replace(/\s+/g, ' ').trim();
+    if (echo) {
+      const capped = echo.length > 200 ? echo.slice(0, 197) + '…' : echo;
+      renderBlockBoundary('user', { compactSame: false });
+      process.stderr.write(`  ${c.brand('›')} ${c.bold(capped)}\n\n`);
+      runtime.lastRenderedBlock = 'user';
+    }
+    // Fire first_prompt on user's first turn
+    if (session.turns === 1) telemetry.track('first_prompt', {});
     // Fire first_prompt on user's first turn
     if (session.turns === 1) telemetry.track('first_prompt', {});
 
