@@ -635,6 +635,94 @@ export function createToolExecutor({
             };
         },
 
+        // 0b. read_attachment → text extraction from a local document.
+        // Backend registers the schema; execution happens client-side because
+        // only the CLI has the user's filesystem. Supports the `path` mode
+        // (local file); `upload_id` is chat-only and returns a redirect
+        // error. Extractors: text/markdown/csv/json/yaml/html via fs.readFile;
+        // pdf via pdf-parse (already a CLI dep). Optional `query` filters
+        // extracted text by case-insensitive substring; `max_chars` (default
+        // 100k) caps the returned length so a 30MB pdf doesn't blow up the
+        // agent's context.
+        read_attachment: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const uploadId = String(args?.upload_id || '').trim();
+            const rawPath = String(args?.path || '').trim();
+            if (uploadId && !rawPath) {
+                return {
+                    success: false,
+                    output: 'upload_id is a chat-only mode. In the CLI, pass path=<local path> to read a file the user has on disk.',
+                    _tool: 'read_attachment',
+                };
+            }
+            if (!rawPath) {
+                return {
+                    success: false,
+                    output: 'read_attachment requires path=<local path> (upload_id is chat-only).',
+                    _tool: 'read_attachment',
+                };
+            }
+            const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+            if (!fs.existsSync(abs)) {
+                return { success: false, output: `File not found: ${abs}`, _tool: 'read_attachment' };
+            }
+            const stat = fs.statSync(abs);
+            if (!stat.isFile()) {
+                return { success: false, output: `Not a regular file: ${abs}`, _tool: 'read_attachment' };
+            }
+
+            const ext = path.extname(abs).toLowerCase();
+            const query = String(args?.query || '').trim().toLowerCase();
+            const maxChars = Math.max(1000, Number(args?.max_chars) || 100_000);
+
+            let text;
+            try {
+                if (ext === '.pdf') {
+                    // Lazy-import — startup shouldn't pay pdf-parse's load cost
+                    // every session. Import from lib/ path directly: the default
+                    // entry `pdf-parse/index.js` has a debug hook that opens a
+                    // bundled test PDF at load time and throws ENOENT when
+                    // that file isn't shipped, which it isn't in production
+                    // installs. lib/pdf-parse.js is the same parser without the hook.
+                    const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
+                    const buf = fs.readFileSync(abs);
+                    const parsed = await pdfParse(buf);
+                    text = String(parsed?.text || '');
+                } else if (['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.yaml', '.yml', '.html', '.htm', '.log', '.rst'].includes(ext) || ext === '') {
+                    text = fs.readFileSync(abs, 'utf8');
+                } else {
+                    return {
+                        success: false,
+                        output: `Unsupported file type: ${ext || '(no extension)'}. Supported: pdf, txt, md, csv, tsv, json, yaml, html, log, rst. For CSV/Excel analysis use read_table; for images use analyze_image.`,
+                        _tool: 'read_attachment',
+                    };
+                }
+            } catch (err) {
+                return { success: false, output: `Failed to read ${abs}: ${err?.message || err}`, _tool: 'read_attachment' };
+            }
+
+            if (query) {
+                // Split on paragraph gaps, keep chunks that contain the substring.
+                const chunks = text.split(/\n\s*\n/).filter(c => c.toLowerCase().includes(query));
+                text = chunks.length ? chunks.join('\n\n') : `(no chunks matched query="${query}")`;
+            }
+
+            let truncated = false;
+            if (text.length > maxChars) {
+                text = text.slice(0, maxChars);
+                truncated = true;
+            }
+
+            const header = `📄 ${path.basename(abs)} · ${stat.size} bytes · ${text.split('\n').length} lines${truncated ? ` · truncated to ${maxChars} chars` : ''}\n\n`;
+            return {
+                success: true,
+                output: header + text,
+                _tool: 'read_attachment',
+                _path: abs,
+                _truncated: truncated,
+            };
+        },
+
         // 1. shell → Bash + classification + smart output filtering
         shell: async (args, options = {}) => {
             throwIfAborted(options.signal);
