@@ -30,6 +30,7 @@ import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
+import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -1437,6 +1438,33 @@ function renderEvent(event) {
       break;
     }
 
+    case 'summarize': {
+      // Backend collapsed older history into a summary. Two phases:
+      //   pre_turn  — fires at the start of a new turn before hydration
+      //   mid_turn  — fires between iterations during a long autonomous run
+      // Both share the same env threshold (BAHULAM_SUMMARIZE_THRESHOLD,
+      // default 160k est tokens). One cache miss per fire; each fires at
+      // most once per turn.
+      stopSpinner();
+      flushContent();
+      flushPendingHead();
+      renderBlockBoundary('status', { compactSame: true });
+      const phase = String(data?.phase || 'pre_turn');
+      const phaseTag = phase === 'mid_turn' ? 'mid-turn' : 'pre-turn';
+      const collapsed = Number(data?.collapsed_messages || 0);
+      const kept = Number(data?.kept_recent || 0);
+      const before = Number(data?.before_est_tokens || 0);
+      const beforeK = before ? ` · ~${Math.round(before / 1000)}k est tokens` : '';
+      const keptPart = kept ? ` · kept last ${kept}` : '';
+      const preview = String(data?.summary_preview || '').trim();
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
+      if (preview) {
+        process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
+      }
+      runtime.lastRenderedBlock = 'status';
+      break;
+    }
+
     case 'reconnecting': {
       stopSpinner();
       flushContent();
@@ -1686,6 +1714,23 @@ function renderEvent(event) {
       // diverts for explore-category tools and folded verbosity modes.
       // Dedup-consecutive inside the push keeps repeat tools quiet.
       pushSubAgentWindowLine(`→ ${tool}`);
+      // Rich-mode fallback: when the render queue isn't active (bare TTY,
+      // --plain, or before the input dock mounts), the live window under
+      // the spinner is invisible — pushSubAgentWindowLine feeds into a
+      // status block that never renders. Guarantee sub-agent tool activity
+      // is visible by emitting a small dim transcript line too, dedup'd
+      // per (agentType, tool). Queue-active mode keeps its clean spinner
+      // + window; the fallback line is only for the "otherwise blind"
+      // case that surfaced in 2.6.17 reports.
+      if (!rqueue.isActive()) {
+        const label = data?.label || '';
+        const hint = label ? ` · ${label}` : '';
+        const key = `${agentType}:${tool}:${label}`;
+        if (session._lastSubAgentInlineKey !== key) {
+          session._lastSubAgentInlineKey = key;
+          process.stderr.write(`    ${c.dim(`→ ${agentType} · ${tool}${hint}`)}\n`);
+        }
+      }
       // Don't clobber an active explore-run spinner. "exploring · 5 read ·
       // 2 searched" is more informative than "explore → search_code", and
       // sub_agent_tool fires on every step of a sub-agent — otherwise the
@@ -2877,8 +2922,9 @@ async function handleCommand(input, ctx) {
       // Session autopilot for long-running jobs: auto-approve routine
       // writes/shell while STILL prompting for dangerous tiers (rm,
       // force-push, command substitution, …) and never overriding hard
-      // safety blocks. Distinct from the launch-time --freeswim flag,
-      // which approves everything including dangerous tiers.
+      // safety blocks. Distinct from the launch-time
+      // --dangerously-skip-permissions flag, which approves everything
+      // including dangerous tiers.
       const sub = (rest || '').trim().toLowerCase();
       if (sub === 'off') {
         ctx.approval.approveAll = false;
@@ -3182,8 +3228,30 @@ export async function startTerminalRepl() {
   let latestProjectContext = null;
   let latestEnvelope = null;
   let hookRunner = new HookRunner({ cwd: safeCwd() });
-  let toolExecutor = createToolExecutor({ checkpoints, hookRunner });
-  const skipPerms = cliArgs.freeswim;
+
+  // ask_user tool → interactive overlay form (repl-ask-form.mjs). `ctx` is
+  // declared below; the arrow only dereferences it at call time (mid-turn),
+  // so the lazy reference is safe. Stop the spinner and flush streamed
+  // content first so the overlay doesn't fight the render queue.
+  const askUserInteraction = async (req) => {
+    stopSpinner();
+    flushContent();
+    const res = await askUserForm({
+      rl: ctx?._rl || null,
+      question: req?.question || '',
+      options: Array.isArray(req?.options) ? req.options : [],
+      context: req?.context || '',
+    });
+    if (res?.answer) {
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('answered:')} ${c.brand(res.answer)}\n`);
+    } else {
+      process.stderr.write(`  ${c.dim('Question declined — agent proceeds with its own judgment.')}\n`);
+    }
+    return res;
+  };
+
+  let toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
+  const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
   // Session manager — persists conversation messages to .bahulam/conversations/
@@ -3276,7 +3344,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd() });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -3456,7 +3524,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner });
+    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -3576,7 +3644,7 @@ export async function startTerminalRepl() {
 
     // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
     // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
-    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.freeswim) {
+    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
       try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
       catch { /* preflight is best-effort */ }
     }
@@ -4714,7 +4782,10 @@ export async function startTerminalRepl() {
       startSpinner('thinking…');
 
       const execContext = { cwd: safeCwd() };
-      if (skipPerms) execContext.freeswim = true;
+      if (skipPerms) {
+        execContext.skip_permissions = true;
+        execContext.freeswim = true; // legacy wire alias — drop after cloud backend 2.7 rollout
+      }
       effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
       approval.policy = effectivePolicy.policy;
       if (approval.trustStore) approval.trustStore.policy = effectivePolicy.policy;
@@ -4754,7 +4825,10 @@ export async function startTerminalRepl() {
       ctx.latestProjectContext = latestProjectContext;
       ctx.latestEnvelope = latestEnvelope;
       Object.assign(execContext, latestEnvelope);
-      if (skipPerms) execContext.freeswim = true;
+      if (skipPerms) {
+        execContext.skip_permissions = true;
+        execContext.freeswim = true; // legacy wire alias — drop after cloud backend 2.7 rollout
+      }
       const modelOverrides = Object.fromEntries(sessionModelOverrideEntries());
       if (Object.keys(modelOverrides).length > 0) {
         execContext.model_overrides = modelOverrides;

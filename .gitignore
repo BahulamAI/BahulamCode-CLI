@@ -1,6 +1,10 @@
 node_modules/
 __pycache__/
 
+# macOS Finder metadata — never track
+.DS_Store
+**/.DS_Store
+
 .kepler
 .kepler/*
 

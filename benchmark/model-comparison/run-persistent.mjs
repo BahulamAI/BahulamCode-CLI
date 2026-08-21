@@ -178,7 +178,8 @@ async function runTurnPersistent({
     }
     const execContext = {
         cwd: process.cwd(),
-        freeswim: true,
+        skip_permissions: true,
+        freeswim: true, // legacy wire alias — drop after cloud backend 2.7 rollout
         project_resources: projectResources,
         work_scope: buildWorkScope({
             instruction: question,

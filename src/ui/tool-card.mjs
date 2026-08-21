@@ -156,6 +156,14 @@ export function summarizeResult(tool, data) {
       if (tool === 'shell') {
         const structured = structuredOutputSummary(data.output_preview || data.output);
         if (structured) return structured;
+        // Multi-row preview: first N rows + a "+ M more" tail so long
+        // outputs (e.g. `ls`) surface their scale instead of collapsing
+        // to a single first line with no hint that more exists.
+        const { preview, remaining } = outputPreviewRows(data, shellPreviewRows());
+        if (!preview) return { text: 'ok', tone: 'success' };
+        if (remaining === 0) return { text: preview, tone: 'success' };
+        const tail = paint.text.dim(`+ ${remaining} more row${remaining === 1 ? '' : 's'}`);
+        return { text: `${preview}\n${tail}`, tone: 'success' };
       }
       const head = firstOutputLine(data).slice(0, 100);
       return { text: head || 'ok', tone: 'success' };
@@ -411,6 +419,24 @@ function truncatePlain(text, max) {
 function firstOutputLine(data) {
   const o = data?.output_preview || data?.output || data?.message || '';
   return String(o).split('\n').map(l => l.trim()).find(Boolean) || '';
+}
+
+// Preview the first N non-empty output rows, joined by \n. Returns
+// { preview, remaining, total } — remaining is how many non-empty rows
+// were dropped past N. Long individual rows get clipped to `perRow` chars.
+function outputPreviewRows(data, n, perRow = 200) {
+  const o = data?.output_preview ?? data?.output ?? data?.message ?? '';
+  const rows = String(o).split('\n').map(l => l.trim()).filter(Boolean);
+  const shown = rows.slice(0, n).map(l => l.length > perRow ? l.slice(0, perRow - 1) + '…' : l);
+  return { preview: shown.join('\n'), remaining: Math.max(0, rows.length - n), total: rows.length };
+}
+
+// Default rows shown in the shell result preview. Overridable via env for
+// power users; keep it small — the result line rides above every command
+// and eats vertical space in a long session.
+function shellPreviewRows() {
+  const raw = parseInt(process.env.BAHULAM_SHELL_PREVIEW_ROWS ?? '', 10);
+  return Number.isFinite(raw) && raw >= 1 ? raw : 2;
 }
 
 function lineCount(s) {

@@ -41,6 +41,7 @@ export function createToolExecutor({
     skillInstaller = null,
     checkpoints = null,
     hookRunner = null,
+    interactionHandler = null,
 } = {}) {
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
@@ -49,6 +50,23 @@ export function createToolExecutor({
         cwd: process.cwd(),
         homeDir: skillsLoader.homeDir || os.homedir(),
     });
+
+    // ── Auto-register the current working directory as a project ──
+    // Without this, shell / list_files / read_attachment fail with
+    // "No projects registered. Call get_project_overview first." on
+    // any fresh folder — including a legitimate user CWD they just
+    // cd'd into to start work. The model then has to spend a turn
+    // registering before it can do anything, which is a poor first-run
+    // UX. Fire-and-forget: if registration fails (permissions, weird
+    // FS), the model can still call get_project_overview explicitly.
+    // bypassProjectMarkers=true because we don't require a .git etc.
+    // for the current directory to be usable — the user chose to be here.
+    // Opt out via BAHULAM_SKIP_AUTO_REGISTER=true for tests or headless
+    // scripts that want a truly empty registry.
+    if (process.env.BAHULAM_SKIP_AUTO_REGISTER !== 'true') {
+        projectRegistry.register(process.cwd(), { bypassProjectMarkers: true })
+            .catch(() => { /* silent — model can register explicitly */ });
+    }
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
     let _readOnlyCacheGeneration = 0;
     const readOnlyResultCache = new Map();
@@ -595,6 +613,240 @@ export function createToolExecutor({
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
+        // 0. ask_user → interactive direction question (client-executed).
+        // The UI form is injected by the REPL via `interactionHandler`;
+        // headless/piped sessions have none and get the best-judgment
+        // fallback so the agent is never blocked on a missing human.
+        ask_user: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const question = String(args?.question || '').trim();
+            const choices = Array.isArray(args?.options)
+                ? args.options.map(o => String(o || '').trim()).filter(Boolean)
+                : [];
+            if (!question) {
+                return { success: false, output: 'ask_user requires a question.', _tool: 'ask_user' };
+            }
+            if (choices.length < 2 || choices.length > 4) {
+                return { success: false, output: 'ask_user requires 2-4 options.', _tool: 'ask_user' };
+            }
+            if (!interactionHandler || !process.stdin.isTTY) {
+                return {
+                    success: true,
+                    output: 'No interactive user is available in this session. Proceed with your best judgment and state the assumption you made.',
+                    _tool: 'ask_user',
+                };
+            }
+            const res = await interactionHandler({ question, options: choices, context: args?.context });
+            throwIfAborted(options.signal);
+            if (!res || !res.answer) {
+                return {
+                    success: true,
+                    output: 'The user declined to answer. Proceed with your best judgment and state the assumption you made.',
+                    _tool: 'ask_user',
+                };
+            }
+            return {
+                success: true,
+                output: `User answered: ${res.answer}${res.source === 'free_text' ? ' (typed answer, not one of the offered options)' : ''}`,
+                _tool: 'ask_user',
+            };
+        },
+
+        // 0b. read_attachment → chunked text extraction from a local document.
+        // Backend registers the schema; execution happens client-side because
+        // only the CLI has the user's filesystem. Supports the `path` mode
+        // (local file); `upload_id` is chat-only and returns a redirect
+        // error. Uses the shared prose-chunker so chunk boundaries and
+        // page/chunk numbering match the server-side path executor byte-
+        // for-byte (documents.py). Supports total_chunks metadata mode,
+        // chunk_range/chunk_no selection, page filtering (PDFs), and
+        // case-insensitive query substring filtering.
+        read_attachment: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const uploadId = String(args?.upload_id || '').trim();
+            const rawPath = String(args?.path || '').trim();
+            if (uploadId && !rawPath) {
+                return {
+                    success: false,
+                    output: 'upload_id is a chat-only mode. In the CLI, pass path=<local path> to read a file the user has on disk.',
+                    _tool: 'read_attachment',
+                };
+            }
+            if (!rawPath) {
+                return {
+                    success: false,
+                    output: 'read_attachment requires path=<local path> (upload_id is chat-only).',
+                    _tool: 'read_attachment',
+                };
+            }
+            // Route through projectRegistry.resolvePath — the same helper
+            // read_file/edit_file use. This handles shell-escape unescaping,
+            // LLM-quoting normalization, and external-file registration for
+            // paths outside registered project roots (attachments in
+            // ~/Downloads, /tmp, etc. are legitimate).
+            let abs;
+            try {
+                abs = await resolvePath(rawPath, args, { allowExternalFileRead: true });
+            } catch (err) {
+                return { success: false, output: String(err?.message || err), _tool: 'read_attachment' };
+            }
+
+            const { extractFromPath } = await import('../context/prose-chunker.mjs');
+            let mime, chunks;
+            try {
+                ({ mime, chunks } = await extractFromPath(abs));
+            } catch (err) {
+                return { success: false, output: `Failed to read ${abs}: ${err?.message || err}`, _tool: 'read_attachment' };
+            }
+            if (!mime) {
+                return { success: false, output: `File not found or not a regular file: ${abs}`, _tool: 'read_attachment' };
+            }
+            if (!chunks.length) {
+                return {
+                    success: false,
+                    output: `Unsupported or empty file (mime=${mime}). Supported: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, html, log, rst. For CSV/Excel analysis use read_table; for images use analyze_image.`,
+                    _tool: 'read_attachment',
+                };
+            }
+
+            // Ingest into the project's BM25 index so subsequent search_code
+            // (and future search_document) calls surface this doc's chunks.
+            // Best-effort: skip if the file isn't inside a registered project
+            // (external attachment like ~/Downloads/foo.pdf), and never let
+            // an index write fail the tool.
+            try {
+                const owningProject = projectRegistry.projectForPath(abs);
+                if (owningProject?.retriever?.addProseChunks) {
+                    const rel = path.relative(owningProject.resource.root, abs);
+                    owningProject.retriever.addProseChunks(rel, chunks);
+                }
+            } catch { /* best-effort */ }
+
+            const totalChunks = chunks.length;
+            const totalPages = new Set(chunks.map(c => c.page).filter(p => p != null)).size;
+            const totalChars = chunks.reduce((s, c) => s + c.text.length, 0);
+
+            // total_chunks metadata mode — size-before-read for large docs.
+            if (args?.total_chunks) {
+                const previewLen = Math.min(400, chunks[0].text.length);
+                const preview = chunks[0].text.slice(0, previewLen);
+                const previewSuffix = previewLen < chunks[0].text.length ? '…' : '';
+                const pagesLine = totalPages ? ` · ${totalPages} pages` : '';
+                return {
+                    success: true,
+                    output: `📄 ${path.basename(abs)} · ${totalChars} chars · ${totalChunks} chunks (0-${totalChunks - 1})${pagesLine}\n\nFirst chunk preview:\n${preview}${previewSuffix}\n\nUse chunk_range='N-M' or chunk_no=N to read specific chunks.`,
+                    _tool: 'read_attachment',
+                    _path: abs,
+                    _mime: mime,
+                    _total_chunks: totalChunks,
+                    _total_pages: totalPages,
+                    _total_chars: totalChars,
+                };
+            }
+
+            // chunk_range / chunk_no selection.
+            let selected = chunks;
+            const rangeStr = String(args?.chunk_range ?? '').trim()
+                || (args?.chunk_no !== undefined && args?.chunk_no !== null
+                    ? String(args.chunk_no).trim()
+                    : '');
+            if (rangeStr) {
+                const m = rangeStr.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+                if (!m) {
+                    return {
+                        success: false,
+                        output: `Invalid chunk_range: '${rangeStr}'. Use 'N' for a single chunk or 'N-M' for an inclusive range.`,
+                        _tool: 'read_attachment',
+                    };
+                }
+                const start = parseInt(m[1], 10);
+                const end = m[2] != null ? parseInt(m[2], 10) : start;
+                if (end < start) {
+                    return {
+                        success: false,
+                        output: `Invalid chunk_range '${rangeStr}': end (${end}) is before start (${start}).`,
+                        _tool: 'read_attachment',
+                    };
+                }
+                selected = chunks.filter(c => c.chunk_no >= start && c.chunk_no <= end);
+                if (!selected.length) {
+                    return {
+                        success: false,
+                        output: `No chunks in range ${start}-${end}. Doc has ${totalChunks} chunks (0-${totalChunks - 1}).`,
+                        _tool: 'read_attachment',
+                    };
+                }
+            }
+
+            // page filter (PDF only — no-op on text docs where page is null).
+            if (args?.page !== undefined && args?.page !== null) {
+                const p = parseInt(args.page, 10);
+                if (Number.isFinite(p)) {
+                    selected = selected.filter(c => c.page === p);
+                    if (!selected.length) {
+                        return {
+                            success: false,
+                            output: `No chunks on page ${p}. Doc has ${totalPages} pages.`,
+                            _tool: 'read_attachment',
+                        };
+                    }
+                }
+            }
+
+            // query substring filter (case-insensitive, per-chunk).
+            const query = String(args?.query || '').trim();
+            if (query) {
+                const q = query.toLowerCase();
+                selected = selected.filter(c => c.text.toLowerCase().includes(q));
+                if (!selected.length) {
+                    return {
+                        success: true,
+                        output: `(No chunks matched query="${query}".)`,
+                        _tool: 'read_attachment',
+                        _path: abs,
+                        _total_chunks: totalChunks,
+                        _returned_chunks: 0,
+                    };
+                }
+            }
+
+            // Render chunks — matches server _render_chunks format:
+            // [page N, chunk M]\n<text>\n\n
+            const maxChars = Math.max(1000, Number(args?.max_chars) || 100_000);
+            const lines = [];
+            let total = 0;
+            let truncated = false;
+            let renderedCount = 0;
+            for (const c of selected) {
+                const headerBits = [];
+                if (c.page != null) headerBits.push(`page ${c.page}`);
+                headerBits.push(`chunk ${c.chunk_no}`);
+                const block = `[${headerBits.join(', ')}]\n${c.text}`;
+                if (total + block.length + 2 > maxChars) {
+                    lines.push(`... [truncated at chunk ${c.chunk_no} to fit max_chars=${maxChars}. Use chunk_range='${c.chunk_no}-${selected[selected.length - 1].chunk_no}' to read the rest.]`);
+                    truncated = true;
+                    break;
+                }
+                lines.push(block);
+                total += block.length + 2;
+                renderedCount += 1;
+            }
+
+            const pagesLine = totalPages ? ` · ${totalPages} pages` : '';
+            const truncNote = truncated ? ' (truncated)' : '';
+            const header = `📄 ${path.basename(abs)} · ${totalChunks} chunks total${pagesLine} · showing ${renderedCount}${truncNote}\n\n`;
+            return {
+                success: true,
+                output: header + lines.join('\n\n'),
+                _tool: 'read_attachment',
+                _path: abs,
+                _mime: mime,
+                _total_chunks: totalChunks,
+                _returned_chunks: renderedCount,
+                _truncated: truncated,
+            };
+        },
+
         // 1. shell → Bash + classification + smart output filtering
         shell: async (args, options = {}) => {
             throwIfAborted(options.signal);

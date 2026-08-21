@@ -33,7 +33,7 @@ export function parseArgs(args) {
         resume: false,
         resumeSessionId: null,
         headless: false,
-        freeswim: false,
+        skipPermissions: false,
         vision: [],
         verbose: false,
         debug: false,
@@ -106,7 +106,7 @@ export function parseArgs(args) {
 
             case '--headless':
                 result.headless = true;
-                result.freeswim = true; // headless implies skip permissions
+                result.skipPermissions = true; // headless implies skip permissions
                 break;
 
             case '--cache-report':
@@ -128,10 +128,8 @@ export function parseArgs(args) {
                 break;
             }
 
-            case '--freeswim-open-waters':
-            case '--freeswim':
-            case '--yes':
-                result.freeswim = true;
+            case '--dangerously-skip-permissions':
+                result.skipPermissions = true;
                 break;
 
             case '--verbose':
@@ -189,9 +187,7 @@ Options:
   --headless                 Non-interactive mode: auto-approve, JSONL output
   --cache-report <file>      Write prompt-cache summary JSON to <file> (headless only)
   --vision <image-path>      Attach image path in headless mode
-  --freeswim-open-waters     Skip all approval prompts (no boundaries)
-  --freeswim                 Alias for --freeswim-open-waters
-  --yes                      Alias for --freeswim-open-waters
+  --dangerously-skip-permissions  Skip ALL approval prompts, including dangerous tiers
   --verbose, -v              Verbose output
   --debug, -d                Debug mode
   --version                  Show version

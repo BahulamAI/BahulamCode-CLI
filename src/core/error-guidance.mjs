@@ -250,6 +250,22 @@ export function formatAgentErrorGuidance(data = {}) {
     lines.push(`You reached the message limit for this plan.${retry}`);
     lines.push('Upgrade your plan for a larger 5-hour message window, or switch to BYOK if available.');
     if (pricingUrl) lines.push(`Open ${pricingUrl} to upgrade.`);
+  } else if (
+    // Auth-specific gateway error → session expired / token invalid.
+    // Must match BEFORE the generic gateway branch below, otherwise
+    // 'gateway_authentication_error' falls into the retry-hint branch
+    // and the user sees "usually transient — retry" when the real fix
+    // is to re-login. The 401/token wording covers both server-shaped
+    // messages ("Invalid or expired token") and message-only fallbacks.
+    code === 'gateway_authentication_error' ||
+    code === 'authentication_error' ||
+    /401|invalid.*or.*expired.*token|invalid token|expired token|not\s*authenticated/i.test(message)
+  ) {
+    lines.push('Your session with Bahulam has expired or become invalid.');
+    lines.push('Re-authenticate:');
+    lines.push('  bahulam logout   # clears saved token');
+    lines.push('  bahulam login    # opens browser to re-auth');
+    lines.push('Then retry the command.');
   } else if (phase === 'gateway' || code.includes('gateway')) {
     // Generic first: on the platform route the user has NO provider key —
     // telling them to "check your DeepSeek API key" is wrong and alarming.
@@ -263,7 +279,7 @@ export function formatAgentErrorGuidance(data = {}) {
       lines.push('Using your own key (BYOK)? Verify it is saved and active in settings, then run /login so provider settings sync.');
     }
   } else if (/authentication|token/i.test(message)) {
-    lines.push('Run /login to re-authenticate.');
+    lines.push('Run `bahulam login` to re-authenticate.');
   } else if (/api key|openrouter/i.test(message)) {
     lines.push('Run /config to set up or refresh your provider settings.');
   } else if (/backend|network/i.test(message)) {
