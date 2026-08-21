@@ -652,15 +652,15 @@ export function createToolExecutor({
             };
         },
 
-        // 0b. read_attachment → text extraction from a local document.
+        // 0b. read_attachment → chunked text extraction from a local document.
         // Backend registers the schema; execution happens client-side because
         // only the CLI has the user's filesystem. Supports the `path` mode
         // (local file); `upload_id` is chat-only and returns a redirect
-        // error. Extractors: text/markdown/csv/json/yaml/html via fs.readFile;
-        // pdf via pdf-parse (already a CLI dep). Optional `query` filters
-        // extracted text by case-insensitive substring; `max_chars` (default
-        // 100k) caps the returned length so a 30MB pdf doesn't blow up the
-        // agent's context.
+        // error. Uses the shared prose-chunker so chunk boundaries and
+        // page/chunk numbering match the server-side path executor byte-
+        // for-byte (documents.py). Supports total_chunks metadata mode,
+        // chunk_range/chunk_no selection, page filtering (PDFs), and
+        // case-insensitive query substring filtering.
         read_attachment: async (args, options = {}) => {
             throwIfAborted(options.signal);
             const uploadId = String(args?.upload_id || '').trim();
@@ -680,73 +680,169 @@ export function createToolExecutor({
                 };
             }
             // Route through projectRegistry.resolvePath — the same helper
-            // read_file/edit_file use. This handles:
-            //   - shell-escape unescaping ('Tarang\ Orca/foo.pdf' → 'Tarang Orca/foo.pdf')
-            //   - LLM-quoting normalization
-            //   - external-file registration for paths outside registered
-            //     project roots (attachments in ~/Downloads/, /tmp/, etc.
-            //     are legitimate; the LLM shouldn't need to first register
-            //     the user's home as a project just to read an attachment)
-            //   - clear "Path not found" vs "Path outside roots" errors
+            // read_file/edit_file use. This handles shell-escape unescaping,
+            // LLM-quoting normalization, and external-file registration for
+            // paths outside registered project roots (attachments in
+            // ~/Downloads, /tmp, etc. are legitimate).
             let abs;
             try {
                 abs = await resolvePath(rawPath, args, { allowExternalFileRead: true });
             } catch (err) {
                 return { success: false, output: String(err?.message || err), _tool: 'read_attachment' };
             }
-            const stat = fs.statSync(abs);
-            if (!stat.isFile()) {
-                return { success: false, output: `Not a regular file: ${abs}`, _tool: 'read_attachment' };
-            }
 
-            const ext = path.extname(abs).toLowerCase();
-            const query = String(args?.query || '').trim().toLowerCase();
-            const maxChars = Math.max(1000, Number(args?.max_chars) || 100_000);
-
-            let text;
+            const { extractFromPath } = await import('../context/prose-chunker.mjs');
+            let mime, chunks;
             try {
-                if (ext === '.pdf') {
-                    // Lazy-import — startup shouldn't pay pdf-parse's load cost
-                    // every session. Import from lib/ path directly: the default
-                    // entry `pdf-parse/index.js` has a debug hook that opens a
-                    // bundled test PDF at load time and throws ENOENT when
-                    // that file isn't shipped, which it isn't in production
-                    // installs. lib/pdf-parse.js is the same parser without the hook.
-                    const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
-                    const buf = fs.readFileSync(abs);
-                    const parsed = await pdfParse(buf);
-                    text = String(parsed?.text || '');
-                } else if (['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.yaml', '.yml', '.html', '.htm', '.log', '.rst'].includes(ext) || ext === '') {
-                    text = fs.readFileSync(abs, 'utf8');
-                } else {
-                    return {
-                        success: false,
-                        output: `Unsupported file type: ${ext || '(no extension)'}. Supported: pdf, txt, md, csv, tsv, json, yaml, html, log, rst. For CSV/Excel analysis use read_table; for images use analyze_image.`,
-                        _tool: 'read_attachment',
-                    };
-                }
+                ({ mime, chunks } = await extractFromPath(abs));
             } catch (err) {
                 return { success: false, output: `Failed to read ${abs}: ${err?.message || err}`, _tool: 'read_attachment' };
             }
+            if (!mime) {
+                return { success: false, output: `File not found or not a regular file: ${abs}`, _tool: 'read_attachment' };
+            }
+            if (!chunks.length) {
+                return {
+                    success: false,
+                    output: `Unsupported or empty file (mime=${mime}). Supported: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, html, log, rst. For CSV/Excel analysis use read_table; for images use analyze_image.`,
+                    _tool: 'read_attachment',
+                };
+            }
 
+            // Ingest into the project's BM25 index so subsequent search_code
+            // (and future search_document) calls surface this doc's chunks.
+            // Best-effort: skip if the file isn't inside a registered project
+            // (external attachment like ~/Downloads/foo.pdf), and never let
+            // an index write fail the tool.
+            try {
+                const owningProject = projectRegistry.projectForPath(abs);
+                if (owningProject?.retriever?.addProseChunks) {
+                    const rel = path.relative(owningProject.resource.root, abs);
+                    owningProject.retriever.addProseChunks(rel, chunks);
+                }
+            } catch { /* best-effort */ }
+
+            const totalChunks = chunks.length;
+            const totalPages = new Set(chunks.map(c => c.page).filter(p => p != null)).size;
+            const totalChars = chunks.reduce((s, c) => s + c.text.length, 0);
+
+            // total_chunks metadata mode — size-before-read for large docs.
+            if (args?.total_chunks) {
+                const previewLen = Math.min(400, chunks[0].text.length);
+                const preview = chunks[0].text.slice(0, previewLen);
+                const previewSuffix = previewLen < chunks[0].text.length ? '…' : '';
+                const pagesLine = totalPages ? ` · ${totalPages} pages` : '';
+                return {
+                    success: true,
+                    output: `📄 ${path.basename(abs)} · ${totalChars} chars · ${totalChunks} chunks (0-${totalChunks - 1})${pagesLine}\n\nFirst chunk preview:\n${preview}${previewSuffix}\n\nUse chunk_range='N-M' or chunk_no=N to read specific chunks.`,
+                    _tool: 'read_attachment',
+                    _path: abs,
+                    _mime: mime,
+                    _total_chunks: totalChunks,
+                    _total_pages: totalPages,
+                    _total_chars: totalChars,
+                };
+            }
+
+            // chunk_range / chunk_no selection.
+            let selected = chunks;
+            const rangeStr = String(args?.chunk_range ?? '').trim()
+                || (args?.chunk_no !== undefined && args?.chunk_no !== null
+                    ? String(args.chunk_no).trim()
+                    : '');
+            if (rangeStr) {
+                const m = rangeStr.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+                if (!m) {
+                    return {
+                        success: false,
+                        output: `Invalid chunk_range: '${rangeStr}'. Use 'N' for a single chunk or 'N-M' for an inclusive range.`,
+                        _tool: 'read_attachment',
+                    };
+                }
+                const start = parseInt(m[1], 10);
+                const end = m[2] != null ? parseInt(m[2], 10) : start;
+                if (end < start) {
+                    return {
+                        success: false,
+                        output: `Invalid chunk_range '${rangeStr}': end (${end}) is before start (${start}).`,
+                        _tool: 'read_attachment',
+                    };
+                }
+                selected = chunks.filter(c => c.chunk_no >= start && c.chunk_no <= end);
+                if (!selected.length) {
+                    return {
+                        success: false,
+                        output: `No chunks in range ${start}-${end}. Doc has ${totalChunks} chunks (0-${totalChunks - 1}).`,
+                        _tool: 'read_attachment',
+                    };
+                }
+            }
+
+            // page filter (PDF only — no-op on text docs where page is null).
+            if (args?.page !== undefined && args?.page !== null) {
+                const p = parseInt(args.page, 10);
+                if (Number.isFinite(p)) {
+                    selected = selected.filter(c => c.page === p);
+                    if (!selected.length) {
+                        return {
+                            success: false,
+                            output: `No chunks on page ${p}. Doc has ${totalPages} pages.`,
+                            _tool: 'read_attachment',
+                        };
+                    }
+                }
+            }
+
+            // query substring filter (case-insensitive, per-chunk).
+            const query = String(args?.query || '').trim();
             if (query) {
-                // Split on paragraph gaps, keep chunks that contain the substring.
-                const chunks = text.split(/\n\s*\n/).filter(c => c.toLowerCase().includes(query));
-                text = chunks.length ? chunks.join('\n\n') : `(no chunks matched query="${query}")`;
+                const q = query.toLowerCase();
+                selected = selected.filter(c => c.text.toLowerCase().includes(q));
+                if (!selected.length) {
+                    return {
+                        success: true,
+                        output: `(No chunks matched query="${query}".)`,
+                        _tool: 'read_attachment',
+                        _path: abs,
+                        _total_chunks: totalChunks,
+                        _returned_chunks: 0,
+                    };
+                }
             }
 
+            // Render chunks — matches server _render_chunks format:
+            // [page N, chunk M]\n<text>\n\n
+            const maxChars = Math.max(1000, Number(args?.max_chars) || 100_000);
+            const lines = [];
+            let total = 0;
             let truncated = false;
-            if (text.length > maxChars) {
-                text = text.slice(0, maxChars);
-                truncated = true;
+            let renderedCount = 0;
+            for (const c of selected) {
+                const headerBits = [];
+                if (c.page != null) headerBits.push(`page ${c.page}`);
+                headerBits.push(`chunk ${c.chunk_no}`);
+                const block = `[${headerBits.join(', ')}]\n${c.text}`;
+                if (total + block.length + 2 > maxChars) {
+                    lines.push(`... [truncated at chunk ${c.chunk_no} to fit max_chars=${maxChars}. Use chunk_range='${c.chunk_no}-${selected[selected.length - 1].chunk_no}' to read the rest.]`);
+                    truncated = true;
+                    break;
+                }
+                lines.push(block);
+                total += block.length + 2;
+                renderedCount += 1;
             }
 
-            const header = `📄 ${path.basename(abs)} · ${stat.size} bytes · ${text.split('\n').length} lines${truncated ? ` · truncated to ${maxChars} chars` : ''}\n\n`;
+            const pagesLine = totalPages ? ` · ${totalPages} pages` : '';
+            const truncNote = truncated ? ' (truncated)' : '';
+            const header = `📄 ${path.basename(abs)} · ${totalChunks} chunks total${pagesLine} · showing ${renderedCount}${truncNote}\n\n`;
             return {
                 success: true,
-                output: header + text,
+                output: header + lines.join('\n\n'),
                 _tool: 'read_attachment',
                 _path: abs,
+                _mime: mime,
+                _total_chunks: totalChunks,
+                _returned_chunks: renderedCount,
                 _truncated: truncated,
             };
         },

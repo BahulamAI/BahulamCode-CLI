@@ -132,6 +132,123 @@ export class ContextRetriever {
         return true;
     }
 
+    /**
+     * Add already-chunked prose content (from prose-chunker.mjs) to the
+     * shared BM25 index — no re-read or re-chunking. Used by
+     * `read_attachment` to make docs discoverable by `search_code` /
+     * future `search_document` without a separate index.
+     *
+     * Chunk IDs are shaped `${sourceId}#c${chunk_no}` — the `#c`
+     * separator makes them distinguishable from code IDs (which use `:`)
+     * so `updateFile` for code files won't accidentally drop prose
+     * chunks and vice versa.
+     *
+     * Re-adding the same sourceId replaces its chunks (idempotent —
+     * safe to call on every `read_attachment`).
+     *
+     * @param {string} sourceId  stable id, usually a project-relative path
+     * @param {Array<{page: (number|null), chunk_no: number, text: string, tokens?: number}>} chunks
+     * @returns {number} chunks indexed
+     */
+    addProseChunks(sourceId, chunks) {
+        if (!Array.isArray(chunks) || chunks.length === 0) return 0;
+        if (!sourceId || typeof sourceId !== 'string') return 0;
+
+        if (!this.index) {
+            if (!this.loadIndex()) {
+                this.index = new BM25Index();
+                this.chunkTexts = new Map();
+            }
+        }
+
+        // Drop prior chunks for this source (idempotent).
+        const sourcePrefix = `${sourceId}#c`;
+        const oldIds = new Set();
+        for (const doc of this.index.docs) {
+            if (doc.id.startsWith(sourcePrefix)) oldIds.add(doc.id);
+        }
+        for (const id of oldIds) this.chunkTexts.delete(id);
+
+        // Collect surviving docs — reconstruct text from stored chunkTexts
+        // (BM25Index only stores tf maps + lengths, not raw text).
+        const remaining = [];
+        for (const doc of this.index.docs) {
+            if (!oldIds.has(doc.id)) {
+                remaining.push({ id: doc.id, text: this.chunkTexts.get(doc.id) || '' });
+            }
+        }
+
+        // Prep new prose docs — prefix indexed text with sourceId so BM25
+        // gets signal from the filename (mirrors how _chunkFile embeds
+        // relPath). Page tag included so page-scoped queries can hit it.
+        const newDocs = chunks.map(c => {
+            const id = `${sourceId}#c${c.chunk_no}`;
+            const pageTag = c.page != null ? ` page:${c.page}` : '';
+            const indexedText = `${sourceId}${pageTag}\n${c.text}`;
+            return { id, text: indexedText };
+        });
+
+        // Rebuild — BM25 needs IDF recomputed across all docs.
+        this.index = new BM25Index();
+        this.index.buildIndex([...remaining, ...newDocs]);
+        for (const doc of newDocs) {
+            this.chunkTexts.set(doc.id, doc.text);
+        }
+
+        // Persist. Best-effort — an unwritable indexDir shouldn't fail
+        // the tool call.
+        try {
+            if (!fs.existsSync(this.indexDir)) fs.mkdirSync(this.indexDir, { recursive: true });
+            fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
+            fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
+        } catch { /* best-effort persist */ }
+
+        return newDocs.length;
+    }
+
+    /**
+     * Remove all chunks belonging to a source (either code path or
+     * prose sourceId). Called when a file is deleted so stale hits
+     * don't linger in the index.
+     */
+    removeSource(sourceId) {
+        if (!this.index) {
+            if (!this.loadIndex()) return 0;
+        }
+        const oldIds = new Set();
+        for (const doc of this.index.docs) {
+            // Code IDs: exact match or `sourceId:` prefix (line/AST chunks).
+            // Prose IDs: `sourceId#c` prefix.
+            if (
+                doc.id === sourceId
+                || doc.id.startsWith(`${sourceId}:`)
+                || doc.id.startsWith(`${sourceId}#c`)
+            ) {
+                oldIds.add(doc.id);
+            }
+        }
+        if (oldIds.size === 0) return 0;
+        for (const id of oldIds) this.chunkTexts.delete(id);
+
+        const remaining = [];
+        for (const doc of this.index.docs) {
+            if (!oldIds.has(doc.id)) {
+                remaining.push({ id: doc.id, text: this.chunkTexts.get(doc.id) || '' });
+            }
+        }
+
+        this.index = new BM25Index();
+        this.index.buildIndex(remaining);
+
+        try {
+            if (!fs.existsSync(this.indexDir)) fs.mkdirSync(this.indexDir, { recursive: true });
+            fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
+            fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
+        } catch { /* best-effort */ }
+
+        return oldIds.size;
+    }
+
     /** Load persisted index. */
     loadIndex() {
         const indexPath = path.join(this.indexDir, 'bm25.json');
