@@ -1287,7 +1287,7 @@ function foldSubAgentToolCall(data = {}) {
   if (!existing) fold.entries.push(entry);
   recordCard({ id: callId, tool, args, startedAt: entry.startedAt });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  startSpinner(`${agentType} → ${tool}`);
+  updateSpinner(`${agentType} → ${tool}`);
   // Live sub-agent window: rebuild from the accumulating fold entries so
   // the same rich '• tool head — outcome' bullets that appear in the
   // final summary render live during the run. Users previously saw only
@@ -1327,6 +1327,7 @@ function foldSubAgentToolResult(data = {}) {
   entry.tone = summary.tone || 'dim';
   if (data._blocked) session.blockedOps++;
   recordCard({ id: callId, tool, args: entry.args, result: data, durationMs, startedAt: entry.startedAt });
+  updateSpinner(`${agentType} → ${tool}`);
   // Same live-window sync on result — updates the '• tool' line into
   // '• tool — outcome' as each result lands, without waiting for the
   // whole sub-agent to complete.
@@ -1602,12 +1603,12 @@ function renderEvent(event) {
         session.totalPrimaryToolCalls++;
       }
       session.totalToolCalls++;
-      stopSpinner();
-      flushContent();
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolCall(data);
         break;
       }
+      stopSpinner();
+      flushContent();
       renderToolCall(data);
       break;
     }
@@ -1650,11 +1651,11 @@ function renderEvent(event) {
 
     case 'tool_result':
     case 'tool_done': {
-      stopSpinner();
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolResult(data);
         break;
       }
+      stopSpinner();
       renderToolResult(data, type);
       break;
     }
