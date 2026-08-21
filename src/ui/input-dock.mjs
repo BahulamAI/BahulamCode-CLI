@@ -261,6 +261,7 @@ function setInputRowsTo(nextRows, { maxRows = inputRowsMax } = {}) {
   const clamped = Math.max(MIN_INPUT_ROWS, Math.min(maxRows, Math.floor(nextRows)));
   if (clamped === inputRows) return false;
   const shrinking = clamped < inputRows;
+  const growing = clamped > inputRows;
   if (mounted && shrinking) {
     // Clear the entire old reserved region — top rule through safety row —
     // so nothing that lived here leaks into the scroll region after we
@@ -269,6 +270,25 @@ function setInputRowsTo(nextRows, { maxRows = inputRowsMax } = {}) {
       moveTo(row, 1);
       clearLine();
     }
+  } else if (mounted && growing) {
+    // GROWING is the case that used to eat transcript. Rows near the
+    // bottom of the current scroll region are about to become dock rows;
+    // whatever transcript sat on them would be overwritten by the wider
+    // dock frame and NEVER enter terminal scrollback, so users lost
+    // history the moment approval prompts (or any overlay) mounted.
+    //
+    // Fix: push the doomed rows into scrollback BEFORE shrinking the
+    // region. Move cursor to the last row of the CURRENT (larger) scroll
+    // region and emit `growth` line-feeds. Each LF at the last row of a
+    // DECSTBM region scrolls the whole region up one line — top row goes
+    // to scrollback, everything else shifts up, bottom clears. After N
+    // such LFs the content that USED to be on rows we're about to reserve
+    // is safely in scrollback and the reserved rows are blank — ready
+    // for the dock frame with zero visible loss to the user.
+    const growth = clamped - inputRows;
+    const oldContentBottom = contentBottomRow(); // computed against OLD reservedRows
+    moveTo(oldContentBottom, 1);
+    for (let i = 0; i < growth; i++) write('\n');
   }
   inputRows = clamped;
   reservedRows = FIXED_ROWS + inputRows;

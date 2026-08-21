@@ -89,6 +89,7 @@ import {
   flushPendingHead,
   isInlineOutcomeTool,
   pushSubAgentWindowLine,
+  rebuildSubAgentWindow,
   renderBlockBoundary,
   renderExploreRun,
   renderFileDiffEvent,
@@ -970,14 +971,64 @@ function slashCommandSuggestions(line, limit = 5) {
 // ── Banner ──
 
 function printBanner(auth) {
-  // The visual block itself lives in the branded banner module. The trailing
-  // status line stays here because it needs `auth`.
+  // The visual block itself lives in the branded banner module.
   printBrandedBanner(VERSION);
 
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
-  const authStatus = creds.token ? c.green('authenticated') : c.red('/login to start');
-  process.stderr.write(`  ${c.dim(env)}  ${authStatus}\n\n`);
+
+  if (creds.token) {
+    // Authenticated: single quiet status line right under the banner.
+    process.stderr.write(`  ${c.dim(env)}  ${c.green('authenticated')}\n\n`);
+  } else {
+    // Unauthenticated: the /login prompt used to be crammed onto the same
+    // line as the env label directly under the ASCII banner — users
+    // reported not noticing it. Break it out into its own bordered block
+    // one blank line below so it can't be missed.
+    process.stderr.write(`  ${c.dim(env)}  ${c.dim('not authenticated')}\n`);
+    process.stderr.write('\n');
+    const line = c.yellow('  ┃  ');
+    process.stderr.write(`${line}${c.bold(c.yellow('Not logged in.'))} ${c.dim('The agent cannot run without auth.')}\n`);
+    process.stderr.write(`${line}${c.dim('Type')} ${c.bold(c.green('/login'))} ${c.dim('to authenticate ')}${c.dim('(opens browser)')}${c.dim('.')}\n`);
+    process.stderr.write('\n');
+  }
+
+  // Fire-and-forget upgrade check — checks npm registry for a newer
+  // version of the CLI package and, if one exists, prints an unobtrusive
+  // banner after the auth status. Silent on failure (no network, npm
+  // registry down, etc.) — must never block session start.
+  _checkForUpgradeAndAnnounce().catch(() => { /* silent */ });
+}
+
+/** Non-blocking check of npm registry for a newer bahulam version. */
+async function _checkForUpgradeAndAnnounce() {
+  if (process.env.BAHULAM_SKIP_UPGRADE_CHECK === 'true') return;
+  const currentPkg = __require('../../package.json');
+  const pkgName = currentPkg.name || 'bahulam';
+  const current = currentPkg.version;
+  const url = `https://registry.npmjs.org/${encodeURIComponent(pkgName)}/latest`;
+  let latest;
+  try {
+    // Node 18+ has global fetch. 3-second timeout keeps banner snappy.
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return;
+    const body = await res.json();
+    latest = String(body?.version || '');
+  } catch { return; }
+  if (!latest || latest === current) return;
+  // Semver-aware "newer than current" — split and compare number tuples.
+  // Anything unparseable is treated as newer (rare pre-release names) to
+  // err on the side of nudging the user.
+  const asTuple = v => String(v).split('.').map(x => parseInt(x, 10));
+  const [a, b, c1] = asTuple(latest);
+  const [x, y, z] = asTuple(current);
+  const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
+  if (!newer) return;
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('New version available:')} ${c.bold(c.green(latest))} ${c.dim(`(current ${current})`)}\n`);
+  process.stderr.write(`  ${c.dim('  Upgrade:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -1236,7 +1287,14 @@ function foldSubAgentToolCall(data = {}) {
   if (!existing) fold.entries.push(entry);
   recordCard({ id: callId, tool, args, startedAt: entry.startedAt });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  startSpinner(`${agentType} → ${tool}`);
+  updateSpinner(`${agentType} → ${tool}`);
+  // Live sub-agent window: rebuild from the accumulating fold entries so
+  // the same rich '• tool head — outcome' bullets that appear in the
+  // final summary render live during the run. Users previously saw only
+  // spinner text and were blind to per-tool progress across long
+  // sub-agent runs (2min+ explores). SUB_AGENT_WINDOW_ROWS caps the
+  // visible portion so tall stacks tail-window naturally.
+  _syncSubAgentWindow(fold);
 }
 
 function foldSubAgentToolResult(data = {}) {
@@ -1269,6 +1327,28 @@ function foldSubAgentToolResult(data = {}) {
   entry.tone = summary.tone || 'dim';
   if (data._blocked) session.blockedOps++;
   recordCard({ id: callId, tool, args: entry.args, result: data, durationMs, startedAt: entry.startedAt });
+  updateSpinner(`${agentType} → ${tool}`);
+  // Same live-window sync on result — updates the '• tool' line into
+  // '• tool — outcome' as each result lands, without waiting for the
+  // whole sub-agent to complete.
+  _syncSubAgentWindow(fold);
+}
+
+/**
+ * Rebuild the sub-agent live window from the last N folded entries so
+ * the window shows RICH progress lines instead of stale spinner text.
+ * Uses the same foldedToolLine formatter as the completion summary for
+ * consistency.
+ */
+function _syncSubAgentWindow(fold) {
+  if (!fold || !Array.isArray(fold.entries)) return;
+  const cols = process.stderr.columns || 120;
+  // Reserve column budget for the '    ' indent the window applies in
+  // presentStatus so we don't wrap.
+  const lines = fold.entries.slice(-7).map(entry =>
+    foldedToolLine(entry, '', Math.max(40, cols - 4)).trimStart()
+  );
+  rebuildSubAgentWindow(lines);
 }
 
 function foldedOutcome(entry) {
@@ -1523,12 +1603,12 @@ function renderEvent(event) {
         session.totalPrimaryToolCalls++;
       }
       session.totalToolCalls++;
-      stopSpinner();
-      flushContent();
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolCall(data);
         break;
       }
+      stopSpinner();
+      flushContent();
       renderToolCall(data);
       break;
     }
@@ -1571,11 +1651,11 @@ function renderEvent(event) {
 
     case 'tool_result':
     case 'tool_done': {
-      stopSpinner();
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolResult(data);
         break;
       }
+      stopSpinner();
       renderToolResult(data, type);
       break;
     }
@@ -4383,6 +4463,8 @@ export async function startTerminalRepl() {
     session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
+    // Fire first_prompt on user's first turn
+    if (session.turns === 1) telemetry.track('first_prompt', {});
     // Fire first_prompt on user's first turn
     if (session.turns === 1) telemetry.track('first_prompt', {});
 

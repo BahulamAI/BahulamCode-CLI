@@ -61,10 +61,25 @@ export function pushSubAgentWindowLine(line) {
   if (!text || win.lines[win.lines.length - 1] === text) return;
   win.lines.push(text);
   if (win.lines.length > 24) win.lines.splice(0, win.lines.length - 24);
+  repaintSpinnerStatus();
 }
 
 export function setSubAgentWindowActive(active) {
   runtime.subAgentWindow = { active: Boolean(active), lines: [] };
+}
+
+/**
+ * Replace the entire sub-agent live window with these lines. Called by
+ * repl.mjs's fold-* functions on every sub-agent tool_call and tool_result
+ * so the window shows RICH per-tool progress (same '• tool — outcome'
+ * format as the final summary) live during the sub-agent run instead of
+ * a bare '→ tool' spinner text or nothing at all.
+ */
+export function rebuildSubAgentWindow(lines) {
+  const win = runtime.subAgentWindow;
+  if (!win?.active) return;
+  win.lines = Array.isArray(lines) ? lines.slice() : [];
+  repaintSpinnerStatus();
 }
 
 function erasePresentedStatus() {
@@ -660,6 +675,17 @@ function composeStatusLabel(label) {
   return parts.join(' · ');
 }
 
+export function repaintSpinnerStatus(text = runtime.spinText, { advance = false } = {}) {
+  const isExploreActive = runtime.exploreRun && runtime.exploreRun.lineActive;
+  const label = isExploreActive ? exploreSummary() : (text || runtime.spinText);
+  if (!label) return;
+  const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
+  if (advance) runtime.spinFrame++;
+  const rendered = `  ${c.brand(frame)} ${c.dim(composeStatusLabel(label))}`;
+  if (!queue.isActive() && isExploreActive && isInputDockMounted()) return;
+  presentStatus(rendered);
+}
+
 /**
  * Start (or re-label) the spinner. `phase` scopes the elapsed clock:
  * a phase change resets it, same-phase updates keep it counting. Callers
@@ -675,22 +701,14 @@ export function startSpinner(text, { phase = null } = {}) {
   runtime.spinText = text;
   runtime.spinFrame = 0;
   if (!queue.isActive() && runtime.exploreRun && runtime.exploreRun.lineActive && isInputDockMounted()) return;
-  if (runtime.spinInterval) return; // already running
+  if (runtime.spinInterval) {
+    repaintSpinnerStatus(runtime.spinText);
+    return; // already running
+  }
   runtime.spinInterval = setInterval(() => {
-    // While an explore run is active, its live counts own the spinner
-    // line — re-fetch on every tick so the text stays current no matter
-    // which handler happened to call startSpinner/updateSpinner last.
-    const isExploreActive = runtime.exploreRun && runtime.exploreRun.lineActive;
-    const label = isExploreActive ? exploreSummary() : runtime.spinText;
-    if (!label) return;
-    const frame = SPIN_FRAMES[runtime.spinFrame % SPIN_FRAMES.length];
-    runtime.spinFrame++;
-    const rendered = `  ${c.brand(frame)} ${c.dim(composeStatusLabel(label))}`;
-    if (!queue.isActive() && isExploreActive && isInputDockMounted()) {
-      return;
-    }
-    presentStatus(rendered);
+    repaintSpinnerStatus(runtime.spinText, { advance: true });
   }, 80);
+  repaintSpinnerStatus(runtime.spinText);
 }
 
 export function updateSpinner(text) {
@@ -702,7 +720,9 @@ export function updateSpinner(text) {
   // "▸ running" with no progress at all. Same phase → clock continues.
   if (!runtime.spinInterval && text) {
     startSpinner(text, { phase: runtime.spinPhase || undefined });
+    return;
   }
+  repaintSpinnerStatus(runtime.spinText);
 }
 
 /** Bump the per-phase progress counter (sub-agent tool calls). */
