@@ -49,8 +49,8 @@
     "web-tree-sitter": "^0.26.9"
   },
   "optionalDependencies": {
-    "@bahulam/runtime-darwin-arm64": "2.6.17",
-    "@bahulam/runtime-linux-x64": "2.6.17",
-    "@bahulam/runtime-win32-x64": "2.6.17"
+    "@bahulam/runtime-darwin-arm64": "0.1.1",
+    "@bahulam/runtime-linux-x64": "0.1.1",
+    "@bahulam/runtime-win32-x64": "0.1.1"
   }
 }
