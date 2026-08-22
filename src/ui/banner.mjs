@@ -51,7 +51,7 @@ export function renderBanner(version = '') {
   const lines = [''];
 
   for (let i = 0; i < wordmark.length; i++) {
-    lines.push(`  ${paint.brand.accent(mark[i].padEnd(markWidth))}  ${paint.bold(paint.brand.primary(wordmark[i]))}`);
+    lines.push(`  ${paint.text.muted(mark[i].padEnd(markWidth))}  ${paint.bold(paint.brand.primary(wordmark[i]))}`);
   }
 
   lines.push(`${wordmarkIndent}${code} ${dim('· abundance in your terminal')}${vTag}`);
