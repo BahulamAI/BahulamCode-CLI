@@ -1241,6 +1241,16 @@ function foldedSubAgentName(data = {}) {
   return data?.sub_agent || data?.agent || data?.type || 'sub-agent';
 }
 
+function subAgentStartingLine(agentType = 'sub-agent') {
+  const normalized = String(agentType || 'sub-agent').toLowerCase();
+  if (normalized === 'plan') return '→ preparing plan handoff';
+  if (normalized === 'explore') return '→ starting exploration';
+  if (normalized === 'verify') return '→ preparing verification';
+  if (normalized === 'debug') return '→ isolating failure context';
+  if (normalized === 'refactor') return '→ preparing refactor pass';
+  return `→ starting ${normalized}`;
+}
+
 function ensureFoldedSubAgentTools(agentType) {
   const current = runtime.foldedSubAgentTools;
   if (current && current.agentType === agentType) return current;
@@ -1780,6 +1790,7 @@ function renderEvent(event) {
       // Phase per sub-agent run: the status line counts elapsed time and
       // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
       startSpinner(`${agentType} agent`, { phase: `sub:${agentType}:${Date.now()}` });
+      pushSubAgentWindowLine(subAgentStartingLine(agentType));
       break;
     }
 
