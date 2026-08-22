@@ -10,7 +10,9 @@
   "files": [
     "src/",
     "pulse/",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "start": "node src/terminal/main.mjs",
@@ -36,7 +38,7 @@
     "gemini",
     "axplusb"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "axplusb.tech <hello@axplusb.tech>",
   "homepage": "https://bahulam.ai/code",
   "repository": {
