@@ -3251,6 +3251,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/agents':
+    case '/subagents':
       await handleAgentsCommand(rest, ctx);
       return;
 

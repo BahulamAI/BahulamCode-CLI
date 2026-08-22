@@ -45,6 +45,7 @@ export const COMMANDS = {
   '/surgical':    'Verbosity: show everything (reasoning, expanded tools)',
   '/compact':     'Compact conversation context',
   '/agents':      'List available agents',
+  '/subagents':   'Alias of /agents (list/create/edit/sync sub-agents)',
   '/run':         'Run a sub-agent or synced workflow',
   '/explore':     'Code explorer agent',
   '/review':      'Code review agent',
