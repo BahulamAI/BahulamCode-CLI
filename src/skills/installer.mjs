@@ -119,12 +119,20 @@ export class SkillInstaller {
             fs.mkdirSync(skillsDir, { recursive: true });
 
             const plans = [];
+            const seenNames = new Set();
             for (const skillDir of skillDirs) {
                 rejectSymlinks(skillDir);
                 const content = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
                 const name = parseSkill(content, path.basename(skillDir)).name;
                 if (onlyNames && !onlyNames.includes(name)) continue;
                 if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Unsafe skill name: ${name}`);
+                // Source repos sometimes ship multiple SKILL.md bundles that all
+                // parse to the same name (e.g. one variant per agent tool).
+                // Silently keep only the FIRST occurrence — otherwise we'd copy
+                // N bundles into the same destination and the last write would
+                // win invisibly.
+                if (seenNames.has(name)) continue;
+                seenNames.add(name);
                 const destination = path.join(skillsDir, name);
                 if (fs.existsSync(destination)) {
                     if (!force) throw new Error(`Skill already installed: ${name} (use --force to replace)`);

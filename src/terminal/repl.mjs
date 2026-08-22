@@ -49,6 +49,9 @@ import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgentDefinition } from './agents.mjs';
+import { SkillInstaller } from '../skills/installer.mjs';
+import { SkillsLoader } from '../skills/loader.mjs';
+import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -937,6 +940,163 @@ async function handleAgentsCommand(rest = '', ctx) {
   }
 
   printAgentsUsage();
+}
+
+function printSkillsUsage() {
+  process.stderr.write(`  ${c.dim('Usage:')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills                       open interactive picker')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills list [--project]      list installed skills')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills install <url|path> [--project] [--force]')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills view <name> [resource]')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills remove <name> [--project]')}\n`);
+  process.stderr.write(`  ${c.dim('  /skills update <name> [--project]')}\n`);
+}
+
+async function handleSkillsCommand(rest = '', ctx) {
+  const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  const hasFlag = (flag) => parts.includes(flag);
+  const positional = parts.filter(p => !p.startsWith('--'));
+  const action = (positional[0] || 'picker').toLowerCase();
+  const scope = hasFlag('--project') ? 'project' : 'global';
+  const cwd = safeCwd();
+  const installer = new SkillInstaller({ cwd });
+  const loader = new SkillsLoader().load(cwd);
+
+  if (action === 'picker' || action === '') {
+    const skills = loader.list({ scope: hasFlag('--all') ? '' : '' });
+    if (!skills.length) {
+      process.stderr.write(`  ${c.dim('No skills installed yet.')}\n`);
+      process.stderr.write(`  ${c.dim('Install one:')} ${c.brand('/skills install https://github.com/<user>/<repo>')}\n`);
+      return;
+    }
+    const rl = ctx?.rl || null;
+    const choice = await openSkillsPicker({ rl, skills });
+    if (!choice) {
+      process.stderr.write(formatSkillsList(skills));
+      return;
+    }
+    if (choice.action === 'view') {
+      try {
+        const view = loader.view(choice.name, null);
+        process.stderr.write(`\n  ${c.bold(view.name)} ${c.dim(`· ${view.source || ''}`)}\n`);
+        if (view.description) process.stderr.write(`  ${c.dim(view.description)}\n`);
+        process.stderr.write(`  ${c.gray('─'.repeat(60))}\n`);
+        process.stderr.write(renderMarkdown(String(view.instructions || '')) + '\n');
+        if (view.resources?.length) {
+          process.stderr.write(`  ${c.dim('Bundled resources:')}\n`);
+          for (const r of view.resources.slice(0, 20)) process.stderr.write(`    ${c.dim('·')} ${r}\n`);
+          if (view.resources.length > 20) process.stderr.write(`    ${c.dim(`(+${view.resources.length - 20} more)`)}\n`);
+          process.stderr.write(`  ${c.dim('View one:')} /skills view ${view.name} <path>\n`);
+        }
+      } catch (err) {
+        process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+      }
+      return;
+    }
+    if (choice.action === 'remove') {
+      try {
+        installer.remove(choice.name, { scope: 'global' });
+        process.stderr.write(`  ${c.green('✓')} ${c.dim('Removed skill:')} ${choice.name}\n`);
+      } catch (err) {
+        // Try project scope if global failed.
+        try {
+          installer.remove(choice.name, { scope: 'project' });
+          process.stderr.write(`  ${c.green('✓')} ${c.dim('Removed skill:')} ${choice.name} ${c.dim('(project)')}\n`);
+        } catch (err2) {
+          process.stderr.write(`  ${c.red(err2.message || String(err2))}\n`);
+        }
+      }
+      return;
+    }
+    return;
+  }
+
+  if (action === 'list' || action === 'ls') {
+    const filter = hasFlag('--all') ? '' : scope;
+    const skills = loader.list({ scope: filter });
+    process.stderr.write(formatSkillsList(skills));
+    return;
+  }
+
+  if (action === 'install') {
+    const source = positional[1];
+    if (!source) {
+      process.stderr.write(`  ${c.yellow('Usage:')} /skills install <git-url|path> [--project] [--force]\n`);
+      return;
+    }
+    try {
+      process.stderr.write(`  ${c.dim('Installing')} ${source} ${c.dim(`→ ${scope}`)}...\n`);
+      const result = installer.install(source, { scope, force: hasFlag('--force') });
+      const unique = [...new Set(result.installed || [])];
+      const dupes = (result.installed?.length || 0) - unique.length;
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Installed:')} ${unique.join(', ') || '(none)'}\n`);
+      if (dupes > 0) {
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Source shipped ${dupes} duplicate SKILL.md file(s) with the same name — last one won.`)}\n`);
+      }
+      process.stderr.write(`  ${c.dim('Lock file:')} ${result.lock_file}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  if (action === 'view') {
+    const name = positional[1];
+    if (!name) {
+      process.stderr.write(`  ${c.yellow('Usage:')} /skills view <name> [resource-path]\n`);
+      return;
+    }
+    const resource = positional[2] || null;
+    try {
+      const view = loader.view(name, resource);
+      process.stderr.write(`\n  ${c.bold(view.name)}${resource ? c.dim(` · ${resource}`) : ''}\n`);
+      if (!resource && view.description) process.stderr.write(`  ${c.dim(view.description)}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(60))}\n`);
+      const body = resource ? view.content : view.instructions;
+      process.stderr.write(renderMarkdown(String(body || '')) + '\n');
+      if (!resource && view.resources?.length) {
+        process.stderr.write(`  ${c.dim('Bundled resources:')}\n`);
+        for (const r of view.resources.slice(0, 20)) process.stderr.write(`    ${c.dim('·')} ${r}\n`);
+        if (view.resources.length > 20) process.stderr.write(`    ${c.dim(`(+${view.resources.length - 20} more)`)}\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  if (action === 'remove' || action === 'rm' || action === 'uninstall') {
+    const name = positional[1];
+    if (!name) {
+      process.stderr.write(`  ${c.yellow('Usage:')} /skills remove <name> [--project]\n`);
+      return;
+    }
+    try {
+      installer.remove(name, { scope });
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Removed:')} ${name} ${c.dim(`(${scope})`)}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  if (action === 'update' || action === 'upgrade') {
+    const name = positional[1];
+    if (!name) {
+      process.stderr.write(`  ${c.yellow('Usage:')} /skills update <name> [--project]\n`);
+      return;
+    }
+    try {
+      const result = installer.update(name, { scope });
+      process.stderr.write(`  ${c.green('✓')} ${c.dim('Updated:')} ${name} ${c.dim(`(${scope})`)}\n`);
+      if (result?.commit) process.stderr.write(`  ${c.dim('Commit:')} ${result.commit.slice(0, 12)}\n`);
+    } catch (err) {
+      process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
+    }
+    return;
+  }
+
+  printSkillsUsage();
 }
 
 function commandCompletions(line) {
@@ -3253,6 +3413,10 @@ async function handleCommand(input, ctx) {
     case '/agents':
     case '/subagents':
       await handleAgentsCommand(rest, ctx);
+      return;
+
+    case '/skills':
+      await handleSkillsCommand(rest, ctx);
       return;
 
     case '/explore':
