@@ -600,21 +600,80 @@ function inlineMarkdown(text) {
 /**
  * Render a unified diff with +/- color highlighting.
  */
-export function renderDiff(diffText) {
+// Parses `@@ -old_start,old_count +new_start,new_count @@` from a unified
+// diff hunk header. Missing counts default to 1 (per unified-diff spec).
+const _HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
+function _padLineNo(n, width) {
+  return n === null ? ' '.repeat(width) : String(n).padStart(width);
+}
+
+/**
+ * Render a unified diff with GitHub-PR-style single-column line numbers.
+ *
+ *   12   context line
+ *   13 - removed line
+ *   13 + added line
+ *   14   context line
+ *
+ * Deletions show the OLD-side line number; additions and context show the
+ * NEW-side number. Hunk headers (`@@ ... @@`) are kept as visual section
+ * markers and seed the counters. Pass `{ numbers: false }` to fall back to
+ * the plain colored-only form.
+ */
+export function renderDiff(diffText, { numbers = true } = {}) {
   if (!diffText) return '';
   const lines = diffText.split('\n');
   const out = [];
+  let oldLn = null;
+  let newLn = null;
+  // Width the gutter to the largest number that will appear in this diff,
+  // clamped to 4 so short diffs still line up cleanly. Prevents a single
+  // huge line number from pushing the whole gutter wide.
+  let gutterWidth = 4;
+  if (numbers) {
+    for (const line of lines) {
+      const m = line.match(_HUNK_RE);
+      if (m) {
+        const maxNum = Math.max(parseInt(m[1], 10), parseInt(m[2], 10));
+        gutterWidth = Math.max(gutterWidth, String(maxNum + 200).length);
+      }
+    }
+  }
+
   for (const line of lines) {
     if (line.startsWith('+++') || line.startsWith('---')) {
       out.push(c.bold(line));
-    } else if (line.startsWith('@@')) {
+      continue;
+    }
+    const m = line.match(_HUNK_RE);
+    if (m) {
+      oldLn = parseInt(m[1], 10);
+      newLn = parseInt(m[2], 10);
       out.push(c.brand(line));
-    } else if (line.startsWith('+')) {
-      out.push(c.green(line));
+      continue;
+    }
+    if (!numbers || oldLn === null) {
+      if (line.startsWith('+')) out.push(c.green(line));
+      else if (line.startsWith('-')) out.push(c.red(line));
+      else out.push(c.gray(line));
+      continue;
+    }
+    if (line.startsWith('+')) {
+      out.push(`${c.gray(_padLineNo(newLn, gutterWidth))} ${c.green(line)}`);
+      newLn += 1;
     } else if (line.startsWith('-')) {
-      out.push(c.red(line));
+      out.push(`${c.gray(_padLineNo(oldLn, gutterWidth))} ${c.red(line)}`);
+      oldLn += 1;
+    } else if (line.startsWith('\\')) {
+      // "\ No newline at end of file" — meta, no line-number applies.
+      out.push(`${' '.repeat(gutterWidth)} ${c.dim(line)}`);
     } else {
-      out.push(c.gray(line));
+      // Context (line starts with a single space per unified-diff spec,
+      // or is truly empty for a blank context line).
+      out.push(`${c.gray(_padLineNo(newLn, gutterWidth))} ${c.gray(line)}`);
+      oldLn += 1;
+      newLn += 1;
     }
   }
   return out.join('\n');
