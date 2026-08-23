@@ -1,5 +1,6 @@
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
+import { formatSkillsList } from './skills-picker.mjs';
 
 function has(args, flag) {
     return args.includes(flag);
@@ -22,9 +23,8 @@ export async function runSkillsCommand(args, { cwd = process.cwd() } = {}) {
 
     if (action === 'list') {
         const rows = loader.list({ scope: has(rest, '--all') ? '' : scope });
-        if (has(rest, '--json')) print(rows);
-        else if (!rows.length) print('No skills found.');
-        else for (const row of rows) print(`${row.name}\t${row.scope}\t${row.source}\t${row.description}`);
+        if (has(rest, '--json')) { print(rows); return; }
+        process.stdout.write(formatSkillsList(rows));
         return;
     }
     if (action === 'view') {

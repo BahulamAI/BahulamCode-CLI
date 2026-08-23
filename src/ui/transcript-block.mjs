@@ -1,7 +1,10 @@
 import { paint } from './palette.mjs';
 
 function tonePaint(tone) {
-  return tone === 'user' ? paint.brand.accent : paint.brand.primary;
+  // 'user' tone was brand.accent (pink) — swapped to state.success (green)
+  // so the "your input" prompt reads as an active/go signal instead of the
+  // magenta 'attention/warn' tint the accent palette carries elsewhere.
+  return tone === 'user' ? paint.state.success : paint.brand.primary;
 }
 
 export function transcriptHeader(label, { tone = 'assistant' } = {}) {

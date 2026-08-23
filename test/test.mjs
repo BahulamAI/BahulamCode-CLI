@@ -1862,7 +1862,7 @@ assert(envKeys.length >= 100, `Should have 100+ env vars, got ${envKeys.length}`
 
 // Verify new env vars exist
 assert(ENV_SCHEMA.CLAUDE_OAUTH_CLIENT_ID !== undefined, 'Has CLAUDE_OAUTH_CLIENT_ID');
-assert(ENV_SCHEMA.CLAUDE_CODE_SANDBOX_PLATFORM !== undefined, 'Has CLAUDE_CODE_SANDBOX_PLATFORM');
+assert(ENV_SCHEMA.BAHULAM_SANDBOX_PLATFORM !== undefined, 'Has BAHULAM_SANDBOX_PLATFORM');
 assert(ENV_SCHEMA.CLAUDE_CODE_INJECTION_CHECK !== undefined, 'Has CLAUDE_CODE_INJECTION_CHECK');
 assert(ENV_SCHEMA.CLAUDE_CODE_MAX_RETRIES !== undefined, 'Has CLAUDE_CODE_MAX_RETRIES');
 assert(ENV_SCHEMA.CLAUDE_CODE_TEAM_SIZE !== undefined, 'Has CLAUDE_CODE_TEAM_SIZE');

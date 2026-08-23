@@ -1,257 +1,197 @@
 # Benchmark Runbook
 
-Run SWE-bench and Terminal-bench with the public Bahulam CLI path:
+Run SWE-bench and Terminal-bench with the public Bahulam CLI path.
+
+## Pipeline (Railway inference + VM1 Docker eval)
+
+Inference runs on Railway (cheap, one-shot container per candidate model). Docker
+evaluation runs on VM1 (the only surviving Azure VM). Artifacts flow through the
+public `bahulam-benchmarks` repo on GitHub.
 
 ```text
-npm CLI -> bundled Python runtime -> Bahulam Gateway -> model provider
+Railway container (bahulam-screening project)
+  └─ npm install -g @bahulam/code@latest
+  └─ python3 screen.py --model <slug> --output-dir /data/screen-<slug>-<date>/
+       ├─ preflight_tools_accepted (gateway probe)
+       ├─ preflight_pricing (OpenRouter snapshot)
+       ├─ harness.py --instance-file <config>
+       └─ push-to-benchmarks.sh  →  screening/<run_id> branch on bahulam-benchmarks
+                                    (predictions.json + predictions-raw.json +
+                                     screening-report.json + pricing.json +
+                                     preflight-tools.json + harness.log)
+
+VM1 (swebench-eval-vm, deallocated when idle)
+  └─ git pull the screening/<run_id> branch
+  └─ swebench.harness.run_evaluation  →  docker-eval.json
+  └─ verify-and-report.py  →  merges into screening-report.json
+                              flips gates_verdict PENDING-VM → PASS/REJECT
+  └─ commit + push to same branch
+  └─ (open PR to main via gh)
 ```
 
-The benchmark VMs should not run `codekepler-backend`, `tarang-ai-agent-framework`
-source, or direct provider keys for the normal CLI benchmark. The runtime is
-already bundled into a platform-specific npm package or supplied as a tarball.
+The Azure shard VMs (VMs 2-5) are decommissioned. Only VM1 remains, and only for
+Docker eval + Terminal-bench.
 
-## VM Inventory
+## Railway Inventory
 
-| VM | Name | Size | IP | Role | Status |
-|----|------|------|----|------|--------|
-| VM1 | swebench-eval-vm | D16s_v3 (16 vCPU) | 172.173.113.58 | Docker eval + hard-10 bundled runtime | DEALLOCATED 2026-08-15 (disks + IP retained) |
-| VM2 | swebench-eval-vm-2 | D4s_v3 (4 vCPU) | (was 172.202.17.40) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
-| VM3 | swebench-eval-vm-3 | D4s_v3 (4 vCPU) | (was 104.43.140.29) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
-| VM4 | swebench-eval-vm-4 | D4s_v3 (4 vCPU) | (was 74.249.204.194) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
-| VM5 | swebench-eval-vm-5 | D4s_v3 (4 vCPU) | (was 20.29.69.244) | SWE-bench shard runner | DECOMMISSIONED — VM deleted, network shell remains |
+| Item | Value |
+|------|-------|
+| Project | `bahulam-screening` (id `5752685d-0c17-4c9f-9a3c-887b58f1be68`) |
+| Region | US East |
+| Restart policy | `NEVER` — one-shot per deploy |
+| Image build source | `/Users/sree/Sites/Tarang-Orca/bahulam-benchmarks/screening/` (Dockerfile + screen.py + configs + scripts) |
+| Base image | `python:3.11-slim` + Node 22 + `npm install -g @bahulam/code@latest` |
 
-Resource Group: `AZ-RG-ORCA-BENCHMARK` in `centralus`.
+One Railway service per candidate model. Each service has its own volume, env
+vars, and log stream.
 
-**Current state (2026-08-15):** Only VM1 exists (deallocated). VMs 2–5 were deleted prior to this run; the RG retains only their NSGs (`swebench-eval-vm{,-2,-3,-4,-5}NSG`), the VNET (`swebench-eval-vmVNET`), and the subnet (`swebench-eval-vmSubnet`). Rebuild any VM via `az vm create` reusing the existing VNET/NSG. VM1 disk contains all benchmark artifacts from the 2026-08-15 bundled-runtime hard-10 runs (delegation-tuned + baseline-reverted); restart with `az vm start -g AZ-RG-ORCA-BENCHMARK -n swebench-eval-vm`.
+| Service | Volume | Purpose |
+|---------|--------|---------|
+| `bahulam-screening-worker` | `bahulam-screening-worker-volume` at `/data` (5 GB) | Default worker; flip `CANDIDATE_MODEL` to reuse |
+| `bahulam-screening-ox-alpha` | `bahulam-screening-ox-alpha-volume` at `/data` (5 GB) | Example: dedicated per-model service |
 
-## VM Management
+Adding a new per-model service (parallel to the worker):
 
 ```bash
-RG=AZ-RG-ORCA-BENCHMARK
+railway add \
+  --service bahulam-screening-<slug> \
+  -v "B0_TOKEN=$(jq -r .token ~/.bahulam/config.json)" \
+  -v "BENCHMARKS_GH_TOKEN=<PAT from pass.md>" \
+  -v "BENCHMARKS_REPO=BahulamAI/bahulam-benchmarks" \
+  -v "BAHULAM_GATEWAY_URL=https://gateway.bahulam.ai/v1" \
+  -v "BAHULAM_RUNTIME_MODE=bundled" \
+  -v "LLM_GATEWAY=BahulamGateway" \
+  -v "HARNESS_TIMEOUT_S=1200" \
+  -v "HARNESS_PARALLEL=3" \
+  -v "CANDIDATE_MODEL=<vendor>/<model-slug>" \
+  -v "SCREENING_INSTANCE_FILE=screening-300.txt"
 
-for i in "" "-2" "-3" "-4" "-5"; do
-  az vm start -g "$RG" -n "swebench-eval-vm$i" --no-wait
-done
-
-for i in "" "-2" "-3" "-4" "-5"; do
-  echo -n "swebench-eval-vm$i: "
-  az vm show -d -g "$RG" -n "swebench-eval-vm$i" --query publicIps -o tsv
-done
-
-for i in "-2" "-3" "-4" "-5"; do
-  az vm deallocate -g "$RG" -n "swebench-eval-vm$i" --no-wait
-done
+railway service link bahulam-screening-<slug>
+railway volume add --mount-path /data     # interactive prompt confirms path
+railway up --detach                        # builds image, runs screen once
 ```
 
-## What Goes To The VM
+## Required Environment Variables
 
-Copy only the benchmark inputs and the CLI/runtime artifacts:
+Set on every Railway service via `railway variables --set KEY=VALUE`.
 
-| Item | Required | Destination | Notes |
-|------|----------|-------------|-------|
-| `codekepler-npm` source checkout or tarball | Yes | `~/codekepler-npm` | Must include `package.json`, `package-lock.json`, `src/`, `benchmark/swe-bench/`, `benchmark/model-comparison/`, and `benchmark/terminal-bench/` if terminal-bench is needed. |
-| Linux runtime tarball | Yes when testing an unpublished runtime | `~/runtime-tarballs/` | Example: `bahulam-runtime-linux-x64-<version>.tgz`. Linux VMs cannot use a Darwin runtime tarball. |
-| Shard file | Yes for shard VMs | `~/shard.txt` | One file per SWE-bench runner VM. |
-| Benchmark env file | Yes | `~/.bahulam-benchmark.env` | Contains gateway URL, runtime mode, and token exports. `chmod 600`. |
-| Bahulam CLI token config | Optional | `~/.bahulam/config.json` | Use this instead of exporting `B0_TOKEN` if the VM has completed `bahulam login`. |
-| SWE-bench predictions | Docker eval only | `~/eval/predictions.json` on VM1 | Produced after shard runs finish. |
+| Var | Purpose |
+|-----|---------|
+| `B0_TOKEN` | Bahulam CLI token from `~/.bahulam/config.json`; rotates frequently — refresh via `railway variables --set "B0_TOKEN=$(jq -r .token ~/.bahulam/config.json)"` before each deploy |
+| `BENCHMARKS_GH_TOKEN` | Fine-grained GitHub PAT with `Contents: Read and write` on `BahulamAI/bahulam-benchmarks`; SSO-enabled for the org if it's a personal PAT |
+| `BENCHMARKS_REPO` | `BahulamAI/bahulam-benchmarks` (override for forks/testing) |
+| `BAHULAM_GATEWAY_URL` | `https://gateway.bahulam.ai/v1` (or dev gateway) |
+| `BAHULAM_RUNTIME_MODE` | `bundled` |
+| `LLM_GATEWAY` | `BahulamGateway` |
+| `CANDIDATE_MODEL` | e.g. `deepseek/deepseek-v4-flash`, `stealth/ox-alpha`, `xiaomi/mimo-v2.5` |
+| `SCREENING_INSTANCE_FILE` | `screening-5.txt` (pipeline test), `screening-30.txt` (screen), `screening-300.txt` (full lite) |
+| `HARNESS_PARALLEL` | `3` (safe default for Railway compute + gateway rate limits) |
+| `HARNESS_TIMEOUT_S` | `600` for short screens, `1200` (20 min) for the full 300 |
 
-Do not copy these for the normal bundled CLI path:
+## Instance File Configs
 
-- `codekepler-backend`
-- `tarang-ai-agent-framework` source
-- backend `.env` files
-- `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or other direct provider keys
-- `TARANG_BACKEND_URL`
-- `SKIP_QUOTA`
-- `TARANG_ENV=local`
+Live in `bahulam-benchmarks/screening/configs/`:
 
-BYOK remains a Bahulam Gateway/user-account concern. Do not copy BYOK provider
-keys onto benchmark VMs for the bundled CLI route.
+| File | Instances | Use |
+|------|-----------|-----|
+| `screening-5.txt` | 5 (django, astropy, sympy, sklearn, requests) | Pipeline shakedown; ~5 min, ~$0.07 on flash |
+| `screening-30.txt` | 30 (diverse across 7 projects) | Standard model screen; ~90 min, ~$2 |
+| `screening-300.txt` | 300 (full SWE-bench Lite) | Published benchmark run; 8-12 h, ~$20-50 depending on model |
 
-## Required Variables
-
-Create `~/.bahulam-benchmark.env` on every VM and source it before a run.
+Regenerate `screening-300.txt` from any prior canonical run:
 
 ```bash
-cat > ~/.bahulam-benchmark.env << 'EOF'
-export BAHULAM_RUNTIME_MODE=bundled
-export TARANG_ENV=bundled
-export BAHULAM_PRODUCT=bahulam
-export LLM_GATEWAY=BahulamGateway
-
-export BAHULAM_GATEWAY_URL=https://gateway.bahulam.ai/v1
-export LICENSE_PORTAL_URL=https://gateway.bahulam.ai/portal
-
-export EXECUTION_MODE=retail
-export AGENT_MEMORY_ENABLED=false
-export KEPLER_MEMORY_ENABLED=false
-export KEPLER_STAGNATION_DETECTION=true
-export KEPLER_ENHANCED_STAGNATION=true
-export KEPLER_STAGNATION_THRESHOLD=3
-export KEPLER_PREFLIGHT_PLAN=true
-export KEPLER_PREFLIGHT_TIMEOUT_SECONDS=120
-EOF
-
-chmod 600 ~/.bahulam-benchmark.env
+RUN=/Users/sree/Sites/Tarang-Orca/bahulam-benchmarks/suites/swe-bench-lite/runs/2026-08-20_bundled-flash-300-2.6.15
+jq -r '.[] | .instance_id' "$RUN/predictions.json" \
+  > /Users/sree/Sites/Tarang-Orca/bahulam-benchmarks/screening/configs/screening-300.txt
 ```
 
-Set one user token path:
+## Running A Screen
+
+From `/Users/sree/Sites/Tarang-Orca/bahulam-benchmarks/screening/`:
 
 ```bash
-read -rsp "Bahulam user CLI token (b0_...): " B0_TOKEN_VALUE
-echo
-printf '\nexport B0_TOKEN=%q\n' "$B0_TOKEN_VALUE" >> ~/.bahulam-benchmark.env
-unset B0_TOKEN_VALUE
+# Refresh B0_TOKEN (rotates frequently) and confirm which service is linked
+railway variables --service bahulam-screening-worker \
+  --set "B0_TOKEN=$(jq -r .token ~/.bahulam/config.json)"
+
+# Point at the instance size you want
+railway variables --service bahulam-screening-worker \
+  --set "SCREENING_INSTANCE_FILE=screening-30.txt"
+
+# Deploy (rebuilds image, starts one-shot container, exits when done)
+railway up --detach --service bahulam-screening-worker
 ```
 
-Or write the login config instead:
+Follow live progress (harness.log is tailed into container stdout by
+`entrypoint.sh`, prefixed with `[harness]`):
 
 ```bash
-mkdir -p ~/.bahulam
-chmod 700 ~/.bahulam
-read -rsp "Bahulam user CLI token (b0_...): " B0_TOKEN_VALUE
-echo
-printf '{"token":"%s"}\n' "$B0_TOKEN_VALUE" > ~/.bahulam/config.json
-chmod 600 ~/.bahulam/config.json
-unset B0_TOKEN_VALUE
+railway logs --service bahulam-screening-worker | grep -E '\[harness\] \[[0-9]+/[0-9]+\]'
 ```
 
-For dev gateway testing, replace the two gateway URLs:
+Check terminal status:
 
 ```bash
-export BAHULAM_GATEWAY_URL=https://bahulam-gateway-dev.<domain>/v1
-export LICENSE_PORTAL_URL=https://bahulam-gateway-dev.<domain>/portal
+railway status --service bahulam-screening-worker
 ```
 
-You do not need to run a gateway on the benchmark VM unless the benchmark is
-explicitly validating a local gateway build. In that case, point the two gateway
-URLs at that local gateway.
+Post-run signals to look for in the logs:
 
-Only set `BAHULAM_RUNTIME_ROOT` when bypassing the npm runtime package and
-pointing at an extracted runtime directory:
-
-```bash
-export BAHULAM_RUNTIME_ROOT=/absolute/path/to/bahulam-runtime-linux-x64
+```text
+[screen] wrote canonical predictions.json + rich predictions-raw.json
+[screen] wrote /data/screen-<slug>-<date>/screening-report.json (schema_version=2)
+[screen] run_id=<date>_<slug> wall_clock=<sec>s
+[screen] totals: {...}
+[push] repo=BahulamAI/bahulam-benchmarks base=main branch=screening/<run_id> dest=...
+[push] DONE — branch ready for VM verify + PR merge
+[push] compare: https://github.com/BahulamAI/bahulam-benchmarks/compare/main...screening/<run_id>
 ```
 
-## Local Mac Setup
+If `[push] failed` appears, see Troubleshooting → GitHub push 403.
 
-Use this to smoke-test before sending artifacts to Linux VMs.
+## Report Schema
+
+`screening-report.json` is schema_version=2. Field groups:
+
+- `run_id`, `run_started_at`, `run_finished_at`, `wall_clock_seconds`
+- `model.slug`
+- `harness`: `cli_version`, `cli_package`, `harness_git_sha`, `gateway_url`, `dataset`, `instance_file`, `instance_count`, `parallel`, `timeout_s`
+- `environment`: `hostname`, `railway_deployment_id`, `railway_service_id`, `railway_project_id`, `railway_region`, `python`
+- `preflight`: tools_param_accepted probe result
+- `totals`: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `tools_invoked`, `sub_agent_invocations`, `harness_cost_usd`, `stagnation_triggers`
+- `distributions`: mean/median/p95/min/max/sum for `cost_usd`, `duration_s`, `input_tokens`, `output_tokens`, `tools_per_instance`
+- `cache`: `cache_read_tokens`, `cache_write_tokens`, `cache_hit_ratio_input`
+- `tool_breakdown`: aggregated tool call counts across all instances
+- `outcome_counts`: counts by `status` (patched, no_changes, timeout, bahulam_failed, error)
+- `metrics`: `patched`, `patch_rate`, `tool_call_emission_rate`, `zero_tool_timeout_count`, `avg_duration_s`, `harness_cost_per_patched_usd`, etc.
+- `gates_verdict`: `PENDING-VM` (Railway-side), flipped to `PASS`/`REJECT` by the VM verify step
+- `gates_pending_vm`: list of fields Docker eval on VM adds
+
+All Railway-side fields are final at push time. Only `resolve_rate`,
+`resolve_per_patch`, `dashboard_cost_usd`, `cost_delta_pct`, and `gates_verdict`
+are computed later on VM1.
+
+## Local Mac Setup (smoke test only)
+
+The Railway image is the source of truth. Use local only to smoke-test screen.py
+changes before pushing:
 
 ```bash
 cd /Users/sree/Sites/Tarang-Orca/codekepler-npm
 npm ci --include=optional
-```
 
-If testing a local Darwin runtime tarball:
-
-```bash
-npm install --no-save \
-  /Users/sree/Sites/Tarang-Orca/codekepler-bahulam-runtime/dist/2.6.12-local.3/bahulam-runtime-darwin-arm64-2.6.12-local.3.tgz
-```
-
-Or point directly at an extracted local runtime:
-
-```bash
-export BAHULAM_RUNTIME_ROOT=/Users/sree/Sites/Tarang-Orca/codekepler-bahulam-runtime/dist/2.6.12-local.3/darwin-arm64
-```
-
-Verify runtime discovery:
-
-```bash
-source ~/.bahulam-benchmark.env
-node -e "import('./src/core/bundled-runtime.mjs').then(m => console.log(JSON.stringify(m.runtimeInfo(), null, 2)))"
-RUNTIME_BIN=$(node -e "import('./src/core/bundled-runtime.mjs').then(m => console.log(m.runtimeInfo().bin))")
-"$RUNTIME_BIN" --version
-```
-
-Smoke-test the headless CLI:
-
-```bash
-source ~/.bahulam-benchmark.env
-BAHULAM_RUNTIME_DEBUG=1 \
-  node src/terminal/main.mjs --headless --verbose --timeout 180 \
-  -p 'Say exactly OK.' | tee /tmp/bahulam-cli-smoke.jsonl
-
-jq 'select(.type == "complete") | {tools, usage, rate_limit, sub_agents}' \
-  /tmp/bahulam-cli-smoke.jsonl
-```
-
-## Package For Linux VMs
-
-If using the published package version, a normal `npm ci --include=optional`
-on Linux should install `@bahulam/runtime-linux-x64` automatically.
-
-If testing a local runtime build, copy the Linux runtime tarball. Do not copy a
-Darwin runtime tarball to the Linux benchmark VMs.
-
-```bash
-cd /Users/sree/Sites/Tarang-Orca/codekepler-npm
-
-tar czf /tmp/bahulam-npm-benchmark-src.tgz \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='benchmark/results' \
-  --exclude='.DS_Store' \
-  .
-
-RUNTIME_TARBALL=/Users/sree/Sites/Tarang-Orca/codekepler-bahulam-runtime/dist/<version>/bahulam-runtime-linux-x64-<version>.tgz
-
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  ssh azureuser@"$IP" 'rm -rf ~/codekepler-npm && mkdir -p ~/codekepler-npm ~/runtime-tarballs'
-  scp /tmp/bahulam-npm-benchmark-src.tgz azureuser@"$IP":~/
-  scp "$RUNTIME_TARBALL" azureuser@"$IP":~/runtime-tarballs/
-  ssh azureuser@"$IP" 'tar xzf ~/bahulam-npm-benchmark-src.tgz -C ~/codekepler-npm'
-done
-```
-
-Install on each VM:
-
-```bash
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  ssh azureuser@"$IP" 'cd ~/codekepler-npm && npm ci --include=optional'
-done
-```
-
-If using the copied local Linux runtime tarball:
-
-```bash
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  ssh azureuser@"$IP" 'cd ~/codekepler-npm && npm install --no-save ~/runtime-tarballs/bahulam-runtime-linux-x64-*.tgz'
-done
-```
-
-Copy the env file to all VMs after creating it locally, or create it on each VM:
-
-```bash
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  scp ~/.bahulam-benchmark.env azureuser@"$IP":~/.bahulam-benchmark.env
-  ssh azureuser@"$IP" 'chmod 600 ~/.bahulam-benchmark.env'
-done
-```
-
-Verify each VM can find and start the bundled runtime:
-
-```bash
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  echo "=== $IP ==="
-  ssh azureuser@"$IP" 'source ~/.bahulam-benchmark.env && cd ~/codekepler-npm && node -e "import(\"./src/core/bundled-runtime.mjs\").then(m => console.log(JSON.stringify(m.runtimeInfo(), null, 2)))"'
-done
-```
-
-## SWE-Bench Smoke Run
-
-Local one-instance smoke:
-
-```bash
-cd /Users/sree/Sites/Tarang-Orca/codekepler-npm
-source ~/.bahulam-benchmark.env
-
+# Local one-instance smoke through the same bundled runtime
 python3 -m venv ~/swebench-env
 source ~/swebench-env/bin/activate
 python -m pip install --upgrade pip
 python -m pip install datasets swebench
+
+source ~/.bahulam/config.json >/dev/null 2>&1 || true
+export B0_TOKEN=$(jq -r .token ~/.bahulam/config.json)
+export BAHULAM_RUNTIME_MODE=bundled
+export LLM_GATEWAY=BahulamGateway
+export BAHULAM_GATEWAY_URL=https://gateway.bahulam.ai/v1
 
 python3 benchmark/swe-bench/harness.py \
   --dataset lite \
@@ -262,230 +202,81 @@ python3 benchmark/swe-bench/harness.py \
   --output /tmp/bahulam-swe-smoke.json
 ```
 
-Persistent hard-10 smoke through the same bundled runtime:
+## VM1 — Docker Evaluation
+
+VM1 (`swebench-eval-vm`, D16s_v3, RG `AZ-RG-ORCA-BENCHMARK`, `centralus`) is
+deallocated when idle. Disks retained. All 300 SWE-bench Lite images should be
+present in the local Docker cache from prior runs.
+
+Start VM1 and get its current public IP:
 
 ```bash
-cd /Users/sree/Sites/Tarang-Orca/codekepler-npm
-source ~/.bahulam-benchmark.env
-
-node benchmark/model-comparison/prep-swe-repos.mjs \
-  --reset \
-  --questions benchmark/model-comparison/questions-swe-hard10.json
-
-node benchmark/model-comparison/run-persistent.mjs \
-  --questions benchmark/model-comparison/questions-swe-hard10.json \
-  --label bahulam-bundled-$(date +%Y%m%d-%H%M) \
-  --model deepseek/deepseek-v4-flash \
-  --route platform \
-  --timeout 480
+RG=AZ-RG-ORCA-BENCHMARK
+az vm start -g "$RG" -n swebench-eval-vm
+az vm show -d -g "$RG" -n swebench-eval-vm --query publicIps -o tsv
 ```
 
-## SWE-Bench VM Run
-
-Create shard files on VM1 if they are not already present:
+Fetch the Railway-pushed branch and run Docker eval:
 
 ```bash
-ssh azureuser@20.9.77.9 'source ~/swebench-env/bin/activate && python3 - << "PY"
-from datasets import load_dataset
-import math
-from pathlib import Path
+VM_IP=$(az vm show -d -g AZ-RG-ORCA-BENCHMARK -n swebench-eval-vm --query publicIps -o tsv)
+RUN_ID=2026-08-22_stealth-ox-alpha        # replace with your target run
+BRANCH=screening/$RUN_ID
 
-ds = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
-ids = sorted(x["instance_id"] for x in ds)
-out = Path("~/codekepler-npm/benchmark/shards").expanduser()
-out.mkdir(parents=True, exist_ok=True)
-chunk = math.ceil(len(ids) / 4)
-for i in range(4):
-    shard = ids[i * chunk:(i + 1) * chunk]
-    path = out / f"shard4_{i + 1}.txt"
-    path.write_text("\n".join(shard) + "\n")
-    print(path, len(shard))
-PY'
-```
+ssh azureuser@"$VM_IP" "cd ~/bahulam-benchmarks && git fetch origin '$BRANCH' && git checkout '$BRANCH'"
 
-Or copy existing local shards:
+ssh azureuser@"$VM_IP" 'docker images --format "{{.Repository}}:{{.Tag}}" | grep -Ei "swe|sweb" | head'
 
-```bash
-for IP in 20.9.77.9 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  ssh azureuser@"$IP" 'mkdir -p ~/codekepler-npm/benchmark/shards'
-  scp benchmark/shards/shard*.txt azureuser@"$IP":~/codekepler-npm/benchmark/shards/
-done
-```
-
-Upload one shard to each runner VM:
-
-```bash
-scp benchmark/shards/shard4_1.txt azureuser@172.202.17.40:~/shard.txt
-scp benchmark/shards/shard4_2.txt azureuser@104.43.140.29:~/shard.txt
-scp benchmark/shards/shard4_3.txt azureuser@74.249.204.194:~/shard.txt
-scp benchmark/shards/shard4_4.txt azureuser@20.29.69.244:~/shard.txt
-```
-
-Start the four shard runs. This starts no backend process; the CLI spawns the
-bundled runtime inside each `node` process.
-
-```bash
-MODEL=deepseek/deepseek-v4-flash
-DATE=$(date +%Y%m%d_%H%M)
-SHARD=0
-
-for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  SHARD=$((SHARD + 1))
-  RUN_ID="bahulam_${MODEL//\//_}_${DATE}_shard${SHARD}"
-  echo "Starting shard $SHARD on $IP..."
-  ssh azureuser@"$IP" "tmux new-session -d -s bench '\
-    source ~/.bahulam-benchmark.env && \
-    source ~/swebench-env/bin/activate && \
-    cd ~/codekepler-npm && \
-    python3 benchmark/swe-bench/harness.py \
-      --dataset lite \
-      --model $MODEL \
-      --parallel 1 \
-      --timeout 600 \
-      --instance-file ~/shard.txt \
-      --output ~/results-${RUN_ID}.json \
-      --skip-done \
-      --debug \
-      2>&1 | tee ~/benchmark-${RUN_ID}.log'"
-done
-```
-
-Monitor progress:
-
-```bash
-for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  echo "=== $IP ==="
-  ssh azureuser@"$IP" 'RESULT=$(ls -t ~/results-*.json 2>/dev/null | head -1); test -n "$RESULT" || { echo "no results yet"; exit 0; }; RESULT="$RESULT" python3 - << PY
-import json, os
-path = os.environ["RESULT"]
-d = json.load(open(path))
-r = d.get("results", [])
-edited = sum(1 for x in r if x.get("kepler", {}).get("tool_breakdown", {}).get("edit_file", 0) > 0)
-tested = sum(1 for x in r if x.get("kepler", {}).get("tool_breakdown", {}).get("run_tests", 0) > 0)
-print(f"{len(r)} done, {edited} edited, {tested} tested")
-PY'
-done
-```
-
-Inspect the latest complete event for tools, usage, and sub-agents:
-
-```bash
-for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  echo "=== $IP ==="
-  ssh azureuser@"$IP" 'RESULT=$(ls -t ~/results-*.json 2>/dev/null | head -1); test -n "$RESULT" || exit 0; jq ".results[-1].kepler | {tools, tool_breakdown, sub_agents, usage, stderr}" "$RESULT"'
-done
-```
-
-Collect and merge results:
-
-```bash
-mkdir -p /tmp/bench_results
-
-for i in 1 2 3 4; do
-  case "$i" in
-    1) IP=172.202.17.40 ;;
-    2) IP=104.43.140.29 ;;
-    3) IP=74.249.204.194 ;;
-    4) IP=20.29.69.244 ;;
-  esac
-  RESULT=$(ssh azureuser@"$IP" 'ls -t ~/results-*.json 2>/dev/null | head -1')
-  scp azureuser@"$IP":"$RESULT" "/tmp/bench_results/shard${i}.json"
-done
-
-python3 - << 'PY'
-import glob
-import json
-
-all_results = []
-for f in sorted(glob.glob("/tmp/bench_results/shard*.json")):
-    all_results.extend(json.load(open(f)).get("results", []))
-
-predictions = [
-    {
-        "instance_id": r["instance_id"],
-        "model_patch": r.get("model_patch", ""),
-        "model_name_or_path": "bahulam-code",
-    }
-    for r in all_results
-]
-
-with open("/tmp/bench_results/predictions.json", "w") as f:
-    json.dump(predictions, f, indent=2)
-
-patched = sum(1 for p in predictions if p["model_patch"])
-edited = sum(
-    1
-    for r in all_results
-    if r.get("kepler", {}).get("tool_breakdown", {}).get("edit_file", 0) > 0
-)
-print(f"Total: {len(all_results)}, edited={edited}, patched={patched}")
-PY
-```
-
-## Docker Evaluation On VM1
-
-The runbook assumes the SWE-bench Docker images are already built or pulled on
-VM1. It does not build images. If `swebench.harness.run_evaluation` starts
-building missing images, stop the run and prepare the VM image cache separately.
-
-Preflight:
-
-```bash
-ssh azureuser@20.9.77.9 'docker images --format "{{.Repository}}:{{.Tag}}" | grep -Ei "swe|sweb" | head'
-```
-
-Run evaluation:
-
-```bash
-ssh azureuser@20.9.77.9 'mkdir -p ~/eval'
-scp /tmp/bench_results/predictions.json azureuser@20.9.77.9:~/eval/predictions.json
-
-ssh azureuser@20.9.77.9 'source ~/swebench-env/bin/activate && \
+ssh azureuser@"$VM_IP" "source ~/swebench-env/bin/activate && \
+  cd ~/bahulam-benchmarks && \
+  PRED=suites/screening/runs/$RUN_ID/predictions.json && \
   nohup python3 -m swebench.harness.run_evaluation \
-    --predictions_path ~/eval/predictions.json \
+    --predictions_path \$PRED \
     --dataset_name princeton-nlp/SWE-bench_Lite \
-    --run_id bahulam-code-eval \
+    --run_id ${RUN_ID}-eval \
     --max_workers 6 \
-    > ~/eval/docker-eval.log 2>&1 &'
+    > suites/screening/runs/$RUN_ID/docker-eval.log 2>&1 &"
 ```
 
-Monitor and collect:
+Monitor:
 
 ```bash
-ssh azureuser@20.9.77.9 'tail -f ~/eval/docker-eval.log'
-
-scp azureuser@20.9.77.9:~/bahulam-code.bahulam-code-eval.json \
-  /tmp/bench_results/docker-eval.json
+ssh azureuser@"$VM_IP" "tail -f ~/bahulam-benchmarks/suites/screening/runs/$RUN_ID/docker-eval.log"
 ```
 
-Save a local run bundle:
+Merge Docker eval output into `screening-report.json`, commit, push:
 
 ```bash
-cd /Users/sree/Sites/Tarang-Orca/codekepler-npm
-RUN_DIR="benchmark/results/runs/swebench-bahulam-$(date +%Y%m%d-%H%M)"
-mkdir -p "$RUN_DIR"
-cp /tmp/bench_results/predictions.json "$RUN_DIR/"
-cp /tmp/bench_results/docker-eval.json "$RUN_DIR/"
-
-python3 - << PY
-import glob
-import json
-results = []
-for f in sorted(glob.glob("/tmp/bench_results/shard*.json")):
-    results.extend(json.load(open(f)).get("results", []))
-json.dump({"results": results}, open("$RUN_DIR/harness-results.json", "w"), indent=2)
-PY
+ssh azureuser@"$VM_IP" "cd ~/bahulam-benchmarks && \
+  cp *${RUN_ID}-eval*.json suites/screening/runs/$RUN_ID/docker-eval.json && \
+  python3 screening/scripts/verify-and-report.py \
+    --run-dir suites/screening/runs/$RUN_ID \
+    --merge && \
+  git add suites/screening/runs/$RUN_ID/ && \
+  git commit -m 'screening: $RUN_ID Docker eval + verdict' && \
+  git push origin $BRANCH"
 ```
+
+Open PR from `screening/<RUN_ID>` → `main`, review, merge.
+
+When done, deallocate VM1:
+
+```bash
+az vm deallocate -g AZ-RG-ORCA-BENCHMARK -n swebench-eval-vm --no-wait
+```
+
+**Never stop VM1 without enumerating consumers first** (bahulam-benchmarks CI, any
+in-flight Docker eval, Terminal-bench runs).
 
 ## Terminal-Bench
 
 Terminal-bench still uses the SSE HTTP API shape, so start the bundled runtime
-directly on a fixed local port and point the Terminal-bench adapter at it.
+on a fixed local port on VM1 and point the Terminal-bench adapter at it.
 
 One-time setup on VM1:
 
 ```bash
-ssh azureuser@20.9.77.9 'python3 -m venv ~/tbench-env && \
+ssh azureuser@"$VM_IP" 'python3 -m venv ~/tbench-env && \
   source ~/tbench-env/bin/activate && \
   pip install --upgrade pip && \
   pip install terminal-bench'
@@ -494,21 +285,21 @@ ssh azureuser@20.9.77.9 'python3 -m venv ~/tbench-env && \
 Start bundled runtime on port `8001`:
 
 ```bash
-ssh azureuser@20.9.77.9 'source ~/.bahulam-benchmark.env && \
+ssh azureuser@"$VM_IP" 'source ~/.bahulam-benchmark.env && \
   cd ~/codekepler-npm && \
   RUNTIME_BIN=$(node -e "import(\"./src/core/bundled-runtime.mjs\").then(m => console.log(m.runtimeInfo().bin))") && \
   tmux kill-session -t bahulam-runtime 2>/dev/null || true && \
   tmux new-session -d -s bahulam-runtime "source ~/.bahulam-benchmark.env && exec \"$RUNTIME_BIN\" --port 8001"'
 
-ssh azureuser@20.9.77.9 'curl -s http://127.0.0.1:8001/healthz'
+ssh azureuser@"$VM_IP" 'curl -s http://127.0.0.1:8001/healthz'
 ```
 
 Run Terminal-bench:
 
 ```bash
-scp benchmark/terminal-bench/kepler_agent.py azureuser@20.9.77.9:~/kepler_agent.py
+scp benchmark/terminal-bench/kepler_agent.py azureuser@"$VM_IP":~/kepler_agent.py
 
-ssh azureuser@20.9.77.9 'source ~/tbench-env/bin/activate && \
+ssh azureuser@"$VM_IP" 'source ~/tbench-env/bin/activate && \
   source ~/.bahulam-benchmark.env && \
   export PYTHONPATH=~ && \
   tb run \
@@ -521,88 +312,138 @@ ssh azureuser@20.9.77.9 'source ~/tbench-env/bin/activate && \
     2>&1 | tee ~/benchmark-tbench.log'
 ```
 
+## Parallel Model Matrix
+
+To screen multiple candidates concurrently, create one Railway service per
+model. Each service builds its own image, has its own volume, and pushes to its
+own branch. Concurrency is bounded by Bahulam gateway rate limits (safe at
+~3 services × parallel=3 = 9 concurrent CLI processes hitting the gateway).
+
+Example: run `deepseek-v4-flash-0731`, `xiaomi/mimo-v2.5`, `tencent/hy3` in
+parallel:
+
+```bash
+for slug in deepseek-v4-flash-0731 mimo-v2.5 hy3; do
+  case "$slug" in
+    deepseek-v4-flash-0731) MODEL=deepseek/deepseek-v4-flash-0731 ;;
+    mimo-v2.5)              MODEL=xiaomi/mimo-v2.5 ;;
+    hy3)                    MODEL=tencent/hy3 ;;
+  esac
+  railway add --service "bahulam-screening-$slug" \
+    -v "B0_TOKEN=$(jq -r .token ~/.bahulam/config.json)" \
+    -v "BENCHMARKS_GH_TOKEN=$(sed -n 's/^Bahulam Benchmarks Railway PAT: //p' /Users/sree/Sites/Tarang-Orca/pass.md)" \
+    -v "BENCHMARKS_REPO=BahulamAI/bahulam-benchmarks" \
+    -v "BAHULAM_GATEWAY_URL=https://gateway.bahulam.ai/v1" \
+    -v "BAHULAM_RUNTIME_MODE=bundled" \
+    -v "LLM_GATEWAY=BahulamGateway" \
+    -v "HARNESS_TIMEOUT_S=1200" \
+    -v "HARNESS_PARALLEL=3" \
+    -v "CANDIDATE_MODEL=$MODEL" \
+    -v "SCREENING_INSTANCE_FILE=screening-300.txt"
+  railway service link "bahulam-screening-$slug"
+  railway volume add --mount-path /data
+  railway up --detach
+done
+
+railway service link bahulam-screening-worker    # return to default context
+```
+
 ## Troubleshooting
 
-Runtime not found:
+**GitHub push 403** (`fatal: unable to access '...bahulam-benchmarks.git/': The requested URL returned error: 403`):
+
+- Fine-grained PAT missing `Contents: Read and write` (needs BOTH read and write).
+- Personal PAT not SSO-authorized for `BahulamAI` org — go to <https://github.com/settings/tokens>, find the PAT, click "Configure SSO", enable for `BahulamAI`.
+- Fine-grained PAT resource selection doesn't include `bahulam-benchmarks`.
+
+Refresh the token on Railway after fixing:
 
 ```bash
-cd ~/codekepler-npm
-source ~/.bahulam-benchmark.env
-node -e "import('./src/core/bundled-runtime.mjs').then(m => console.log(JSON.stringify(m.runtimeInfo(), null, 2)))"
-ls -la node_modules/@bahulam/runtime-linux-x64/bin
+GH=$(sed -n 's/^Bahulam Benchmarks Railway PAT: //p' /Users/sree/Sites/Tarang-Orca/pass.md)
+railway variables --service bahulam-screening-worker --set "BENCHMARKS_GH_TOKEN=$GH"
+railway redeploy --service bahulam-screening-worker --yes
 ```
 
-Authentication fails with `401`:
+**Preflight 401** (`HTTP 401: Invalid or expired token`):
+
+`B0_TOKEN` has rotated. Refresh:
 
 ```bash
-source ~/.bahulam-benchmark.env
-test -n "$B0_TOKEN" && echo "B0_TOKEN present"
-test -f ~/.bahulam/config.json && jq '{token_present: (.token | type == "string")}' ~/.bahulam/config.json
-echo "$BAHULAM_GATEWAY_URL"
+B0=$(jq -r .token ~/.bahulam/config.json)
+railway variables --service bahulam-screening-worker --set "B0_TOKEN=$B0"
+railway redeploy --service bahulam-screening-worker --yes
 ```
 
-The CLI reports product `kepler`:
+**"Bahulam runtime not found at /root/.bahulam/runtime/current/bin/bahulam-agent"**:
+
+The Dockerfile installs the CLI via `npm install -g` so postinstall runs and
+lands the runtime at the standard path. If this error appears, verify the image
+was rebuilt after the switch (build id after `2026-08-22T14:00Z`).
+
+**Zero patches / zero tokens after Railway container completes**:
+
+The CLI ran but produced no work. Almost always the runtime-not-found bug above.
+Confirm via `railway logs | grep -F 'runtime not found'`.
+
+**Railway VOLUME directive rejected at build**:
+
+`dockerfile invalid: docker VOLUME at Line N is not supported, use Railway Volumes`.
+Dockerfiles cannot declare `VOLUME`. Attach a Railway Volume via
+`railway volume add --mount-path /data` instead.
+
+**Zero visibility during long runs**:
+
+`screen.py` writes harness output to a file (`$OUT/harness.log`), not container
+stdout. `entrypoint.sh` spawns `tail -F "$OUT/harness.log" | sed -u 's/^/[harness] /'`
+in the background so `[n/M]` markers stream live via `railway logs`. If you
+don't see `[harness]`-prefixed lines mid-run, the tail is broken.
+
+**Docker eval starts building images** (should be pulling only):
 
 ```bash
-cd ~/codekepler-npm
-rg -n "BAHULAM_PRODUCT|this.product|product = 'bahulam'" src
-node -e "import('./src/core/bundled-runtime.mjs').then(m => console.log(m.runtimeInfo()))"
+ssh azureuser@"$VM_IP" 'pkill -f swebench.harness.run_evaluation'
+ssh azureuser@"$VM_IP" 'docker images --format "{{.Repository}}:{{.Tag}}" | grep -Ei "swe|sweb" | head'
 ```
 
-Zero tools or zero content:
+Prepare the image cache separately before restarting the eval run.
 
-```bash
-source ~/.bahulam-benchmark.env
-cd ~/codekepler-npm
-BAHULAM_RUNTIME_DEBUG=1 node src/terminal/main.mjs --headless --verbose --timeout 180 -p 'Inspect this repository and list the top-level files.' | tee /tmp/bahulam-debug.jsonl
-jq -r 'select(.type == "error" or .type == "complete")' /tmp/bahulam-debug.jsonl
-```
+**Low prompt-cache numbers**:
 
-Docker evaluation starts building images:
-
-```bash
-pkill -f swebench.harness.run_evaluation
-docker images --format "{{.Repository}}:{{.Tag}}" | grep -Ei "swe|sweb" | head
-```
-
-Low prompt-cache numbers:
-
-- Use the persistent runner when comparing models.
-- Keep the same gateway URL, model, runtime version, and framework version for a run.
-- Avoid injecting per-instance volatile text into the shared system/context prefix.
-- Compare gateway logs for `cache_creation_input_tokens` and `cache_read_input_tokens`.
+- Keep the same gateway URL, model, runtime version for a run.
+- Avoid per-instance volatile text in the shared system/context prefix.
+- Compare gateway logs for `cache_creation_input_tokens` vs `cache_read_input_tokens`.
 
 ## Quick Reference
 
-Check all shard VMs:
+Check all screening services:
 
 ```bash
-for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  echo "=== $IP ==="
-  ssh -o ConnectTimeout=5 azureuser@"$IP" 'tmux ls 2>/dev/null || true; RESULT=$(ls -t ~/results-*.json 2>/dev/null | head -1); test -n "$RESULT" && jq ".results | length" "$RESULT" || echo "no results"'
-done
+railway service list --project bahulam-screening
 ```
 
-Stop benchmark sessions:
+Cancel a running deploy:
 
 ```bash
-for IP in 172.202.17.40 104.43.140.29 74.249.204.194 20.29.69.244; do
-  ssh azureuser@"$IP" 'tmux kill-session -t bench 2>/dev/null || true'
-done
-ssh azureuser@20.9.77.9 'tmux kill-session -t bahulam-runtime 2>/dev/null || true'
+railway service list --project bahulam-screening
+# find the running service, then kill its deployment via the dashboard
+# (Railway CLI has no direct "cancel deploy" — supersede with railway up)
 ```
 
-Expected VM filesystem layout:
+Filesystem inside a Railway container (during run):
 
 ```text
-~/codekepler-npm/              CLI source and benchmark harness
-~/runtime-tarballs/            Optional copied runtime npm tarballs
-~/swebench-env/                Python venv for datasets and SWE-bench
-~/tbench-env/                  Python venv for Terminal-bench on VM1
-~/.bahulam-benchmark.env       Runtime, gateway, and benchmark variables
-~/.bahulam/config.json         Optional saved Bahulam user CLI token
-~/shard.txt                    Assigned SWE-bench shard on runner VMs
-~/results-*.json               Harness output files
-~/benchmark-*.log              Harness console logs
-~/eval/                        Docker eval predictions and logs on VM1
+/opt/bahulam-cli/                          Global @bahulam/code install (via npm install -g)
+                                           symlinked from $(npm root -g)/@bahulam/code
+/opt/bahulam-cli/benchmark/swe-bench/      Vendored harness.py + kepler_agent.py
+/opt/screen/                               screen.py + configs/ + entrypoint.sh + push-to-benchmarks.sh
+/root/.bahulam/runtime/current/bin/        Runtime binary (set up by postinstall)
+/data/                                     Railway volume — screen output survives container exit
 ```
+
+## Deprecated: Azure Shard VMs
+
+VMs 2-5 (`swebench-eval-vm-2..5`) are deleted; only their NSGs remain in
+`AZ-RG-ORCA-BENCHMARK`. The old per-shard flow is preserved in git history at
+tag/pre-`RAILWAY_MIGRATION_2026_08_22` on this file, or by `git log -- benchmark/RUNBOOK.md`.
+Do not attempt to bring them back — the Railway path is cheaper (~$0.15/run vs
+~$4.80/run on D16s_v3) and easier to fan out across models.

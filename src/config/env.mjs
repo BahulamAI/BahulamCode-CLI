@@ -35,7 +35,7 @@ export const ENV_SCHEMA = {
 
     // Permission and Security
     CLAUDE_CODE_PERMISSION_MODE: { type: 'string', default: 'default', description: 'Permission mode' },
-    CLAUDE_CODE_SANDBOX: { type: 'boolean', default: true, description: 'Enable sandbox' },
+    BAHULAM_SANDBOX: { type: 'boolean', default: true, description: 'Wrap contained/high-risk shell commands in the OS sandbox (bwrap/seatbelt)' },
 
     // Context and Memory
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: { type: 'number', default: 180000, description: 'Max context window tokens' },
@@ -81,7 +81,7 @@ export const ENV_SCHEMA = {
     ANTHROPIC_AUTH_TOKEN: { type: 'string', description: 'Anthropic auth token (OAuth)' },
 
     // Extended: Sandbox & Security
-    CLAUDE_CODE_SANDBOX_PLATFORM: { type: 'string', description: 'Override sandbox platform (linux/darwin)' },
+    BAHULAM_SANDBOX_PLATFORM: { type: 'string', description: 'Override sandbox platform (linux/darwin)' },
     CLAUDE_CODE_INJECTION_CHECK: { type: 'boolean', default: true, description: 'Enable command injection checks' },
     CLAUDE_CODE_PATH_CHECK: { type: 'boolean', default: true, description: 'Enable file path validation' },
 
