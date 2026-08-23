@@ -1703,11 +1703,19 @@ function renderEvent(event) {
       const phaseTag = phase === 'mid_turn' ? 'mid-turn' : 'pre-turn';
       const collapsed = Number(data?.collapsed_messages || 0);
       const kept = Number(data?.kept_recent || 0);
-      const before = Number(data?.before_est_tokens || 0);
-      const beforeK = before ? ` · ~${Math.round(before / 1000)}k est tokens` : '';
+      // PRD-213: backend now sends `before_tokens` (real when source is
+      // `ground_truth`, chars/4 estimate when `estimator_fallback`) plus
+      // the resolved threshold. Keep the legacy `before_est_tokens` fall-
+      // back so an older backend that hasn't rolled out yet still renders.
+      const before = Number(data?.before_tokens || data?.before_est_tokens || 0);
+      const threshold = Number(data?.threshold || 160_000);
+      const source = String(data?.source || 'estimator');
+      const tokenLabel = source === 'ground_truth' ? 'real' : 'est';
+      const beforeK = before ? ` · ${Math.round(before / 1000)}k/${Math.round(threshold / 1000)}k ${tokenLabel} tokens` : '';
+      const sourceTag = source === 'ground_truth' ? '' : ` [${source}]`;
       const keptPart = kept ? ` · kept last ${kept}` : '';
       const preview = String(data?.summary_preview || '').trim();
-      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}`)}\n`);
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}${sourceTag}`)}\n`);
       if (preview) {
         process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
       }
