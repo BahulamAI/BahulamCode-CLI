@@ -5146,7 +5146,7 @@ export async function startTerminalRepl() {
         }
         if (session.gatewaySession) {
           _turnIterable = createAgentLoop({
-            sessionId: session.gatewaySession.session_id,
+            session: session.gatewaySession,
             messages: session.agentHistory,
             toolExecutor,
           });

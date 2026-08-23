@@ -83,22 +83,45 @@ export async function createGatewaySession({
 }
 
 /**
- * Execute one turn against /v1/agent/turn. Real implementation of the
- * gateway call — sends session_id + messages, gets back Bahulam-shape
- * response (assistant with content blocks + optional tool_calls + usage).
+ * Execute one turn against /v1/chat/completions (the standard OpenAI-shape
+ * gateway endpoint). This reuses the existing metering, entitlement, and
+ * provider translation the gateway already does for BYOK — we don't need
+ * a new /v1/agent/turn endpoint. Session config (prompt + tools + model)
+ * comes from createGatewaySession() once, then every turn just posts
+ * standard OpenAI messages + tools + model.
+ *
+ * The `session` param carries { prompt, tool_schemas, model } from
+ * createGatewaySession. We inject them into the request server prefers
+ * client to send explicitly so per-tier gating on the gateway side
+ * still works (gateway decides what a caller may use; client just
+ * echoes what it received).
  */
-async function _callGateway({ sessionId, messages, model }) {
+async function _callGateway({ session, messages }) {
     const token = _readCliToken();
     if (!token) throw new Error('Missing gateway token (BAHULAM_API_KEY / bahulam login).');
     const base = _gatewayUrl();
-    const url = base.endsWith('/v1') ? base.slice(0, -3) + '/v1/agent/turn' : `${base}/v1/agent/turn`;
+    // Support both `<host>` and `<host>/v1` in BAHULAM_GATEWAY_URL.
+    const url = base.endsWith('/v1')
+        ? `${base}/chat/completions`
+        : `${base}/v1/chat/completions`;
+
+    // Strip Bahulam-specific metadata from tool schemas before sending
+    // — server also strips defensively, but keep the wire clean.
+    const tools = (session.tool_schemas || []).map(t => ({
+        type: t.type || 'function',
+        function: t.function,
+    }));
 
     const body = {
-        session_id: sessionId,
-        messages,
-        ...(model ? { model } : {}),
+        model: session.model,
+        messages,   // OpenAI-shape end-to-end — {role, content} or
+                    // assistant.tool_calls + tool.tool_call_id
+        ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
+        temperature: 0.0,
+        stream: false,
     };
 
+    const t0 = performance.now();
     const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -109,26 +132,41 @@ async function _callGateway({ sessionId, messages, model }) {
         },
         body: JSON.stringify(body),
     });
+    const roundTripMs = performance.now() - t0;
+
     if (!res.ok) {
         const text = await res.text();
-        throw new Error(`turn failed (HTTP ${res.status}): ${text.slice(0, 400)}`);
+        throw new Error(`chat/completions failed (HTTP ${res.status}): ${text.slice(0, 400)}`);
     }
-    return res.json();  // { messages, tool_calls?, done, usage, timing_ms }
+    const data = await res.json();
+    const choice = (data.choices || [{}])[0];
+    return {
+        message: choice.message || {},   // OpenAI assistant message shape
+        finish_reason: choice.finish_reason,
+        usage: data.usage || {},
+        timing_ms: { roundTrip: Math.round(roundTripMs * 10) / 10 },
+    };
 }
 
 /**
  * Create an async generator that iterates turns against the gateway.
  *
+ * Uses standard OpenAI /v1/chat/completions shape throughout — the same
+ * shape the gateway already speaks to upstream providers. No custom
+ * content-block conversion, no /v1/agent/turn endpoint needed.
+ *
  * @param {Object} opts
- * @param {string} opts.sessionId        - Gateway session ID
- * @param {Array}  opts.messages          - Conversation history (role/content)
- * @param {Object} opts.toolExecutor      - From createToolExecutor()
+ * @param {Object} opts.session           - From createGatewaySession()
+ *                                          { session_id, prompt, tool_schemas, model, ... }
+ * @param {Array}  opts.messages          - Conversation history (mutated across turns).
+ *                                          Caller seeds with [{role:'user', content:input}].
+ * @param {Object} opts.toolExecutor      - From createToolExecutor() — .execute(name, input)
  * @param {Function} [opts.gatewayFetch]  - Override for testing
- * @param {number}  [opts.maxTurns]       - Max iterations (default 50)
+ * @param {number}  [opts.maxTurns]       - Max iterations (default 999)
  * @yields {Object} Events matching the REPL event protocol
  */
 export async function* createAgentLoop({
-    sessionId,
+    session,
     messages,
     toolExecutor,
     gatewayFetch = _callGateway,
@@ -136,37 +174,50 @@ export async function* createAgentLoop({
 } = {}) {
     let toolCount = 0;
     const startTime = Date.now();
+    let usage = { input_tokens: 0, output_tokens: 0 };
+
+    // Prepend the workspace system prompt if not already present. The
+    // messages array (caller-owned) may accumulate across REPL turns,
+    // so only inject once.
+    if (session?.prompt && !messages.some(m => m.role === 'system')) {
+        messages.unshift({ role: 'system', content: session.prompt });
+    }
 
     for (let i = 0; i < maxTurns; i++) {
-        // ── Call gateway ────────────────────────────────────────────
-        const turn = await gatewayFetch({
-            sessionId,
-            messages,
-            toolExecutor,
-        });
+        // ── Call gateway (/v1/chat/completions) ─────────────────────
+        const turn = await gatewayFetch({ session, messages });
+        const asst = turn.message || {};
+        usage = {
+            input_tokens: (usage.input_tokens || 0) + (turn.usage?.prompt_tokens || 0),
+            output_tokens: (usage.output_tokens || 0) + (turn.usage?.completion_tokens || 0),
+        };
 
-        // ── Push assistant response into message history ────────────
-        const assistantContent = turn.messages?.[0]?.content || [];
-        messages.push({
-            role: 'assistant',
-            content: assistantContent,
-        });
+        // ── Push assistant response into message history (OpenAI shape)
+        // content=null when tool_calls exist (OpenAI protocol requirement),
+        // else the text string.
+        const openAiAsst = { role: 'assistant' };
+        if (asst.tool_calls && asst.tool_calls.length > 0) {
+            openAiAsst.content = asst.content ?? null;
+            openAiAsst.tool_calls = asst.tool_calls;
+        } else {
+            openAiAsst.content = asst.content ?? '';
+        }
+        messages.push(openAiAsst);
 
-        // ── Yield text content blocks ───────────────────────────────
-        for (const block of assistantContent) {
-            if (block.type === 'text' && block.text) {
-                yield { type: 'content', data: { text: block.text } };
-            }
+        // ── Yield text content ──────────────────────────────────────
+        if (typeof asst.content === 'string' && asst.content) {
+            yield { type: 'content', data: { text: asst.content } };
         }
 
         // ── Handle tool calls ───────────────────────────────────────
-        const toolCalls = turn.tool_calls;
-        if (toolCalls && toolCalls.length > 0) {
-            let hasToolUse = false;
-
+        const toolCalls = asst.tool_calls || [];
+        if (toolCalls.length > 0) {
             for (const tc of toolCalls) {
-                const { id, name, input } = tc;
-                hasToolUse = true;
+                const id = tc.id;
+                const name = tc.function?.name || '';
+                let input = {};
+                try { input = JSON.parse(tc.function?.arguments || '{}'); }
+                catch { input = { _raw: tc.function?.arguments }; }
 
                 yield { type: 'tool_call', data: { call_id: id, tool: name, args: input } };
 
@@ -181,24 +232,20 @@ export async function* createAgentLoop({
                 yield { type: 'tool_done', data: { tool: name, duration_ms: 0 } };
                 toolCount++;
 
-                // Push tool result as a user message
+                // Push tool response as a role='tool' message (OpenAI shape).
+                // tool_call_id links it to the assistant's tool_calls[i].id.
+                // MUST push one message per tool_call in the SAME order as
+                // the assistant's tool_calls, or OpenAI rejects the next
+                // turn with "tool_call_ids did not have response messages".
                 messages.push({
-                    role: 'user',
-                    content: [
-                        {
-                            type: 'tool_result',
-                            tool_use_id: id,
-                            content: result.output || JSON.stringify(result),
-                        },
-                    ],
+                    role: 'tool',
+                    tool_call_id: id,
+                    content: typeof result.output === 'string'
+                        ? result.output
+                        : JSON.stringify(result.output ?? result),
                 });
             }
-
-            if (!hasToolUse) {
-                // No actual tool calls in the tool_calls array — weird edge case
-                break;
-            }
-            // Loop continues to next iteration with tool results in messages
+            // Loop continues to next iteration
         } else {
             // ── No tool calls → turn is done ────────────────────────
             const duration = (Date.now() - startTime) / 1000;
@@ -208,7 +255,7 @@ export async function* createAgentLoop({
                     summary: 'Done',
                     changes: toolCount,
                     duration_s: duration,
-                    usage: turn.usage || { input_tokens: 0, output_tokens: 0 },
+                    usage,
                 },
             };
             return;
@@ -223,7 +270,7 @@ export async function* createAgentLoop({
             summary: 'Aborted (max turns)',
             changes: toolCount,
             duration_s: (Date.now() - startTime) / 1000,
-            usage: { input_tokens: 0, output_tokens: 0 },
+            usage,
         },
     };
 }
