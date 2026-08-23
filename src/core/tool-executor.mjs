@@ -993,12 +993,20 @@ export function createToolExecutor({
                     const output = typeof result === 'string' ? result : String(result);
                     const content = output.replace(/^\s*\d+[→\t]/gm, '');
                     const actNudge = solutionNudge(filePath);
+                    // Set _total_lines so the tool-card display doesn't have
+                    // to compute line counts from the display-side `output`
+                    // (which contains nudges + line-number prefixes that
+                    // throw off the count and can render as "0 lines" when
+                    // downstream fallbacks miss the payload). Uses the
+                    // same split-by-newline convention as the >50-line
+                    // truncation branch above so both paths agree.
                     return {
                         success: !isError(output),
                         content,
                         output: output + nudge + actNudge,
                         _tool: 'read_file',
                         _output_type: 'file_content',
+                        _total_lines: content ? content.split('\n').length : 0,
                     };
                 },
             );
