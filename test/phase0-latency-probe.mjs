@@ -43,29 +43,50 @@ const PROMPTS = [
   'How many lines are in package.json?',
 ];
 
-// ── Turn call ───────────────────────────────────────────────────────────
+// ── Gateway calls ──────────────────────────────────────────────────────
 
-async function callTurn(messages, toolResults) {
+const AUTH_HEADERS = {
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${API_KEY}`,
+  'X-Bahulam-User-Id': 'phase0-probe',
+  'X-Bahulam-Tier': 'free',
+};
+
+async function createSession(workspace) {
   const t0 = performance.now();
-  const body = { messages, ...(toolResults ? { tool_results: toolResults } : {}), ...(MODEL ? { model: MODEL } : {}) };
+  const body = { ...(workspace ? { workspace } : {}), ...(MODEL ? { model: MODEL } : {}) };
+  const res = await fetch(`${GATEWAY}/v1/agent/session`, {
+    method: 'POST', headers: AUTH_HEADERS, body: JSON.stringify(body),
+  });
+  const t1 = performance.now();
+  if (!res.ok) throw new Error(`session HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  return { data, roundTripMs: t1 - t0 };
+}
+
+async function callTurn(sessionId, messages, toolResults) {
+  const t0 = performance.now();
+  const body = {
+    session_id: sessionId,
+    messages,
+    ...(toolResults ? { tool_results: toolResults } : {}),
+    ...(MODEL ? { model: MODEL } : {}),
+  };
   const res = await fetch(`${GATEWAY}/v1/agent/turn`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${API_KEY}`,
-      'X-Bahulam-User-Id': 'phase0-probe',
-      'X-Bahulam-Tier': 'free',
-    },
-    body: JSON.stringify(body),
+    method: 'POST', headers: AUTH_HEADERS, body: JSON.stringify(body),
   });
   const t1 = performance.now();
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`turn HTTP ${res.status}: ${text.slice(0, 300)}`);
   }
   const data = await res.json();
   return { data, roundTripMs: t1 - t0 };
 }
+
+// ── Local tool executors (Phase 1 minimum: bash, read_file, glob) ─────
+
+import { readFileSync } from 'node:fs';
 
 async function runBash(command) {
   try {
@@ -76,14 +97,53 @@ async function runBash(command) {
   }
 }
 
+function runReadFile(args) {
+  try {
+    const content = readFileSync(args.path, 'utf-8');
+    const lines = content.split('\n');
+    const cap = args.max_lines || 400;
+    return lines.length > cap
+      ? lines.slice(0, cap).join('\n') + `\n… [truncated at ${cap} lines of ${lines.length}]`
+      : content;
+  } catch (e) {
+    return `[read_file error] ${e.message}`;
+  }
+}
+
+// Glob via shell — safer than depending on Node 22's globSync API shape.
+async function runGlob(args) {
+  const pattern = String(args.pattern || '*').replace(/'/g, "'\\''");
+  // find + -path pattern is more portable than shell brace expansion.
+  const cmd = `bash -c 'compgen -G "${pattern}" || find . -path "./${pattern}" -type f 2>/dev/null | head -200'`;
+  try {
+    const { stdout } = await exec(cmd, { timeout: 5000, maxBuffer: 512 * 1024 });
+    return stdout.trim() || '(no matches)';
+  } catch (e) {
+    return `[glob error] ${e.message}`;
+  }
+}
+
+async function executeToolCall(tc) {
+  switch (tc.name) {
+    case 'bash':      return await runBash(tc.input?.command || '');
+    case 'read_file': return runReadFile(tc.input || {});
+    case 'glob':      return await runGlob(tc.input || {});
+    default:          return `[unknown tool: ${tc.name}]`;
+  }
+}
+
 // ── Run one prompt end-to-end ───────────────────────────────────────────
 
-async function runPrompt(prompt) {
+async function runPrompt(sessionId, prompt) {
   let messages = [{ role: 'user', content: prompt }];
-  let toolResults = null;
   const turns = [];
   for (let iter = 0; iter < MAX_ITERS_PER_PROMPT; iter++) {
-    const { data, roundTripMs } = await callTurn(messages, toolResults);
+    // Note: tool_results are now INSIDE the messages history (as role="tool"
+    // messages appended right after each assistant-with-tool_calls). We no
+    // longer pass a separate tool_results field. OpenAI requires responses
+    // interleaved with the assistant messages that emitted them — a flat
+    // tail-append breaks chains longer than one turn.
+    const { data, roundTripMs } = await callTurn(sessionId, messages, null);
     const overhead = roundTripMs - (data.timing_ms?.llm || 0);
     turns.push({
       roundTripMs,
@@ -95,11 +155,20 @@ async function runPrompt(prompt) {
     });
     messages = [...messages, ...data.messages];
     if (data.done) return { prompt, turns, final: data.messages.at(-1)?.content || '' };
-    toolResults = [];
+    // Execute every tool_call from this assistant turn and append each
+    // response as a role="tool" message DIRECTLY after the assistant
+    // message in the history. Keeps the chain: user → assistant(tc) →
+    // tool → assistant(tc) → tool → … → assistant(text) even across N
+    // iterations.
     for (const tc of data.tool_calls || []) {
-      const cmd = tc.input?.command || '';
-      const output = await runBash(cmd);
-      toolResults.push({ tool_call_id: tc.id, output: output.slice(0, 4000) });
+      let output;
+      try { output = await executeToolCall(tc); }
+      catch (e) { output = `[executor error] ${e.message || String(e)}`; }
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: String(output).slice(0, 4000),
+      });
     }
   }
   return { prompt, turns, final: '(max iterations reached)' };
@@ -131,12 +200,17 @@ function report(allTurns) {
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(`Phase 0 probe — gateway=${GATEWAY}  model=${MODEL || '(gateway default)'}`);
+  console.log(`Phase 0/1 probe — gateway=${GATEWAY}  model=${MODEL || '(session default)'}`);
+
+  // Phase 1: fetch a session first
+  const { data: sess, roundTripMs: sessMs } = await createSession('kepler-code');
+  console.log(`  session_id=${sess.session_id}  workspace=${sess.workspace}  model=${sess.model}  tools=${sess.tool_schemas.length}  (session-fetch rt=${sessMs.toFixed(1)}ms)`);
+
   const allTurns = [];
   for (const [i, prompt] of PROMPTS.entries()) {
     console.log(`\n[${i + 1}/${PROMPTS.length}] ${prompt}`);
     try {
-      const { turns, final } = await runPrompt(prompt);
+      const { turns, final } = await runPrompt(sess.session_id, prompt);
       allTurns.push(...turns);
       turns.forEach((t, j) => {
         console.log(`  turn ${j + 1}:  rt=${t.roundTripMs.toFixed(1)}ms  llm=${t.llmMs.toFixed(1)}ms  overhead=${t.overheadMs.toFixed(1)}ms  tools=${t.toolCallCount}  ${t.done ? '✓ done' : ''}`);
