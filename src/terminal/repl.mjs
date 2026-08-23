@@ -3574,7 +3574,7 @@ export async function startTerminalRepl() {
     stopSpinner();
     flushContent();
     flushPendingHead();
-    flushCompactReadRun();
+    flushExploreRun();
     runtime.foldedSubAgentTools = null;
     clearCards();
 
