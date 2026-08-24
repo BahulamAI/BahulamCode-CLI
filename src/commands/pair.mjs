@@ -64,7 +64,7 @@ export async function runPairCommand(args = []) {
 }
 
 function _usage() {
-  process.stderr.write(`${BOLD}bahulam pair${RESET} ${DIM}— PRD-092 device pairing${RESET}\n\n`);
+  process.stderr.write(`${BOLD}bahulam pair${RESET} ${DIM}— pair a device for remote monitoring${RESET}\n\n`);
   process.stderr.write(`  bahulam pair get-code [name]     Get a 6-digit code (share with new device)\n`);
   process.stderr.write(`  bahulam pair <code> [name]       Register THIS device using a 6-digit code\n`);
   process.stderr.write(`  bahulam pair status              Show current pairing state\n`);

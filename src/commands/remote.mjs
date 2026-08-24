@@ -42,7 +42,7 @@ export async function runRemoteCommand(args = []) {
   if (sub === 'disable') return _disable(auth);
   if (sub === 'status')  return _status(auth);
 
-  process.stderr.write(`${BOLD}bahulam remote${RESET} ${DIM}— PRD-092 relay control${RESET}\n\n`);
+  process.stderr.write(`${BOLD}bahulam remote${RESET} ${DIM}— control the remote relay connection${RESET}\n\n`);
   process.stderr.write(`  bahulam remote enable    Connect the daemon to the relay for remote monitoring/control\n`);
   process.stderr.write(`  bahulam remote disable   Kill switch — drops relay connection within one heartbeat\n`);
   process.stderr.write(`  bahulam remote status    Show current remote-connection state\n`);

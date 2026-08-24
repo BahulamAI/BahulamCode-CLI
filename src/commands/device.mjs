@@ -40,7 +40,7 @@ export async function runDeviceCommand(args = []) {
   if (sub === 'revoke') return await _revoke(creds.token, args[1], auth);
   if (sub === 'whoami') return _whoami(auth);
 
-  process.stderr.write(`${BOLD}bahulam device${RESET} ${DIM}— PRD-092 device inventory${RESET}\n\n`);
+  process.stderr.write(`${BOLD}bahulam device${RESET} ${DIM}— list and revoke paired devices${RESET}\n\n`);
   process.stderr.write(`  bahulam device list             List paired devices\n`);
   process.stderr.write(`  bahulam device revoke <id>      Revoke a device (kill switch)\n`);
   process.stderr.write(`  bahulam device whoami           Show this device's registered id\n`);
