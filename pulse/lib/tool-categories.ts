@@ -11,13 +11,20 @@ export type ToolCategory =
 
 export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   Read:           'file-io',
+  read_file:      'file-io',
   Write:          'file-io',
+  write_file:     'file-io',
   Edit:           'file-io',
+  edit_file:      'file-io',
   Glob:           'file-io',
+  list_files:     'file-io',
   Grep:           'file-io',
+  search_code:    'file-io',
+  search_files:   'file-io',
   NotebookEdit:   'file-io',
 
   Bash:           'shell',
+  shell:          'shell',
 
   Task:           'agent',
   TaskCreate:     'agent',
@@ -58,10 +65,16 @@ export const CATEGORY_COLORS: Record<ToolCategory, string> = {
 /** Per-tool bar colors so Read / Write / Edit / … stay distinct on project cards */
 const TOOL_BAR_OVERRIDES: Record<string, string> = {
   Read:         'var(--viz-tool-read)',
+  read_file:    'var(--viz-tool-read)',
   Write:        'var(--viz-tool-write)',
+  write_file:   'var(--viz-tool-write)',
   Edit:         'var(--viz-tool-edit)',
+  edit_file:    'var(--viz-tool-edit)',
   Grep:         'var(--viz-tool-grep)',
+  search_code:  'var(--viz-tool-grep)',
+  search_files: 'var(--viz-tool-grep)',
   Glob:         'var(--viz-tool-glob)',
+  list_files:   'var(--viz-tool-glob)',
   NotebookEdit: 'var(--viz-tool-edit)',
 }
 

@@ -50,9 +50,5 @@
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.26.9"
   },
-  "optionalDependencies": {
-    "@bahulam/runtime-darwin-arm64": "0.1.3",
-    "@bahulam/runtime-linux-x64": "0.1.3",
-    "@bahulam/runtime-win32-x64": "0.1.3"
-  }
+  "optionalDependencies": {}
 }

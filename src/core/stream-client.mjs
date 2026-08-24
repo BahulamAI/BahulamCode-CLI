@@ -143,23 +143,19 @@ export class TarangStreamClient {
         this._toolAbort = null;
 
         // Transport mode:
-        //   'bundled' → local Python runtime (PRD-091 §6). Framework calls
-        //     the Bahulam Gateway directly. Metering runs. THIS IS THE
-        //     PUBLIC CLI DEFAULT.
         //   'remote' → cloud backend runs the agent loop server-side.
         //     Backend calls Bahulam Gateway with service-token attribution;
-        //     metering still runs at the gateway boundary.
+        //     metering runs at the gateway boundary.
+        //   'bundled' → legacy: local Python runtime (PRD-091 §6, deprecated).
+        //     Only used when BAHULAM_RUNTIME_MODE=bundled is explicitly set.
         //
-        // Explicit opt precedence: constructor arg > env vars > sniff runtime
-        // package availability > default 'bundled'.
+        // Explicit opt precedence: constructor arg > env vars > default 'remote'.
         this.mode = mode
             || (process.env.BAHULAM_RUNTIME_MODE === 'remote' ? 'remote' : null)
             || (process.env.BAHULAM_RUNTIME_MODE === 'bundled' ? 'bundled' : null)
             || (process.env.TARANG_ENV === 'remote' ? 'remote' : null)
             || (process.env.TARANG_ENV === 'bundled' ? 'bundled' : null)
-            || 'bundled';
-        // Bundled runtime binds to a random localhost port on first use. Cached
-        // here so every method sees the same baseUrl without re-spawning.
+            || 'remote';
         this._bundledReady = false;
     }
 
