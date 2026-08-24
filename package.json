@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "bahulam": "src/terminal/main.mjs",
-    "bahulam-code": "src/terminal/main.mjs"
+    "bahulam-code": "src/terminal/main.mjs",
+    "bahulamd": "src/terminal/main.mjs"
   },
   "files": [
     "src/",

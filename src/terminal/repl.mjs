@@ -25,7 +25,8 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
-import { tapSseEvent } from '../daemon/event-tap.mjs';
+import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
+import { startSocketServer } from '../daemon/socket-server.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
@@ -2059,6 +2060,23 @@ function renderEvent(event) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
         if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
+        // PRD-092: Wire socket server for attach clients
+        if (process.env.BAHULAM_DAEMON_EVENTLOG === '1') {
+          try {
+            const socketServer = await startSocketServer({
+              sessionId: session.id,
+              onCommand: {
+                approve: async (payload, attachId) => { /* TODO: wire to approval */ },
+                deny: async (payload, attachId) => { /* TODO: wire to approval */ },
+                interrupt: async () => { /* TODO: wire to stream client cancel */ },
+                send_message: async (payload, attachId) => { /* TODO: wire to turn handler */ },
+              }
+            });
+            registerBroadcaster(evt => socketServer.broadcastEvent(evt));
+          } catch (err) {
+            try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
+          }
+        }
       }
       if (data?.model) session.model = data.model;
       if (data?.models?.coder) session.model = data.models.coder;

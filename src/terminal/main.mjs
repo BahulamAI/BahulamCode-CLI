@@ -232,6 +232,14 @@ async function main() {
     bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
     bahulam version                Show version
 
+  \x1b[1mDaemon:\x1b[0m
+    bahulam list               List detached daemon sessions
+    bahulam attach <id>        Attach to a running daemon
+    bahulam stop <id>          Stop a running daemon
+    bahulam pair               Pair a device for remote access
+    bahulam remote enable      Enable relay connection
+    bahulam remote disable     Disable relay connection (kill switch)
+
   \x1b[1mAnalytics:\x1b[0m
     bahulam sessions               List recent local sessions
     bahulam stats                  Show aggregate local session stats
@@ -282,6 +290,38 @@ async function main() {
 
   \x1b[2mDocs: https://bahulam.ai\x1b[0m
 `);
+    return;
+  }
+
+  // ── Daemon subcommands (PRD-092) ──
+
+  if (subcommand === 'list') {
+    const { listDaemonSessions } = await import('../daemon/session-list.mjs');
+    await listDaemonSessions();
+    return;
+  }
+
+  if (subcommand === 'attach') {
+    const { attachToSession } = await import('../daemon/attach-client.mjs');
+    await attachToSession(subcommandArgs[0]);
+    return;
+  }
+
+  if (subcommand === 'stop') {
+    const { stopDaemonSession } = await import('../daemon/stop-daemon.mjs');
+    await stopDaemonSession(subcommandArgs[0]);
+    return;
+  }
+
+  if (subcommand === 'pair') {
+    const { runPairCommand } = await import('../commands/pair.mjs');
+    await runPairCommand(subcommandArgs);
+    return;
+  }
+
+  if (subcommand === 'remote') {
+    const { runRemoteCommand } = await import('../commands/remote.mjs');
+    await runRemoteCommand(subcommandArgs);
     return;
   }
 
