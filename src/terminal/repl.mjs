@@ -2013,7 +2013,12 @@ function renderEvent(event) {
       flushFoldedSubAgentTools();
       const agentType = data?.type || 'sub-agent';
       const usage = data?.usage || {};
-      const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      // Output tokens = generation size. Summing input+output across a
+      // multi-iteration sub-agent double-counts the context re-shipped each
+      // iteration (a 16-iter run can inflate to 600k+ "tokens" of which
+      // ~95% is repeated context) — the resulting number reads as usage but
+      // it's really billing accumulation, not useful signal in the close line.
+      const tokens = usage.output_tokens || 0;
       const costUsd = usage.cost_usd ?? usage.total_cost_usd ?? data?.cost_usd ?? null;
       if (typeof costUsd === 'number') session.savedUsd += costUsd;
       const summary = data?.result_summary
