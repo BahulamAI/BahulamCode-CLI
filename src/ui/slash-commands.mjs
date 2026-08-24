@@ -52,9 +52,8 @@ export const COMMANDS = {
   '/review':      'Code review agent',
   '/architect':   'Feature architect agent',
   '/safety':      'Show safety guardrail status',
-  '/auto':        'Session autopilot: auto-approve routine tools (dangerous still prompts)',
-  '/approvals':   'List or edit session approval grants',
-  '/revoke':      'Revoke auto-approvals',
+  '/auto':        'Session autopilot: `/auto` routine-only · `/auto full` everything · `/auto off`',
+  '/approvals':   'List or edit session approval grants (`/approvals clear` revokes all)',
   '/resume':      'Resume a previous session',
   '/sessions':    'List resumable sessions',
   '/logout':      'Sign out and clear credentials',
@@ -118,7 +117,6 @@ export const HELP_GROUPS = [
       ['/settings logout', 'Sign out'],
       ['/settings whoami', 'Current user'],
       ['/settings quiet|verbose|surgical', 'Verbosity'],
-      ['/settings revoke', 'Revoke auto-approvals'],
     ],
   },
   {
@@ -207,7 +205,6 @@ export const LEGACY_COMMAND_HINTS = {
   '/quiet':      '/settings quiet',
   '/verbose':    '/settings verbose',
   '/surgical':   '/settings surgical',
-  '/revoke':     '/settings revoke',
 };
 
 // Namespaced subcommands. `/status metrics` -> `/stats`, etc.
@@ -235,7 +232,6 @@ export const NAMESPACED_COMMANDS = {
     quiet:    '/quiet',
     verbose:  '/verbose',
     surgical: '/surgical',
-    revoke:   '/revoke',
   },
 };
 

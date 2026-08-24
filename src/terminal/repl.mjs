@@ -3181,40 +3181,48 @@ async function handleCommand(input, ctx) {
       return;
     }
 
-    case '/revoke': {
-      const wasActive = ctx.approval.revoke();
-      if (wasActive) {
-        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto-approvals revoked. All tool calls will prompt again.')}\n`);
-      } else {
-        process.stderr.write(`  ${c.gray('No auto-approvals were active.')}\n`);
-      }
-      return;
-    }
 
     case '/auto': {
-      // Session autopilot for long-running jobs: auto-approve routine
-      // writes/shell while STILL prompting for dangerous tiers (rm,
-      // force-push, command substitution, …) and never overriding hard
-      // safety blocks. Distinct from the launch-time
-      // --dangerously-skip-permissions flag, which approves everything
-      // including dangerous tiers.
+      // Session autopilot for long-running jobs. Three levels:
+      //   /auto        (or /auto on)  routine writes/shell auto-approve;
+      //                                dangerous tiers (rm/force-push/
+      //                                command substitution/protected
+      //                                files) still prompt.
+      //   /auto full                   approves EVERYTHING short of the
+      //                                unbypassable hard-safety blocks —
+      //                                mid-session equivalent of the
+      //                                --dangerously-skip-permissions
+      //                                launch flag. Long autonomous runs
+      //                                won't stall on a dangerous tier.
+      //   /auto off                    all approvals prompt again.
       const sub = (rest || '').trim().toLowerCase();
       if (sub === 'off') {
         ctx.approval.approveAll = false;
+        ctx.approval.autoApprove = false;
         process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto mode off — approvals prompt again.')}\n`);
         return;
       }
+      if (sub === 'full' || sub === 'dangerous' || sub === 'yolo') {
+        ctx.approval.autoApprove = true;
+        ctx.approval.approveAll = true;
+        process.stderr.write(`  ${c.yellow('⚠')} ${c.bold('Auto FULL')} ${c.dim('— EVERY tool call auto-approves this session.')}\n`);
+        process.stderr.write(`    ${c.dim('Includes dangerous shell (rm/force-push/substitution) and protected files.')}\n`);
+        process.stderr.write(`    ${c.dim('Hard safety blocks are still enforced by the CLI safety layer.')}\n`);
+        process.stderr.write(`    ${c.dim('Disable with /auto off · this is the runtime equivalent of --dangerously-skip-permissions.')}\n`);
+        return;
+      }
       if (sub === '' || sub === 'on') {
+        ctx.approval.autoApprove = false;   // clear any prior /auto full
         ctx.approval.approveAll = true;
         process.stderr.write(`  ${c.green('✓')} ${c.bold('Auto mode on')} ${c.dim('— routine tool calls auto-approve this session.')}\n`);
         process.stderr.write(`    ${c.dim('Still prompts: dangerous shell (rm/force-push/substitution), protected files.')}\n`);
         process.stderr.write(`    ${c.dim('Hard safety blocks stay enforced. Disable with /auto off · inspect with /approvals.')}\n`);
-        process.stderr.write(`    ${c.dim('Tip: start your message with #auto to switch the backend agent into autonomous mode too.')}\n`);
+        process.stderr.write(`    ${c.dim('Need full autopilot mid-run? /auto full — same effect as --dangerously-skip-permissions.')}\n`);
         return;
       }
       // status / anything else → show current mode
       process.stderr.write(`  ${c.dim('Approval mode:')} ${ctx.approval.getModeLabel()}\n`);
-      process.stderr.write(`  ${c.dim('Usage: /auto [on|off|status]')}\n`);
+      process.stderr.write(`  ${c.dim('Usage: /auto [on|off|full|status]')}\n`);
       return;
     }
 
