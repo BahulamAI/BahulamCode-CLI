@@ -814,12 +814,23 @@ export function renderStagnation(data = {}) {
   const rawMessage = data?.message || '';
   const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
   const tool = data?.tool || data?.tool_name || '';
-  const suggestion = data?.suggestion || data?.recovery_strategy || data?.strategy || '';
-  const message = reason
-    ? `Stagnation${tool ? ` (${tool})` : ''}: ${reason}`
-    : `Stagnation${tool ? ` (${tool})` : ''} detected`;
-  const key = `${message}\n${suggestion}`;
+  const count = data?.repeat_count || data?.count || null;
+  // Try to extract a target/path from the reason so we can show a
+  // compact one-liner. Reason shapes we know about from the framework:
+  //   "Repeated overlapping <tool> inspections of '<target>' N times without mutation"
+  //   "..."  (fallback: use reason as-is, trimmed to ~80 chars)
+  const targetMatch = reason.match(/of\s+['"]([^'"]+)['"]/);
+  const target = targetMatch ? targetMatch[1] : '';
 
+  // Compose a compact single-line message:
+  //   ! stagnation · read_file × 3 · v3_sse.py
+  // Falls back to a short slice of the reason when we can't parse it.
+  const parts = ['stagnation'];
+  if (tool) parts.push(`${tool}${count ? ` × ${count}` : ''}`);
+  if (target) parts.push(target);
+  const compact = parts.length > 1 ? parts.join(' · ') : reason.slice(0, 80);
+
+  const key = `${tool}:${target}:${count}`;
   if (session._lastStagnationWarning === key) return;
   session._lastStagnationWarning = key;
 
@@ -827,7 +838,9 @@ export function renderStagnation(data = {}) {
   flushContent();
   flushPendingHead();
   renderBlockBoundary('status', { compactSame: true });
-  process.stderr.write(`  ${c.yellow('!')} ${c.yellow(message)}\n`);
-  if (suggestion) process.stderr.write(`    ${c.dim(suggestion)}\n`);
+  // One line, dim yellow, no follow-up paragraph. The full guidance is
+  // still injected into the LLM context on the backend side — no need
+  // to also spam the operator's terminal with it.
+  process.stderr.write(`  ${c.yellow('!')} ${c.dim(c.yellow(compact))}\n`);
   runtime.lastRenderedBlock = 'status';
 }
