@@ -234,6 +234,29 @@ export class TarangStreamClient {
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
 
+        // PRD-092 cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
+        // path, serialize the exact body that would go to /api/execute, write
+        // it there, and exit(0) before making the network call. Zero credits
+        // spent, zero backend state changed. Used to capture a byte-exact
+        // baseline before the Slice B refactor so we can assert byte identity
+        // after the daemon extraction. See PRD-092 §7 (security model note
+        // about no daemon-added fields leaking into the payload).
+        if (process.env.BAHULAM_CAPTURE_REQUEST) {
+            const fs = await import('node:fs');
+            const target = process.env.BAHULAM_CAPTURE_REQUEST;
+            const serialized = JSON.stringify(body, null, 2);
+            try {
+                fs.writeFileSync(target, serialized, { mode: 0o600 });
+                process.stderr.write(
+                    `[BAHULAM_CAPTURE_REQUEST] wrote ${target} (${Buffer.byteLength(serialized, 'utf-8')} bytes, ${Object.keys(body).length} top-level keys)\n`
+                );
+            } catch (err) {
+                process.stderr.write(`[BAHULAM_CAPTURE_REQUEST] write failed: ${err.message}\n`);
+                process.exit(1);
+            }
+            process.exit(0);
+        }
+
         const headers = this._headers({
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
