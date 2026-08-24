@@ -2060,22 +2060,34 @@ function renderEvent(event) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
         if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
-        // PRD-092: Wire socket server for attach clients
-        if (process.env.BAHULAM_DAEMON_EVENTLOG === '1') {
-          try {
-            const socketServer = await startSocketServer({
-              sessionId: session.id,
-              onCommand: {
-                approve: async (payload, attachId) => { /* TODO: wire to approval */ },
-                deny: async (payload, attachId) => { /* TODO: wire to approval */ },
-                interrupt: async () => { /* TODO: wire to stream client cancel */ },
-                send_message: async (payload, attachId) => { /* TODO: wire to turn handler */ },
-              }
-            });
-            registerBroadcaster(evt => socketServer.broadcastEvent(evt));
-          } catch (err) {
-            try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
-          }
+        // PRD-092: Wire socket server for attach clients.
+        // renderEvent() is NOT async, so we can't `await startSocketServer(...)`
+        // directly (that fails at import time — "Unexpected reserved word").
+        // Fire-and-forget IIFE, and guard against re-entry on session_info
+        // repeats (backend can re-emit on reconnect; two listen()s on the
+        // same sock path → EADDRINUSE and both server + tap explode).
+        if (process.env.BAHULAM_DAEMON_EVENTLOG === '1' && !session._prd092SocketStarting && !session._prd092SocketServer) {
+          session._prd092SocketStarting = true;
+          const _sid = session.id;
+          (async () => {
+            try {
+              const server = await startSocketServer({
+                sessionId: _sid,
+                onCommand: {
+                  approve: async (payload, attachId) => { /* Slice E wires the pending-approval store */ },
+                  deny: async (payload, attachId) => { /* Slice E */ },
+                  interrupt: async () => { /* Slice C — stream-client cancel via ctx */ },
+                  send_message: async (payload, attachId) => { /* Slice C — needs input lock */ },
+                }
+              });
+              session._prd092SocketServer = server;
+              session._prd092Unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+            } catch (err) {
+              try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
+            } finally {
+              session._prd092SocketStarting = false;
+            }
+          })();
         }
       }
       if (data?.model) session.model = data.model;
