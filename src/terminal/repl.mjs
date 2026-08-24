@@ -29,6 +29,8 @@ import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
+import { startRelayBridge } from '../daemon/relay-client.mjs';
+import { loadRemoteConfig } from '../commands/remote.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
@@ -2144,6 +2146,30 @@ function renderEvent(event) {
                 }
               } catch (err) {
                 try { process.stderr.write(`[prd-092] approval intercept: ${err.message}\n`); } catch {}
+              }
+              // Slice H — dial the relay if `bahulam remote enable` set the
+              // flag. Bridge is bidirectional: local events go out as
+              // control-frame envelopes, incoming envelopes dispatch to the
+              // same handlers the local socket-server uses (so approve/deny
+              // from a phone runs the same resolvePending path).
+              try {
+                const remoteCfg = loadRemoteConfig();
+                if (remoteCfg?.enabled) {
+                  const bridge = startRelayBridge({
+                    sessionId: _sid,
+                    remoteConfig: remoteCfg,
+                    registerBroadcaster,
+                    onCommand: {
+                      approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
+                      deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
+                      interrupt: async () => { try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {} },
+                      send_message: async (_p, _a) => { /* Slice C follow-up */ },
+                    },
+                  });
+                  session._prd092RelayBridge = bridge;
+                }
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] relay bridge: ${err.message}\n`); } catch {}
               }
               // Populate ~/.bahulam/sessions/<id>/meta.json + daemon.pid so
               // `bahulam list` and `bahulam stop <id>` see this session.

@@ -319,18 +319,72 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'device') {
+    const { runDeviceCommand } = await import('../commands/device.mjs');
+    const code = await runDeviceCommand(subcommandArgs);
+    process.exit(code || 0);
+  }
+
   if (subcommand === 'remote') {
     const { runRemoteCommand } = await import('../commands/remote.mjs');
     await runRemoteCommand(subcommandArgs);
     return;
   }
 
-  // ── Headless mode (benchmarks, automation) ──
+  // PRD-092 Slice D — auto-daemon spawn.
+  //   bahulam daemonize [prompt]  → fork a detached bahulam child with
+  //   the socket server up. Parent waits briefly for the child's session
+  //   id to appear, prints it, and exits. Attach later with `bahulam
+  //   attach <sess_id>` or from a paired device via the relay.
+  if (subcommand === 'daemonize') {
+    const { spawnDetachedDaemon } = await import('../daemon/daemonize.mjs');
+    const initialPrompt = subcommandArgs.join(' ').trim();
+    const { pid, waitForSession } = spawnDetachedDaemon({
+      cwd: process.cwd(),
+      prompt: initialPrompt || null,
+    });
+    process.stderr.write(`\x1b[2mdaemon spawned pid=${pid}, waiting for session id…\x1b[0m\n`);
+    const sid = await waitForSession();
+    if (sid) {
+      process.stderr.write(`\x1b[32m✓\x1b[0m ${sid}\n`);
+      process.stderr.write(`  \x1b[2mattach:\x1b[0m bahulam attach ${sid}\n`);
+      process.stderr.write(`  \x1b[2mstop:  \x1b[0m bahulam stop ${sid}\n`);
+      process.exit(0);
+    } else {
+      process.stderr.write(`\x1b[33m! daemon spawned (pid ${pid}) but no session id visible after 15s. Check \`bahulam list\`.\x1b[0m\n`);
+      process.exit(2);
+    }
+  }
+
+  // PRD-092 Slice D — auto-attach when a live daemon is bound to this cwd.
+  // Opt-in via BAHULAM_AUTO_ATTACH=1 so existing muscle memory (bahulam →
+  // fresh REPL) isn't disrupted for users who haven't opted into the daemon
+  // model. `bahulam --no-attach` bypasses even with the env var set.
+  const wantsAutoAttach = process.env.BAHULAM_AUTO_ATTACH === '1' && !process.argv.includes('--no-attach');
+  if (wantsAutoAttach && !subcommand) {
+    const { findSessionForCwd } = await import('../daemon/daemonize.mjs');
+    const existing = await findSessionForCwd(process.cwd());
+    if (existing) {
+      process.stderr.write(`\x1b[2mattaching to existing daemon ${existing} (BAHULAM_AUTO_ATTACH)…\x1b[0m\n`);
+      const { attachToSession } = await import('../daemon/attach-client.mjs');
+      const code = await attachToSession(existing);
+      process.exit(code || 0);
+    }
+  }
+
+  // ── Headless mode (benchmarks, automation, PRD-092 daemonize) ──
   const args = parseArgs(process.argv.slice(2));
-  if (args.prompt && (process.argv.includes('--headless') || !process.stdin.isTTY)) {
+  // PRD-092 Slice D: when this process is a spawned daemon (via
+  // `bahulam daemonize`), pull the initial prompt from the env var
+  // rather than argv — child was spawned with stdio: 'ignore' and no
+  // shell args. BAHULAM_DAEMON_SPAWNED=1 is set by daemonize.mjs.
+  const daemonSpawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
+  const daemonPrompt = daemonSpawned ? (process.env.BAHULAM_DAEMON_INITIAL_PROMPT || '').trim() : '';
+  const effectivePrompt = args.prompt || (daemonSpawned && daemonPrompt) || '';
+  if (effectivePrompt && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY)) {
     const { runHeadless } = await import('../core/headless.mjs');
     await runHeadless({
-      instruction: args.prompt,
+      instruction: effectivePrompt,
       model: args.model,
       timeout: args.timeout || (args.maxTurns ? args.maxTurns * 60 : 600),
       verbose: args.verbose,
