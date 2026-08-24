@@ -25,6 +25,7 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
+import { tapSseEvent } from '../daemon/event-tap.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
@@ -5162,6 +5163,11 @@ export async function startTerminalRepl() {
       }
       for await (const event of _turnIterable) {
         jsonlWriter.writeKeplerEvent(event);
+        // PRD-092 §5.1 daemon event log. Env-var gated (off by default) —
+        // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
+        // to a first-class PRD-092 type into ~/.bahulam/sessions/<id>/events.jsonl.
+        // No-op otherwise; zero effect on the render path either way.
+        tapSseEvent(event, { sessionId: session.id });
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,
