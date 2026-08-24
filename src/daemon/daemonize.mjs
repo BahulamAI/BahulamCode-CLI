@@ -1,5 +1,5 @@
 /**
- * PRD-092 Slice D — auto-daemon spawn + start-or-attach.
+ * . — auto-daemon spawn + start-or-attach.
  *
  * Two entrypoints:
  *

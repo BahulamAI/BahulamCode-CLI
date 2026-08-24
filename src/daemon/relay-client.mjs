@@ -1,24 +1,10 @@
 /**
- * PRD-092 Slice H — Daemon → relay WebSocket client.
+ * Relay WebSocket client — connects to the gateway relay and routes
+ * session events to attached CLI clients.
  *
- * When `bahulam remote enable` is set, the daemon dials
- * wss://<gateway>/relay/session/<sess_id>?device=<device_id>&token=<bearer>
- * and bridges:
- *
- *   local socket event → envelope { control: <event> } → relay
- *   envelope from relay ← relay ← control command → dispatch locally
- *
- * MVP scope (this slice):
- *   • WebSocket dial (uses Node 22+ built-in global `WebSocket`).
- *   • Reconnect with exponential backoff (250ms → 30s cap, ±25% jitter).
- *   • Bridge: register a broadcaster that sends every daemon event to
- *     the relay as an envelope with `to: "session"` and an unencrypted
- *     `control` body. (My gateway relay.py at /relay/session accepts
- *     both AEAD and control envelopes.)
- *   • Bridge back: on inbound envelope with a `control` command,
- *     dispatch to the same handlers the local socket-server uses
- *     (approve/deny/interrupt/send_message).
- *   • Heartbeat / keepalive via WebSocket ping (20s).
+ * On connect the client authenticates with a bearer token, then
+ * registers as a device on each active session. Events from the
+ * relay are dispatched to the appropriate session handler. *   • Heartbeat / keepalive via WebSocket ping (20s).
  *   • Kill-switch check: BAHULAM_RELAY_KILL=1 env var, plus config
  *     `remote.enabled = false` polled every 10s from the file so
  *     `bahulam remote disable` in another terminal drops us fast.
@@ -94,7 +80,7 @@ export function startRelayBridge({ sessionId, remoteConfig, registerBroadcaster,
       to,
       // No AEAD until Phase 2.5 — send as a `control` field which
       // gateway's relay.py forwards untouched (see routes/relay.py:_send_envelope).
-      // Payload is one PRD-092 event/command exactly as it would appear
+      // Payload is one  event/command exactly as it would appear
       // on the local socket, but plaintext for now.
       control: controlBody,
     });
@@ -230,7 +216,7 @@ export function startRelayBridge({ sessionId, remoteConfig, registerBroadcaster,
   if (typeof registerBroadcaster === 'function') {
     state.unregisterBroadcaster = registerBroadcaster(evt => {
       // Forward every event as a control-frame envelope so mobile sees
-      // the same PRD-092 §5.1 shape it does from the mock relay.
+      // the same  §5.1 shape it does from the mock relay.
       _send(evt);
     });
   }

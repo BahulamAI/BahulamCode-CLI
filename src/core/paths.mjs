@@ -162,7 +162,7 @@ export function historyPath() {
     return path.join(bahulamHome(), 'history.jsonl');
 }
 
-// ── PRD-092 daemon session paths ─────────────────────────────────────
+// ── daemon session paths ─────────────────────────────────────
 //
 // Daemon-owned sessions (bahulamd, detach/attach) live at:
 //   ~/.bahulam/sessions/<sess_id>/            per-session dir

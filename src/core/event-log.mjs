@@ -1,12 +1,11 @@
 /**
- * PRD-092 §6.4 / §6.8 — Append-only event log for daemon-owned sessions.
+ * Append-only event log for daemon-owned sessions.
  *
  * This module is the DURABLE side of the daemon. Every event the agent loop
  * emits (tool calls, approvals, diffs, usage updates, …) is written here so
  * that a detached-then-reattached client can reconstruct exactly what
  * happened while nobody was watching.
  *
- * Design constraints (from PRD-092):
  *   • Append-only, monotonic seq per session — never rewrite an earlier line.
  *   • Line-delimited JSON — one event per line, `JSON.parse` per line.
  *   • Rotate at ~100MB → events-1.jsonl, events-2.jsonl, … `events.jsonl`

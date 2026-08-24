@@ -1,5 +1,5 @@
 /**
- * PRD-092 Slice E — Pending-approval registry + timeout policy.
+ *   — Pending-approval registry + timeout policy.
  *
  * Bridges the two paths that can answer an approval request:
  *
@@ -141,7 +141,7 @@ export function resolvePending(decision, apr_id, decided_by, note = '') {
 
 /**
  * Introspection — used by the socket server's `attach_joined` replay
- * (Slice E follow-up) and by `bahulam status` to show pending approvals.
+ * ( follow-up) and by `bahulam status` to show pending approvals.
  */
 export function listPending() {
   return Array.from(_pending.values(), e => ({
@@ -173,7 +173,7 @@ export function shutdownAllPending(reason = 'shutdown') {
  *   (a) an approval_required event is emitted (broadcast to attaches),
  *   (b) a socket approve/deny can resolve the check before the TTY does.
  *
- * Usage in repl.mjs (Slice E wiring):
+ * Usage in repl.mjs ( wiring):
  *
  *     const orig = approval.check.bind(approval);
  *     approval.check = (tool, args, req, ctx) =>

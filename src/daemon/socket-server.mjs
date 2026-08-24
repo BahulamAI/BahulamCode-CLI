@@ -1,27 +1,12 @@
 /**
- * PRD-092 Slice B.4 — Unix socket server for the daemon session.
+ * Unix socket server — accepts local CLI client connections and
+ * dispatches relay events to attached clients.
  *
- * Purpose: turn a running CLI turn into something a second attach
- * client can observe (and, once approve/deny commands land, control).
- * One socket per session at ~/.bahulam/sockets/<sess_id>.sock (perms
- * 0600). Attaches speak the PRD-092 event/command protocol from
- * PRDs/PRD-092-relay-protocol.md over line-delimited JSON.
- *
- * What this slice ships (B.4):
- *   • Accept loop, per-connection framing, graceful teardown.
- *   • `hello` handshake: replay events with seq > last_seq, then live.
- *   • `bye` — client disconnects cleanly.
- *   • `approve` / `deny` — dispatched to a registered handler (Slice E
- *     wires the actual pending-approval store; for now the handler
- *     just receives the command).
- *   • `broadcastEvent(event)` — called by the tap to fan out live
- *     events to all attached clients.
- *
- * What's deferred to later slices:
- *   • `interrupt`, `send_message`, `switch_model` — require Slice C's
- *     input arbitration model.
- *   • Multi-attach input lock (Slice E).
- *   • Relay bridge (Slice H).
+ * Commands accepted from local clients:
+ *   • `approve` / `deny` — dispatched to the approval handler
+ *   • `interrupt`, `send_message`, `switch_model` — forwarded to relay
+ *   • `take_input_lock` / `release_input_lock` — lock management *   • Multi-attach input lock ().
+ *   • Relay bridge ().
  *
  * Design invariants:
  *   • ONE writer per event log; the server never writes to the log
@@ -178,7 +163,7 @@ function _createAttachedClient(sock, sessionId, onCommand) {
       case 'hello': {
         helloSeen = true;
         const lastSeq = Number(msg.last_seq) || 0;
-        // Slice E — input lock: first attach implicitly becomes holder;
+        //  — input lock: first attach implicitly becomes holder;
         // later attaches join as watchers. The state is stored in
         // input-lock.mjs; the changed event is emitted from THAT module
         // (via wireEmit()) so it also fans out through the tap and hits
@@ -204,7 +189,7 @@ function _createAttachedClient(sock, sessionId, onCommand) {
         });
         return;
       }
-      // Slice E — input lock commands. Both handled internally by the
+      //  — input lock commands. Both handled internally by the
       // shared input-lock.mjs state; the resulting input_lock_changed
       // event is emitted from that module (via wireEmit) so all attaches
       // see the transition, including the daemon's local renderer.
@@ -259,7 +244,7 @@ function _createAttachedClient(sock, sessionId, onCommand) {
       case 'interrupt':
       case 'send_message':
       case 'switch_model': {
-        // Slice E — typing-class commands require the input lock. Watch-
+        //  — typing-class commands require the input lock. Watch-
         // mode attaches get a `not_input_holder` error and can request
         // the lock via take_input_lock (steal-with-grace).
         if (!isHolder(attachId)) {

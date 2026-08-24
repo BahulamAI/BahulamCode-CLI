@@ -1,13 +1,13 @@
 /**
- * PRD-092 §6.1 / §6.8 — SessionCore: the daemon-owned view of a session.
+ *  §6.1 / §6.8 — SessionCore: the daemon-owned view of a session.
  *
- * The daemon (bahulamd, Slice B.3+) owns:
+ * The daemon (bahulamd, .3+) owns:
  *   1. The agent loop (SSE consumer → tool executor → event dispatch).
- *   2. The event log (PRD-092 §6.4).
+ *   2. The event log ( §6.4).
  *   3. The message history + cumulative usage — everything an attach
  *      client needs to reconstruct the transcript on reconnect.
  *
- * The attach client (Slice C) owns everything rendering-related:
+ * The attach client () owns everything rendering-related:
  *   spinner, per-line dedup, block-boundary tracking, sub-agent tool
  *   window, input-history for arrow keys, one-shot toasts, etc.
  *
@@ -18,7 +18,7 @@
  * bahulamd will call to write/read the periodic snapshot-<seq>.json
  * files that seed a re-attaching client.
  *
- * IMPORTANT — cache invariance (PRD-092 §7 note we keep repeating):
+ * IMPORTANT — cache invariance ( §7 note we keep repeating):
  * NOTHING in this module gets sent to the LLM. The snapshot is written
  * to local disk only. The daemon's outbound HTTP body to /api/execute
  * is constructed exactly the same way it is today — via existing code

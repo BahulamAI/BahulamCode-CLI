@@ -1,10 +1,10 @@
 /**
- * PRD-092 Slice I — Device pairing (client side).
+ * Device pairing — pair this laptop with a phone or another device
+ * for remote session monitoring.
  *
- * Companion to the gateway's /v1/devices/{code,pair,revoke} endpoints
- * (Slice G). This command turns "code on the screen" into "this laptop
- * is a paired device" on both sides.
+ * Two directions:
  *
+ *   bahulam pair get-code [name]      Generate a fresh 6-digit code. *
  * Two directions:
  *
  *   bahulam pair get-code [name]      Ask the gateway for a fresh 6-digit
@@ -183,7 +183,7 @@ function _pemPubkeyToBase64Raw(pemStr) {
   const der = Buffer.from(derBase64, 'base64');
   // Strip the 12-byte SPKI Ed25519 header. If length isn't 44 (12+32),
   // fall back to sending the full DER base64 — the gateway just stores
-  // it opaquely for Slice G; the raw-vs-SPKI decision is a Slice H
+  // it opaquely — the raw-vs-SPKI decision is a future
   // (session key wrap) concern anyway.
   if (der.length === 44) return der.slice(12).toString('base64');
   return derBase64;

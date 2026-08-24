@@ -1,25 +1,16 @@
 /**
- * PRD-092 Slice I — Remote relay control (client side).
+ * Remote relay control.
  *
- *   bahulam remote enable    Turn on the daemon → relay outbound connect.
- *                            Flips config.remote.enabled = true. The
- *                            daemon (once running) checks this flag on
- *                            each session_info to decide whether to dial
- *                            wss://relay.bahulam.ai (Slice H).
+ *   bahulam remote enable    Turn on the relay connection.
+ *                            Flips config to enable outbound relay dial.
  *
- *   bahulam remote disable   Kill switch. Flips config.remote.enabled =
- *                            false. Any running daemon drops its relay
- *                            connection within one heartbeat (Slice H
- *                            polls this flag).
+ *   bahulam remote disable   Turn off the relay connection (kill switch).
+ *                            Disabling drops the relay connection within
+ *                            one heartbeat interval.
  *
- *   bahulam remote status    Print current state: enabled flag, paired
- *                            device id, relay URL, last connect time
- *                            (if the daemon reported it).
- *
- * IMPORTANT: this command only flips a flag. The actual relay dial +
- * disconnect lives in the daemon (Slice H's relay-client.mjs). Enabling
- * remote WITHOUT first running `bahulam pair` is meaningless — the
- * daemon needs a device_id + keypair to authenticate to the relay.
+ * IMPORTANT: this command only flips a flag. The actual relay dial and
+ * disconnect lives in the daemon. Enabling does not guarantee a
+ * connection — the daemon must be running. * daemon needs a device_id + keypair to authenticate to the relay.
  */
 
 import { TarangAuth } from '../auth/tarang-auth.mjs';
@@ -97,7 +88,7 @@ function _status(auth) {
 }
 
 /**
- * Read-only helper for the daemon (Slice H). Returns the effective
+ * Read-only helper for the daemon. Returns the effective
  * remote config: { enabled, relay_url, device_id, private_key,
  * public_key, peer_pubkeys } — or null if we shouldn't dial.
  */

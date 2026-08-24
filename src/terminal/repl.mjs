@@ -2064,7 +2064,7 @@ function renderEvent(event) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
         if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
-        // PRD-092: Wire socket server for attach clients.
+        // Wire socket server for attach clients.
         // renderEvent() is NOT async, so we can't `await startSocketServer(...)`
         // directly (that fails at import time — "Unexpected reserved word").
         // Fire-and-forget IIFE, and guard against re-entry on session_info
@@ -5312,9 +5312,9 @@ export async function startTerminalRepl() {
       }
       for await (const event of _turnIterable) {
         jsonlWriter.writeKeplerEvent(event);
-        // PRD-092 §5.1 daemon event log. Env-var gated (off by default) —
+        // . daemon event log. Env-var gated (off by default) —
         // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
-        // to a first-class PRD-092 type into ~/.bahulam/sessions/<id>/events.jsonl.
+        // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
         // No-op otherwise; zero effect on the render path either way.
         tapSseEvent(event, { sessionId: session.id });
         if (event.type === 'plan_created' || event.type === 'goal_created') {

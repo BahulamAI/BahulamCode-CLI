@@ -293,7 +293,7 @@ async function main() {
     return;
   }
 
-  // ── Daemon subcommands (PRD-092) ──
+  // ── Daemon subcommands (daemon) ──
 
   if (subcommand === 'list') {
     const { listDaemonSessions } = await import('../daemon/session-list.mjs');
@@ -331,7 +331,7 @@ async function main() {
     return;
   }
 
-  // PRD-092 Slice D — auto-daemon spawn.
+  //  auto-daemon spawn.
   //   bahulam daemonize [prompt]  → fork a detached bahulam child with
   //   the socket server up. Parent waits briefly for the child's session
   //   id to appear, prints it, and exits. Attach later with `bahulam
@@ -356,7 +356,7 @@ async function main() {
     }
   }
 
-  // PRD-092 Slice D — auto-attach when a live daemon is bound to this cwd.
+  //  auto-attach when a live daemon is bound to this cwd.
   // Opt-in via BAHULAM_AUTO_ATTACH=1 so existing muscle memory (bahulam →
   // fresh REPL) isn't disrupted for users who haven't opted into the daemon
   // model. `bahulam --no-attach` bypasses even with the env var set.
@@ -372,9 +372,9 @@ async function main() {
     }
   }
 
-  // ── Headless mode (benchmarks, automation, PRD-092 daemonize) ──
+  // ── Headless mode (benchmarks, automation, daemonize) ──
   const args = parseArgs(process.argv.slice(2));
-  // PRD-092 Slice D: when this process is a spawned daemon (via
+  // Slice D: when this process is a spawned daemon (via
   // `bahulam daemonize`), pull the initial prompt from the env var
   // rather than argv — child was spawned with stdio: 'ignore' and no
   // shell args. BAHULAM_DAEMON_SPAWNED=1 is set by daemonize.mjs.

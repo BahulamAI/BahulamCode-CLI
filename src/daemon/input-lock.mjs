@@ -1,5 +1,5 @@
 /**
- * PRD-092 Slice E — Input lock state (multi-attach input arbitration).
+ *   — Input lock state (multi-attach input arbitration).
  *
  * Per PRD §6.5:
  *   - The first attach implicitly holds the input lock.

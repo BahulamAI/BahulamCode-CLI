@@ -1,10 +1,10 @@
 /**
- * PRD-092 Slice C — Attach client.
+ *   — Attach client.
  *
  * `bahulam attach <session-id>` connects to the daemon's Unix socket at
  * ~/.bahulam/sockets/<sess_id>.sock and mirrors the event stream in the
  * current terminal. It's the "observer + approver" surface — the local
- * counterpart to the mobile PWA. Every wire type is the same PRD-092
+ * counterpart to the mobile PWA. Every wire type is the same 
  * event/command schema the relay uses; only the transport differs.
  *
  * What this slice ships:
@@ -18,17 +18,17 @@
  *
  * What's deferred:
  *   • Full renderer parity (spinner, block boundaries, sub-agent window)
- *     — Slice D refactors repl-render.mjs to be attach-mode-aware.
- *   • Input-lock steal-with-grace (Slice E).
+ *     —  refactors repl-render.mjs to be attach-mode-aware.
+ *   • Input-lock steal-with-grace ().
  *   • Sending `send_message` / `switch_model` from the attach client
- *     (Slice C ships read+approve; interactive prompt input lands in D).
+ *     ( ships read+approve; interactive prompt input lands in D).
  *
- * NOT wired here (Slice E/H concerns):
+ * NOT wired here (/H concerns):
  *   • The daemon's approve/deny handlers don't yet resolve pending
  *     approvals (they stub as TODO in repl.mjs). Approvals we send from
  *     here will be dispatched to the daemon but the daemon-side pending
- *     approval registry is Slice E work. This client sends the wire
- *     command correctly — that's the piece Slice C is responsible for.
+ *     approval registry is  work. This client sends the wire
+ *     command correctly — that's the piece  is responsible for.
  */
 
 import * as fs from 'node:fs';

@@ -1,5 +1,5 @@
 /**
- * PRD-092 Slice M — session_directory publisher (daemon side).
+ * .  — session_directory publisher (daemon side).
  *
  * POSTs to the gateway's /v1/session-directory endpoint on session
  * lifecycle transitions so mobile clients + the web dashboard can see

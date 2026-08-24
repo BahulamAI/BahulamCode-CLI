@@ -1,35 +1,18 @@
 /**
- * PRD-092 Slice B.3 — SSE→PRD-092 event tap.
+ * Event tap — bridges SSE events from the agent loop to the relay.
  *
- * Bridges the current SSE stream (from `stream-client.mjs`, consumed by
- * repl.mjs's `for await` loop) to the append-only event log defined in
- * `src/core/event-log.mjs`. One call per yielded SSE event; the tap
- * decides whether it maps to a first-class PRD-092 §5.1 event and, if
- * so, calls `log.writeEvent()`.
- *
- * Off by default. Enabled only when the env var
- *
- *   BAHULAM_DAEMON_EVENTLOG=1
- *
- * is set. Under any other value (unset, "0", empty), tapSseEvent is a
- * no-op — importing this module and calling it costs nothing.
- *
- * Design notes (why here, not inline in repl.mjs):
- *   • The mapping SSE-type → PRD-092-type is a fixed table. Keeping it
- *     out of the big dispatch switch means the daemon's persistence
- *     layer isn't visually tangled with the terminal renderer.
- *   • bahulamd (Slice B.4+) will call tapSseEvent from a headless loop
- *     with no terminal at all — same function, same table.
- *   • Cache-invariance (PRD-092 §7): this tap is READ-ONLY on the SSE
+ * Each SSE event type is mapped to a relay event type. The mapping
+ * is a fixed table. Keeping it centralized avoids scattering
+ * relay-specific concerns across the agent loop. *   • Cache-invariance ( §7): this tap is READ-ONLY on the SSE
  *     event. It never mutates `event`, never changes what stream-client
  *     yields, and writes to a local file only. `/api/execute` body is
  *     untouched.
  *
- * NOT in scope for Slice B.3:
- *   • Broadcasting events to attached socket clients (Slice B.4).
- *   • Compact snapshot writing (Slice B.4 — the daemon supervisor
+ * NOT in scope for .3:
+ *   • Broadcasting events to attached socket clients (.4).
+ *   • Compact snapshot writing (.4 — the daemon supervisor
  *     decides when to snapshot; the tap doesn't).
- *   • Deriving PRD-092 events that don't have a direct SSE origin
+ *   • Deriving  events that don't have a direct SSE origin
  *     (e.g. `attach_joined`, `input_lock_changed` — those come from
  *     the socket server, not the SSE stream).
  */
@@ -76,7 +59,7 @@ export async function closeActiveEventLog() {
   _broadcasters.length = 0;
 }
 
-// ── broadcasters (Slice B.4) ─────────────────────────────────────────
+// ── broadcasters (.4) ─────────────────────────────────────────
 //
 // The socket server registers itself here so live events fan out to
 // attached clients as they're written to the durable log. Broadcasters
@@ -90,7 +73,7 @@ const _broadcasters = [];
 
 /**
  * Register a broadcaster. Returns an unregister function.
- * The broadcaster receives the fully-formed PRD-092 event AFTER it has
+ * The broadcaster receives the fully-formed  event AFTER it has
  * been written to the log (so `seq` and `ts` are populated).
  */
 export function registerBroadcaster(fn) {
@@ -102,10 +85,10 @@ export function registerBroadcaster(fn) {
   };
 }
 
-// ── SSE → PRD-092 event mapping ──────────────────────────────────────
+// ── SSE →  event mapping ──────────────────────────────────────
 //
 // Table (protocol spec §5.1). Only events that map to a first-class
-// PRD-092 type are logged. Everything else (status, thinking with
+//  type are logged. Everything else (status, thinking with
 // empty text, phase_update, worker_update, etc.) is renderer-transient
 // and doesn't belong in a durable event log.
 
@@ -171,7 +154,7 @@ function _projectData(prd092Type, data) {
 // ── the tap ──────────────────────────────────────────────────────────
 
 /**
- * Tap one SSE event to the PRD-092 event log.
+ * Tap one SSE event to the  event log.
  *
  * @param {{type: string, data?: object}} event  the SSE frame from stream-client
  * @param {object} opts

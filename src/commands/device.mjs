@@ -1,16 +1,9 @@
 /**
- * PRD-092 Slice I — Device inventory + revocation (kill switch).
+ * Device inventory and revocation.
  *
- *   bahulam device list             List all paired devices for this user
- *                                    (calls GET /v1/devices on the gateway).
- *
- *   bahulam device revoke <id>      Revoke a paired device. The gateway
- *                                    marks status=revoked and revokes all
- *                                    session grants; the daemon poller
- *                                    (Slice H) drops the connection within
- *                                    one heartbeat. Any paired device can
- *                                    revoke any other device — including
- *                                    revoking itself remotely.
+ *   bahulam device list             List all paired devices for this user.
+ *   bahulam device revoke <id>      Revoke a device (kill switch).
+ *                                    Revoked devices are dropped within *                                    revoking itself remotely.
  *
  *   bahulam device whoami           Print this device's registered id +
  *                                    pubkey (for cross-checking with

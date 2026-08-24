@@ -1,10 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { daemonSessionsRoot } from '../core/paths.mjs';
-
-export async function listDaemonSessions() {
-  const dir = daemonSessionsRoot();
-  try {
+ * Session list — reads local session metadata from ~/.bahulam/sessions/
+ * and presents them for attach/stop operations.  try {
     const entries = await readdir(dir, { withFileTypes: true });
     const sessions = [];
     for (const entry of entries) {

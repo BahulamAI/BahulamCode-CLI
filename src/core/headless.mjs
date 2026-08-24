@@ -17,7 +17,7 @@ import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
-// PRD-092 wiring — headless (and `bahulam daemonize`) also starts the socket
+// daemon wiring — headless (and `bahulam daemonize`) also starts the socket
 // server + relay bridge when eventlog is enabled. Without this the daemon
 // is invisible to attach clients and to paired mobile devices.
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
@@ -187,7 +187,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const subAgents = [];       // { type, model, duration_s, tool_calls, success }
     let stagnationCount = 0;
     let usage = {};             // { input_tokens, output_tokens, cache_read, cache_write }
-    // PRD-092 daemon wiring — one-shot per headless invocation.
+    // daemon wiring — one-shot per headless invocation.
     let prd092Started = false;
     let currentSessionId = null;
 
@@ -322,7 +322,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 // capture it from turn N and forward on turn N+1 (via TARANG_SESSION_ID).
                 if (data?.session_id) emit({ type: 'session_info', session_id: data.session_id });
 
-                // PRD-092 — same daemon wiring the interactive REPL does on
+                // — same daemon wiring the interactive REPL does on
                 // session_info: start the socket server so attach clients can
                 // connect, tap events, and (if remote is enabled) dial the
                 // relay so mobile can see the session. Gated by env var, one-
@@ -575,7 +575,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.stderr.write(`\n--- Response ---\n${finalContent.slice(0, 2000)}\n`);
     }
 
-    // PRD-092 — DAEMON_HOLD mode.
+    // — DAEMON_HOLD mode.
     //   BAHULAM_DAEMON_HOLD=1                   keep alive forever
     //   BAHULAM_DAEMON_HOLD=<seconds>           keep alive for N seconds
     //   BAHULAM_DAEMON_SPAWNED=1 (implicit)     hold with a default TTL if
@@ -589,7 +589,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     //
     // Exit signals honored: SIGTERM (from `bahulam stop <id>`), SIGINT
     // (Ctrl-C from a foreground shell), the TTL timer, and the idle-exit
-    // policy from PRD-092 §6.6 (30-min default with no attach).
+    // policy from §6.6 (30-min default with no attach).
     if (prd092Started) {
         const hold = process.env.BAHULAM_DAEMON_HOLD;
         const spawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
@@ -623,11 +623,11 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     process.exit(0);
 }
 
-// ── PRD-092 daemon-hold helpers ─────────────────────────────────────
+// ── daemon-hold helpers ─────────────────────────────────────
 
 /**
  * How long to hold. Explicit HOLD wins; else spawned-default is 30min
- * (PRD-092 §6.6 idle_ttl). Infinity for "1" or "true".
+ * (§6.6 idle_ttl). Infinity for "1" or "true".
  */
 function _resolveHoldTtl(holdEnv, spawned) {
   if (holdEnv === '1' || holdEnv === 'true') return Infinity;
@@ -635,7 +635,7 @@ function _resolveHoldTtl(holdEnv, spawned) {
     const n = Number(holdEnv);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  if (spawned) return 30 * 60;  // PRD-092 §6.6 default idle_ttl
+  if (spawned) return 30 * 60;  // §6.6 default idle_ttl
   return 60;                     // defensive fallback
 }
 
