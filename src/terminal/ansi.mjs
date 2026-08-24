@@ -729,7 +729,13 @@ export function table(headers, rows) {
 export function formatElapsed(startMs) {
   const s = Math.floor((Date.now() - startMs) / 1000);
   if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m${s % 60}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${s % 60}s`;
+  // Long-running REPL sessions: prefer 'HhMMmSSs' over a growing minute
+  // count. '264m42s' reads as broken; '4h24m42s' reads as time.
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${h}h${m}m${sec}s`;
 }
 
 // ── Format Cost ──

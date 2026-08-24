@@ -1241,12 +1241,17 @@ function buildContextStrip() {
   // Cache hit % lives under /cache — keep the always-on strip focused on
   // volume + elapsed. Historical rate calc was double-counting the cache tokens
   // vs OpenRouter's convention (see computeCacheTotals) which was misleading.
-  const right = [
-    c.dim(`${formatTokens(totalTokens)} tok`),
-    c.dim(elapsed),
-  ].join(c.dim(' · '));
-
-  return right;
+  const parts = [];
+  // ctx: last turn's cumulative input tokens — approximates the CURRENT
+  // prompt size. Only shown once we've completed at least one turn (so
+  // the initial banner doesn't read '0 ctx'). This is the number the
+  // 160k summarize threshold compares against on the next turn.
+  if (session.lastTurnInputTokens > 0) {
+    parts.push(c.dim(`ctx ${formatTokens(session.lastTurnInputTokens)}`));
+  }
+  parts.push(c.dim(`${formatTokens(totalTokens)} tok`));
+  parts.push(c.dim(elapsed));
+  return parts.join(c.dim(' · '));
 }
 
 // ── Dock meta line (model · cwd ⎇ branch · turn N) ─────────────────────
@@ -2153,6 +2158,10 @@ function renderEvent(event) {
         const out = usage.total_output_tokens || usage.output_tokens || 0;
         session.inputTokens += inp;
         session.outputTokens += out;
+        // Remember THIS turn's cumulative input for the dock strip's ctx
+        // indicator — approximates how big the prompt currently is (vs
+        // session.inputTokens which sums every turn since launch).
+        session.lastTurnInputTokens = inp;
 
         // Model-aware cost calculation
         const costResult = calculateCost(usage);
@@ -3628,6 +3637,7 @@ export async function startTerminalRepl() {
       startTime: Date.now(),
       inputTokens: 0,
       outputTokens: 0,
+      lastTurnInputTokens: 0,
       toolCalls: 0,
       subAgentToolCalls: 0,
       totalToolCalls: 0,
@@ -3986,9 +3996,23 @@ export async function startTerminalRepl() {
     initialContentRow: dockCursor.row,
     initialContentCol: dockCursor.col,
   });
+  // 1 Hz live-tick for the elapsed clock in the dock's top strip.
+  // Only fires when the user is idle (inputActive === true) — while the
+  // agent is streaming content, skipping the tick avoids ANSI writes
+  // interleaving with the stream. Cheap: one renderIdleDockInput per
+  // second, only if mounted + idle. `unref()` so the timer never blocks
+  // process exit.
+  let _dockTickTimer = null;
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
     process.on('exit',       unmountInputDock);
+    _dockTickTimer = setInterval(() => {
+      if (!isInputDockMounted()) return;
+      if (!inputActive) return;
+      try { renderIdleDockInput(); } catch { /* one bad tick is not fatal */ }
+    }, 1000);
+    _dockTickTimer.unref?.();
+    process.on('exit', () => { if (_dockTickTimer) clearInterval(_dockTickTimer); });
   }
 
   // ── Bracketed paste (DEC private mode 2004) ──────────────────────────────
