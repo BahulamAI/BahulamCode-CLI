@@ -73,6 +73,33 @@ export async function closeActiveEventLog() {
   const { log } = _current;
   _current = null;
   try { await log.close(); } catch { /* ignore */ }
+  _broadcasters.length = 0;
+}
+
+// ── broadcasters (Slice B.4) ─────────────────────────────────────────
+//
+// The socket server registers itself here so live events fan out to
+// attached clients as they're written to the durable log. Broadcasters
+// are fire-and-forget; a slow/broken one MUST NOT slow down or block
+// the tap. Each broadcaster is invoked in its own try/catch.
+//
+// Registration is process-global (one bahulamd = one process = one tap
+// registry). Multiple socket servers CAN register; the tap doesn't care.
+
+const _broadcasters = [];
+
+/**
+ * Register a broadcaster. Returns an unregister function.
+ * The broadcaster receives the fully-formed PRD-092 event AFTER it has
+ * been written to the log (so `seq` and `ts` are populated).
+ */
+export function registerBroadcaster(fn) {
+  if (typeof fn !== 'function') throw new Error('registerBroadcaster: fn must be a function');
+  _broadcasters.push(fn);
+  return () => {
+    const i = _broadcasters.indexOf(fn);
+    if (i >= 0) _broadcasters.splice(i, 1);
+  };
 }
 
 // ── SSE → PRD-092 event mapping ──────────────────────────────────────
@@ -163,9 +190,25 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
   if (!prd092Type) return;
   const log = _openLogFor(sessionId);
   const data = _projectData(prd092Type, event.data);
+  let seq;
   try {
-    log.writeEvent(prd092Type, data, turnId ? { turnId } : undefined);
+    seq = log.writeEvent(prd092Type, data, turnId ? { turnId } : undefined);
   } catch (err) {
     try { process.stderr.write(`[event-tap] writeEvent failed: ${err.message}\n`); } catch {}
+    return;
+  }
+  if (_broadcasters.length === 0) return;
+  const wireEvent = {
+    seq,
+    ts: new Date().toISOString(),
+    type: prd092Type,
+    session_id: sessionId,
+    v: 1,
+    ...(turnId ? { turn_id: turnId } : {}),
+    data,
+  };
+  for (const fn of _broadcasters) {
+    try { fn(wireEvent); }
+    catch (err) { try { process.stderr.write(`[event-tap] broadcaster failed: ${err.message}\n`); } catch {} }
   }
 }
