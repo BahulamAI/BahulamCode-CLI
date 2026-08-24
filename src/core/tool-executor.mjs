@@ -704,7 +704,7 @@ export function createToolExecutor({
             if (!chunks.length) {
                 return {
                     success: false,
-                    output: `Unsupported or empty file (mime=${mime}). Supported: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, html, log, rst. For CSV/Excel analysis use read_table; for images use analyze_image.`,
+                    output: `Unsupported or empty file (mime=${mime}). Supported text: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, xml, html, log, rst, sql, sh, .env, .ini, Dockerfile, .gitignore — plus any file whose first 8KB is valid UTF-8 (auto-sniffed). For CSV/Excel analysis use read_table; for images use analyze_image. If this is binary, ensure the file has a text extension or use read_table.`,
                     _tool: 'read_attachment',
                 };
             }
