@@ -27,6 +27,7 @@ import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
 import { writeSessionMeta } from './event-log.mjs';
 import { daemonSessionDir } from './paths.mjs';
+import { publishSessionDirectory, markSessionClosed } from '../daemon/session-publisher.mjs';
 import * as fsSync from 'node:fs';
 import * as pathSync from 'node:path';
 import {
@@ -371,6 +372,20 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                 try { process.stderr.write(`[prd-092] meta/pid write: ${err.message}\n`); } catch {}
                             }
 
+                            // Slice M — publish to session_directory so mobile
+                            // can list this session even before/after the
+                            // relay handshake. Fire-and-forget; a failure
+                            // here doesn't affect anything else.
+                            try {
+                                publishSessionDirectory({
+                                    sessionId: _sid,
+                                    token: creds.token,
+                                    cwd: process.cwd(),
+                                    model: options.model || null,
+                                    status: 'running',
+                                }).catch(() => {});
+                            } catch { /* silent */ }
+
                             // Optional relay dial (Slice H) — only when the
                             // user opted in via `bahulam remote enable`.
                             try {
@@ -560,5 +575,84 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.stderr.write(`\n--- Response ---\n${finalContent.slice(0, 2000)}\n`);
     }
 
+    // PRD-092 — DAEMON_HOLD mode.
+    //   BAHULAM_DAEMON_HOLD=1                   keep alive forever
+    //   BAHULAM_DAEMON_HOLD=<seconds>           keep alive for N seconds
+    //   BAHULAM_DAEMON_SPAWNED=1 (implicit)     hold with a default TTL if
+    //                                            HOLD not explicitly set
+    //
+    // When held, we DO NOT exit after agent_complete. The socket server and
+    // relay bridge (started earlier by the session_info wiring) stay up so
+    // attach clients and paired mobile devices can still see the session,
+    // reconnect, replay events from disk, and — once send_message is wired
+    // — kick off follow-up turns without spinning up a fresh daemon.
+    //
+    // Exit signals honored: SIGTERM (from `bahulam stop <id>`), SIGINT
+    // (Ctrl-C from a foreground shell), the TTL timer, and the idle-exit
+    // policy from PRD-092 §6.6 (30-min default with no attach).
+    if (prd092Started) {
+        const hold = process.env.BAHULAM_DAEMON_HOLD;
+        const spawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
+        const holdMode = hold != null || spawned;
+        if (holdMode) {
+            // Slice M — mark idle in the session directory so the mobile
+            // list shows the session as available-but-not-active.
+            try {
+                publishSessionDirectory({
+                    sessionId: currentSessionId,
+                    token: creds.token,
+                    cwd: process.cwd(),
+                    model: options.model || null,
+                    status: 'idle',
+                }).catch(() => {});
+            } catch { /* silent */ }
+
+            const ttlSec = _resolveHoldTtl(hold, spawned);
+            const banner = ttlSec === Infinity ? 'until stopped' : `for ${ttlSec}s`;
+            log(`[prd-092] daemon holding ${banner}. Attach: bahulam attach ${currentSessionId || '<id>'}`);
+            await _blockUntilStop(ttlSec);
+            log('[prd-092] daemon exiting (hold expired or signal received)');
+        }
+        // Whether held or not, mark the session closed in the directory
+        // so mobile doesn't list a gone-forever daemon as "idle" forever.
+        try {
+            await markSessionClosed({ sessionId: currentSessionId, token: creds.token });
+        } catch { /* silent */ }
+    }
+
     process.exit(0);
+}
+
+// ── PRD-092 daemon-hold helpers ─────────────────────────────────────
+
+/**
+ * How long to hold. Explicit HOLD wins; else spawned-default is 30min
+ * (PRD-092 §6.6 idle_ttl). Infinity for "1" or "true".
+ */
+function _resolveHoldTtl(holdEnv, spawned) {
+  if (holdEnv === '1' || holdEnv === 'true') return Infinity;
+  if (holdEnv != null && holdEnv !== '') {
+    const n = Number(holdEnv);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  if (spawned) return 30 * 60;  // PRD-092 §6.6 default idle_ttl
+  return 60;                     // defensive fallback
+}
+
+/**
+ * Await SIGTERM/SIGINT or the TTL. Resolves without an error either way —
+ * the caller then falls through to process.exit(0) so bahulam stop looks
+ * like a clean shutdown, not a crash.
+ */
+function _blockUntilStop(ttlSec) {
+  return new Promise(resolve => {
+    let done = false;
+    const _done = () => { if (done) return; done = true; resolve(); };
+    process.once('SIGTERM', _done);
+    process.once('SIGINT', _done);
+    if (ttlSec !== Infinity) {
+      const t = setTimeout(_done, ttlSec * 1000);
+      if (typeof t.unref === 'function') t.unref();
+    }
+  });
 }
