@@ -36,6 +36,7 @@ import { ReadFilesTool } from './read-files.mjs';
 import { SearchFilesTool } from './search-files.mjs';
 import { AnalyzeCodeTool } from './analyze-code.mjs';
 import { ExploreTool, PlanTool, VerifyTool, DebugTool, RefactorTool } from './meta-tools.mjs';
+import { RememberTool } from './remember.mjs';
 
 const BUILTIN_TOOLS = [
     BashTool,
@@ -48,6 +49,7 @@ const BUILTIN_TOOLS = [
     WebFetchTool,
     WebSearchTool,
     TodoWriteTool,
+    RememberTool,
     NotebookEditTool,
     MultiEditTool,
     LsTool,
