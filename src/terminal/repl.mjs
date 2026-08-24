@@ -27,6 +27,8 @@ import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
+import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
@@ -2074,14 +2076,75 @@ function renderEvent(event) {
               const server = await startSocketServer({
                 sessionId: _sid,
                 onCommand: {
-                  approve: async (payload, attachId) => { /* Slice E wires the pending-approval store */ },
-                  deny: async (payload, attachId) => { /* Slice E */ },
-                  interrupt: async () => { /* Slice C — stream-client cancel via ctx */ },
-                  send_message: async (payload, attachId) => { /* Slice C — needs input lock */ },
+                  // Slice E — approve/deny now resolve any pending approval
+                  // registered via interceptApproval(). Returns false if the
+                  // apr_id is unknown or already answered (log-only, not an
+                  // error surfaced to the client — the racy nature of two
+                  // attaches answering is expected).
+                  approve: async (payload, attachId) => {
+                    const ok = resolvePending('approve', payload?.apr_id, attachId, payload?.note);
+                    if (!ok) try { process.stderr.write(`[prd-092] approve for unknown apr_id ${payload?.apr_id}\n`); } catch {}
+                  },
+                  deny: async (payload, attachId) => {
+                    const ok = resolvePending('deny', payload?.apr_id, attachId, payload?.note);
+                    if (!ok) try { process.stderr.write(`[prd-092] deny for unknown apr_id ${payload?.apr_id}\n`); } catch {}
+                  },
+                  // Slice C/E — interrupt from an attach holder cancels the
+                  // current turn. Uses the stream client on the closure
+                  // above (streamClient variable is in scope in this file
+                  // at the outer REPL loop; if unavailable, log and skip).
+                  interrupt: async (_payload, _attachId) => {
+                    try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {}
+                  },
+                  send_message: async (_payload, _attachId) => {
+                    // Slice C follow-up. Requires plumbing into the turn
+                    // handler; enqueued as a TODO for the daemon slice.
+                  },
                 }
               });
               session._prd092SocketServer = server;
               session._prd092Unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+              // Slice E — input-lock changes broadcast via the tap so the
+              // input_lock_changed events flow to attached clients + land
+              // in the event log. Emit under the sessionId in scope.
+              wireInputLockEmit((type, data) => {
+                try { tapSseEvent({ type, data }, { sessionId: _sid }); }
+                catch { /* never blocks a lock transition */ }
+              });
+              // Slice E — apply the timeout policy from env (safe default:
+              // 'hold' = never times out). Explicit opt-in via env var so
+              // running unattended is a conscious choice, not a surprise.
+              //   BAHULAM_APPROVAL_TIMEOUT=hold                (default)
+              //   BAHULAM_APPROVAL_TIMEOUT=deny:300            (auto-deny after 5min)
+              //   BAHULAM_APPROVAL_TIMEOUT=allow:300           (auto-approve; gated behind --dangerously-skip-permissions elsewhere)
+              try {
+                const p = String(process.env.BAHULAM_APPROVAL_TIMEOUT || 'hold').trim();
+                const [mode, secStr] = p.split(':');
+                setTimeoutPolicy({
+                  mode: (mode === 'deny' || mode === 'allow') ? mode : 'hold',
+                  durationSec: Number(secStr) || 0,
+                });
+              } catch { /* stay on hold */ }
+              // Slice E — intercept ApprovalManager.check so every prompt
+              // also emits approval_required to attached clients AND can be
+              // resolved by a remote approve/deny command (racing the local
+              // TTY prompt; first answer wins). Only patch once per session.
+              try {
+                if (approval && !approval._prd092Intercepted) {
+                  const orig = approval.check.bind(approval);
+                  approval.check = (tool, args, req, ctx) => interceptApproval(orig, {
+                    tool, args, req, ctx,
+                    sessionId: _sid,
+                    emit: (type, data) => {
+                      try { tapSseEvent({ type, data }, { sessionId: _sid }); }
+                      catch { /* never blocks approval */ }
+                    },
+                  });
+                  approval._prd092Intercepted = true;
+                }
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] approval intercept: ${err.message}\n`); } catch {}
+              }
               // Populate ~/.bahulam/sessions/<id>/meta.json + daemon.pid so
               // `bahulam list` and `bahulam stop <id>` see this session.
               // These files are what session-list.mjs / stop-daemon.mjs

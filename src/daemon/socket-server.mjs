@@ -39,6 +39,9 @@ import * as path from 'node:path';
 
 import { readEvents, readLatestSnapshot } from '../core/event-log.mjs';
 import { daemonSocketPath, daemonSocketsDir } from '../core/paths.mjs';
+import {
+  onAttachJoined, onAttachLeft, takeInputLock, releaseInputLock, isHolder,
+} from './input-lock.mjs';
 
 const NL = '\n';
 
@@ -175,19 +178,57 @@ function _createAttachedClient(sock, sessionId, onCommand) {
       case 'hello': {
         helloSeen = true;
         const lastSeq = Number(msg.last_seq) || 0;
-        _send({ type: 'hello_ok', v: 1, data: { attach_id: attachId, session_id: sessionId } });
+        // Slice E — input lock: first attach implicitly becomes holder;
+        // later attaches join as watchers. The state is stored in
+        // input-lock.mjs; the changed event is emitted from THAT module
+        // (via wireEmit()) so it also fans out through the tap and hits
+        // the event log for later attaches to replay.
+        const lockInfo = onAttachJoined(attachId);
+        _send({
+          type: 'hello_ok', v: 1,
+          data: {
+            attach_id: attachId,
+            session_id: sessionId,
+            input_lock: { holder: lockInfo.holder, kind: lockInfo.kind },
+          },
+        });
         await _replaySince(lastSeq);
-        // Emit an attach_joined event so watchers see us. This is NOT
-        // written to the durable log (the tap writes those); it's a
-        // wire-only meta event framing the live stream.
         _send({
           seq: 0, ts: new Date().toISOString(), type: 'attach_joined',
           session_id: sessionId, v: 1,
-          data: { attach_id: attachId, kind: 'local', human_hint: msg.human_hint || null },
+          data: {
+            attach_id: attachId, kind: 'local',
+            human_hint: msg.human_hint || null,
+            input_role: lockInfo.kind,   // 'holder' | 'watch'
+          },
         });
         return;
       }
+      // Slice E — input lock commands. Both handled internally by the
+      // shared input-lock.mjs state; the resulting input_lock_changed
+      // event is emitted from that module (via wireEmit) so all attaches
+      // see the transition, including the daemon's local renderer.
+      case 'take_input_lock': {
+        const out = takeInputLock(attachId);
+        _send({
+          seq: 0, ts: new Date().toISOString(), type: 'input_lock_ack',
+          session_id: sessionId, v: 1,
+          data: { in_reply_to: msg.reply_to || null, ...out },
+        });
+        return;
+      }
+      case 'release_input_lock': {
+        const out = releaseInputLock(attachId);
+        _send({
+          seq: 0, ts: new Date().toISOString(), type: 'input_lock_ack',
+          session_id: sessionId, v: 1,
+          data: { in_reply_to: msg.reply_to || null, ...out },
+        });
+        return;
+      }
+
       case 'bye': {
+        onAttachLeft(attachId);
         // Serialize attach_left, then end() only after the write drains.
         // Immediate sock.end() after sock.write() races the flush on some
         // kernels — the FIN can go out before the frame's last byte lands
@@ -217,9 +258,23 @@ function _createAttachedClient(sock, sessionId, onCommand) {
       }
       case 'interrupt':
       case 'send_message':
-      case 'switch_model':
-      case 'take_input_lock':
-      case 'release_input_lock':
+      case 'switch_model': {
+        // Slice E — typing-class commands require the input lock. Watch-
+        // mode attaches get a `not_input_holder` error and can request
+        // the lock via take_input_lock (steal-with-grace).
+        if (!isHolder(attachId)) {
+          _sendError('not_input_holder', `command ${msg.type} requires the input lock; send take_input_lock first`, msg.reply_to);
+          return;
+        }
+        const handler = onCommand[msg.type];
+        if (typeof handler !== 'function') {
+          _sendError('not_implemented', `command ${msg.type} is not wired yet (deferred slice)`, msg.reply_to);
+          return;
+        }
+        try { await handler(msg.data || {}, attachId); }
+        catch (err) { _sendError('handler_failed', err.message, msg.reply_to); }
+        return;
+      }
       case 'wake': {
         const handler = onCommand[msg.type];
         if (typeof handler !== 'function') {
