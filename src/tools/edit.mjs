@@ -3,7 +3,7 @@
  *
  * Features:
  * - replace_all parameter for global replacement
- * - Verify old_string is unique (error if not)
+ * - Verify search string is unique (error if not)
  * - Require file was Read first (track read files)
  * - Preserve exact indentation
  */
@@ -12,23 +12,23 @@ import path from 'path';
 import { hasBeenRead, markRead } from './read.mjs';
 
 export const EditTool = {
-    name: 'Edit',
+    name: 'edit_file',
     description: 'Performs exact string replacements in files.',
     inputSchema: {
         type: 'object',
         properties: {
             file_path: { type: 'string', description: 'Absolute path to the file' },
-            old_string: { type: 'string', description: 'The text to replace' },
-            new_string: { type: 'string', description: 'The replacement text' },
+            search: { type: 'string', description: 'The text to replace' },
+            replace: { type: 'string', description: 'The replacement text' },
             replace_all: { type: 'boolean', description: 'Replace all occurrences', default: false },
         },
-        required: ['file_path', 'old_string', 'new_string'],
+        required: ['file_path', 'search', 'replace'],
     },
     validateInput(input) {
         const errors = [];
         if (!input.file_path) errors.push('file_path required');
-        if (!input.old_string && input.old_string !== '') errors.push('old_string required');
-        if (input.old_string === input.new_string) errors.push('old_string must differ from new_string');
+        if (!input.search && input.search !== '') errors.push('search is required');
+        if (input.search === input.replace) errors.push('search must differ from replace');
         return errors;
     },
     async call(input) {
@@ -51,23 +51,23 @@ export const EditTool = {
             return `Error: ${e.message}`;
         }
 
-        if (!content.includes(input.old_string)) {
-            return 'Error: old_string not found in file. Make sure the string matches exactly, including whitespace and indentation.';
+        if (!content.includes(input.search)) {
+            return 'Error: search string not found in file. Make sure the string matches exactly, including whitespace and indentation.';
         }
 
         if (input.replace_all) {
             // Replace all occurrences
-            const escaped = input.old_string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            content = content.replace(new RegExp(escaped, 'g'), input.new_string);
+            const escaped = input.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            content = content.replace(new RegExp(escaped, 'g'), input.replace);
         } else {
-            // Check uniqueness: old_string must appear exactly once
-            const firstIdx = content.indexOf(input.old_string);
-            const secondIdx = content.indexOf(input.old_string, firstIdx + 1);
+            // Check uniqueness: search string must appear exactly once
+            const firstIdx = content.indexOf(input.search);
+            const secondIdx = content.indexOf(input.search, firstIdx + 1);
             if (secondIdx !== -1) {
-                const count = content.split(input.old_string).length - 1;
-                return `Error: old_string is not unique in the file (found ${count} occurrences). Provide more context to make it unique, or use replace_all to replace all occurrences.`;
+                const count = content.split(input.search).length - 1;
+                return `Error: search string is not unique in the file (found ${count} occurrences). Provide more context to make it unique, or use replace_all to replace all occurrences.`;
             }
-            content = content.replace(input.old_string, input.new_string);
+            content = content.replace(input.search, input.replace);
         }
 
         try {

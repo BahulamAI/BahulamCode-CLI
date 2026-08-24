@@ -74,13 +74,16 @@ function walkDir(dir, maxDepth = 20, depth = 0) {
 }
 
 export const GlobTool = {
-    name: 'Glob',
+    name: 'list_files',
     description: 'Find files matching a glob pattern, sorted by modification time.',
     inputSchema: {
         type: 'object',
         properties: {
             pattern: { type: 'string', description: 'Glob pattern (e.g. "**/*.js")' },
-            path: { type: 'string', description: 'Directory to search in' },
+            path: { type: 'string', description: 'Directory path' },
+            recursive: { type: 'boolean', description: 'Search recursively' },
+            format: { type: 'string', enum: ['files', 'tree'], description: "Output format. 'files' returns matching file paths; 'tree' returns a bounded directory tree including folders." },
+            max_depth: { type: 'integer', description: "Maximum tree depth when format='tree' (default 2, max 6)" },
         },
         required: ['pattern'],
     },

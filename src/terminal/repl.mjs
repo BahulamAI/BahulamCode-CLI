@@ -25,7 +25,18 @@ import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCred
 import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
+import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
+import { startSocketServer } from '../daemon/socket-server.mjs';
+import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
+import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
+import { startRelayBridge } from '../daemon/relay-client.mjs';
+import { loadRemoteConfig } from '../commands/remote.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+// PRD-091 Phase 3 preview: opt-in gateway loop path. Set
+// BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
+// /v1/agent/turn instead of the local bundled runtime. Falls back to
+// the existing local-agent path if the flag is unset.
+import { createAgentLoop, createGatewaySession } from '../core/loop.mjs';
 import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
@@ -2008,7 +2019,12 @@ function renderEvent(event) {
       flushFoldedSubAgentTools();
       const agentType = data?.type || 'sub-agent';
       const usage = data?.usage || {};
-      const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      // Output tokens = generation size. Summing input+output across a
+      // multi-iteration sub-agent double-counts the context re-shipped each
+      // iteration (a 16-iter run can inflate to 600k+ "tokens" of which
+      // ~95% is repeated context) — the resulting number reads as usage but
+      // it's really billing accumulation, not useful signal in the close line.
+      const tokens = usage.output_tokens || 0;
       const costUsd = usage.cost_usd ?? usage.total_cost_usd ?? data?.cost_usd ?? null;
       if (typeof costUsd === 'number') session.savedUsd += costUsd;
       const summary = data?.result_summary
@@ -2048,6 +2064,150 @@ function renderEvent(event) {
         session.id = data.session_id;
         // Track in session manager so conversations save to the right file
         if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
+        // PRD-092: Wire socket server for attach clients.
+        // renderEvent() is NOT async, so we can't `await startSocketServer(...)`
+        // directly (that fails at import time — "Unexpected reserved word").
+        // Fire-and-forget IIFE, and guard against re-entry on session_info
+        // repeats (backend can re-emit on reconnect; two listen()s on the
+        // same sock path → EADDRINUSE and both server + tap explode).
+        if (process.env.BAHULAM_DAEMON_EVENTLOG === '1' && !session._prd092SocketStarting && !session._prd092SocketServer) {
+          session._prd092SocketStarting = true;
+          const _sid = session.id;
+          (async () => {
+            try {
+              const server = await startSocketServer({
+                sessionId: _sid,
+                onCommand: {
+                  // Slice E — approve/deny now resolve any pending approval
+                  // registered via interceptApproval(). Returns false if the
+                  // apr_id is unknown or already answered (log-only, not an
+                  // error surfaced to the client — the racy nature of two
+                  // attaches answering is expected).
+                  approve: async (payload, attachId) => {
+                    const ok = resolvePending('approve', payload?.apr_id, attachId, payload?.note);
+                    if (!ok) try { process.stderr.write(`[prd-092] approve for unknown apr_id ${payload?.apr_id}\n`); } catch {}
+                  },
+                  deny: async (payload, attachId) => {
+                    const ok = resolvePending('deny', payload?.apr_id, attachId, payload?.note);
+                    if (!ok) try { process.stderr.write(`[prd-092] deny for unknown apr_id ${payload?.apr_id}\n`); } catch {}
+                  },
+                  // Slice C/E — interrupt from an attach holder cancels the
+                  // current turn. Uses the stream client on the closure
+                  // above (streamClient variable is in scope in this file
+                  // at the outer REPL loop; if unavailable, log and skip).
+                  interrupt: async (_payload, _attachId) => {
+                    try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {}
+                  },
+                  send_message: async (_payload, _attachId) => {
+                    // Slice C follow-up. Requires plumbing into the turn
+                    // handler; enqueued as a TODO for the daemon slice.
+                  },
+                }
+              });
+              session._prd092SocketServer = server;
+              session._prd092Unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+              // Slice E — input-lock changes broadcast via the tap so the
+              // input_lock_changed events flow to attached clients + land
+              // in the event log. Emit under the sessionId in scope.
+              wireInputLockEmit((type, data) => {
+                try { tapSseEvent({ type, data }, { sessionId: _sid }); }
+                catch { /* never blocks a lock transition */ }
+              });
+              // Slice E — apply the timeout policy from env (safe default:
+              // 'hold' = never times out). Explicit opt-in via env var so
+              // running unattended is a conscious choice, not a surprise.
+              //   BAHULAM_APPROVAL_TIMEOUT=hold                (default)
+              //   BAHULAM_APPROVAL_TIMEOUT=deny:300            (auto-deny after 5min)
+              //   BAHULAM_APPROVAL_TIMEOUT=allow:300           (auto-approve; gated behind --dangerously-skip-permissions elsewhere)
+              try {
+                const p = String(process.env.BAHULAM_APPROVAL_TIMEOUT || 'hold').trim();
+                const [mode, secStr] = p.split(':');
+                setTimeoutPolicy({
+                  mode: (mode === 'deny' || mode === 'allow') ? mode : 'hold',
+                  durationSec: Number(secStr) || 0,
+                });
+              } catch { /* stay on hold */ }
+              // Slice E — intercept ApprovalManager.check so every prompt
+              // also emits approval_required to attached clients AND can be
+              // resolved by a remote approve/deny command (racing the local
+              // TTY prompt; first answer wins). Only patch once per session.
+              try {
+                if (approval && !approval._prd092Intercepted) {
+                  const orig = approval.check.bind(approval);
+                  approval.check = (tool, args, req, ctx) => interceptApproval(orig, {
+                    tool, args, req, ctx,
+                    sessionId: _sid,
+                    emit: (type, data) => {
+                      try { tapSseEvent({ type, data }, { sessionId: _sid }); }
+                      catch { /* never blocks approval */ }
+                    },
+                  });
+                  approval._prd092Intercepted = true;
+                }
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] approval intercept: ${err.message}\n`); } catch {}
+              }
+              // Slice H — dial the relay if `bahulam remote enable` set the
+              // flag. Bridge is bidirectional: local events go out as
+              // control-frame envelopes, incoming envelopes dispatch to the
+              // same handlers the local socket-server uses (so approve/deny
+              // from a phone runs the same resolvePending path).
+              try {
+                const remoteCfg = loadRemoteConfig();
+                if (remoteCfg?.enabled) {
+                  const bridge = startRelayBridge({
+                    sessionId: _sid,
+                    remoteConfig: remoteCfg,
+                    registerBroadcaster,
+                    onCommand: {
+                      approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
+                      deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
+                      interrupt: async () => { try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {} },
+                      send_message: async (_p, _a) => { /* Slice C follow-up */ },
+                    },
+                  });
+                  session._prd092RelayBridge = bridge;
+                }
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] relay bridge: ${err.message}\n`); } catch {}
+              }
+              // Populate ~/.bahulam/sessions/<id>/meta.json + daemon.pid so
+              // `bahulam list` and `bahulam stop <id>` see this session.
+              // These files are what session-list.mjs / stop-daemon.mjs
+              // read; without them those commands are cosmetic. Fire-and-
+              // forget imports so a write failure never affects the turn.
+              try {
+                const [{ writeSessionMeta }, fs, path, { daemonSessionDir }] = await Promise.all([
+                  import('../core/event-log.mjs'),
+                  import('node:fs'),
+                  import('node:path'),
+                  import('../core/paths.mjs'),
+                ]);
+                await writeSessionMeta({
+                  sessionId: _sid,
+                  meta: {
+                    cwd: process.cwd(),
+                    model: session.model || null,
+                    pid: process.pid,
+                    sock_path: server.sockPath,
+                    opened_at: new Date().toISOString(),
+                  },
+                });
+                fs.writeFileSync(
+                  path.join(daemonSessionDir(_sid), 'daemon.pid'),
+                  String(process.pid),
+                  { mode: 0o600 },
+                );
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] meta/pid write: ${err.message}\n`); } catch {}
+              }
+            } catch (err) {
+              try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
+            } finally {
+              session._prd092SocketStarting = false;
+            }
+          })();
+        }
       }
       if (data?.model) session.model = data.model;
       if (data?.models?.coder) session.model = data.models.coder;
@@ -5116,8 +5276,47 @@ export async function startTerminalRepl() {
         }
       }
 
-      for await (const event of client.execute(input, execContext, session.agentHistory)) {
+      // PRD-091 Phase 3 preview: BAHULAM_USE_GATEWAY_LOOP=1 routes the
+      // turn through the gateway's /v1/agent/turn (thin CLI loop) instead
+      // of the local bundled runtime. Session is bootstrapped lazily on
+      // first turn and reused across the REPL. Falls through to the
+      // existing local-agent path when the flag is unset (default today).
+      const _useGatewayLoop = process.env.BAHULAM_USE_GATEWAY_LOOP === '1';
+      let _turnIterable;
+      if (_useGatewayLoop) {
+        if (!session.gatewaySession) {
+          try {
+            session.gatewaySession = await createGatewaySession({
+              workspace: process.env.BAHULAM_WORKSPACE || 'kepler-code',
+              model: process.env.BAHULAM_MODEL || undefined,
+            });
+            process.stderr.write(
+              `  ${c.dim(`[gateway] session ${session.gatewaySession.session_id.slice(0, 20)}… ${session.gatewaySession.tool_schemas.length} tools, model=${session.gatewaySession.model}`)}\n`,
+            );
+          } catch (err) {
+            process.stderr.write(`  ${c.warn(`[gateway] session create failed: ${err.message}`)}\n`);
+            process.stderr.write(`  ${c.dim('falling back to local-agent path')}\n`);
+            session.gatewaySession = null;  // don't retry every turn
+          }
+        }
+        if (session.gatewaySession) {
+          _turnIterable = createAgentLoop({
+            session: session.gatewaySession,
+            messages: session.agentHistory,
+            toolExecutor,
+          });
+        }
+      }
+      if (!_turnIterable) {
+        _turnIterable = client.execute(input, execContext, session.agentHistory);
+      }
+      for await (const event of _turnIterable) {
         jsonlWriter.writeKeplerEvent(event);
+        // PRD-092 §5.1 daemon event log. Env-var gated (off by default) —
+        // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
+        // to a first-class PRD-092 type into ~/.bahulam/sessions/<id>/events.jsonl.
+        // No-op otherwise; zero effect on the render path either way.
+        tapSseEvent(event, { sessionId: session.id });
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,

@@ -19,6 +19,7 @@
 
 import { paint } from './palette.mjs';
 import { icons } from './icons.mjs';
+import { formatSeconds } from '../terminal/ansi.mjs';
 
 const SUB_ICONS = {
   explore: '🔭',
@@ -122,9 +123,14 @@ export function renderSubAgentClose({
   const parts = [];
   if (toolCalls > 0)              parts.push(`${toolCalls} tools`);
   if (iterations > 0)             parts.push(`${iterations} iter`);
-  if (tokens > 0)                 parts.push(`${formatTokens(tokens)} tok`);
+  // Tokens: pass the OUTPUT (generation) count only. Summing input+output
+  // across a multi-iteration sub-agent double-counts the context that is
+  // re-shipped each iteration, and the resulting number reads huge and
+  // misleading (e.g. 632.8k for a 16-iter run whose actual generation was
+  // a fraction of that). Output tokens are the honest "work done" number.
+  if (tokens > 0)                 parts.push(`${formatTokens(tokens)} gen`);
   if (typeof costUsd === 'number' && costUsd > 0) parts.push(formatCost(costUsd));
-  if (durationS != null)          parts.push(`${Number(durationS).toFixed(1)}s`);
+  if (durationS != null)          parts.push(formatSeconds(durationS));
   const detail = parts.length ? paint.text.dim(' · ' + parts.join(' · ')) : '';
 
   const body = summary

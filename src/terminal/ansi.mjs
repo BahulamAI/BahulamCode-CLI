@@ -727,9 +727,26 @@ export function table(headers, rows) {
 // ── Elapsed Timer ──
 
 export function formatElapsed(startMs) {
-  const s = Math.floor((Date.now() - startMs) / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m${s % 60}s`;
+  return formatSeconds((Date.now() - startMs) / 1000);
+}
+
+/**
+ * Human-readable duration from a numeric seconds value. Same shape as
+ * formatElapsed (`1h:35m:19s` / `35m:19s` / `19s`) so every duration in
+ * the UI reads the same. Sub-second values fall back to one decimal so
+ * fast tool calls don't collapse to `0s`.
+ */
+export function formatSeconds(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s < 0) return '0s';
+  if (s < 1) return `${s.toFixed(1)}s`;
+  const whole = Math.floor(s);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const sec = whole % 60;
+  if (h > 0) return `${h}h:${m}m:${sec}s`;
+  if (m > 0) return `${m}m:${sec}s`;
+  return `${sec}s`;
 }
 
 // ── Format Cost ──

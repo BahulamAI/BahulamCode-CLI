@@ -24,9 +24,11 @@ import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
+import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 
 /**
@@ -43,6 +45,35 @@ export function createToolExecutor({
     hookRunner = null,
     interactionHandler = null,
 } = {}) {
+    // Cross-session memory cache. Ships in getAgentContext() on every turn,
+    // so we need it to be byte-identical when the underlying disk file hasn't
+    // changed — otherwise the backend's prompt cache invalidates on every
+    // ExecuteRequest.
+    //
+    // Strategy: mtime-driven cache. Read the mtimes of the global +
+    // project memory files; if unchanged since the last call, return the
+    // cached snapshot. The `remember` tool writes to disk directly, which
+    // bumps mtime and forces a reload on the next getAgentContext() call.
+    //
+    // Self-heal ~/.bahulam/ once at construction; loadDiskMemory() also
+    // guards it, but doing it here means the first read is a plain fs stat
+    // rather than a mkdir round-trip.
+    try { ensureBahulamDir('global'); } catch { /* ignore */ }
+    let _memoryCache = null; // { key: string, facts: Fact[], digest: string }
+    function _readMemorySnapshot() {
+        const gPath = globalMemoryPath();
+        const pPath = projectMemoryPath(process.cwd());
+        const gStat = fs.existsSync(gPath) ? fs.statSync(gPath).mtimeMs : 0;
+        const pStat = fs.existsSync(pPath) ? fs.statSync(pPath).mtimeMs : 0;
+        const key = `${gStat}|${pStat}|${process.cwd()}`;
+        if (_memoryCache && _memoryCache.key === key) return _memoryCache;
+        const facts = loadDiskMemory(process.cwd());
+        const digest = crypto.createHash('sha256')
+            .update(JSON.stringify(facts.map(f => [f.fact_id, f.content, f.updated_at])))
+            .digest('hex').slice(0, 16);
+        _memoryCache = { key, facts, digest };
+        return _memoryCache;
+    }
     const occRegistry = createToolRegistry();
     const skillTool = occRegistry.get('Skill');
     if (skillTool) skillTool._skillsLoader = skillsLoader;
@@ -898,7 +929,7 @@ export function createToolExecutor({
 
             const observationTimeout = args.timeout == null && isLikelyLongRunningCommand(args.command);
             const effectiveTimeout = observationTimeout ? longRunningObservationTimeoutMs() : args.timeout;
-            const result = await occRegistry.call('Bash', {
+            const result = await occRegistry.call('shell', {
                 command: args.command,
                 timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
@@ -985,7 +1016,7 @@ export function createToolExecutor({
                         } catch { /* let Read handle the error */ }
                     }
 
-                    const result = await occRegistry.call('Read', {
+                    const result = await occRegistry.call('read_file', {
                         file_path: filePath,
                         offset,
                         limit,
@@ -1027,14 +1058,14 @@ export function createToolExecutor({
             // OCC Write requires Read first for existing files — handle gracefully
             try {
                 if (fs.existsSync(filePath)) {
-                    await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                    await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
                 }
             } catch { /* file may not exist yet */ }
             // Checkpoint before overwrite so /undo can restore the previous content.
             if (checkpoints && fs.existsSync(filePath)) {
                 try { checkpoints.save(filePath); } catch { /* best effort */ }
             }
-            const result = await occRegistry.call('Write', {
+            const result = await occRegistry.call('write_file', {
                 file_path: filePath,
                 content: args.content,
             });
@@ -1092,11 +1123,11 @@ export function createToolExecutor({
                     // Read first if exists (OCC Write requirement)
                     try {
                         if (fs.existsSync(filePath)) {
-                            await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                            await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
                         }
                     } catch { /* file may not exist yet */ }
 
-                    await occRegistry.call('Write', { file_path: filePath, content });
+                    await occRegistry.call('write_file', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
                     diffs.push(buildResultFileDiff(filePath, before, after));
                     updateProjectIndex(filePath);
@@ -1145,7 +1176,7 @@ export function createToolExecutor({
             }
             // OCC Edit requires Read first
             try {
-                await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
             } catch { /* best effort */ }
 
             // Checkpoint before edit so /undo can restore the previous content.
@@ -1155,10 +1186,10 @@ export function createToolExecutor({
 
             let result;
             try {
-                result = await occRegistry.call('Edit', {
+                result = await occRegistry.call('edit_file', {
                     file_path: filePath,
-                    old_string: args.search,
-                    new_string: args.replace,
+                    search: args.search,
+                    replace: args.replace,
                     replace_all: args.replace_all || false,
                 });
             } catch (editErr) {
@@ -1239,7 +1270,7 @@ print('OK: replaced')
                             _format: 'tree',
                         };
                     }
-                    const result = await occRegistry.call('Glob', {
+                    const result = await occRegistry.call('list_files', {
                         pattern: args.pattern || '**/*',
                         path: searchPath,
                     });
@@ -1343,7 +1374,7 @@ print('OK: replaced')
                     { query, path: searchPath, mode: 'glob' },
                     { generation: _readOnlyCacheGeneration },
                     async () => {
-                        const result = await occRegistry.call('Glob', {
+                        const result = await occRegistry.call('list_files', {
                             pattern: query,
                             path: searchPath,
                         });
@@ -1364,7 +1395,7 @@ print('OK: replaced')
                 { query, path: searchPath, mode: 'grep' },
                 { generation: _readOnlyCacheGeneration },
                 async () => {
-                    const result = await occRegistry.call('Grep', {
+                    const result = await occRegistry.call('search_code', {
                         pattern: query,
                         path: searchPath,
                         output_mode: 'content',
@@ -1521,7 +1552,7 @@ print('OK: replaced')
                     else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: Math.min(args.timeout || 120_000, 600_000),
                     description: `Validate build: ${cmd.slice(0, 80)}`,
@@ -1571,7 +1602,7 @@ print('OK: replaced')
                 else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
                 else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
 
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: 30_000,
                     description: `Lint: ${path.basename(filePath)}`,
@@ -1595,7 +1626,7 @@ print('OK: replaced')
                 throwIfAborted(options.signal);
                 const cmd = args.command || 'npm test';
                 const cwd = await commandCwd(args);
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: Math.min(args.timeout || 120_000, 600_000),
                     description: `Run tests: ${cmd.slice(0, 80)}`,
@@ -2197,10 +2228,19 @@ print('OK: replaced')
 
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();
+            const mem = _readMemorySnapshot();
             return {
                 identity: global.identity,
                 preferences: global.preferences,
                 global_skills: skillsLoader.list(),
+                // Cross-session memory read from disk (CLI-only source of truth).
+                // Backend prefers this over the Supabase agent_memory table when
+                // ctx.agent_ctx.source === 'cli'. `memory_digest` is a stable
+                // sha256 prefix so the backend can hash-compare without
+                // re-serializing — helps keep the prompt cacheable when memory
+                // hasn't changed between turns.
+                memory_facts: mem.facts,
+                memory_digest: mem.digest,
                 available_agents: listLocalAgents(process.cwd()).map(agent => ({
                     slug: agent.slug,
                     name: agent.name,
