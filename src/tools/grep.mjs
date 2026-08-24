@@ -14,7 +14,7 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 
 export const GrepTool = {
-    name: 'Grep',
+    name: 'search_code',
     description: 'Search file contents with regex (powered by ripgrep or grep).',
     inputSchema: {
         type: 'object',

@@ -29,6 +29,14 @@ import { CronDeleteTool } from './cron-delete.mjs';
 import { CronListTool } from './cron-list.mjs';
 import { LspTool } from './lsp.mjs';
 import { ReadMcpResourceTool } from './read-mcp-resource.mjs';
+import { GitDiffTool } from './git-diff.mjs';
+import { GitStatusTool } from './git-status.mjs';
+import { WriteProjectTool } from './write-project.mjs';
+import { ReadFilesTool } from './read-files.mjs';
+import { SearchFilesTool } from './search-files.mjs';
+import { AnalyzeCodeTool } from './analyze-code.mjs';
+import { ExploreTool, PlanTool, VerifyTool, DebugTool, RefactorTool } from './meta-tools.mjs';
+import { RememberTool } from './remember.mjs';
 
 const BUILTIN_TOOLS = [
     BashTool,
@@ -41,6 +49,7 @@ const BUILTIN_TOOLS = [
     WebFetchTool,
     WebSearchTool,
     TodoWriteTool,
+    RememberTool,
     NotebookEditTool,
     MultiEditTool,
     LsTool,
@@ -56,6 +65,17 @@ const BUILTIN_TOOLS = [
     CronListTool,
     LspTool,
     ReadMcpResourceTool,
+    GitDiffTool,
+    GitStatusTool,
+    WriteProjectTool,
+    ReadFilesTool,
+    SearchFilesTool,
+    AnalyzeCodeTool,
+    ExploreTool,
+    PlanTool,
+    VerifyTool,
+    DebugTool,
+    RefactorTool,
 ];
 
 export function createToolRegistry() {

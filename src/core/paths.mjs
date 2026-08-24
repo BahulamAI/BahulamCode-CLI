@@ -162,6 +162,42 @@ export function historyPath() {
     return path.join(bahulamHome(), 'history.jsonl');
 }
 
+// ── daemon session paths ─────────────────────────────────────
+//
+// Daemon-owned sessions (bahulamd, detach/attach) live at:
+//   ~/.bahulam/sessions/<sess_id>/            per-session dir
+//     meta.json                                cwd, model, opened_at, ...
+//     events.jsonl (+ events-1.jsonl, ...)    append-only event log
+//     snapshot-<seq>.json                      periodic compacted snapshot
+//     approvals/                               pending + decided approvals
+//     input-lock.json                          who holds input right now
+//     daemon.pid                               pid of the owning daemon
+//   ~/.bahulam/sockets/<sess_id>.sock          Unix socket (0600)
+//
+// These are DIFFERENT from the projects/<hash>/sessions/ archive above.
+// The archive is a historical index keyed on project path; daemon sessions
+// are keyed on session id and are the live source of truth while running.
+
+/** ~/.bahulam/sessions/ — root for daemon-owned sessions. */
+export function daemonSessionsRoot() {
+    return path.join(bahulamHome(), 'sessions');
+}
+
+/** ~/.bahulam/sessions/<sess_id>/ — per-session dir. */
+export function daemonSessionDir(sessionId) {
+    return path.join(daemonSessionsRoot(), sessionId);
+}
+
+/** ~/.bahulam/sockets/ — root for daemon Unix sockets (Phase 1). */
+export function daemonSocketsDir() {
+    return path.join(bahulamHome(), 'sockets');
+}
+
+/** ~/.bahulam/sockets/<sess_id>.sock — Unix socket path for a session. */
+export function daemonSocketPath(sessionId) {
+    return path.join(daemonSocketsDir(), `${sessionId}.sock`);
+}
+
 // ── Project-local config directory (.bahulam/ next to CLAUDE.md/etc) ────
 //
 // Project-scoped stuff (agents/*.yaml, memory/*.md, hooks/, settings.json,

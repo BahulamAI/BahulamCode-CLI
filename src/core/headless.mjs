@@ -17,6 +17,19 @@ import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
+// daemon wiring — headless (and `bahulam daemonize`) also starts the socket
+// server + relay bridge when eventlog is enabled. Without this the daemon
+// is invisible to attach clients and to paired mobile devices.
+import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
+import { startSocketServer } from '../daemon/socket-server.mjs';
+import { resolvePending } from '../daemon/approval-store.mjs';
+import { startRelayBridge } from '../daemon/relay-client.mjs';
+import { loadRemoteConfig } from '../commands/remote.mjs';
+import { writeSessionMeta } from './event-log.mjs';
+import { daemonSessionDir } from './paths.mjs';
+import { publishSessionDirectory, markSessionClosed } from '../daemon/session-publisher.mjs';
+import * as fsSync from 'node:fs';
+import * as pathSync from 'node:path';
 import {
     appendVisionAnalysisToInstruction,
     prepareImageAttachments,
@@ -174,6 +187,9 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const subAgents = [];       // { type, model, duration_s, tool_calls, success }
     let stagnationCount = 0;
     let usage = {};             // { input_tokens, output_tokens, cache_read, cache_write }
+    // daemon wiring — one-shot per headless invocation.
+    let prd092Started = false;
+    let currentSessionId = null;
 
     try {
         for await (const event of client.execute(instruction, execContext)) {
@@ -305,7 +321,110 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 // Surface session_id in the JSONL so multi-turn harnesses can
                 // capture it from turn N and forward on turn N+1 (via TARANG_SESSION_ID).
                 if (data?.session_id) emit({ type: 'session_info', session_id: data.session_id });
+
+                // — same daemon wiring the interactive REPL does on
+                // session_info: start the socket server so attach clients can
+                // connect, tap events, and (if remote is enabled) dial the
+                // relay so mobile can see the session. Gated by env var, one-
+                // shot per process, fire-and-forget so a wire failure never
+                // interrupts the turn.
+                const _sid = data?.session_id;
+                if (
+                    _sid &&
+                    process.env.BAHULAM_DAEMON_EVENTLOG === '1' &&
+                    !prd092Started
+                ) {
+                    prd092Started = true;
+                    (async () => {
+                        try {
+                            const server = await startSocketServer({
+                                sessionId: _sid,
+                                onCommand: {
+                                    approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
+                                    deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
+                                    interrupt: async () => { try { if (typeof client?.cancel === 'function') client.cancel(); } catch {} },
+                                    send_message: async () => { /* Slice C follow-up */ },
+                                },
+                            });
+                            registerBroadcaster(evt => server.broadcastEvent(evt));
+
+                            // Write meta.json + daemon.pid so `bahulam list` /
+                            // `bahulam stop` and the mobile session directory
+                            // can find this session.
+                            try {
+                                await writeSessionMeta({
+                                    sessionId: _sid,
+                                    meta: {
+                                        cwd: process.cwd(),
+                                        model: options.model || null,
+                                        pid: process.pid,
+                                        sock_path: server.sockPath,
+                                        opened_at: new Date().toISOString(),
+                                        headless: true,
+                                    },
+                                });
+                                fsSync.writeFileSync(
+                                    pathSync.join(daemonSessionDir(_sid), 'daemon.pid'),
+                                    String(process.pid),
+                                    { mode: 0o600 },
+                                );
+                            } catch (err) {
+                                try { process.stderr.write(`[prd-092] meta/pid write: ${err.message}\n`); } catch {}
+                            }
+
+                            // Slice M — publish to session_directory so mobile
+                            // can list this session even before/after the
+                            // relay handshake. Fire-and-forget; a failure
+                            // here doesn't affect anything else.
+                            try {
+                                publishSessionDirectory({
+                                    sessionId: _sid,
+                                    token: creds.token,
+                                    cwd: process.cwd(),
+                                    model: options.model || null,
+                                    status: 'running',
+                                }).catch(() => {});
+                            } catch { /* silent */ }
+
+                            // Optional relay dial (Slice H) — only when the
+                            // user opted in via `bahulam remote enable`.
+                            try {
+                                const remoteCfg = loadRemoteConfig();
+                                if (remoteCfg?.enabled) {
+                                    startRelayBridge({
+                                        sessionId: _sid,
+                                        remoteConfig: remoteCfg,
+                                        registerBroadcaster,
+                                        onCommand: {
+                                            approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
+                                            deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
+                                            interrupt: async () => { try { if (typeof client?.cancel === 'function') client.cancel(); } catch {} },
+                                            send_message: async () => { /* Slice C follow-up */ },
+                                        },
+                                    });
+                                }
+                            } catch (err) {
+                                try { process.stderr.write(`[prd-092] relay bridge: ${err.message}\n`); } catch {}
+                            }
+                        } catch (err) {
+                            try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
+                        }
+                    })();
+                }
+                // Tap this event too, so the very first frame lands in the
+                // event log (before broadcasters are registered).
+                if (_sid && process.env.BAHULAM_DAEMON_EVENTLOG === '1') {
+                    tapSseEvent({ type: 'session_info', data }, { sessionId: _sid });
+                }
+            } else if (process.env.BAHULAM_DAEMON_EVENTLOG === '1') {
+                // Tap every other event too, matching the REPL's for-await tap.
+                // sessionId is populated once session_info has landed.
+                if (currentSessionId) {
+                    tapSseEvent(event, { sessionId: currentSessionId });
+                }
             }
+            // Track current session id for the tap.
+            if (type === 'session_info' && data?.session_id) currentSessionId = data.session_id;
 
             if (type === 'complete') {
                 if (data?.rate_limit) rateLimit = data.rate_limit;
@@ -456,5 +575,84 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.stderr.write(`\n--- Response ---\n${finalContent.slice(0, 2000)}\n`);
     }
 
+    // — DAEMON_HOLD mode.
+    //   BAHULAM_DAEMON_HOLD=1                   keep alive forever
+    //   BAHULAM_DAEMON_HOLD=<seconds>           keep alive for N seconds
+    //   BAHULAM_DAEMON_SPAWNED=1 (implicit)     hold with a default TTL if
+    //                                            HOLD not explicitly set
+    //
+    // When held, we DO NOT exit after agent_complete. The socket server and
+    // relay bridge (started earlier by the session_info wiring) stay up so
+    // attach clients and paired mobile devices can still see the session,
+    // reconnect, replay events from disk, and — once send_message is wired
+    // — kick off follow-up turns without spinning up a fresh daemon.
+    //
+    // Exit signals honored: SIGTERM (from `bahulam stop <id>`), SIGINT
+    // (Ctrl-C from a foreground shell), the TTL timer, and the idle-exit
+    // policy from §6.6 (30-min default with no attach).
+    if (prd092Started) {
+        const hold = process.env.BAHULAM_DAEMON_HOLD;
+        const spawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
+        const holdMode = hold != null || spawned;
+        if (holdMode) {
+            // Slice M — mark idle in the session directory so the mobile
+            // list shows the session as available-but-not-active.
+            try {
+                publishSessionDirectory({
+                    sessionId: currentSessionId,
+                    token: creds.token,
+                    cwd: process.cwd(),
+                    model: options.model || null,
+                    status: 'idle',
+                }).catch(() => {});
+            } catch { /* silent */ }
+
+            const ttlSec = _resolveHoldTtl(hold, spawned);
+            const banner = ttlSec === Infinity ? 'until stopped' : `for ${ttlSec}s`;
+            log(`[prd-092] daemon holding ${banner}. Attach: bahulam attach ${currentSessionId || '<id>'}`);
+            await _blockUntilStop(ttlSec);
+            log('[prd-092] daemon exiting (hold expired or signal received)');
+        }
+        // Whether held or not, mark the session closed in the directory
+        // so mobile doesn't list a gone-forever daemon as "idle" forever.
+        try {
+            await markSessionClosed({ sessionId: currentSessionId, token: creds.token });
+        } catch { /* silent */ }
+    }
+
     process.exit(0);
+}
+
+// ── daemon-hold helpers ─────────────────────────────────────
+
+/**
+ * How long to hold. Explicit HOLD wins; else spawned-default is 30min
+ * (§6.6 idle_ttl). Infinity for "1" or "true".
+ */
+function _resolveHoldTtl(holdEnv, spawned) {
+  if (holdEnv === '1' || holdEnv === 'true') return Infinity;
+  if (holdEnv != null && holdEnv !== '') {
+    const n = Number(holdEnv);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  if (spawned) return 30 * 60;  // §6.6 default idle_ttl
+  return 60;                     // defensive fallback
+}
+
+/**
+ * Await SIGTERM/SIGINT or the TTL. Resolves without an error either way —
+ * the caller then falls through to process.exit(0) so bahulam stop looks
+ * like a clean shutdown, not a crash.
+ */
+function _blockUntilStop(ttlSec) {
+  return new Promise(resolve => {
+    let done = false;
+    const _done = () => { if (done) return; done = true; resolve(); };
+    process.once('SIGTERM', _done);
+    process.once('SIGINT', _done);
+    if (ttlSec !== Infinity) {
+      const t = setTimeout(_done, ttlSec * 1000);
+      if (typeof t.unref === 'function') t.unref();
+    }
+  });
 }

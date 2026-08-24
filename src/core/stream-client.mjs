@@ -143,23 +143,19 @@ export class TarangStreamClient {
         this._toolAbort = null;
 
         // Transport mode:
-        //   'bundled' → local Python runtime (PRD-091 §6). Framework calls
-        //     the Bahulam Gateway directly. Metering runs. THIS IS THE
-        //     PUBLIC CLI DEFAULT.
         //   'remote' → cloud backend runs the agent loop server-side.
         //     Backend calls Bahulam Gateway with service-token attribution;
-        //     metering still runs at the gateway boundary.
+        //     metering runs at the gateway boundary.
+        //   'bundled' → legacy: local Python runtime (PRD-091 §6, deprecated).
+        //     Only used when BAHULAM_RUNTIME_MODE=bundled is explicitly set.
         //
-        // Explicit opt precedence: constructor arg > env vars > sniff runtime
-        // package availability > default 'bundled'.
+        // Explicit opt precedence: constructor arg > env vars > default 'remote'.
         this.mode = mode
             || (process.env.BAHULAM_RUNTIME_MODE === 'remote' ? 'remote' : null)
             || (process.env.BAHULAM_RUNTIME_MODE === 'bundled' ? 'bundled' : null)
             || (process.env.TARANG_ENV === 'remote' ? 'remote' : null)
             || (process.env.TARANG_ENV === 'bundled' ? 'bundled' : null)
-            || 'bundled';
-        // Bundled runtime binds to a random localhost port on first use. Cached
-        // here so every method sees the same baseUrl without re-spawning.
+            || 'remote';
         this._bundledReady = false;
     }
 
@@ -237,6 +233,29 @@ export class TarangStreamClient {
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
+
+        // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
+        // path, serialize the exact body that would go to /api/execute, write
+        // it there, and exit(0) before making the network call. Zero credits
+        // spent, zero backend state changed. Used to capture a byte-exact
+        // baseline before the Slice B refactor so we can assert byte identity
+        // after the daemon extraction. See the security model note
+        // about no daemon-added fields leaking into the payload).
+        if (process.env.BAHULAM_CAPTURE_REQUEST) {
+            const fs = await import('node:fs');
+            const target = process.env.BAHULAM_CAPTURE_REQUEST;
+            const serialized = JSON.stringify(body, null, 2);
+            try {
+                fs.writeFileSync(target, serialized, { mode: 0o600 });
+                process.stderr.write(
+                    `[BAHULAM_CAPTURE_REQUEST] wrote ${target} (${Buffer.byteLength(serialized, 'utf-8')} bytes, ${Object.keys(body).length} top-level keys)\n`
+                );
+            } catch (err) {
+                process.stderr.write(`[BAHULAM_CAPTURE_REQUEST] write failed: ${err.message}\n`);
+                process.exit(1);
+            }
+            process.exit(0);
+        }
 
         const headers = this._headers({
             'Accept': 'text/event-stream',

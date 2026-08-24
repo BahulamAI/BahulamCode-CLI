@@ -17,7 +17,7 @@ export function createPermissionChecker(config = {}) {
         mode,
         async check(toolName, input) {
             // Always run injection check on Bash commands
-            if (toolName === 'Bash' && input?.command) {
+            if (toolName === 'shell' && input?.command) {
                 const injection = checkInjection(input.command);
                 if (!injection.safe) {
                     return false; // block dangerous commands
@@ -25,8 +25,8 @@ export function createPermissionChecker(config = {}) {
             }
 
             // Always validate file paths for file operations
-            if (['Edit', 'Write', 'Read', 'MultiEdit'].includes(toolName) && input?.file_path) {
-                const pathResult = validatePath(input.file_path, { write: toolName !== 'Read' });
+            if (['edit_file', 'write_file', 'read_file', 'MultiEdit'].includes(toolName) && input?.file_path) {
+                const pathResult = validatePath(input.file_path, { write: toolName !== 'read_file' });
                 if (!pathResult.safe) {
                     return false; // block unsafe paths
                 }
@@ -35,14 +35,14 @@ export function createPermissionChecker(config = {}) {
             switch (mode) {
                 case 'bypassPermissions': return true;
                 case 'acceptEdits':
-                    // Allow file ops, block Bash/Agent unless rl available
-                    if (toolName === 'Bash' || toolName === 'Agent') {
+                    // Allow file ops, block shell/Agent unless rl available
+                    if (toolName === 'shell' || toolName === 'Agent') {
                         return !requiresPermission(toolName) || !!config.bypassBash;
                     }
                     return true;
                 case 'auto': return true; // AI decides
                 case 'dontAsk': return false; // deny everything not pre-approved
-                case 'plan': return toolName === 'Read' || toolName === 'Glob' || toolName === 'Grep';
+                case 'plan': return toolName === 'read_file' || toolName === 'list_files' || toolName === 'search_code' || toolName === 'grep';
                 case 'default':
                 default:
                     // In default mode, safe tools pass through

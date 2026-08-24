@@ -35,14 +35,14 @@ function isBinary(buffer) {
 }
 
 export const ReadTool = {
-    name: 'Read',
+    name: 'read_file',
     description: 'Read a file from the local filesystem.',
     inputSchema: {
         type: 'object',
         properties: {
             file_path: { type: 'string', description: 'Absolute path to the file' },
-            offset: { type: 'number', description: 'Line number to start reading from (0-based)' },
-            limit: { type: 'number', description: 'Number of lines to read (default 2000)' },
+            start_line: { type: 'integer', description: 'Line number to start reading from (1-indexed)' },
+            end_line: { type: 'integer', description: 'Line number to stop reading at (1-indexed, inclusive)' },
             pages: { type: 'string', description: 'Page range for PDF files (e.g. "1-5")' },
         },
         required: ['file_path'],
@@ -87,9 +87,6 @@ export const ReadTool = {
         try {
             const content = fs.readFileSync(filePath, 'utf-8');
             const lines = content.split('\n');
-            const start = input.offset || 0;
-            const limit = input.limit || DEFAULT_LIMIT;
-            const end = Math.min(start + limit, lines.length);
 
             // Track as read
             readFiles.add(filePath);
@@ -99,13 +96,26 @@ export const ReadTool = {
                 return '[File exists but is empty]';
             }
 
+            // start_line/end_line: 1-indexed, inclusive
+            const hasStart = input.start_line != null;
+            const hasEnd = input.end_line != null;
+            const startIdx = hasStart ? Math.max(0, Number(input.start_line) - 1) : 0;
+            let endIdx;
+            if (hasEnd) {
+                endIdx = Math.min(Number(input.end_line), lines.length); // inclusive → exclusive bound
+            } else if (hasStart) {
+                endIdx = lines.length;
+            } else {
+                endIdx = Math.min(DEFAULT_LIMIT, lines.length);
+            }
+
             const output = lines
-                .slice(start, end)
-                .map((l, i) => `${start + i + 1}\t${l}`)
+                .slice(startIdx, endIdx)
+                .map((l, i) => `${startIdx + i + 1}\t${l}`)
                 .join('\n');
 
-            if (end < lines.length) {
-                return output + `\n\n[File has ${lines.length} lines total. Showing lines ${start + 1}-${end}. Use offset/limit for more.]`;
+            if (endIdx < lines.length) {
+                return output + `\n\n[File has ${lines.length} lines total. Showing lines ${startIdx + 1}-${endIdx}. Use read_file with start_line/end_line for more.]`;
             }
 
             return output;
