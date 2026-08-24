@@ -2082,6 +2082,36 @@ function renderEvent(event) {
               });
               session._prd092SocketServer = server;
               session._prd092Unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+              // Populate ~/.bahulam/sessions/<id>/meta.json + daemon.pid so
+              // `bahulam list` and `bahulam stop <id>` see this session.
+              // These files are what session-list.mjs / stop-daemon.mjs
+              // read; without them those commands are cosmetic. Fire-and-
+              // forget imports so a write failure never affects the turn.
+              try {
+                const [{ writeSessionMeta }, fs, path, { daemonSessionDir }] = await Promise.all([
+                  import('../core/event-log.mjs'),
+                  import('node:fs'),
+                  import('node:path'),
+                  import('../core/paths.mjs'),
+                ]);
+                await writeSessionMeta({
+                  sessionId: _sid,
+                  meta: {
+                    cwd: process.cwd(),
+                    model: session.model || null,
+                    pid: process.pid,
+                    sock_path: server.sockPath,
+                    opened_at: new Date().toISOString(),
+                  },
+                });
+                fs.writeFileSync(
+                  path.join(daemonSessionDir(_sid), 'daemon.pid'),
+                  String(process.pid),
+                  { mode: 0o600 },
+                );
+              } catch (err) {
+                try { process.stderr.write(`[prd-092] meta/pid write: ${err.message}\n`); } catch {}
+              }
             } catch (err) {
               try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
             } finally {
