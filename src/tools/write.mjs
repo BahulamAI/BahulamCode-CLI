@@ -11,7 +11,7 @@ import path from 'path';
 import { hasBeenRead, markRead } from './read.mjs';
 
 export const WriteTool = {
-    name: 'Write',
+    name: 'write_file',
     description: 'Write content to a file. Creates parent dirs if needed.',
     inputSchema: {
         type: 'object',

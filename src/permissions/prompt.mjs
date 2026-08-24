@@ -34,12 +34,12 @@ export async function promptPermission(toolName, input, rl) {
  */
 export function formatToolSummary(toolName, input) {
     switch (toolName) {
-        case 'Bash':
-            return `Bash: ${truncate(input.command || '', 60)}`;
-        case 'Edit':
-            return `Edit: ${input.file_path || 'unknown file'}`;
-        case 'Write':
-            return `Write: ${input.file_path || 'unknown file'} (${(input.content || '').length} chars)`;
+        case 'shell':
+            return `shell: ${truncate(input.command || '', 60)}`;
+        case 'edit_file':
+            return `edit_file: ${input.file_path || 'unknown file'}`;
+        case 'write_file':
+            return `write_file: ${input.file_path || 'unknown file'} (${(input.content || '').length} chars)`;
         case 'MultiEdit':
             return `MultiEdit: ${input.file_path || 'unknown file'} (${(input.edits || []).length} edits)`;
         case 'Agent':
@@ -61,7 +61,8 @@ export function formatToolSummary(toolName, input) {
  */
 export function requiresPermission(toolName) {
     const SAFE_TOOLS = new Set([
-        'Read', 'Glob', 'Grep', 'LS', 'ToolSearch',
+        'read_file', 'list_files', 'search_code',
+        'grep', 'search_files', 'LS', 'ToolSearch',
         'AskUser', 'CronList', 'TodoWrite',
     ]);
     return !SAFE_TOOLS.has(toolName);

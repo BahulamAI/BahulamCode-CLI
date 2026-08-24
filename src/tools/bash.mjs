@@ -20,7 +20,7 @@ const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
 const TIMEOUT_TAIL_BYTES = 64 * 1024;
 
 export const BashTool = {
-    name: 'Bash',
+    name: 'shell',
     description: 'Execute a bash command and return its output.',
     inputSchema: {
         type: 'object',

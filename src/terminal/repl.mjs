@@ -26,6 +26,11 @@ import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+// PRD-091 Phase 3 preview: opt-in gateway loop path. Set
+// BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
+// /v1/agent/turn instead of the local bundled runtime. Falls back to
+// the existing local-agent path if the flag is unset.
+import { createAgentLoop, createGatewaySession } from '../core/loop.mjs';
 import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
@@ -5116,7 +5121,41 @@ export async function startTerminalRepl() {
         }
       }
 
-      for await (const event of client.execute(input, execContext, session.agentHistory)) {
+      // PRD-091 Phase 3 preview: BAHULAM_USE_GATEWAY_LOOP=1 routes the
+      // turn through the gateway's /v1/agent/turn (thin CLI loop) instead
+      // of the local bundled runtime. Session is bootstrapped lazily on
+      // first turn and reused across the REPL. Falls through to the
+      // existing local-agent path when the flag is unset (default today).
+      const _useGatewayLoop = process.env.BAHULAM_USE_GATEWAY_LOOP === '1';
+      let _turnIterable;
+      if (_useGatewayLoop) {
+        if (!session.gatewaySession) {
+          try {
+            session.gatewaySession = await createGatewaySession({
+              workspace: process.env.BAHULAM_WORKSPACE || 'kepler-code',
+              model: process.env.BAHULAM_MODEL || undefined,
+            });
+            process.stderr.write(
+              `  ${c.dim(`[gateway] session ${session.gatewaySession.session_id.slice(0, 20)}… ${session.gatewaySession.tool_schemas.length} tools, model=${session.gatewaySession.model}`)}\n`,
+            );
+          } catch (err) {
+            process.stderr.write(`  ${c.warn(`[gateway] session create failed: ${err.message}`)}\n`);
+            process.stderr.write(`  ${c.dim('falling back to local-agent path')}\n`);
+            session.gatewaySession = null;  // don't retry every turn
+          }
+        }
+        if (session.gatewaySession) {
+          _turnIterable = createAgentLoop({
+            session: session.gatewaySession,
+            messages: session.agentHistory,
+            toolExecutor,
+          });
+        }
+      }
+      if (!_turnIterable) {
+        _turnIterable = client.execute(input, execContext, session.agentHistory);
+      }
+      for await (const event of _turnIterable) {
         jsonlWriter.writeKeplerEvent(event);
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(

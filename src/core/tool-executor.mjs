@@ -898,7 +898,7 @@ export function createToolExecutor({
 
             const observationTimeout = args.timeout == null && isLikelyLongRunningCommand(args.command);
             const effectiveTimeout = observationTimeout ? longRunningObservationTimeoutMs() : args.timeout;
-            const result = await occRegistry.call('Bash', {
+            const result = await occRegistry.call('shell', {
                 command: args.command,
                 timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
@@ -985,7 +985,7 @@ export function createToolExecutor({
                         } catch { /* let Read handle the error */ }
                     }
 
-                    const result = await occRegistry.call('Read', {
+                    const result = await occRegistry.call('read_file', {
                         file_path: filePath,
                         offset,
                         limit,
@@ -1027,14 +1027,14 @@ export function createToolExecutor({
             // OCC Write requires Read first for existing files — handle gracefully
             try {
                 if (fs.existsSync(filePath)) {
-                    await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                    await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
                 }
             } catch { /* file may not exist yet */ }
             // Checkpoint before overwrite so /undo can restore the previous content.
             if (checkpoints && fs.existsSync(filePath)) {
                 try { checkpoints.save(filePath); } catch { /* best effort */ }
             }
-            const result = await occRegistry.call('Write', {
+            const result = await occRegistry.call('write_file', {
                 file_path: filePath,
                 content: args.content,
             });
@@ -1092,11 +1092,11 @@ export function createToolExecutor({
                     // Read first if exists (OCC Write requirement)
                     try {
                         if (fs.existsSync(filePath)) {
-                            await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                            await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
                         }
                     } catch { /* file may not exist yet */ }
 
-                    await occRegistry.call('Write', { file_path: filePath, content });
+                    await occRegistry.call('write_file', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
                     diffs.push(buildResultFileDiff(filePath, before, after));
                     updateProjectIndex(filePath);
@@ -1145,7 +1145,7 @@ export function createToolExecutor({
             }
             // OCC Edit requires Read first
             try {
-                await occRegistry.call('Read', { file_path: filePath, limit: 1 });
+                await occRegistry.call('read_file', { file_path: filePath, limit: 1 });
             } catch { /* best effort */ }
 
             // Checkpoint before edit so /undo can restore the previous content.
@@ -1155,10 +1155,10 @@ export function createToolExecutor({
 
             let result;
             try {
-                result = await occRegistry.call('Edit', {
+                result = await occRegistry.call('edit_file', {
                     file_path: filePath,
-                    old_string: args.search,
-                    new_string: args.replace,
+                    search: args.search,
+                    replace: args.replace,
                     replace_all: args.replace_all || false,
                 });
             } catch (editErr) {
@@ -1239,7 +1239,7 @@ print('OK: replaced')
                             _format: 'tree',
                         };
                     }
-                    const result = await occRegistry.call('Glob', {
+                    const result = await occRegistry.call('list_files', {
                         pattern: args.pattern || '**/*',
                         path: searchPath,
                     });
@@ -1343,7 +1343,7 @@ print('OK: replaced')
                     { query, path: searchPath, mode: 'glob' },
                     { generation: _readOnlyCacheGeneration },
                     async () => {
-                        const result = await occRegistry.call('Glob', {
+                        const result = await occRegistry.call('list_files', {
                             pattern: query,
                             path: searchPath,
                         });
@@ -1364,7 +1364,7 @@ print('OK: replaced')
                 { query, path: searchPath, mode: 'grep' },
                 { generation: _readOnlyCacheGeneration },
                 async () => {
-                    const result = await occRegistry.call('Grep', {
+                    const result = await occRegistry.call('search_code', {
                         pattern: query,
                         path: searchPath,
                         output_mode: 'content',
@@ -1521,7 +1521,7 @@ print('OK: replaced')
                     else if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) cmd = 'cargo build';
                     else return { success: false, output: 'No build system detected', _tool: 'validate_build' };
                 }
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: Math.min(args.timeout || 120_000, 600_000),
                     description: `Validate build: ${cmd.slice(0, 80)}`,
@@ -1571,7 +1571,7 @@ print('OK: replaced')
                 else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
                 else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
 
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: 30_000,
                     description: `Lint: ${path.basename(filePath)}`,
@@ -1595,7 +1595,7 @@ print('OK: replaced')
                 throwIfAborted(options.signal);
                 const cmd = args.command || 'npm test';
                 const cwd = await commandCwd(args);
-                const output = await occRegistry.call('Bash', {
+                const output = await occRegistry.call('shell', {
                     command: cmd,
                     timeout: Math.min(args.timeout || 120_000, 600_000),
                     description: `Run tests: ${cmd.slice(0, 80)}`,
