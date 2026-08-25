@@ -76,9 +76,39 @@ function currentWorkingDirectory() {
   }
 }
 
+// Shortens a path for tool-card display without dropping the meaningful
+// tail. Strategy, in priority order:
+//
+//   1. INSIDE cwd            /repo/foo/bar.py  (cwd = /repo)     → foo/bar.py
+//   2. SIBLING under cwd's   /work/repo-a/x.py (cwd = /work/repo-b)
+//      parent                                                    → …/repo-a/x.py
+//                            (typical mono-repo / adjacent-clone case)
+//   3. UNDER $HOME           /Users/sree/Sites/…/x.py            → ~/Sites/…/x.py
+//   4. Absolute               (fallback — printed as-is; card truncator
+//                              handles the display width from here)
+//
+// The point: keep the basename + parent visible even when the full path
+// is long, so users don't see "Editing /Users/sree/Sites/Tarang-Orca/
+// codekepler-ba…" with the actual filename lost off the right edge.
 function shortPath(filePath, cwd = currentWorkingDirectory()) {
   const value = String(filePath || '');
+  if (!value) return value;
+
+  // 1. inside cwd
   if (cwd && value.startsWith(`${cwd}/`)) return value.slice(cwd.length + 1);
+
+  // 2. sibling under cwd's parent (e.g. sister repo in the same workspace)
+  if (cwd) {
+    const cwdParent = cwd.slice(0, cwd.lastIndexOf('/'));
+    if (cwdParent && value.startsWith(`${cwdParent}/`)) {
+      return `…/${value.slice(cwdParent.length + 1)}`;
+    }
+  }
+
+  // 3. under $HOME
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (home && value.startsWith(`${home}/`)) return `~/${value.slice(home.length + 1)}`;
+
   return value;
 }
 

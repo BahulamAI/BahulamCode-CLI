@@ -73,6 +73,13 @@ export const session = {
   startTime: Date.now(),
   inputTokens: 0,
   outputTokens: 0,
+  // Per-turn context indicator for the dock strip. Updated at each
+  // AGENT_COMPLETE from the backend's usage.total_input_tokens (the
+  // cumulative input the primary agent sent this turn across all its
+  // internal inferences). Rough proxy for "how big is the prompt right
+  // now" — approximates what the NEXT user turn will pay before any
+  // growth. Reset by /new.
+  lastTurnInputTokens: 0,
   toolCalls: 0,        // primary-agent tool calls in the current turn
   subAgentToolCalls: 0,// forwarded internal sub-agent tool calls in the current turn
   totalToolCalls: 0,   // across all turns
