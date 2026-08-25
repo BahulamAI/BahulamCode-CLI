@@ -1790,6 +1790,9 @@ function renderEvent(event) {
 
     case 'tool_call':
     case 'tool_request': {
+      if (watchState.active) {
+        watchState.addEntry('tool', { label: data?.tool, detail: data?.args?.file_path || data?.args?.path || data?.args?.pattern || data?.args?.query || '' });
+      }
       const isInternal = Boolean(data?.internal || data?.sub_agent);
       if (isInternal) {
         session.subAgentToolCalls++;
@@ -1847,6 +1850,10 @@ function renderEvent(event) {
 
     case 'tool_result':
     case 'tool_done': {
+      if (watchState.active) {
+        const success = data?.success !== false;
+        watchState.addEntry('done', { label: data?.tool, detail: success ? '✓' : '✗' });
+      }
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolResult(data);
         break;

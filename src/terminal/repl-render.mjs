@@ -21,6 +21,7 @@ import { paint } from '../ui/palette.mjs';
 import { runtime, session } from './repl-state.mjs';
 import { fitAnsiLine } from './repl-format.mjs';
 import { exploreCategory, isExploreTool } from './repl-explore.mjs';
+import { watchState } from './watch-state.mjs';
 import {
   clearPinnedStatus,
   drawPinnedStatus,
@@ -37,6 +38,21 @@ import * as queue from '../ui/render-queue.mjs';
 const SUB_AGENT_WINDOW_ROWS = 7;
 
 function presentStatus(rendered) {
+  // Watch panel override: when active, render the watch panel entries as a
+  // multi-line status block instead of the normal spinner/status line.
+  if (watchState.active) {
+    const lines = watchState.visible();
+    if (lines.length) {
+      if (queue.isActive()) {
+        queue.statusBlock(lines);
+      } else if (isInputDockMounted()) {
+        drawPinnedStatus(lines.join('\n'));
+      } else {
+        inPlace(lines.join('\n'));
+      }
+      return;
+    }
+  }
   if (queue.isActive()) {
     const win = runtime.subAgentWindow;
     if (win?.active && win.lines.length) {
