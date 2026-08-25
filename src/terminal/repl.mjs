@@ -92,6 +92,7 @@ import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-e
 import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import * as rqueue from '../ui/render-queue.mjs';
+import { watchState } from './watch-state.mjs';
 import {
   appendContent,
   bumpSpinnerProgress,
@@ -1936,6 +1937,9 @@ function renderEvent(event) {
     }
 
     case 'delegation': {
+      if (watchState.active) {
+        watchState.addEntry('handoff', { label: `${data?.from || '?'} → ${data?.to || '?'}` });
+      }
       stopSpinner();
       clearPendingHead();
       const from = data?.from || '';
@@ -1954,6 +1958,9 @@ function renderEvent(event) {
     // ── Sub-Agent Activity ──
 
     case 'sub_agent_start': {
+      if (watchState.active) {
+        watchState.addEntry('spawn', { type: data?.type, label: (data?.query || '').slice(0, 60) });
+      }
       stopSpinner();
       clearPendingHead();
       flushFoldedSubAgentTools();
@@ -2014,6 +2021,12 @@ function renderEvent(event) {
     }
 
     case 'sub_agent_complete': {
+      if (watchState.active) {
+        const agentType = data?.type || 'sub-agent';
+        const toolCalls = data?.tool_calls || 0;
+        const durationS = data?.duration_s || 0;
+        watchState.addEntry('done', { type: agentType, detail: `${toolCalls} tools · ${durationS.toFixed(1)}s`, status: 'done' });
+      }
       setSubAgentWindowActive(false);
       stopSpinner();
       clearPendingHead();
@@ -2827,6 +2840,19 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/watch': {
+      const nowActive = !watchState.active;
+      watchState.active = nowActive;
+      runtime.watchPanelActive = nowActive;
+      watchState.clear();
+      process.stderr.write(`  ${c.green(nowActive ? '✓' : '✗')} ${c.dim(`Watch panel ${nowActive ? 'on' : 'off'}`)}\n`);
+      if (!nowActive) {
+        // Clear any watch panel status lines
+        if (rqueue.isActive()) rqueue.clearStatus();
+        else if (isInputDockMounted()) { clearPinnedStatus(); moveToContent(); }
+      }
+      return;
+    }
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
       telemetry.track('login_shown', { method: 'repl_command' });
