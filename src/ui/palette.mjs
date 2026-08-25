@@ -1,5 +1,5 @@
 /**
- * Kepler palette — semantic color tokens for the CLI.
+ * Bahulam palette — semantic color tokens for the CLI.
  *
  * Every feature module imports from here, never from raw ANSI. Tokens resolve
  * at call time so changing terminal capabilities (resize, `refresh()`) is

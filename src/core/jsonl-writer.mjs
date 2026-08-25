@@ -2,7 +2,7 @@
  * JSONL Writer — writes cc-lens compatible session transcripts to ~/.bahulam/.
  *
  * Format mirrors Claude Code's ~/.claude/ JSONL structure so that
- * cc-lens (CLAUDE_CONFIG_DIR=~/.bahulam npx cc-lens) can read Kepler sessions.
+ * cc-lens (CLAUDE_CONFIG_DIR=~/.bahulam npx cc-lens) can read Bahulam sessions.
  *
  * Design:
  * - Non-blocking: buffered writes, flushed every 500ms or on turn end
@@ -143,8 +143,8 @@ export class JsonlWriter {
   }
 
   /**
-   * Write a Kepler UI/SSE event for exact-ish terminal replay on /resume.
-   * This is a Kepler extension; cc-lens readers should ignore unknown types.
+   * Write a Bahulam UI/SSE event for exact-ish terminal replay on /resume.
+   * This is a Bahulam extension; cc-lens readers should ignore unknown types.
    */
   writeKeplerEvent(event) {
     if (!event || !event.type) return;

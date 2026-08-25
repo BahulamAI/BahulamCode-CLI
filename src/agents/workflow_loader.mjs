@@ -1,7 +1,7 @@
 /**
  * Workflow Loader — loads single-agent workflow YAML files from .bahulam/workflows/
  *
- * Workflow YAML files follow the same structure as Kepler SubAgent YAML:
+ * Workflow YAML files follow the same structure as Bahulam SubAgent YAML:
  *   metadata: { id, name, description, icon, tags }
  *   agent: { system_prompt, model, max_iterations }
  *   tools: { include: [...], exclude: [...] }

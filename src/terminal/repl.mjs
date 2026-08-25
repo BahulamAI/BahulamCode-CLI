@@ -1,5 +1,5 @@
 /**
- * Kepler REPL — Full Claude-like terminal UX.
+ * Bahulam REPL — Full Claude-like terminal UX.
  *
  * Pure ANSI. No React. No Ink. No flickering.
  *
@@ -4992,6 +4992,11 @@ export async function startTerminalRepl() {
       runtime.lastRenderedBlock = 'user';
     }
 
+    function isExecutionSlashCommand(instruction) {
+      const command = String(instruction || '').trim().split(/\s+/, 1)[0].toLowerCase();
+      return command === '/watch';
+    }
+
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
       executionInputBuffer = '';
@@ -5008,6 +5013,25 @@ export async function startTerminalRepl() {
           process.stderr.write('\n');
         }
         executionInputVisible = false;
+        return;
+      }
+      if (isExecutionSlashCommand(instruction)) {
+        if (isInputDockMounted()) {
+          clearInputPrompt();
+          moveToContent();
+        } else if (executionInputVisible) {
+          process.stderr.write('\n');
+        }
+        executionInputVisible = false;
+        await handleCommand(instruction, ctx);
+        if (isInputDockMounted()) {
+          renderDockInput(executionInputPrefix(), '', {
+            context: buildContextStrip(),
+            meta: buildDockMeta(),
+            tips: executionInputTips(),
+          });
+          moveToContent();
+        }
         return;
       }
       printExecutionInstruction(instruction);

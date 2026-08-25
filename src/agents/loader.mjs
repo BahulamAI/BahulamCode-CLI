@@ -2,7 +2,7 @@
  * Agent Loader — loads custom agent definitions from .bahulam/agents/
  *
  * Supports two formats:
- * - YAML: .bahulam/agents/*.yaml / *.yml (native Kepler SubAgent config)
+ * - YAML: .bahulam/agents/*.yaml / *.yml (native Bahulam SubAgent config)
  * - JSON: .bahulam/agents/*.json
  * - Markdown with YAML frontmatter: .bahulam/agents/*.md
  *
