@@ -74,6 +74,7 @@ import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessi
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
+import { startSpinner as startInlineSpinner } from '../ui/spinner.mjs';
 import {
   appendVisionAnalysisToInstruction,
   appendDocumentsToInstruction,
@@ -3691,7 +3692,28 @@ export async function startTerminalRepl() {
     return res;
   };
 
-  let toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
+  function makeToolExecutor({ showIndexStatus = false } = {}) {
+    const shouldShowIndexStatus = showIndexStatus && process.stderr.isTTY && !term().plain;
+    let stopIndexSpinner = null;
+    return createToolExecutor({
+      checkpoints,
+      hookRunner,
+      interactionHandler: askUserInteraction,
+      onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
+        const name = path.basename(root || safeCwd()) || root || 'project';
+        stopIndexSpinner?.();
+        stopIndexSpinner = startInlineSpinner(
+          `Indexing ${name} so tools can read and search this project...`
+        );
+      } : null,
+      onAutoRegisterDone: shouldShowIndexStatus ? () => {
+        stopIndexSpinner?.();
+        stopIndexSpinner = null;
+      } : null,
+    });
+  }
+
+  let toolExecutor = makeToolExecutor({ showIndexStatus: true });
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
@@ -3785,7 +3807,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd() });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
+    toolExecutor = makeToolExecutor();
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -3966,7 +3988,7 @@ export async function startTerminalRepl() {
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
-    toolExecutor = createToolExecutor({ checkpoints, hookRunner, interactionHandler: askUserInteraction });
+    toolExecutor = makeToolExecutor();
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());

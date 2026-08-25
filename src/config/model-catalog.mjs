@@ -1,17 +1,27 @@
 /**
- * Shipped model catalog snapshot — Node side of PRD-076 W7.
+ * Shipped model catalog snapshot — CLI-side default list.
  *
  * The canonical source is `codekepler-backend/app/services/
- * model_catalog_snapshot.json` (admin dashboard edits it and publishes to
- * Supabase). `stage-runtime-app.sh` copies that file into every runtime
- * wheel at `runtime/app/services/model_catalog_snapshot.json`, so when
- * `@bahulam/runtime-<platform>-<arch>` is installed as a sibling optional
- * dep of `@bahulam/code`, the file is already on disk — we read from
- * there instead of maintaining a third copy in the CLI package.
+ * model_catalog_snapshot.json`. That file is copied into this package at
+ * publish time (see `scripts/sync-catalog.mjs`, wired to `prepublishOnly`)
+ * and lives at `src/config/model-catalog-default.json` inside the shipped
+ * CLI. Fresh installs see the up-to-date default catalog without needing
+ * to hit the backend on first launch.
+ *
+ * Legacy fallback: older installs may still have the file inside an
+ * `@bahulam/runtime-<platform>-<arch>` optional dep from the pre-server-
+ * agent-execution era. If our own copy isn't present, we try that path
+ * before giving up. This fallback can be removed once the runtime bundle
+ * is no longer published.
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runtimeSnapshotPath } from '../core/bundled-runtime.mjs';
+
+const _dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLI_DEFAULT_CATALOG_PATH = path.join(_dirname, 'model-catalog-default.json');
 
 let _cache = null;
 
@@ -37,21 +47,46 @@ function normalizeSnapshotRow(row) {
   };
 }
 
+function _readJson(p) {
+  try {
+    const raw = fs.readFileSync(p, 'utf-8');
+    const data = JSON.parse(raw);
+    const rows = Array.isArray(data?.models) ? data.models : [];
+    const normalized = rows.map(normalizeSnapshotRow).filter(Boolean);
+    return normalized.length ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Read the shipped catalog snapshot from the installed runtime bundle.
- * Returns an array of normalized rows (API-shape) or null if the runtime
- * isn't installed / the file is unreadable. Cached after first success.
+ * Read the shipped catalog snapshot. Tries CLI-bundled default first
+ * (`src/config/model-catalog-default.json`, refreshed at publish time
+ * via `scripts/sync-catalog.mjs`), then falls back to the legacy
+ * `@bahulam/runtime-*` bundle path for older installs. Cached after
+ * first success. Returns null if neither path yields data.
  */
 export function readShippedCatalog() {
   if (_cache !== null) return _cache;
-  try {
-    const raw = fs.readFileSync(runtimeSnapshotPath(), 'utf-8');
-    const data = JSON.parse(raw);
-    const rows = Array.isArray(data?.models) ? data.models : [];
-    _cache = rows.map(normalizeSnapshotRow).filter(Boolean);
+
+  // Preferred: CLI-bundled default catalog.
+  const own = _readJson(CLI_DEFAULT_CATALOG_PATH);
+  if (own) {
+    _cache = own;
     return _cache;
-  } catch {
-    _cache = null;
-    return null;
   }
+
+  // Legacy fallback: runtime wheel copy (pre-server-execution architecture).
+  try {
+    const runtime = _readJson(runtimeSnapshotPath());
+    if (runtime) {
+      _cache = runtime;
+      return _cache;
+    }
+  } catch {
+    // runtimeSnapshotPath() itself may throw when the optional dep is absent
+  }
+
+  _cache = null;
+  return null;
 }
