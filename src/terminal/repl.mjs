@@ -3696,7 +3696,7 @@ export async function startTerminalRepl() {
     });
   }
 
-  let toolExecutor = makeToolExecutor({ showIndexStatus: true });
+  let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
 
@@ -3710,7 +3710,7 @@ export async function startTerminalRepl() {
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
 
-  const ctx = { auth, toolExecutor, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
+  const ctx = { auth, toolExecutor: null, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
 
   let startupOutputRow = 1;
   let startupOutputCol = 1;
@@ -4094,6 +4094,11 @@ export async function startTerminalRepl() {
       try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
       catch { /* preflight is best-effort */ }
     }
+
+    // Create the auto-indexing executor after the startup header is visible so
+    // the indexing status appears in the user's line of sight.
+    toolExecutor = makeToolExecutor({ showIndexStatus: true });
+    ctx.toolExecutor = toolExecutor;
 
     // ── Initialization ──
     process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
