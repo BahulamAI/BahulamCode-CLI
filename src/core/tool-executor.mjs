@@ -44,6 +44,8 @@ export function createToolExecutor({
     checkpoints = null,
     hookRunner = null,
     interactionHandler = null,
+    onAutoRegisterStart = null,
+    onAutoRegisterDone = null,
 } = {}) {
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
@@ -94,9 +96,19 @@ export function createToolExecutor({
     // for the current directory to be usable — the user chose to be here.
     // Opt out via BAHULAM_SKIP_AUTO_REGISTER=true for tests or headless
     // scripts that want a truly empty registry.
+    let autoRegisterPromise = Promise.resolve(null);
     if (process.env.BAHULAM_SKIP_AUTO_REGISTER !== 'true') {
-        projectRegistry.register(process.cwd(), { bypassProjectMarkers: true })
-            .catch(() => { /* silent — model can register explicitly */ });
+        const autoRegisterRoot = process.cwd();
+        try { onAutoRegisterStart?.(autoRegisterRoot); } catch { /* status hooks are best-effort */ }
+        autoRegisterPromise = projectRegistry.register(autoRegisterRoot, { bypassProjectMarkers: true })
+            .then((result) => {
+                try { onAutoRegisterDone?.(null, result); } catch { /* status hooks are best-effort */ }
+                return result;
+            })
+            .catch((err) => {
+                try { onAutoRegisterDone?.(err, null); } catch { /* status hooks are best-effort */ }
+                return null;
+            });
     }
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
     let _readOnlyCacheGeneration = 0;
@@ -2201,6 +2213,10 @@ print('OK: replaced')
 
         getProjectResources() {
             return projectRegistry.resources();
+        },
+
+        waitForAutoRegister() {
+            return autoRegisterPromise;
         },
 
         async registerProjectRoots(roots, { forceRefresh = false } = {}) {

@@ -76,6 +76,23 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function envMs(name, fallback) {
+    const raw = Number(process.env[name] || fallback);
+    return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+function transportDebugEnabled() {
+    const raw = String(process.env.BAHULAM_TRANSPORT_DEBUG || '').toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function transportDebug(message, data = {}) {
+    if (!transportDebugEnabled()) return;
+    try {
+        process.stderr.write(`[transport] ${message} ${JSON.stringify(data)}\n`);
+    } catch {}
+}
+
 // Full jitter around the scheduled delay: pick a value in [delay*0.5, delay*1.5].
 // Spreads out reconnect storms so N clients dropping simultaneously don't
 // synchronize their retries. Clamped to the same 30s ceiling as the base delay.
@@ -223,6 +240,7 @@ export class TarangStreamClient {
     async *execute(instruction, context = {}, messages = null) {
         this._cancelled = false;
         this.currentTaskId = null;
+        this._firstEventTimedOut = false;
 
         // Bundled mode: spawn the local Python runtime on first turn.
         // After this, this.baseUrl points at http://127.0.0.1:<random-port>
@@ -233,6 +251,7 @@ export class TarangStreamClient {
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
+        const requestId = `cli-${_uuidLike()}`;
 
         // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
         // path, serialize the exact body that would go to /api/execute, write
@@ -260,6 +279,8 @@ export class TarangStreamClient {
         const headers = this._headers({
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
+            'X-Bahulam-Request-ID': requestId,
+            'X-Request-ID': requestId,
         });
 
         // Abort controller so cancel() can break out of a stalled reader
@@ -268,6 +289,21 @@ export class TarangStreamClient {
         this._toolAbort = new AbortController();
 
         let response;
+        let connectTimedOut = false;
+        const connectTimeoutMs = envMs('BAHULAM_EXECUTE_CONNECT_TIMEOUT_MS', 60_000);
+        const connectStarted = Date.now();
+        const connectTimer = setTimeout(() => {
+            connectTimedOut = true;
+            try { this._abort.abort(); } catch {}
+        }, connectTimeoutMs);
+        transportDebug('execute.start', {
+            request_id: requestId,
+            url,
+            mode: this.mode,
+            session_id: this.sessionId || null,
+            messages: Array.isArray(messages) ? messages.length : 0,
+            body_bytes: Buffer.byteLength(JSON.stringify(body), 'utf8'),
+        });
         try {
             response = await fetch(url, {
                 method: 'POST',
@@ -276,15 +312,39 @@ export class TarangStreamClient {
                 signal: this._abort.signal,
             });
         } catch (err) {
+            clearTimeout(connectTimer);
             if (err.name === 'AbortError') {
+                if (connectTimedOut) {
+                    const message = `Backend did not accept /api/execute within ${Math.round(connectTimeoutMs / 1000)}s (request ${requestId}).`;
+                    transportDebug('execute.connect_timeout', {
+                        request_id: requestId,
+                        ms: Date.now() - connectStarted,
+                    });
+                    yield { type: EVENT_TYPES.ERROR, data: { message, request_id: requestId, fatal: true } };
+                }
                 return;
             }
-            yield { type: EVENT_TYPES.ERROR, data: { message: `Network error: ${err.message}. Check your connection or use --local mode.`, fatal: true } };
+            transportDebug('execute.network_error', {
+                request_id: requestId,
+                ms: Date.now() - connectStarted,
+                error: err.message,
+                code: err?.cause?.code || err?.code || '',
+            });
+            yield { type: EVENT_TYPES.ERROR, data: { message: `Network error: ${err.message}. Check your connection or use --local mode.`, request_id: requestId, fatal: true } };
             return;
         }
+        clearTimeout(connectTimer);
+        const responseRequestId = response.headers.get('x-request-id') || requestId;
+        transportDebug('execute.response', {
+            request_id: responseRequestId,
+            status: response.status,
+            ok: response.ok,
+            ms: Date.now() - connectStarted,
+            task_id: response.headers.get('x-task-id') || null,
+        });
 
         if (response.status === 401) {
-            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `bahulam login` to re-authenticate.', fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: 'Authentication failed. Run `bahulam login` to re-authenticate.', request_id: responseRequestId, fatal: true } };
             return;
         }
         if (response.status === 429) {
@@ -305,6 +365,7 @@ export class TarangStreamClient {
                     rate_limit: detail?.rate_limit || null,
                     action: detail?.action || null,
                     pricing_url: normalizeBillingBrandCopy(detail?.pricing_url || null),
+                    request_id: responseRequestId,
                     fatal: true,
                 },
             };
@@ -312,7 +373,7 @@ export class TarangStreamClient {
         }
         if (!response.ok) {
             const text = await response.text().catch(() => 'Unknown error');
-            yield { type: EVENT_TYPES.ERROR, data: { message: `Backend error ${response.status}: ${text}`, fatal: true } };
+            yield { type: EVENT_TYPES.ERROR, data: { message: `Backend error ${response.status}: ${text}`, request_id: responseRequestId, fatal: true } };
             return;
         }
 
@@ -320,6 +381,17 @@ export class TarangStreamClient {
             yield* this._consumeResponse(response);
         } catch (err) {
             if (this._cancelled) {
+                return;
+            }
+            if (this._firstEventTimedOut) {
+                yield {
+                    type: EVENT_TYPES.ERROR,
+                    data: {
+                        message: `Backend opened the stream but sent no SSE events within ${Math.round(envMs('BAHULAM_FIRST_EVENT_TIMEOUT_MS', 60_000) / 1000)}s (request ${responseRequestId}).`,
+                        request_id: responseRequestId,
+                        fatal: true,
+                    },
+                };
                 return;
             }
             yield* this._reconnectAfterDrop(err);
@@ -330,18 +402,37 @@ export class TarangStreamClient {
         const taskId = response.headers.get('X-Task-ID');
         if (taskId) this.currentTaskId = taskId;
 
-        for await (const parsed of this._parseSSE(response)) {
-            if (this._cancelled) return;
-            await this._waitIfPaused();
-            if (this._cancelled) return;
+        let sawFirstEvent = false;
+        const firstEventTimeoutMs = envMs('BAHULAM_FIRST_EVENT_TIMEOUT_MS', 60_000);
+        const firstEventTimer = setTimeout(() => {
+            if (sawFirstEvent || this._cancelled) return;
+            this._firstEventTimedOut = true;
+            try { this._abort?.abort(); } catch {}
+        }, firstEventTimeoutMs);
+        try {
+            for await (const parsed of this._parseSSE(response)) {
+                if (!sawFirstEvent) {
+                    sawFirstEvent = true;
+                    clearTimeout(firstEventTimer);
+                    transportDebug('execute.first_event', {
+                        task_id: this.currentTaskId || null,
+                        event: parsed.event || null,
+                    });
+                }
+                if (this._cancelled) return;
+                await this._waitIfPaused();
+                if (this._cancelled) return;
 
-            if (parsed.id != null) this.lastEventId = parsed.id;
-            if (parsed.retry != null) this.retryDelayMs = parsed.retry;
-            if (parsed.data?.task_id) this.currentTaskId = parsed.data.task_id;
+                if (parsed.id != null) this.lastEventId = parsed.id;
+                if (parsed.retry != null) this.retryDelayMs = parsed.retry;
+                if (parsed.data?.task_id) this.currentTaskId = parsed.data.task_id;
 
-            for await (const event of this._handleStreamEvent(parsed)) {
-                yield event;
+                for await (const event of this._handleStreamEvent(parsed)) {
+                    yield event;
+                }
             }
+        } finally {
+            clearTimeout(firstEventTimer);
         }
     }
 

@@ -54,6 +54,10 @@ const IGNORED_DIRS = new Set([
     '.git', '.bahulam', '.next', '.venv', '__pycache__',
     'build', 'dist', 'node_modules', 'venv',
 ]);
+const ENV_PROBE_TIMEOUT_MS = Math.max(
+    50,
+    Number(process.env.BAHULAM_ENV_PROBE_TIMEOUT_MS || 500) || 500,
+);
 
 // Files or directories whose presence at the root implies this IS a project.
 // One is enough. Kept broad so we accept Node/Python/Rust/Go/Ruby/Java/C++
@@ -227,7 +231,7 @@ function commandVersion(command, args = ['--version']) {
     try {
         const result = spawnSync(command, args, {
             encoding: 'utf-8',
-            timeout: 2000,
+            timeout: ENV_PROBE_TIMEOUT_MS,
             windowsHide: true,
         });
         if (result.error || result.status !== 0) return '';
@@ -244,7 +248,6 @@ function detectEnvironment() {
         ['git', 'git'],
         ['npm', 'npm'],
         ['uv', 'uv'],
-        ['pytest', 'pytest'],
         ['docker', 'docker'],
     ];
     const tools = {};
