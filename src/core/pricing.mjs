@@ -304,14 +304,21 @@ export function formatCredits(credits) {
 }
 
 /**
- * Format a token count for display (e.g. 42100 → '42.1k').
+ * Format a token count for display.
+ *   42          → '42'
+ *   42100       → '42.1k'
+ *   1_500_000   → '1.5M'
+ * Session-cumulative counts easily cross millions on tool-heavy runs;
+ * without the M suffix they render as multi-thousand-'k' strings like
+ * '53148.2k' that read as broken.
  * @param {number} tokens
  * @returns {string}
  */
 export function formatTokens(tokens) {
     if (tokens === 0) return '0';
     if (tokens < 1000) return String(tokens);
-    return `${(tokens / 1000).toFixed(1)}k`;
+    if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
+    return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
 /**

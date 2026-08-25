@@ -72,17 +72,26 @@ export const TEXT_LIKE_MIMES = new Set([
   'application/json',
   'application/x-yaml',
   'application/toml',
+  'application/xml',
+  'application/sql',
   'text/yaml',
   'text/html',
+  'text/xml',
   'text/x-log',
   'text/x-rst',
   'text/x-restructuredtext',
+  'text/x-sql',
+  'text/x-sh',
+  'text/x-ini',
+  'text/x-env',
+  'text/x-dockerfile',
 ]);
 
 // Extension → mime map. Kept small and explicit — Python's
 // mimetypes.guess_type varies by OS registry; this table is stable.
 const EXT_TO_MIME = new Map([
   ['.txt', 'text/plain'],
+  ['.text', 'text/plain'],
   ['.log', 'text/x-log'],
   ['.md', 'text/markdown'],
   ['.markdown', 'text/markdown'],
@@ -95,8 +104,25 @@ const EXT_TO_MIME = new Map([
   ['.toml', 'application/toml'],
   ['.html', 'text/html'],
   ['.htm', 'text/html'],
+  ['.xml', 'application/xml'],
   ['.rst', 'text/x-rst'],
   ['.pdf', 'application/pdf'],
+  // Config + shell + database extensions users actually paste in as
+  // attachments (Supabase seeds, .env for triage, Dockerfile review, …).
+  ['.sql', 'text/x-sql'],
+  ['.env', 'text/x-env'],
+  ['.ini', 'text/x-ini'],
+  ['.conf', 'text/plain'],
+  ['.cfg', 'text/plain'],
+  ['.properties', 'text/plain'],
+  ['.editorconfig', 'text/plain'],
+  ['.gitignore', 'text/plain'],
+  ['.gitattributes', 'text/plain'],
+  ['.dockerignore', 'text/plain'],
+  ['.dockerfile', 'text/x-dockerfile'],
+  ['.sh', 'text/x-sh'],
+  ['.bash', 'text/x-sh'],
+  ['.zsh', 'text/x-sh'],
 ]);
 
 /**
@@ -217,6 +243,32 @@ export async function extractFromBytes(buffer, mime, opts = {}) {
   return [];
 }
 
+// Sniff whether a buffer is UTF-8 text vs binary. Cheap heuristic used
+// only as a fallback when the file extension didn't map to a known text
+// mime — the goal is to let obscure but genuinely-textual files (.sql,
+// .env, Dockerfile, .terraformrc, whatever) through instead of dropping
+// them at the mime gate.
+//
+// Rules:
+//   * NUL byte in the first probe window → binary
+//   * Not decodable as strict UTF-8 → binary
+//   * Otherwise → text
+//
+// Probe window bounded to 8KB — enough to catch a binary header on
+// large files, small enough to be a no-op on the hot path.
+const _TEXT_PROBE_BYTES = 8192;
+function looksLikeText(buffer) {
+  if (!buffer || buffer.length === 0) return false;
+  const probe = buffer.length > _TEXT_PROBE_BYTES ? buffer.subarray(0, _TEXT_PROBE_BYTES) : buffer;
+  if (probe.includes(0x00)) return false;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Read a local file and chunk it. Returns { mime, chunks }; both empty
  * on unresolvable path or unsupported mime — same contract as Python's
@@ -237,17 +289,29 @@ export async function extractFromPath(absPath, opts = {}) {
   }
   if (!stat.isFile()) return { mime: '', chunks: [] };
 
-  const mime = guessMime(absPath);
+  let mime = guessMime(absPath);
   const textMimes = opts.textMimes || TEXT_LIKE_MIMES;
-  if (!textMimes.has(mime) && !PDF_MIMES.has(mime)) {
-    return { mime, chunks: [] };
-  }
 
+  // Read the buffer up front so the text-sniff fallback can see the
+  // actual bytes when the extension didn't map to a known mime.
   let buffer;
   try {
     buffer = fs.readFileSync(absPath);
   } catch {
     return { mime, chunks: [] };
+  }
+
+  // Fallback for unknown extensions: if guessMime returned octet-stream
+  // (or any mime not in our allow-list), sniff the buffer. If the bytes
+  // look like valid UTF-8 text with no NULs in the first probe window,
+  // treat as text/plain. This unblocks .sql, .env, Dockerfile, and any
+  // other text file we haven't explicitly listed.
+  if (!textMimes.has(mime) && !PDF_MIMES.has(mime)) {
+    if (looksLikeText(buffer)) {
+      mime = 'text/plain';
+    } else {
+      return { mime, chunks: [] };
+    }
   }
 
   const chunks = await extractFromBytes(buffer, mime, opts);

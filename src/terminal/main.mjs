@@ -261,7 +261,7 @@ async function main() {
     /new                    Start a new session
     /clear                  Clear conversation history
     /safety                 Show safety guardrail status
-    /revoke                 Revoke auto-approvals
+    /approvals clear        Revoke all session auto-approvals
     /explore <query>        Spawn read-only codebase explorer
     /review <query>         Spawn code review agent
     /architect <query>      Spawn architecture planning agent
