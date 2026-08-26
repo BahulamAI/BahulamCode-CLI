@@ -191,6 +191,7 @@ async function parseSessionMeta(filePath) {
     toolCalls: [],   // [{name, count}]
     models: [],      // [model strings]
     modelLimits: {},  // role -> {model, context_length, max_output, source}
+    subAgentModels: {}, // role -> model from backend session_info
     startTime: null,
     endTime: null,
     gitBranch: null,
@@ -243,6 +244,9 @@ async function parseSessionMeta(filePath) {
           const info = ev.data || ev;
           if (info.model_limits && typeof info.model_limits === 'object') {
             meta.modelLimits = info.model_limits;
+          }
+          if (info.sub_agent_models && typeof info.sub_agent_models === 'object') {
+            meta.subAgentModels = info.sub_agent_models;
           }
           if (info.models && typeof info.models === 'object') {
             for (const model of Object.values(info.models)) {

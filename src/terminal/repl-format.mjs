@@ -284,6 +284,7 @@ export function normalizeResumableSession(s) {
     resumeSummary: s.resumeSummary || null,    // latest resume_summary checkpoint metadata
     models: Array.isArray(s.models) ? s.models : [],
     modelLimits: s.modelLimits && typeof s.modelLimits === 'object' ? s.modelLimits : {},
+    subAgentModels: s.subAgentModels && typeof s.subAgentModels === 'object' ? s.subAgentModels : {},
     costUsd: typeof s.costUsd === 'number' ? s.costUsd : 0,
     partial: !!s.partial,                      // true if the transcript file was partially malformed
     source: 'transcript',

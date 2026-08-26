@@ -292,14 +292,15 @@ function renderKeyboardHelp() {
 
 const MODEL_ROLE_ALIASES = new Map([
   ['reasoning', 'reasoning'],
-  ['main', 'reasoning'],
   ['coder', 'reasoning'],
   ['coding', 'reasoning'],
   ['smart', 'reasoning'],
   ['fast', 'fast'],
   ['explorer', 'fast'],
+  ['main', 'orchestrator'],
   ['orchestrator', 'orchestrator'],
-  ['planner', 'orchestrator'],
+  ['planner', 'plan'],
+  ['planning', 'plan'],
   ['local', 'local'],
   ['worker', 'worker'],
   ['explore', 'explore'],
@@ -323,11 +324,11 @@ const MODEL_ROLE_ALIASES = new Map([
 const MODEL_ROLE_LABELS = {
   reasoning: 'coding',
   fast: 'fast',
-  orchestrator: 'orchestrator',
+  orchestrator: 'main',
   local: 'local',
   worker: 'worker',
   explore: 'explore',
-  plan: 'plan',
+  plan: 'planning',
   verify: 'verify',
   debug: 'debug',
   refactor: 'refactor',
@@ -336,9 +337,9 @@ const MODEL_ROLE_LABELS = {
 };
 
 const MODEL_ROLE_DESCRIPTIONS = {
-  reasoning: 'primary coding model',
+  reasoning: 'coding model',
   fast: 'fast low-cost work',
-  orchestrator: 'planning and routing',
+  orchestrator: 'main orchestrator model',
   local: 'local fallback role',
   worker: 'background worker role',
   explore: 'read/search sub-agent',
@@ -351,9 +352,9 @@ const MODEL_ROLE_DESCRIPTIONS = {
 };
 
 const MODEL_ROLE_ORDER = [
+  'orchestrator',
   'reasoning',
   'fast',
-  'orchestrator',
   'local',
   'worker',
   'explore',
@@ -661,10 +662,12 @@ function printModelStatus() {
   }
 
   const limits = session.modelLimits || {};
+  const subAgentModels = session.subAgentModels || {};
   const rows = [
-    ['coder', limits.coder?.model],
-    ['explorer', limits.explorer?.model],
-    ['orchestrator', limits.orchestrator?.model],
+    ['main', limits.orchestrator?.model],
+    ['coding', limits.coder?.model],
+    ['explore', subAgentModels.explore || limits.explorer?.model],
+    ['planning', subAgentModels.plan],
   ].filter(([, model]) => model);
   if (rows.length) {
     process.stderr.write(`\n  ${c.bold('Backend roles')}\n`);
@@ -686,17 +689,18 @@ function printModelStatus() {
   printModelCommandUsage();
 }
 
-const MODEL_FORM_ROLES = ['reasoning', 'fast', 'orchestrator', 'explore', 'plan'];
+const MODEL_FORM_ROLES = ['orchestrator', 'reasoning', 'fast', 'explore', 'plan'];
 const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
   const limits = session.modelLimits || {};
+  const subAgentModels = session.subAgentModels || {};
   const defaultsByRole = {
     reasoning: limits.coder?.model,
     fast: limits.explorer?.model,
     orchestrator: limits.orchestrator?.model,
-    explore: limits.explorer?.model,
-    plan: limits.orchestrator?.model,
+    explore: subAgentModels.explore || limits.explorer?.model,
+    plan: subAgentModels.plan || limits.orchestrator?.model,
     image_analysis: 'backend tier default',
     image_generation: 'backend tier default',
   };
@@ -2362,6 +2366,9 @@ function renderEvent(event) {
       if (data?.model_limits && typeof data.model_limits === 'object') {
         session.modelLimits = data.model_limits;
       }
+      if (data?.sub_agent_models && typeof data.sub_agent_models === 'object') {
+        session.subAgentModels = data.sub_agent_models;
+      }
       if (data?.user) session.user = { ...session.user, ...data.user };
       // BYOK users pay their model provider directly; the platform does not
       // charge them credits. Hide cost + credits when this flag is set.
@@ -3945,6 +3952,7 @@ export async function startTerminalRepl() {
       user: session.user,
       model: session.model,
       modelLimits: session.modelLimits,
+      subAgentModels: session.subAgentModels,
       modelOverrides: session.modelOverrides,
       modelMode: session.modelMode,
       routePreference: session.routePreference,
@@ -3990,6 +3998,7 @@ export async function startTerminalRepl() {
       user: preserved.user,
       model: preserved.model,
       modelLimits: preserved.modelLimits,
+      subAgentModels: preserved.subAgentModels,
       modelOverrides: preserved.modelOverrides,
       modelMode: preserved.modelMode,
       routePreference: preserved.routePreference,

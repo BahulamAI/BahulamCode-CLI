@@ -96,6 +96,7 @@ export const session = {
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
   modelLimits: {},     // role -> {model, context_length, max_output, source}
+  subAgentModels: {},  // role -> model from backend session_info
   blockedOps: 0,       // safety guardrail blocks
   delegations: [],     // agent delegation events: { from, to, time }
   phases: [],          // phase history: { name, time }
