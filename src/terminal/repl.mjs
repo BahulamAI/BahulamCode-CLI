@@ -297,8 +297,8 @@ const MODEL_ROLE_ALIASES = new Map([
   ['smart', 'reasoning'],
   ['fast', 'fast'],
   ['explorer', 'fast'],
-  ['main', 'orchestrator'],
-  ['orchestrator', 'orchestrator'],
+  ['main', 'reasoning'],
+  ['orchestrator', 'plan'],
   ['planner', 'plan'],
   ['planning', 'plan'],
   ['local', 'local'],
@@ -324,7 +324,7 @@ const MODEL_ROLE_ALIASES = new Map([
 const MODEL_ROLE_LABELS = {
   reasoning: 'coding',
   fast: 'fast',
-  orchestrator: 'main',
+  orchestrator: 'planning',
   local: 'local',
   worker: 'worker',
   explore: 'explore',
@@ -339,7 +339,7 @@ const MODEL_ROLE_LABELS = {
 const MODEL_ROLE_DESCRIPTIONS = {
   reasoning: 'coding model',
   fast: 'fast low-cost work',
-  orchestrator: 'main orchestrator model',
+  orchestrator: 'planning model (legacy role name)',
   local: 'local fallback role',
   worker: 'background worker role',
   explore: 'read/search sub-agent',
@@ -352,7 +352,6 @@ const MODEL_ROLE_DESCRIPTIONS = {
 };
 
 const MODEL_ROLE_ORDER = [
-  'orchestrator',
   'reasoning',
   'fast',
   'local',
@@ -663,11 +662,11 @@ function printModelStatus() {
 
   const limits = session.modelLimits || {};
   const subAgentModels = session.subAgentModels || {};
+  const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
   const rows = [
-    ['main', limits.orchestrator?.model],
     ['coding', limits.coder?.model],
     ['explore', subAgentModels.explore || limits.explorer?.model],
-    ['planning', subAgentModels.plan],
+    ['planning', planningModel],
   ].filter(([, model]) => model);
   if (rows.length) {
     process.stderr.write(`\n  ${c.bold('Backend roles')}\n`);
@@ -689,18 +688,18 @@ function printModelStatus() {
   printModelCommandUsage();
 }
 
-const MODEL_FORM_ROLES = ['orchestrator', 'reasoning', 'fast', 'explore', 'plan'];
+const MODEL_FORM_ROLES = ['reasoning', 'fast', 'explore', 'plan'];
 const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
   const limits = session.modelLimits || {};
   const subAgentModels = session.subAgentModels || {};
+  const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
   const defaultsByRole = {
     reasoning: limits.coder?.model,
     fast: limits.explorer?.model,
-    orchestrator: limits.orchestrator?.model,
     explore: subAgentModels.explore || limits.explorer?.model,
-    plan: subAgentModels.plan || limits.orchestrator?.model,
+    plan: planningModel,
     image_analysis: 'backend tier default',
     image_generation: 'backend tier default',
   };
@@ -3811,7 +3810,7 @@ async function fetchUser(ctx) {
     });
     if (resp.ok) {
       session.user = await resp.json();
-      session.model = session.user.default_reasoning_model || session.user.default_orchestrator_model || null;
+      session.model = session.user.default_reasoning_model || null;
     }
   } catch {}
 }
