@@ -7,6 +7,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { TarangAuth } from '../auth/tarang-auth.mjs';
+
 const DEFAULT_IMAGE_GENERATION_MODEL = 'google/gemini-3-pro-image';
 const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -77,14 +79,6 @@ export const GenerateImageTool = {
         const prompt = String(input.prompt || '').trim();
         const n = boundedInt(input.n, 1, 1, 4);
         const model = resolveImageModel();
-        const apiKey = gatewayApiKey();
-        if (!apiKey) {
-            return {
-                success: false,
-                output: 'Image generation unavailable: configure BAHULAM_CLI_TOKEN, BAHULAM_GATEWAY_SERVICE_TOKEN, BAHULAM_API_KEY, BAHULAM_GATEWAY_API_KEY, or OPENROUTER_API_KEY.',
-                _tool: 'generate_image',
-            };
-        }
         let basePath;
         try {
             basePath = safeOutputBase(input.output_path || input.filename, prompt);
@@ -92,8 +86,7 @@ export const GenerateImageTool = {
             return { success: false, output: String(err?.message || err), _tool: 'generate_image' };
         }
 
-        const result = await callImageApi({
-            apiKey,
+        const request = {
             model,
             prompt,
             n,
@@ -101,11 +94,33 @@ export const GenerateImageTool = {
             resolution: optionalString(input.resolution),
             quality: optionalString(input.quality),
             output_format: optionalString(input.output_format),
-        });
+            output_path: optionalString(input.output_path),
+            filename: optionalString(input.filename),
+        };
+        const creds = new TarangAuth().loadCredentials();
+        const apiKey = gatewayApiKey(creds);
+        let result;
+        if (creds.backendUrl && creds.token) {
+            result = await callBackendImageApi({
+                backendUrl: creds.backendUrl,
+                token: creds.token,
+                product: process.env.BAHULAM_PRODUCT || 'bahulam',
+                ...request,
+            });
+        } else if (apiKey) {
+            result = await callImageApi({ apiKey, ...request });
+        } else {
+            return {
+                success: false,
+                output: 'Image generation unavailable: sign in with `bahulam-code login` or configure OPENROUTER_API_KEY / BAHULAM_GATEWAY_API_KEY for direct local generation.',
+                _tool: 'generate_image',
+            };
+        }
         if (result.error) {
             return { success: false, output: result.error, _tool: 'generate_image' };
         }
 
+        const resultModel = result.model || model;
         const images = [];
         for (let i = 0; i < result.images.length; i += 1) {
             const item = result.images[i];
@@ -139,17 +154,75 @@ export const GenerateImageTool = {
         return {
             success: true,
             output: [
-                `Generated ${images.length} image${images.length === 1 ? '' : 's'} with ${model}${cost}:`,
+                `Generated ${images.length} image${images.length === 1 ? '' : 's'} with ${resultModel}${cost}:`,
                 ...images.map((image) => `- ${image.path} (${image.mime}, ${image.size_bytes} bytes)`),
             ].join('\n'),
             images,
-            model,
-            provider: 'openrouter-compatible',
+            model: resultModel,
+            provider: result.provider || 'openrouter-compatible',
             usage,
             _tool: 'generate_image',
         };
     },
 };
+
+async function callBackendImageApi({
+    backendUrl,
+    token,
+    product,
+    prompt,
+    n,
+    aspect_ratio,
+    resolution,
+    quality,
+    output_format,
+    output_path,
+    filename,
+}) {
+    const body = { prompt, include_data_url: true };
+    if (n > 1) body.n = n;
+    if (aspect_ratio) body.aspect_ratio = aspect_ratio;
+    if (resolution) body.resolution = resolution;
+    if (quality) body.quality = quality;
+    if (output_format) body.output_format = output_format;
+    if (output_path) body.output_path = output_path;
+    if (filename) body.filename = filename;
+
+    let response;
+    try {
+        response = await fetch(`${backendUrl}/api/images/generate`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'X-Product': product || 'bahulam',
+            },
+            body: JSON.stringify(body),
+        });
+    } catch (err) {
+        return { error: `Image generation backend unreachable: ${err.message || err}` };
+    }
+
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+        return { error: `Image generation backend error (${response.status}): ${errorMessage(payload, response.status)}` };
+    }
+
+    const data = Array.isArray(payload?.images) ? payload.images : [];
+    if (!data.length) return { error: 'Image generation backend returned no image data.' };
+    const images = [];
+    for (const item of data) {
+        const parsed = normalizeImageData(item, output_format);
+        if (parsed.error) return parsed;
+        images.push(parsed);
+    }
+    return {
+        images,
+        model: payload?.model || '',
+        provider: payload?.provider || 'bahulam',
+        usage: payload?.usage || {},
+    };
+}
 
 async function callImageApi({ apiKey, model, prompt, n, aspect_ratio, resolution, quality, output_format }) {
     const body = { model, prompt };
@@ -176,26 +249,20 @@ async function callImageApi({ apiKey, model, prompt, n, aspect_ratio, resolution
         return { error: `Image generation model unreachable: ${err.message || err}` };
     }
 
-    const text = await response.text().catch(() => '');
-    let payload = {};
-    try {
-        payload = text ? JSON.parse(text) : {};
-    } catch {
-        payload = { error: text };
-    }
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
-        const detail = payload.error || payload.message || payload.detail || text || `HTTP ${response.status}`;
-        return { error: `Image generation model error (${response.status}): ${String(detail).slice(0, 500)}` };
+        return { error: `Image generation model error (${response.status}): ${errorMessage(payload, response.status)}` };
     }
 
     const data = Array.isArray(payload.data) ? payload.data : [];
     if (!data.length) return { error: 'Image generation model returned no image data.' };
     const images = [];
     for (const item of data) {
-        if (!item?.b64_json) return { error: 'Image generation model returned an image without base64 data.' };
-        images.push({ b64_json: item.b64_json, media_type: item.media_type });
+        const parsed = normalizeImageData(item, output_format);
+        if (parsed.error) return parsed;
+        images.push(parsed);
     }
-    return { images, usage: payload.usage || {} };
+    return { images, model, provider: 'openrouter-compatible', usage: payload.usage || {} };
 }
 
 function imageApiBaseUrl() {
@@ -207,15 +274,50 @@ function imageApiBaseUrl() {
     ).replace(/\/+$/, '');
 }
 
-function gatewayApiKey() {
+function gatewayApiKey(creds = {}) {
     return String(
         process.env.BAHULAM_GATEWAY_SERVICE_TOKEN ||
         process.env.BAHULAM_API_KEY ||
         process.env.BAHULAM_CLI_TOKEN ||
         process.env.BAHULAM_GATEWAY_API_KEY ||
         process.env.OPENROUTER_API_KEY ||
+        creds.openRouterKey ||
         ''
     ).trim();
+}
+
+async function readJsonResponse(response) {
+    const text = await response.text().catch(() => '');
+    try {
+        return text ? JSON.parse(text) : {};
+    } catch {
+        return { error: text };
+    }
+}
+
+function errorMessage(payload, status) {
+    const detail = payload?.detail || payload?.error || payload?.message || `HTTP ${status}`;
+    if (typeof detail === 'string') return detail.slice(0, 500);
+    return String(detail.message || detail.error || JSON.stringify(detail)).slice(0, 500);
+}
+
+function normalizeImageData(item, requestedFormat) {
+    if (item?.b64_json) {
+        return {
+            b64_json: String(item.b64_json),
+            media_type: mediaTypeFor(item.media_type || item.mime, requestedFormat),
+        };
+    }
+    const dataUrl = String(item?.data_url || '').trim();
+    const parsed = parseDataUrl(dataUrl);
+    if (parsed) return parsed;
+    return { error: 'Image generation returned an image without base64 data.' };
+}
+
+function parseDataUrl(dataUrl) {
+    const match = dataUrl.match(/^data:([^;,]+);base64,([\s\S]+)$/);
+    if (!match) return null;
+    return { media_type: match[1].toLowerCase(), b64_json: match[2] };
 }
 
 function resolveImageModel() {
