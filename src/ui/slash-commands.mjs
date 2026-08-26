@@ -57,6 +57,7 @@ export const COMMANDS = {
   '/resume':      'Resume a previous session',
   '/sessions':    'List resumable sessions',
   '/logout':      'Sign out and clear credentials',
+  '/watch':       'Toggle live agent activity tracking panel',
   '/exit':        'Exit CLI',
 };
 
@@ -136,6 +137,7 @@ export const HELP_GROUPS = [
     title: 'Agents',
     summary: 'specialist modes',
     commands: [
+      ['/watch', 'Toggle live agent tracking panel'],
       ['/agents', 'List built-in and local agents'],
       ['/agents create <name>', 'Create .bahulam/agents/<name>.yaml'],
       ['/agents edit <name>', 'Open local agent YAML'],

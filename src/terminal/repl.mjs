@@ -1,5 +1,5 @@
 /**
- * Kepler REPL — Full Claude-like terminal UX.
+ * Bahulam REPL — Full Claude-like terminal UX.
  *
  * Pure ANSI. No React. No Ink. No flickering.
  *
@@ -92,6 +92,7 @@ import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-e
 import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import * as rqueue from '../ui/render-queue.mjs';
+import { watchState } from './watch-state.mjs';
 import {
   appendContent,
   bumpSpinnerProgress,
@@ -291,14 +292,15 @@ function renderKeyboardHelp() {
 
 const MODEL_ROLE_ALIASES = new Map([
   ['reasoning', 'reasoning'],
-  ['main', 'reasoning'],
   ['coder', 'reasoning'],
   ['coding', 'reasoning'],
   ['smart', 'reasoning'],
   ['fast', 'fast'],
   ['explorer', 'fast'],
-  ['orchestrator', 'orchestrator'],
-  ['planner', 'orchestrator'],
+  ['main', 'reasoning'],
+  ['orchestrator', 'plan'],
+  ['planner', 'plan'],
+  ['planning', 'plan'],
   ['local', 'local'],
   ['worker', 'worker'],
   ['explore', 'explore'],
@@ -306,25 +308,52 @@ const MODEL_ROLE_ALIASES = new Map([
   ['verify', 'verify'],
   ['debug', 'debug'],
   ['refactor', 'refactor'],
+  ['vision', 'image_analysis'],
+  ['image', 'image_analysis'],
+  ['image-analysis', 'image_analysis'],
+  ['image_analysis', 'image_analysis'],
+  ['analyze-image', 'image_analysis'],
+  ['analyze_image', 'image_analysis'],
+  ['image-generation', 'image_generation'],
+  ['image_generation', 'image_generation'],
+  ['image-gen', 'image_generation'],
+  ['generate-image', 'image_generation'],
+  ['generate_image', 'image_generation'],
 ]);
 
 const MODEL_ROLE_LABELS = {
   reasoning: 'coding',
   fast: 'fast',
-  orchestrator: 'orchestrator',
+  orchestrator: 'planning',
   local: 'local',
   worker: 'worker',
   explore: 'explore',
-  plan: 'plan',
+  plan: 'planning',
   verify: 'verify',
   debug: 'debug',
   refactor: 'refactor',
+  image_analysis: 'image analysis',
+  image_generation: 'image generation',
+};
+
+const MODEL_ROLE_DESCRIPTIONS = {
+  reasoning: 'coding model',
+  fast: 'fast low-cost work',
+  orchestrator: 'planning model (legacy role name)',
+  local: 'local fallback role',
+  worker: 'background worker role',
+  explore: 'read/search sub-agent',
+  plan: 'planning sub-agent',
+  verify: 'verification sub-agent',
+  debug: 'debugging sub-agent',
+  refactor: 'refactor sub-agent',
+  image_analysis: 'inspect screenshots and uploads',
+  image_generation: 'create visual assets',
 };
 
 const MODEL_ROLE_ORDER = [
   'reasoning',
   'fast',
-  'orchestrator',
   'local',
   'worker',
   'explore',
@@ -332,6 +361,8 @@ const MODEL_ROLE_ORDER = [
   'verify',
   'debug',
   'refactor',
+  'image_analysis',
+  'image_generation',
 ];
 
 function normalizeModelRole(value) {
@@ -349,7 +380,8 @@ function printModelCommandUsage() {
   process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
   process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
-  process.stderr.write(`         /model list · status · refresh · clear [role]\n`);
+  process.stderr.write(`         /model list [text|image|image-analysis|image-generation|multimodal]\n`);
+  process.stderr.write(`         /model status · refresh · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
 }
 
@@ -461,6 +493,69 @@ function modelCreditBadge(model) {
   return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
 }
 
+function modelCategory(model) {
+  const category = String(model?.category || 'text').trim().toLowerCase();
+  return category === 'chat' ? 'text' : (category || 'text');
+}
+
+function isImageGenerationModel(model) {
+  const text = `${model?.id || ''} ${model?.label || ''}`.toLowerCase();
+  return (
+    text.includes('image generation') ||
+    text.includes('generate image') ||
+    text.includes('gemini-3-pro-image') ||
+    text.includes('nano banana')
+  );
+}
+
+function modelDisplayCategory(model) {
+  const category = modelCategory(model);
+  if (category === 'image') {
+    return isImageGenerationModel(model) ? 'image_generation' : 'image_analysis';
+  }
+  return category;
+}
+
+function normalizeCatalogCategory(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'chat') return 'text';
+  if (raw === 'image-analysis' || raw === 'vision') return 'image_analysis';
+  if (raw === 'image-generation' || raw === 'image-gen') return 'image_generation';
+  return raw;
+}
+
+function modelMatchesCatalogFilter(model, filter) {
+  if (!filter) return true;
+  if (filter === 'image') return modelCategory(model) === 'image';
+  return modelDisplayCategory(model) === filter || modelCategory(model) === filter;
+}
+
+function modelCategoryLabel(category) {
+  switch (category) {
+    case 'image': return 'Image models';
+    case 'image_analysis': return 'Image analysis models';
+    case 'image_generation': return 'Image generation models';
+    case 'embedding': return 'Embedding models';
+    case 'audio': return 'Audio models';
+    case 'video': return 'Video models';
+    case 'other': return 'Other models';
+    case 'text': return 'Text models';
+    case 'multimodal': return 'Multimodal models';
+    default: return 'Other models';
+  }
+}
+
+function printModelCatalogRows(rows) {
+  for (const m of rows) {
+    const badge = modelCreditBadge(m);
+    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
+      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
+      : '';
+    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+  }
+}
+
 async function warnIfNotCurated(model, ctx) {
   if (isByokModelRoute()) return;
   const catalog = await fetchModelCatalog(ctx);
@@ -470,28 +565,42 @@ async function warnIfNotCurated(model, ctx) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not in the platform catalog — the backend may reject it. See /model list.`)}\n`);
   } else if (row.harness_validated === false) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not harness-validated for the platform route — cost/quality untuned. See /model list.`)}\n`);
+  } else if (modelCategory(row) !== 'text') {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is categorized as ${modelCategory(row)}; it is listed for media tooling, not coding-model overrides.`)}\n`);
   }
 }
 
-async function printModelCatalog(ctx) {
+async function printModelCatalog(ctx, filterCategory = null) {
   const catalog = await fetchModelCatalog(ctx);
   if (!catalog) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Model catalog unavailable — ${_modelCatalogError || 'unknown error'}.`)}\n`);
     return;
   }
   const curated = catalog.filter(m => m?.harness_validated);
+  const filter = filterCategory ? String(filterCategory).trim().toLowerCase() : null;
+  const visible = filter
+    ? curated.filter(m => modelMatchesCatalogFilter(m, filter))
+    : curated;
+
   process.stderr.write(`\n  ${c.bold('Platform catalog')} ${c.dim('(harness-validated, credit-priced)')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(64))}\n`);
-  if (!curated.length) {
+  if (!visible.length) {
     process.stderr.write(`  ${c.dim('(none published yet)')}\n`);
   }
-  for (const m of curated) {
-    const badge = modelCreditBadge(m);
-    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
-      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
-      : '';
-    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+
+  const categories = [...new Set(visible.map(modelDisplayCategory))].sort((a, b) => {
+    const order = ['text', 'image_analysis', 'image_generation', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'];
+    return (order.indexOf(a) === -1 ? 999 : order.indexOf(a)) -
+      (order.indexOf(b) === -1 ? 999 : order.indexOf(b)) ||
+      a.localeCompare(b);
+  });
+  for (const category of categories) {
+    const rows = visible.filter(m => modelDisplayCategory(m) === category);
+    if (!rows.length) continue;
+    process.stderr.write(`\n  ${c.bold(modelCategoryLabel(category))} ${c.dim(`(${rows.length})`)}\n`);
+    printModelCatalogRows(rows);
   }
+
   const rest = catalog.length - curated.length;
   if (rest > 0) {
     process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
@@ -552,10 +661,12 @@ function printModelStatus() {
   }
 
   const limits = session.modelLimits || {};
+  const subAgentModels = session.subAgentModels || {};
+  const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
   const rows = [
-    ['coder', limits.coder?.model],
-    ['explorer', limits.explorer?.model],
-    ['orchestrator', limits.orchestrator?.model],
+    ['coding', limits.coder?.model],
+    ['explore', subAgentModels.explore || limits.explorer?.model],
+    ['planning', planningModel],
   ].filter(([, model]) => model);
   if (rows.length) {
     process.stderr.write(`\n  ${c.bold('Backend roles')}\n`);
@@ -577,20 +688,28 @@ function printModelStatus() {
   printModelCommandUsage();
 }
 
-const MODEL_FORM_ROLES = ['reasoning', 'fast', 'orchestrator', 'explore', 'plan'];
+const MODEL_FORM_ROLES = ['reasoning', 'fast', 'explore', 'plan'];
+const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
   const limits = session.modelLimits || {};
+  const subAgentModels = session.subAgentModels || {};
+  const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
   const defaultsByRole = {
     reasoning: limits.coder?.model,
     fast: limits.explorer?.model,
-    orchestrator: limits.orchestrator?.model,
-    explore: limits.explorer?.model,
-    plan: limits.orchestrator?.model,
+    explore: subAgentModels.explore || limits.explorer?.model,
+    plan: planningModel,
+    image_analysis: 'backend tier default',
+    image_generation: 'backend tier default',
   };
-  const roles = MODEL_FORM_ROLES.map(role => ({
+  const roles = [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES].map(role => ({
     role,
     label: MODEL_ROLE_LABELS[role] || role,
+    description: MODEL_ROLE_DESCRIPTIONS[role] || '',
+    optionGroup: role === 'image_analysis'
+      ? 'image_analysis'
+      : (role === 'image_generation' ? 'image_generation' : 'text'),
     current: (session.modelOverrides || {})[role] || null,
     defaultLabel: defaultsByRole[role] || null,
   }));
@@ -616,7 +735,7 @@ async function openModelForm(ctx) {
   // Merge: form rows replace their roles; overrides on roles the form
   // doesn't show (verify/debug/…) are left untouched.
   const next = { ...(session.modelOverrides || {}) };
-  for (const role of MODEL_FORM_ROLES) delete next[role];
+  for (const role of [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES]) delete next[role];
   Object.assign(next, result.overrides);
   session.modelOverrides = next;
   if (result.overrides.reasoning) session.model = result.overrides.reasoning;
@@ -653,7 +772,14 @@ async function handleModelCommand(rest = '', ctx) {
   }
 
   if (parts[0] === 'list' || parts[0] === 'catalog') {
-    await printModelCatalog(ctx);
+    const category = parts[1]?.toLowerCase();
+    const normalizedCategory = normalizeCatalogCategory(category);
+    if (normalizedCategory && !['text', 'image', 'image_analysis', 'image_generation', 'multimodal', 'embedding', 'audio', 'video', 'other'].includes(normalizedCategory)) {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model category: ${category}`)}\n`);
+      printModelCommandUsage();
+      return;
+    }
+    await printModelCatalog(ctx, normalizedCategory || null);
     return;
   }
 
@@ -1789,6 +1915,9 @@ function renderEvent(event) {
 
     case 'tool_call':
     case 'tool_request': {
+      if (watchState.active) {
+        watchState.addEntry('tool', { label: data?.tool, detail: data?.args?.file_path || data?.args?.path || data?.args?.pattern || data?.args?.query || '' });
+      }
       const isInternal = Boolean(data?.internal || data?.sub_agent);
       if (isInternal) {
         session.subAgentToolCalls++;
@@ -1846,6 +1975,10 @@ function renderEvent(event) {
 
     case 'tool_result':
     case 'tool_done': {
+      if (watchState.active) {
+        const success = data?.success !== false;
+        watchState.addEntry('done', { label: data?.tool, detail: success ? '✓' : '✗' });
+      }
       if (shouldFoldSubAgentTool(data)) {
         foldSubAgentToolResult(data);
         break;
@@ -1941,6 +2074,9 @@ function renderEvent(event) {
     }
 
     case 'delegation': {
+      if (watchState.active) {
+        watchState.addEntry('handoff', { label: `${data?.from || '?'} → ${data?.to || '?'}` });
+      }
       stopSpinner();
       clearPendingHead();
       const from = data?.from || '';
@@ -1959,6 +2095,9 @@ function renderEvent(event) {
     // ── Sub-Agent Activity ──
 
     case 'sub_agent_start': {
+      if (watchState.active) {
+        watchState.addEntry('spawn', { type: data?.type, label: (data?.query || '').slice(0, 60) });
+      }
       stopSpinner();
       clearPendingHead();
       flushFoldedSubAgentTools();
@@ -2019,6 +2158,12 @@ function renderEvent(event) {
     }
 
     case 'sub_agent_complete': {
+      if (watchState.active) {
+        const agentType = data?.type || 'sub-agent';
+        const toolCalls = data?.tool_calls || 0;
+        const durationS = data?.duration_s || 0;
+        watchState.addEntry('done', { type: agentType, detail: `${toolCalls} tools · ${durationS.toFixed(1)}s`, status: 'done' });
+      }
       setSubAgentWindowActive(false);
       stopSpinner();
       clearPendingHead();
@@ -2219,6 +2364,9 @@ function renderEvent(event) {
       if (data?.models?.coder) session.model = data.models.coder;
       if (data?.model_limits && typeof data.model_limits === 'object') {
         session.modelLimits = data.model_limits;
+      }
+      if (data?.sub_agent_models && typeof data.sub_agent_models === 'object') {
+        session.subAgentModels = data.sub_agent_models;
       }
       if (data?.user) session.user = { ...session.user, ...data.user };
       // BYOK users pay their model provider directly; the platform does not
@@ -2836,6 +2984,19 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/watch': {
+      const nowActive = !watchState.active;
+      watchState.active = nowActive;
+      runtime.watchPanelActive = nowActive;
+      watchState.clear();
+      process.stderr.write(`  ${c.green(nowActive ? '✓' : '✗')} ${c.dim(`Watch panel ${nowActive ? 'on' : 'off'}`)}\n`);
+      if (!nowActive) {
+        // Clear any watch panel status lines
+        if (rqueue.isActive()) rqueue.clearStatus();
+        else if (isInputDockMounted()) { clearPinnedStatus(); moveToContent(); }
+      }
+      return;
+    }
     case '/login':
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
       telemetry.track('login_shown', { method: 'repl_command' });
@@ -3649,7 +3810,7 @@ async function fetchUser(ctx) {
     });
     if (resp.ok) {
       session.user = await resp.json();
-      session.model = session.user.default_reasoning_model || session.user.default_orchestrator_model || null;
+      session.model = session.user.default_reasoning_model || null;
     }
   } catch {}
 }
@@ -3790,6 +3951,7 @@ export async function startTerminalRepl() {
       user: session.user,
       model: session.model,
       modelLimits: session.modelLimits,
+      subAgentModels: session.subAgentModels,
       modelOverrides: session.modelOverrides,
       modelMode: session.modelMode,
       routePreference: session.routePreference,
@@ -3835,6 +3997,7 @@ export async function startTerminalRepl() {
       user: preserved.user,
       model: preserved.model,
       modelLimits: preserved.modelLimits,
+      subAgentModels: preserved.subAgentModels,
       modelOverrides: preserved.modelOverrides,
       modelMode: preserved.modelMode,
       routePreference: preserved.routePreference,
@@ -4959,6 +5122,11 @@ export async function startTerminalRepl() {
       runtime.lastRenderedBlock = 'user';
     }
 
+    function isExecutionSlashCommand(instruction) {
+      const command = String(instruction || '').trim().split(/\s+/, 1)[0].toLowerCase();
+      return command === '/watch';
+    }
+
     async function submitExecutionInstruction() {
       const instruction = executionInputBuffer.trim();
       executionInputBuffer = '';
@@ -4975,6 +5143,25 @@ export async function startTerminalRepl() {
           process.stderr.write('\n');
         }
         executionInputVisible = false;
+        return;
+      }
+      if (isExecutionSlashCommand(instruction)) {
+        if (isInputDockMounted()) {
+          clearInputPrompt();
+          moveToContent();
+        } else if (executionInputVisible) {
+          process.stderr.write('\n');
+        }
+        executionInputVisible = false;
+        await handleCommand(instruction, ctx);
+        if (isInputDockMounted()) {
+          renderDockInput(executionInputPrefix(), '', {
+            context: buildContextStrip(),
+            meta: buildDockMeta(),
+            tips: executionInputTips(),
+          });
+          moveToContent();
+        }
         return;
       }
       printExecutionInstruction(instruction);

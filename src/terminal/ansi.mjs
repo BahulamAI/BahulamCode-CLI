@@ -2,7 +2,7 @@
  * ANSI Terminal Renderer — cursor control, box drawing, status bars.
  *
  * Color helpers (the `c` object) now route through the semantic palette
- * (`src/ui/palette.mjs`) so the entire CLI honors the Kepler brand and
+ * (`src/ui/palette.mjs`) so the entire CLI honors the Bahulam brand and
  * tier fallbacks (truecolor, ansi256, ansi16, none) without touching
  * each call site. Hot-swap-friendly: external semantics like `c.red`,
  * `c.bold`, `c.cyan` are preserved as the legacy contract; new code
@@ -35,7 +35,7 @@ export const cursor = {
 // ── Colors ──
 // Legacy color names re-mapped onto semantic palette tokens. The CLI's
 // branding is centralized in palette.mjs; this object is preserved only
-// so existing imports keep compiling. Internal Kepler color choices are
+// so existing imports keep compiling. Internal Bahulam color choices are
 // documented next to each mapping for the next code review.
 
 const identity = (s) => String(s ?? '');

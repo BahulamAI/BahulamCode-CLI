@@ -8,7 +8,7 @@
  * mode on, redraw in place with cursor-up + erase-down, restore on exit.
  */
 
-import { c } from './ansi.mjs';
+import { c, stripAnsi } from './ansi.mjs';
 import { fitAnsiLine, writeOverlayFrame, eraseOverlayFrame } from './repl-format.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
@@ -20,10 +20,65 @@ function creditBadge(row) {
   return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M`;
 }
 
+function formatTokenLimit(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M ${label}`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K ${label}`;
+  return `${Math.round(n)} ${label}`;
+}
+
+function formatTiers(value) {
+  const tiers = Array.isArray(value) ? value : [];
+  const clean = tiers.map(v => String(v || '').trim()).filter(Boolean);
+  return clean.length ? clean.join(',') : '';
+}
+
+function cacheProfileLabel(value) {
+  if (!value) return '';
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (parsed?.type === 'prefix_hash') return 'prefix cache';
+  } catch {
+    // Fall through to the generic cache hint.
+  }
+  return 'cache';
+}
+
+function modelCategory(model) {
+  const category = String(model?.category || 'text').trim().toLowerCase();
+  return category === 'chat' ? 'text' : (category || 'text');
+}
+
+function isImageGenerationModel(model) {
+  const text = `${model?.id || ''} ${model?.label || ''}`.toLowerCase();
+  return (
+    text.includes('image generation') ||
+    text.includes('generate image') ||
+    text.includes('gemini-3-pro-image') ||
+    text.includes('nano banana')
+  );
+}
+
+function optionRowsForRole(catalog, row) {
+  const curated = (catalog || []).filter(m => m?.harness_validated && m?.id);
+  const group = String(row?.optionGroup || 'text').toLowerCase();
+  if (group === 'image_analysis') {
+    return curated.filter(m => (
+      ['image', 'multimodal'].includes(modelCategory(m))
+      && !isImageGenerationModel(m)
+    ));
+  }
+  if (group === 'image_generation') {
+    return curated.filter(m => modelCategory(m) === 'image' && isImageGenerationModel(m));
+  }
+  return curated.filter(m => ['text', 'chat'].includes(modelCategory(m)));
+}
+
 /**
  * @param {object} opts
  * @param {object|null} opts.rl        readline instance to pause/resume
- * @param {Array}  opts.roles          [{ role, label, current, defaultLabel }]
+ * @param {Array}  opts.roles          [{ role, label, description, current, defaultLabel, optionGroup }]
  * @param {Array}  opts.catalog        raw /api/models rows (may be empty)
  * @param {Array}  [opts.fallbackIds]  model ids to cycle when no curated catalog
  * @param {string} [opts.unavailableNote] why the catalog is missing (shown in header)
@@ -33,25 +88,24 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
   if (!process.stdin.isTTY) return null;
   if (rl) rl.pause();
 
-  const curated = (catalog || []).filter(m => m?.harness_validated && m?.id);
-  const usingFallback = curated.length === 0;
-  const optionIds = usingFallback
-    ? [...new Set((fallbackIds || []).filter(Boolean))]
-    : curated.map(m => m.id);
-  const baseOptions = [DEFAULT_SENTINEL, ...optionIds];
-  const byId = new Map(curated.map(m => [m.id, m]));
+  const catalogRows = (catalog || []).filter(m => m?.harness_validated && m?.id);
+  const usingFallback = catalogRows.length === 0;
+  const byId = new Map(catalogRows.map(m => [m.id, m]));
 
   // Per-row option list; a current override that isn't in the curated list
   // is appended so it stays visible and selectable.
   const rows = roles.map(r => {
-    let opts = baseOptions;
+    const optionIds = usingFallback
+      ? [...new Set((fallbackIds || []).filter(Boolean))]
+      : optionRowsForRole(catalogRows, r).map(m => m.id);
+    let opts = [DEFAULT_SENTINEL, ...optionIds];
     let idx = 0;
     if (r.current) {
-      const found = baseOptions.indexOf(r.current);
+      const found = opts.indexOf(r.current);
       if (found >= 0) {
         idx = found;
       } else {
-        opts = [...baseOptions, r.current];
+        opts = [...opts, r.current];
         idx = opts.length - 1;
       }
     }
@@ -76,8 +130,40 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       return `${c.brand(value)}${badge ? ` ${c.dim(badge)}` : ''}${flag}`;
     };
 
+    const valueDescription = (row) => {
+      const value = row.opts[row.idx];
+      if (value === DEFAULT_SENTINEL) {
+        return row.description || 'backend default for this role';
+      }
+      const meta = byId.get(value);
+      if (!meta) {
+        return usingFallback ? 'backend configured model' : 'custom override outside curated catalog';
+      }
+      const label = String(meta.label || '').trim();
+      const parts = [];
+      if (label && label !== value) parts.push(label);
+      if (meta.provider) parts.push(String(meta.provider));
+      const category = modelCategory(meta);
+      if (category) parts.push(category);
+      const context = formatTokenLimit(meta.context_length, 'ctx');
+      if (context) parts.push(context);
+      const output = formatTokenLimit(meta.max_output, 'out');
+      if (output) parts.push(output);
+      if (meta.supports_tools) parts.push('tools');
+      if (meta.supports_reasoning) parts.push('reasoning');
+      const cache = cacheProfileLabel(meta.cache_profile);
+      if (cache) parts.push(cache);
+      const tiers = formatTiers(meta.platform_access_tier);
+      if (tiers) parts.push(tiers);
+      return parts.join(' · ');
+    };
+
     const render = () => {
       const cols = Math.max(60, process.stderr.columns || 120);
+      const labelWidth = Math.min(
+        18,
+        Math.max(14, ...rows.map(row => stripAnsi(String(row.label || row.role)).length)),
+      );
       const lines = [];
       lines.push(`  ${c.bold('Models')} ${c.dim('· session overrides · curated platform catalog')}`);
       if (usingFallback) {
@@ -87,9 +173,17 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       lines.push('');
       rows.forEach((row, i) => {
         const marker = i === cursor ? c.brand('▸') : ' ';
-        const rawLabel = String(row.label || row.role).padEnd(14, ' ');
+        const rawLabel = String(row.label || row.role).padEnd(labelWidth, ' ');
         const label = i === cursor ? c.brand(rawLabel) : rawLabel;
-        lines.push(fitAnsiLine(`  ${marker} ${label} ${c.dim('‹')} ${valueLabel(row)} ${c.dim('›')}`, cols - 1));
+        const prefix = `  ${marker} ${label} ${c.dim('‹')} `;
+        const suffix = ` ${c.dim('›')}`;
+        const descText = valueDescription(row);
+        const descMaxCols = Math.max(0, Math.min(72, cols - stripAnsi(prefix + suffix).length - 24));
+        const desc = descText && descMaxCols > 12
+          ? `  ${c.dim(fitAnsiLine(descText, descMaxCols))}`
+          : '';
+        const maxValueCols = Math.max(18, cols - stripAnsi(prefix + suffix + desc).length - 1);
+        lines.push(fitAnsiLine(`${prefix}${fitAnsiLine(valueLabel(row), maxValueCols)}${suffix}${desc}`, cols - 1));
       });
       lines.push('');
       lines.push(fitAnsiLine(`  ${c.dim('↑↓ role · ←→ model · Enter apply · c defaults · Esc cancel')}`, cols - 1));

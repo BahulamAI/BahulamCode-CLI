@@ -206,9 +206,10 @@ export class TarangAuth {
         process.stderr.write(`  Gateway:        ${DIM}${creds.gatewayType}${RESET}\n`);
 
         const models = creds.models || {};
-        if (models.orchestrator || models.reasoning || models.local) {
+        const planningModel = models.planning || models.orchestrator;
+        if (planningModel || models.reasoning || models.local) {
             process.stderr.write(`\n${BOLD}  Models${RESET}\n`);
-            if (models.orchestrator) process.stderr.write(`  Orchestrator:   ${DIM}${models.orchestrator}${RESET}\n`);
+            if (planningModel)       process.stderr.write(`  Planning:       ${DIM}${planningModel}${RESET}\n`);
             if (models.reasoning)    process.stderr.write(`  Coding:         ${DIM}${models.reasoning}${RESET}\n`);
             if (models.local)        process.stderr.write(`  Local:          ${DIM}${models.local}${RESET}\n`);
         }

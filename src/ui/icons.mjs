@@ -74,6 +74,7 @@ const TOOL_ICON = Object.freeze({
   grep:              'search',
   list_files:        'search',
   analyze_code:      'search',
+  analyze_image:     'search',
   get_file_info:     'search',
   git_diff:          'search',
   git_status:        'search',
@@ -84,6 +85,7 @@ const TOOL_ICON = Object.freeze({
   write_project:     'write',
   edit_file:         'write',
   delete_file:       'write',
+  generate_image:    'write',
 
   // Shell / validate
   shell:             'shell',

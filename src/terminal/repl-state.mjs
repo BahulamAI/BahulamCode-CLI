@@ -62,6 +62,10 @@ export const runtime = {
   // N lines under the spinner) instead of appending to the transcript.
   // Full detail stays on the recorded cards (/expand, /last, `d`).
   subAgentWindow: { active: false, lines: [] },
+
+  // PRD-092: Watch panel — toggled by /watch. When active, the spinner
+  // area renders a compact agent-activity summary instead of the spinner.
+  watchPanelActive: false,
 };
 
 // Full session state for the current CLI process. Set by the REPL loop
@@ -92,6 +96,7 @@ export const session = {
   user: null,          // { github_username, email, role }
   model: null,         // from backend user profile
   modelLimits: {},     // role -> {model, context_length, max_output, source}
+  subAgentModels: {},  // role -> model from backend session_info
   blockedOps: 0,       // safety guardrail blocks
   delegations: [],     // agent delegation events: { from, to, time }
   phases: [],          // phase history: { name, time }

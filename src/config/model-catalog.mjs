@@ -31,10 +31,12 @@ let _cache = null;
 function normalizeSnapshotRow(row) {
   const id = row.value || row.id;
   if (!id) return null;
+  const category = row.category || row.modelCategory || row.model_category || 'text';
   return {
     id,
     provider: row.provider || (id.includes('/') ? id.split('/', 1)[0] : 'unknown'),
     label: row.label || id,
+    category,
     input_cost_usd_per_m: row.inputCost ?? row.input_cost_usd_per_m ?? null,
     output_cost_usd_per_m: row.outputCost ?? row.output_cost_usd_per_m ?? null,
     context_length: row.context ?? row.context_length ?? null,

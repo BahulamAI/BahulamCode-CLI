@@ -123,7 +123,29 @@ async function main() {
   } catch {}
 
   if (subcommand === 'dashboard') {
-    // Launch Bahulam Pulse Next.js dashboard
+    // Try to open the live daemon's HTTP dashboard first
+    try {
+      const { findSessionForCwd } = await import('../daemon/daemonize.mjs');
+      const sid = await findSessionForCwd(process.cwd());
+      if (sid) {
+        const { daemonSessionDir } = await import('../core/paths.mjs');
+        const metaPath = path.join(daemonSessionDir(sid), 'meta.json');
+        if (fs.existsSync(metaPath)) {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          if (meta.dashboard_url) {
+            process.stderr.write(`\x1b[2mOpening dashboard for session ${sid}…\x1b[0m\n`);
+            const { execSync } = await import('node:child_process');
+            const cmd = process.platform === 'darwin' ? 'open'
+                      : process.platform === 'win32' ? 'start'
+                      : 'xdg-open';
+            execSync(`${cmd} "${meta.dashboard_url}"`, { stdio: 'ignore', timeout: 3000 });
+            process.exit(0);
+            return;
+          }
+        }
+      }
+    } catch {}
+    // Fallback: launch Bahulam Pulse Next.js dashboard
     const { spawn } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const path = await import('node:path');

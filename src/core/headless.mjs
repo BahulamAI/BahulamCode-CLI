@@ -22,6 +22,7 @@ import { ApprovalManager } from './approval.mjs';
 // is invisible to attach clients and to paired mobile devices.
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { startHttpDashboard } from '../daemon/http-dashboard.mjs';
 import { resolvePending } from '../daemon/approval-store.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
@@ -348,6 +349,18 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                             });
                             registerBroadcaster(evt => server.broadcastEvent(evt));
 
+                            // Optional HTTP browser dashboard (opt-in with BAHULAM_DASHBOARD=1)
+                            let dashboardUrl = null;
+                            if (process.env.BAHULAM_DASHBOARD === '1') {
+                                try {
+                                    const dashboard = await startHttpDashboard({ sessionId: _sid });
+                                    dashboardUrl = dashboard.url;
+                                    process.stderr.write(`[prd-092] dashboard: ${dashboard.url}\n`);
+                                } catch (err) {
+                                    try { process.stderr.write(`[prd-092] dashboard start: ${err.message}\n`); } catch {}
+                                }
+                            }
+
                             // Write meta.json + daemon.pid so `bahulam list` /
                             // `bahulam stop` and the mobile session directory
                             // can find this session.
@@ -361,6 +374,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                         sock_path: server.sockPath,
                                         opened_at: new Date().toISOString(),
                                         headless: true,
+                                        dashboard_url: dashboardUrl,
                                     },
                                 });
                                 fsSync.writeFileSync(

@@ -58,6 +58,7 @@ export const DAEMON_OWNED_FIELDS = Object.freeze([
   'user',
   'model',
   'modelLimits',
+  'subAgentModels',
   'blockedOps',
   'delegations',
   'phases',

@@ -282,7 +282,7 @@ export function formatCostValue(cost) {
 }
 
 /**
- * Convert provider cost to Kepler credits.
+ * Convert provider cost to Bahulam credits.
  * 100 credits = $1 of retail model usage, 2x multiplier.
  * @param {number} costUsd
  * @returns {number}

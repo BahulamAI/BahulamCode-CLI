@@ -24,6 +24,8 @@ const TOOL_LABELS = Object.freeze({
   git_diff: 'Reviewing changes',
   git_status: 'Checking git',
   analyze_code: 'Analyzing',
+  analyze_image: 'Analyzing image',
+  generate_image: 'Generating image',
   get_project_overview: 'Indexing project',
   skills_list: 'Listing skills',
   skill_view: 'Loading skill',
