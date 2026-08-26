@@ -59,6 +59,7 @@ await test('shipped catalog includes DeepSeek vision default', async () => {
   assert.strictEqual(row.outputCost, 0.66);
   assert.strictEqual(row.context, 1048576);
   assert.strictEqual(row.maxOutput, 384000);
+  assert.strictEqual(row.category, 'image');
   assert.deepStrictEqual(row.platformAccessTier, ['free', 'pro', 'tier_49', 'tier_99']);
 });
 

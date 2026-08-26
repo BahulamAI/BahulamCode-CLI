@@ -33,7 +33,11 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
   if (!process.stdin.isTTY) return null;
   if (rl) rl.pause();
 
-  const curated = (catalog || []).filter(m => m?.harness_validated && m?.id);
+  const curated = (catalog || []).filter(m => (
+    m?.harness_validated
+    && m?.id
+    && ['text', 'chat'].includes(String(m.category || 'text').toLowerCase())
+  ));
   const usingFallback = curated.length === 0;
   const optionIds = usingFallback
     ? [...new Set((fallbackIds || []).filter(Boolean))]

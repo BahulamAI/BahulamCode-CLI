@@ -40,6 +40,17 @@ await test('registry exposes generate_image', async () => {
   assert.ok(registry.list().some(tool => tool.name === 'generate_image'));
 });
 
+await test('shipped catalog categorizes image generation model as image', async () => {
+  const catalog = JSON.parse(fs.readFileSync(
+    new URL('../src/config/model-catalog-default.json', import.meta.url),
+    'utf8',
+  ));
+  const row = catalog.models.find(model => model.value === 'google/gemini-3-pro-image');
+  assert.ok(row);
+  assert.strictEqual(row.category, 'image');
+  assert.deepStrictEqual(row.platformAccessTier, ['pro', 'tier_49', 'tier_99']);
+});
+
 await test('generate_image calls authenticated backend and writes file', async () => {
   const originalFetch = globalThis.fetch;
   const originalCwd = process.cwd();

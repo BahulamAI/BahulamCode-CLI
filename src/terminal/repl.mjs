@@ -350,7 +350,7 @@ function printModelCommandUsage() {
   process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
   process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
-  process.stderr.write(`         /model list · status · refresh · clear [role]\n`);
+  process.stderr.write(`         /model list [text|image|multimodal] · status · refresh · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
 }
 
@@ -462,6 +462,34 @@ function modelCreditBadge(model) {
   return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
 }
 
+function modelCategory(model) {
+  const category = String(model?.category || 'text').trim().toLowerCase();
+  return category === 'chat' ? 'text' : (category || 'text');
+}
+
+function modelCategoryLabel(category) {
+  switch (category) {
+    case 'image': return 'Image models';
+    case 'embedding': return 'Embedding models';
+    case 'audio': return 'Audio models';
+    case 'video': return 'Video models';
+    case 'other': return 'Other models';
+    case 'text': return 'Text models';
+    case 'multimodal': return 'Multimodal models';
+    default: return 'Other models';
+  }
+}
+
+function printModelCatalogRows(rows) {
+  for (const m of rows) {
+    const badge = modelCreditBadge(m);
+    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
+      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
+      : '';
+    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+  }
+}
+
 async function warnIfNotCurated(model, ctx) {
   if (isByokModelRoute()) return;
   const catalog = await fetchModelCatalog(ctx);
@@ -471,28 +499,42 @@ async function warnIfNotCurated(model, ctx) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not in the platform catalog — the backend may reject it. See /model list.`)}\n`);
   } else if (row.harness_validated === false) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is not harness-validated for the platform route — cost/quality untuned. See /model list.`)}\n`);
+  } else if (modelCategory(row) !== 'text') {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(`${model} is categorized as ${modelCategory(row)}; it is listed for media tooling, not coding-model overrides.`)}\n`);
   }
 }
 
-async function printModelCatalog(ctx) {
+async function printModelCatalog(ctx, filterCategory = null) {
   const catalog = await fetchModelCatalog(ctx);
   if (!catalog) {
     process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Model catalog unavailable — ${_modelCatalogError || 'unknown error'}.`)}\n`);
     return;
   }
   const curated = catalog.filter(m => m?.harness_validated);
+  const filter = filterCategory ? String(filterCategory).trim().toLowerCase() : null;
+  const visible = filter
+    ? curated.filter(m => modelCategory(m) === filter)
+    : curated;
+
   process.stderr.write(`\n  ${c.bold('Platform catalog')} ${c.dim('(harness-validated, credit-priced)')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(64))}\n`);
-  if (!curated.length) {
+  if (!visible.length) {
     process.stderr.write(`  ${c.dim('(none published yet)')}\n`);
   }
-  for (const m of curated) {
-    const badge = modelCreditBadge(m);
-    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
-      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
-      : '';
-    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+
+  const categories = [...new Set(visible.map(modelCategory))].sort((a, b) => {
+    const order = ['text', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'];
+    return (order.indexOf(a) === -1 ? 999 : order.indexOf(a)) -
+      (order.indexOf(b) === -1 ? 999 : order.indexOf(b)) ||
+      a.localeCompare(b);
+  });
+  for (const category of categories) {
+    const rows = visible.filter(m => modelCategory(m) === category);
+    if (!rows.length) continue;
+    process.stderr.write(`\n  ${c.bold(modelCategoryLabel(category))} ${c.dim(`(${rows.length})`)}\n`);
+    printModelCatalogRows(rows);
   }
+
   const rest = catalog.length - curated.length;
   if (rest > 0) {
     process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
@@ -654,7 +696,14 @@ async function handleModelCommand(rest = '', ctx) {
   }
 
   if (parts[0] === 'list' || parts[0] === 'catalog') {
-    await printModelCatalog(ctx);
+    const category = parts[1]?.toLowerCase();
+    const normalizedCategory = category === 'chat' ? 'text' : category;
+    if (normalizedCategory && !['text', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'].includes(normalizedCategory)) {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model category: ${category}`)}\n`);
+      printModelCommandUsage();
+      return;
+    }
+    await printModelCatalog(ctx, normalizedCategory || null);
     return;
   }
 
