@@ -37,6 +37,7 @@ import { SearchFilesTool } from './search-files.mjs';
 import { AnalyzeCodeTool } from './analyze-code.mjs';
 import { ExploreTool, PlanTool, VerifyTool, DebugTool, RefactorTool } from './meta-tools.mjs';
 import { RememberTool } from './remember.mjs';
+import { GenerateImageTool } from './generate-image.mjs';
 
 const BUILTIN_TOOLS = [
     BashTool,
@@ -71,6 +72,7 @@ const BUILTIN_TOOLS = [
     ReadFilesTool,
     SearchFilesTool,
     AnalyzeCodeTool,
+    GenerateImageTool,
     ExploreTool,
     PlanTool,
     VerifyTool,

@@ -695,6 +695,29 @@ export function createToolExecutor({
             };
         },
 
+        generate_image: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const tool = occRegistry.get('generate_image');
+            if (!tool) {
+                return { success: false, output: 'generate_image tool is not registered in the CLI.', _tool: 'generate_image' };
+            }
+            try {
+                const result = await tool.call(args || {});
+                throwIfAborted(options.signal);
+                if (typeof result === 'string') {
+                    return { success: !/^error\b/i.test(result), output: result, _tool: 'generate_image' };
+                }
+                return {
+                    success: result?.success !== false,
+                    output: result?.output || JSON.stringify(result),
+                    ...result,
+                    _tool: 'generate_image',
+                };
+            } catch (err) {
+                return { success: false, output: String(err?.message || err), _tool: 'generate_image' };
+            }
+        },
+
         // 0b. read_attachment → chunked text extraction from a local document.
         // Backend registers the schema; execution happens client-side because
         // only the CLI has the user's filesystem. Supports the `path` mode
