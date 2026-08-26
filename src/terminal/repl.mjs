@@ -307,6 +307,17 @@ const MODEL_ROLE_ALIASES = new Map([
   ['verify', 'verify'],
   ['debug', 'debug'],
   ['refactor', 'refactor'],
+  ['vision', 'image_analysis'],
+  ['image', 'image_analysis'],
+  ['image-analysis', 'image_analysis'],
+  ['image_analysis', 'image_analysis'],
+  ['analyze-image', 'image_analysis'],
+  ['analyze_image', 'image_analysis'],
+  ['image-generation', 'image_generation'],
+  ['image_generation', 'image_generation'],
+  ['image-gen', 'image_generation'],
+  ['generate-image', 'image_generation'],
+  ['generate_image', 'image_generation'],
 ]);
 
 const MODEL_ROLE_LABELS = {
@@ -320,6 +331,23 @@ const MODEL_ROLE_LABELS = {
   verify: 'verify',
   debug: 'debug',
   refactor: 'refactor',
+  image_analysis: 'image analysis',
+  image_generation: 'image generation',
+};
+
+const MODEL_ROLE_DESCRIPTIONS = {
+  reasoning: 'primary coding model',
+  fast: 'fast low-cost work',
+  orchestrator: 'planning and routing',
+  local: 'local fallback role',
+  worker: 'background worker role',
+  explore: 'read/search sub-agent',
+  plan: 'planning sub-agent',
+  verify: 'verification sub-agent',
+  debug: 'debugging sub-agent',
+  refactor: 'refactor sub-agent',
+  image_analysis: 'inspect screenshots and uploads',
+  image_generation: 'create visual assets',
 };
 
 const MODEL_ROLE_ORDER = [
@@ -333,6 +361,8 @@ const MODEL_ROLE_ORDER = [
   'verify',
   'debug',
   'refactor',
+  'image_analysis',
+  'image_generation',
 ];
 
 function normalizeModelRole(value) {
@@ -350,7 +380,8 @@ function printModelCommandUsage() {
   process.stderr.write(`         /model <model>      set coding model directly\n`);
   process.stderr.write(`         /model <role> <model>\n`);
   process.stderr.write(`         /model ${NAMED_MODEL_MODES_LIST.join('|')}\n`);
-  process.stderr.write(`         /model list [text|image|multimodal] · status · refresh · clear [role]\n`);
+  process.stderr.write(`         /model list [text|image|image-analysis|image-generation|multimodal]\n`);
+  process.stderr.write(`         /model status · refresh · clear [role]\n`);
   process.stderr.write(`  ${c.gray('Roles:')} ${MODEL_ROLE_ORDER.map(role => MODEL_ROLE_LABELS[role]).join(', ')}\n`);
 }
 
@@ -467,9 +498,44 @@ function modelCategory(model) {
   return category === 'chat' ? 'text' : (category || 'text');
 }
 
+function isImageGenerationModel(model) {
+  const text = `${model?.id || ''} ${model?.label || ''}`.toLowerCase();
+  return (
+    text.includes('image generation') ||
+    text.includes('generate image') ||
+    text.includes('gemini-3-pro-image') ||
+    text.includes('nano banana')
+  );
+}
+
+function modelDisplayCategory(model) {
+  const category = modelCategory(model);
+  if (category === 'image') {
+    return isImageGenerationModel(model) ? 'image_generation' : 'image_analysis';
+  }
+  return category;
+}
+
+function normalizeCatalogCategory(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'chat') return 'text';
+  if (raw === 'image-analysis' || raw === 'vision') return 'image_analysis';
+  if (raw === 'image-generation' || raw === 'image-gen') return 'image_generation';
+  return raw;
+}
+
+function modelMatchesCatalogFilter(model, filter) {
+  if (!filter) return true;
+  if (filter === 'image') return modelCategory(model) === 'image';
+  return modelDisplayCategory(model) === filter || modelCategory(model) === filter;
+}
+
 function modelCategoryLabel(category) {
   switch (category) {
     case 'image': return 'Image models';
+    case 'image_analysis': return 'Image analysis models';
+    case 'image_generation': return 'Image generation models';
     case 'embedding': return 'Embedding models';
     case 'audio': return 'Audio models';
     case 'video': return 'Video models';
@@ -513,7 +579,7 @@ async function printModelCatalog(ctx, filterCategory = null) {
   const curated = catalog.filter(m => m?.harness_validated);
   const filter = filterCategory ? String(filterCategory).trim().toLowerCase() : null;
   const visible = filter
-    ? curated.filter(m => modelCategory(m) === filter)
+    ? curated.filter(m => modelMatchesCatalogFilter(m, filter))
     : curated;
 
   process.stderr.write(`\n  ${c.bold('Platform catalog')} ${c.dim('(harness-validated, credit-priced)')}\n`);
@@ -522,14 +588,14 @@ async function printModelCatalog(ctx, filterCategory = null) {
     process.stderr.write(`  ${c.dim('(none published yet)')}\n`);
   }
 
-  const categories = [...new Set(visible.map(modelCategory))].sort((a, b) => {
-    const order = ['text', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'];
+  const categories = [...new Set(visible.map(modelDisplayCategory))].sort((a, b) => {
+    const order = ['text', 'image_analysis', 'image_generation', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'];
     return (order.indexOf(a) === -1 ? 999 : order.indexOf(a)) -
       (order.indexOf(b) === -1 ? 999 : order.indexOf(b)) ||
       a.localeCompare(b);
   });
   for (const category of categories) {
-    const rows = visible.filter(m => modelCategory(m) === category);
+    const rows = visible.filter(m => modelDisplayCategory(m) === category);
     if (!rows.length) continue;
     process.stderr.write(`\n  ${c.bold(modelCategoryLabel(category))} ${c.dim(`(${rows.length})`)}\n`);
     printModelCatalogRows(rows);
@@ -621,6 +687,7 @@ function printModelStatus() {
 }
 
 const MODEL_FORM_ROLES = ['reasoning', 'fast', 'orchestrator', 'explore', 'plan'];
+const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
   const limits = session.modelLimits || {};
@@ -630,10 +697,16 @@ async function openModelForm(ctx) {
     orchestrator: limits.orchestrator?.model,
     explore: limits.explorer?.model,
     plan: limits.orchestrator?.model,
+    image_analysis: 'backend tier default',
+    image_generation: 'backend tier default',
   };
-  const roles = MODEL_FORM_ROLES.map(role => ({
+  const roles = [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES].map(role => ({
     role,
     label: MODEL_ROLE_LABELS[role] || role,
+    description: MODEL_ROLE_DESCRIPTIONS[role] || '',
+    optionGroup: role === 'image_analysis'
+      ? 'image_analysis'
+      : (role === 'image_generation' ? 'image_generation' : 'text'),
     current: (session.modelOverrides || {})[role] || null,
     defaultLabel: defaultsByRole[role] || null,
   }));
@@ -659,7 +732,7 @@ async function openModelForm(ctx) {
   // Merge: form rows replace their roles; overrides on roles the form
   // doesn't show (verify/debug/…) are left untouched.
   const next = { ...(session.modelOverrides || {}) };
-  for (const role of MODEL_FORM_ROLES) delete next[role];
+  for (const role of [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES]) delete next[role];
   Object.assign(next, result.overrides);
   session.modelOverrides = next;
   if (result.overrides.reasoning) session.model = result.overrides.reasoning;
@@ -697,8 +770,8 @@ async function handleModelCommand(rest = '', ctx) {
 
   if (parts[0] === 'list' || parts[0] === 'catalog') {
     const category = parts[1]?.toLowerCase();
-    const normalizedCategory = category === 'chat' ? 'text' : category;
-    if (normalizedCategory && !['text', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'].includes(normalizedCategory)) {
+    const normalizedCategory = normalizeCatalogCategory(category);
+    if (normalizedCategory && !['text', 'image', 'image_analysis', 'image_generation', 'multimodal', 'embedding', 'audio', 'video', 'other'].includes(normalizedCategory)) {
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Unknown model category: ${category}`)}\n`);
       printModelCommandUsage();
       return;
