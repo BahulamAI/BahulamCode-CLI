@@ -20,6 +20,31 @@ function creditBadge(row) {
   return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M`;
 }
 
+function formatTokenLimit(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M ${label}`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K ${label}`;
+  return `${Math.round(n)} ${label}`;
+}
+
+function formatTiers(value) {
+  const tiers = Array.isArray(value) ? value : [];
+  const clean = tiers.map(v => String(v || '').trim()).filter(Boolean);
+  return clean.length ? clean.join(',') : '';
+}
+
+function cacheProfileLabel(value) {
+  if (!value) return '';
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (parsed?.type === 'prefix_hash') return 'prefix cache';
+  } catch {
+    // Fall through to the generic cache hint.
+  }
+  return 'cache';
+}
+
 function modelCategory(model) {
   const category = String(model?.category || 'text').trim().toLowerCase();
   return category === 'chat' ? 'text' : (category || 'text');
@@ -105,6 +130,34 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       return `${c.brand(value)}${badge ? ` ${c.dim(badge)}` : ''}${flag}`;
     };
 
+    const valueDescription = (row) => {
+      const value = row.opts[row.idx];
+      if (value === DEFAULT_SENTINEL) {
+        return row.description || 'backend default for this role';
+      }
+      const meta = byId.get(value);
+      if (!meta) {
+        return usingFallback ? 'backend configured model' : 'custom override outside curated catalog';
+      }
+      const label = String(meta.label || '').trim();
+      const parts = [];
+      if (label && label !== value) parts.push(label);
+      if (meta.provider) parts.push(String(meta.provider));
+      const category = modelCategory(meta);
+      if (category) parts.push(category);
+      const context = formatTokenLimit(meta.context_length, 'ctx');
+      if (context) parts.push(context);
+      const output = formatTokenLimit(meta.max_output, 'out');
+      if (output) parts.push(output);
+      if (meta.supports_tools) parts.push('tools');
+      if (meta.supports_reasoning) parts.push('reasoning');
+      const cache = cacheProfileLabel(meta.cache_profile);
+      if (cache) parts.push(cache);
+      const tiers = formatTiers(meta.platform_access_tier);
+      if (tiers) parts.push(tiers);
+      return parts.join(' · ');
+    };
+
     const render = () => {
       const cols = Math.max(60, process.stderr.columns || 120);
       const labelWidth = Math.min(
@@ -122,9 +175,13 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
         const marker = i === cursor ? c.brand('▸') : ' ';
         const rawLabel = String(row.label || row.role).padEnd(labelWidth, ' ');
         const label = i === cursor ? c.brand(rawLabel) : rawLabel;
-        const desc = row.description ? `  ${c.dim(row.description)}` : '';
         const prefix = `  ${marker} ${label} ${c.dim('‹')} `;
         const suffix = ` ${c.dim('›')}`;
+        const descText = valueDescription(row);
+        const descMaxCols = Math.max(0, Math.min(72, cols - stripAnsi(prefix + suffix).length - 24));
+        const desc = descText && descMaxCols > 12
+          ? `  ${c.dim(fitAnsiLine(descText, descMaxCols))}`
+          : '';
         const maxValueCols = Math.max(18, cols - stripAnsi(prefix + suffix + desc).length - 1);
         lines.push(fitAnsiLine(`${prefix}${fitAnsiLine(valueLabel(row), maxValueCols)}${suffix}${desc}`, cols - 1));
       });
