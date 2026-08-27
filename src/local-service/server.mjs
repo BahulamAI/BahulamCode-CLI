@@ -166,8 +166,39 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
 
   if (req.method === 'GET' && url.pathname === '/api/chat/history') {
     const relay = getAgentRelay(session);
-    const history = await relay.loadHistory();
+    const history = relay.currentHistory();
     sendJson(res, 200, history);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/chat/sessions') {
+    const relay = getAgentRelay(session);
+    const historySessions = await relay.listHistorySessions();
+    sendJson(res, 200, historySessions);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/chat/resume') {
+    const body = await readJsonBody(req);
+    const relay = getAgentRelay(session);
+    const history = await relay.resumeHistory(body.session_id || body.sessionId);
+    sendJson(res, 200, history);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/chat/new') {
+    const relay = getAgentRelay(session);
+    const history = await relay.startNewHistory();
+    sendJson(res, 200, history);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
+    const approvalId = decodeURIComponent(url.pathname.slice('/api/approvals/'.length));
+    const body = await readJsonBody(req);
+    const relay = getAgentRelay(session);
+    const result = relay.decideApproval(approvalId, body);
+    sendJson(res, 200, result);
     return;
   }
 
@@ -412,7 +443,7 @@ button,textarea,input{font:inherit}button{color:inherit}.shell{display:flex;flex
 .topbar{height:38px;display:flex;align-items:center;gap:12px;border-bottom:1px solid rgba(27,27,27,.06);background:rgba(255,255,255,.80);backdrop-filter:blur(10px);padding:0 16px;flex:0 0 auto}.terminal-icon{width:16px;height:16px;color:rgba(27,27,27,.30);flex:0 0 auto}.workspace-name{font-size:14px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-kind{font-size:12px;color:rgba(27,27,27,.30)}.top-actions{margin-left:auto;display:flex;align-items:center;gap:6px;min-width:0}
 .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid var(--ws-border);background:#fff;padding:2px 8px;font-size:10px;font-weight:500;color:rgba(27,27,27,.58);white-space:nowrap}.badge.local{border-color:#BBF7D0;background:var(--ws-success-bg);color:var(--ws-success)}.badge.local:before{content:"";width:6px;height:6px;border-radius:999px;background:#10B981}
 .icon-button{height:26px;min-width:26px;border:1px solid rgba(27,27,27,.10);border-radius:6px;background:#fff;color:rgba(27,27,27,.64);display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 8px;cursor:pointer;font-size:11px;font-weight:500;transition:background .15s ease,color .15s ease,border-color .15s ease}.icon-button:hover{background:#F7F5EF;color:var(--ws-foreground)}.icon-button[aria-pressed="true"]{background:rgba(27,27,27,.08);border-color:rgba(27,27,27,.10);color:#1B1B1B}.icon-button svg{width:14px;height:14px}
-.menubar{height:28px;display:flex;align-items:center;gap:2px;border-bottom:1px solid rgba(27,27,27,.06);background:#F7F5EF;padding:0 12px;flex:0 0 auto;user-select:none}.menu-item{height:22px;border:0;background:transparent;border-radius:5px;padding:0 8px;color:rgba(27,27,27,.58);font-size:12px;cursor:pointer}.menu-item:hover{background:var(--ws-hover);color:rgba(27,27,27,.86)}
+.menubar{height:28px;display:flex;align-items:center;gap:2px;border-bottom:1px solid rgba(27,27,27,.06);background:#F7F5EF;padding:0 12px;flex:0 0 auto;user-select:none;position:relative;z-index:20}.menu-item{height:22px;border:0;background:transparent;border-radius:5px;padding:0 8px;color:rgba(27,27,27,.58);font-size:12px;cursor:pointer}.menu-item:hover{background:var(--ws-hover);color:rgba(27,27,27,.86)}.menubar-spacer{flex:1}.session-menu-wrap{display:flex;align-items:center}.session-menu-button{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-modal-backdrop,.approval-modal-backdrop{position:fixed;inset:0;z-index:80;display:flex;align-items:flex-start;justify-content:center;background:rgba(27,27,27,.28);padding:92px 16px 24px}.approval-modal-backdrop{z-index:90;background:rgba(27,27,27,.36)}.session-modal-backdrop[hidden],.approval-modal-backdrop[hidden]{display:none}.session-dialog,.approval-dialog{width:min(620px,100%);max-height:min(620px,calc(100vh - 128px));display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(27,27,27,.12);border-radius:8px;background:#FFFDF7;box-shadow:0 24px 70px rgba(27,27,27,.22)}.approval-dialog{width:min(680px,100%)}.session-dialog-head,.approval-dialog-head{height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--ws-border-subtle);padding:0 12px}.session-dialog-title,.approval-dialog-title{font-size:13px;font-weight:750;color:rgba(27,27,27,.80)}.session-dialog-subtitle,.approval-dialog-subtitle{margin-top:1px;font:10px var(--mono);color:rgba(27,27,27,.38);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-menu{display:block;overflow:auto;padding:6px}.session-menu-empty{padding:10px;color:rgba(27,27,27,.42);font-size:12px}.approval-body{padding:12px;overflow:auto}.approval-subject{border:1px solid var(--ws-border);border-radius:7px;background:#fff;padding:10px;font:12px/1.45 var(--mono);color:rgba(27,27,27,.72);white-space:pre-wrap;overflow-wrap:anywhere}.approval-reason{margin-top:10px;color:rgba(27,27,27,.58);font-size:12px;line-height:1.5}.approval-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;border-top:1px solid var(--ws-border-subtle);padding:10px 12px;background:#F7F5EF}.approval-actions .danger{border-color:rgba(185,28,28,.24);color:#B91C1C}.approval-actions .primary-action{background:#1B1B1B;color:#FFFDF7;border-color:#1B1B1B}
 main{--left-w:256px;--right-w:480px;display:grid;grid-template-columns:var(--left-w) 6px minmax(360px,1fr) 6px var(--right-w);flex:1;min-height:0}.panel{min-width:0;background:var(--ws-panel);overflow:hidden}.files{background:rgba(255,255,255,.52)}.work{display:flex;flex-direction:column;background:#fff}.agent{background:rgba(255,255,255,.58);display:flex;flex-direction:column}.resizer{background:transparent;border-left:1px solid var(--ws-border-subtle);border-right:1px solid transparent;cursor:col-resize;position:relative}.resizer:hover,.resizer.dragging{background:rgba(8,145,178,.08);border-left-color:rgba(8,145,178,.25)}
 main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}main.hide-files .files,main.hide-files .left-resizer{display:none}main.hide-agent{grid-template-columns:var(--left-w) 6px minmax(360px,1fr) 0 0}main.hide-agent .agent,main.hide-agent .right-resizer{display:none}
 .section-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 12px;color:var(--ws-faint);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;background:rgba(255,255,255,.45)}.section-actions{display:flex;align-items:center;gap:4px}.section-button{height:20px;border:0;background:transparent;border-radius:5px;color:rgba(27,27,27,.35);cursor:pointer;padding:0 4px}.section-button:hover{background:var(--ws-hover);color:rgba(27,27,27,.70)}
@@ -420,8 +451,8 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
 .tabbar{height:36px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:var(--ws-tab);flex:0 0 auto;overflow-x:auto}.tab{height:100%;display:flex;align-items:center;gap:7px;border:0;border-right:1px solid var(--ws-border-subtle);padding:0 9px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;cursor:pointer;max-width:220px;min-width:90px}.tab.active{background:#fff;color:var(--ws-foreground);box-shadow:inset 0 -1.5px 0 var(--ws-foreground)}.tab:hover{background:rgba(27,27,27,.03);color:rgba(27,27,27,.75)}.tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tab-close{border:0;background:transparent;border-radius:4px;color:rgba(27,27,27,.28);cursor:pointer;padding:0 2px}.tab-close:hover{background:rgba(27,27,27,.07);color:rgba(27,27,27,.70)}.tab-muted{flex:1;height:100%;border-left:1px solid var(--ws-border-subtle);min-width:24px}
 .viewer{flex:1;min-height:0;overflow:auto;background:#fff}.file-header{height:34px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(27,27,27,.015);font:12px var(--mono);color:rgba(27,27,27,.50)}.path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-actions{margin-left:auto;display:flex;gap:6px}.file-action{font:11px var(--sans);color:rgba(27,27,27,.50);text-decoration:none;border:1px solid var(--ws-border);border-radius:6px;padding:2px 7px;background:#fff}.file-action:hover{color:var(--ws-foreground);background:var(--ws-surface)}.empty{color:var(--ws-faint);padding:24px;font-size:12px}.error{color:var(--ws-error)}
 .code-wrap{display:grid;grid-template-columns:auto 1fr;align-items:start;min-height:100%;font:12px/1.55 var(--mono)}.line-nums{user-select:none;text-align:right;padding:14px 10px 14px 14px;color:rgba(27,27,27,.25);background:#FAF9F5;border-right:1px solid var(--ws-border-subtle);white-space:pre}.code-pre{margin:0;padding:14px;white-space:pre;overflow:auto;color:#1F2937;background:#fff;min-height:100%}.markdown-preview{max-width:880px;padding:24px 28px;color:rgba(27,27,27,.86);font-size:14px;line-height:1.65}.markdown-preview h1,.markdown-preview h2,.markdown-preview h3{line-height:1.2;margin:18px 0 8px}.markdown-preview p{margin:0 0 12px}.markdown-preview code,.message-content code{font-family:var(--mono);font-size:.92em;background:rgba(27,27,27,.06);border-radius:4px;padding:1px 4px}.markdown-preview pre,.message-content pre{overflow:auto;background:#0D1117;color:#E5E7EB;border-radius:7px;padding:12px}.image-preview{height:100%;display:flex;align-items:center;justify-content:center;padding:18px;background:#F8F7F2}.image-preview img{max-width:100%;max-height:100%;object-fit:contain;border:1px solid var(--ws-border);background:#fff}.frame-preview{height:100%;min-height:420px}.frame-preview iframe{width:100%;height:100%;border:0}.table-preview{padding:18px;overflow:auto}.table-preview table{border-collapse:collapse;font-size:12px;background:#fff}.table-preview th,.table-preview td{border:1px solid var(--ws-border);padding:5px 7px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.table-preview th{background:#F7F5EF;text-align:left;color:rgba(27,27,27,.65)}.binary-preview{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;color:rgba(27,27,27,.50);text-align:center}
-.chat-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(255,255,255,.55)}.chat-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:rgba(27,27,27,.35)}.chat-subtitle{min-width:0;flex:1;font-size:10px;color:rgba(27,27,27,.28);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-body{display:flex;flex-direction:column;flex:1;min-height:0}.thread{flex:1;min-height:0;overflow:auto;padding:16px 14px 10px;background:rgba(255,255,255,.40)}.thread-inner{display:flex;flex-direction:column;gap:12px}.empty-chat{display:flex;height:100%;align-items:center;justify-content:center;text-align:center;color:rgba(27,27,27,.35);font-size:12px}.msg{display:flex}.msg.user{justify-content:flex-end}.msg.assistant{justify-content:flex-start}.bubble{max-width:86%;border-radius:16px;padding:10px 12px;font-size:13px;line-height:1.55;word-break:break-word}.user .bubble{background:#1B1B1B;color:#FFFDF7}.assistant-stack{width:100%;max-width:960px;display:flex;flex-direction:column;gap:8px}.assistant-bubble{display:none;max-width:94%;border-radius:16px;background:#F7F5EF;padding:11px 13px;color:rgba(27,27,27,.86);font-size:13px;line-height:1.6}.assistant-bubble:not(:empty){display:block}.message-content p{margin:0 0 10px}.message-content p:last-child{margin-bottom:0}.message-content ul{margin:0 0 10px 18px;padding:0}.message-content li{margin:2px 0}
-.activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:300px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.trace{display:none;max-height:170px;overflow:auto;border-top:1px solid var(--ws-border-subtle);background:#fff;padding:6px}.trace.open{display:block}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:6px 4px;color:rgba(27,27,27,.52)}.trace-row b{color:var(--ws-primary)}
+.chat-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(255,255,255,.55)}.chat-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:rgba(27,27,27,.35)}.chat-subtitle{min-width:0;flex:1;font-size:10px;color:rgba(27,27,27,.28);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-tabs{height:32px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:#F7F5EF;padding:0 8px;gap:3px}.agent-tab{height:24px;border:0;border-radius:6px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;font-weight:650;padding:0 9px;cursor:pointer}.agent-tab:hover{background:var(--ws-hover);color:rgba(27,27,27,.76)}.agent-tab.active{background:#fff;color:var(--ws-foreground);box-shadow:0 0 0 1px rgba(27,27,27,.06)}.chat-body{display:flex;flex-direction:column;flex:1;min-height:0}.chat-pane{display:none;flex-direction:column;flex:1;min-height:0}.chat-pane.active{display:flex}.thread{flex:1;min-height:0;overflow:auto;padding:16px 14px 10px;background:rgba(255,255,255,.40)}.thread-inner{display:flex;flex-direction:column;gap:12px}.empty-chat{display:flex;height:100%;align-items:center;justify-content:center;text-align:center;color:rgba(27,27,27,.35);font-size:12px}.session-list{display:flex;flex-direction:column;gap:2px}.session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border-radius:6px;padding:8px}.session-row:hover{background:rgba(27,27,27,.035)}.session-main{min-width:0}.session-prompt{font-size:12px;color:rgba(27,27,27,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta{margin-top:3px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.38);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-tools{margin-top:5px;display:flex;gap:4px;flex-wrap:wrap}.session-chip{border-radius:999px;border:1px solid rgba(27,27,27,.07);background:#F7F5EF;padding:1px 6px;font:10px var(--mono);color:rgba(27,27,27,.48)}.msg{display:flex}.msg.user{justify-content:flex-end}.msg.assistant{justify-content:flex-start}.bubble{max-width:86%;border-radius:16px;padding:10px 12px;font-size:13px;line-height:1.55;word-break:break-word}.user .bubble{background:#1B1B1B;color:#FFFDF7}.assistant-stack{width:100%;max-width:960px;display:flex;flex-direction:column;gap:8px}.assistant-bubble{display:none;max-width:94%;border-radius:16px;background:#F7F5EF;padding:11px 13px;color:rgba(27,27,27,.86);font-size:13px;line-height:1.6}.assistant-bubble:not(:empty){display:block}.message-content p{margin:0 0 10px}.message-content p:last-child{margin-bottom:0}.message-content ul{margin:0 0 10px 18px;padding:0}.message-content li{margin:2px 0}
+.activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:300px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.trace{display:block;flex:1;min-height:0;overflow:auto;background:#fff;padding:8px}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:7px 4px;color:rgba(27,27,27,.52);white-space:pre-wrap;overflow-wrap:anywhere}.trace-row b{color:var(--ws-primary)}
 .composer{border-top:1px solid var(--ws-border-subtle);background:#FFFDF7;padding:10px 12px}.composer-box{border:1px solid var(--ws-border);border-radius:10px;background:#fff;overflow:hidden}textarea{display:block;width:100%;min-height:84px;max-height:240px;resize:vertical;border:0;padding:10px 11px;background:#fff;color:var(--ws-foreground);outline:none}.composer-actions{height:34px;border-top:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 8px}.status{font-size:11px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}button.primary{height:24px;border:0;border-radius:6px;background:var(--ws-foreground);color:#fff;font-size:11px;font-weight:750;padding:0 10px;cursor:pointer}button.primary:hover{background:#2B2B2B}button.primary:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:980px){body{overflow:auto}.shell{height:auto;min-height:100vh}.global-links .global-link:not(:last-of-type){display:none}.auth-chip{display:none}main,main.hide-files,main.hide-agent{display:flex;flex-direction:column}.resizer{display:none}.panel{min-height:320px}.files,.agent{border:0;border-bottom:1px solid var(--ws-border-subtle)}.top-actions .badge:not(.local){display:none}.thread{min-height:420px}.bubble{max-width:94%}}
 </style>
@@ -463,6 +494,10 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
     <button class="menu-item" type="button">Edit</button>
     <button class="menu-item" type="button">Run</button>
     <button class="menu-item" type="button">Tools</button>
+    <div class="menubar-spacer"></div>
+    <div class="session-menu-wrap">
+      <button class="menu-item session-menu-button" id="sessionMenuButton" type="button" aria-haspopup="dialog" aria-expanded="false">Chat: New</button>
+    </div>
   </div>
   <main id="layout">
     <section class="panel files" id="filesPanel">
@@ -476,22 +511,58 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
     </section>
     <div class="resizer right-resizer" data-resize="right"></div>
     <section class="panel agent" id="agentPanel">
-      <div class="chat-head"><span class="chat-title">Agent</span><span class="chat-subtitle" id="bridgeState">bridge pending</span><button class="section-button" id="traceToggle" type="button" title="Trace">Trace</button></div>
+      <div class="chat-head"><span class="chat-title">Agent</span><span class="chat-subtitle" id="bridgeState">bridge pending</span></div>
+      <div class="agent-tabs" role="tablist" aria-label="Agent panel">
+        <button class="agent-tab active" id="chatTab" type="button" role="tab" aria-selected="true" data-agent-tab="chat">Chat</button>
+        <button class="agent-tab" id="traceTab" type="button" role="tab" aria-selected="false" data-agent-tab="trace">Trace</button>
+      </div>
       <div class="chat-body">
-        <div class="thread" id="thread"><div class="thread-inner" id="threadInner"><div class="empty-chat" id="emptyChat">Ask about this local workspace.</div></div></div>
-        <div class="trace" id="events"></div>
-        <form class="composer" id="composer">
-          <div class="composer-box">
-          <textarea id="prompt" placeholder="Ask about this local workspace"></textarea>
-          <div class="composer-actions">
-            <div class="status" id="sendStatus"></div>
-            <button class="primary" id="send" type="submit">Send</button>
+        <div class="chat-pane active" id="chatPane" role="tabpanel" aria-labelledby="chatTab">
+          <div class="thread" id="thread"><div class="thread-inner" id="threadInner"><div class="empty-chat" id="emptyChat">Ask about this local workspace.</div></div></div>
+          <form class="composer" id="composer">
+            <div class="composer-box">
+            <textarea id="prompt" placeholder="Ask about this local workspace"></textarea>
+            <div class="composer-actions">
+              <div class="status" id="sendStatus"></div>
+              <button class="primary" id="send" type="submit">Send</button>
+            </div>
+            </div>
+          </form>
+        </div>
+        <div class="chat-pane" id="tracePane" role="tabpanel" aria-labelledby="traceTab">
+          <div class="trace" id="events"></div>
           </div>
-          </div>
-        </form>
       </div>
     </section>
   </main>
+  <div class="session-modal-backdrop" id="sessionModal" hidden>
+    <section class="session-dialog" role="dialog" aria-modal="true" aria-labelledby="sessionDialogTitle">
+      <div class="session-dialog-head">
+        <div>
+          <div class="session-dialog-title" id="sessionDialogTitle">Chat sessions</div>
+          <div class="session-dialog-subtitle">${escapeHtml(session.root_path)}</div>
+        </div>
+        <button class="icon-button" id="sessionModalClose" type="button" aria-label="Close chat sessions">×</button>
+      </div>
+      <div class="session-menu" id="sessionMenu" role="menu"></div>
+    </section>
+  </div>
+  <div class="approval-modal-backdrop" id="approvalModal" hidden>
+    <section class="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalTitle">
+      <div class="approval-dialog-head">
+        <div>
+          <div class="approval-dialog-title" id="approvalTitle">Approval required</div>
+          <div class="approval-dialog-subtitle" id="approvalSubtitle"></div>
+        </div>
+        <button class="icon-button danger" id="approvalDenyTop" type="button">Deny</button>
+      </div>
+      <div class="approval-body">
+        <div class="approval-subject" id="approvalSubject"></div>
+        <div class="approval-reason" id="approvalReason"></div>
+      </div>
+      <div class="approval-actions" id="approvalActions"></div>
+    </section>
+  </div>
 </div>
 <script>
 const BOOT = ${boot};
@@ -507,7 +578,11 @@ const fileCache = new Map();
 let activePath = null;
 let activeTurn = null;
 let turnSeq = 0;
-let traceOpen = false;
+let historySelectionReady = false;
+let historySessions = [];
+let sessionMenuOpen = false;
+let traceCount = 0;
+let pendingApproval = null;
 
 function esc(value){return String(value ?? '').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
 async function api(path, opts={}){
@@ -527,6 +602,8 @@ function basename(p){const parts=String(p||'').split('/').filter(Boolean);return
 function extname(p){const name=basename(p).toLowerCase();const i=name.lastIndexOf('.');return i>=0?name.slice(i+1):'';}
 function formatBytes(size){const n=Number(size)||0;if(n<1024)return String(n);if(n<1024*1024)return Math.round(n/1024)+'K';return (n/1024/1024).toFixed(1)+'M';}
 function parentPath(p){const parts=String(p||'.').split('/').filter(Boolean);parts.pop();return parts.length?parts.join('/'):'.';}
+function compactId(id){const value=String(id||'');return value.length>16?value.slice(0,8)+'...'+value.slice(-5):value;}
+function formatSessionTime(value){if(!value)return 'unknown';try{return new Date(value).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}catch{return String(value);}}
 function applyLayout(){
   let prefs={leftWidth:256,rightWidth:480,explorerVisible:true,agentVisible:true};
   try{prefs={...prefs,...JSON.parse(localStorage.getItem(layoutKey)||'{}')};}catch{}
@@ -694,10 +771,18 @@ function inlineMd(s){const tick=String.fromCharCode(96);return s.replace(/\\*\\*
 function addTrace(type, detail){
   const el = document.createElement('div');
   el.className = 'trace-row';
-  el.innerHTML = '<b>' + esc(type) + '</b> ' + esc(detail || '');
+  const text = typeof detail === 'string' ? detail : JSON.stringify(detail || {});
+  el.innerHTML = '<b>' + esc(type) + '</b> ' + esc(text || '');
   const events = document.getElementById('events');
   events.appendChild(el);
   events.scrollTop = events.scrollHeight;
+  traceCount += 1;
+  const traceTab=document.getElementById('traceTab');
+  if(traceTab) traceTab.textContent='Trace ' + traceCount;
+}
+function resetThread(emptyText='Ask about this local workspace.'){
+  activeTurn=null;
+  document.getElementById('threadInner').innerHTML='<div class="empty-chat" id="emptyChat">'+esc(emptyText)+'</div>';
 }
 function addUserMessage(text){
   document.getElementById('emptyChat')?.remove();
@@ -715,32 +800,141 @@ function addAssistantMessage(text){
   document.getElementById('threadInner').appendChild(el);
   scrollThread();
 }
-function addHistoryToolMessage(item){
-  document.getElementById('emptyChat')?.remove();
-  const el=document.createElement('div');
-  el.className='msg assistant';
-  const label=(item.tool || item.kind || 'tool') + (item.kind ? ' ' + item.kind : '');
-  el.innerHTML='<div class="assistant-stack"><div class="activity-card active"><button class="activity-head" type="button"><span class="activity-label">'+esc(label)+'</span><span class="activity-rollup">history</span><span>›</span></button><div class="activity-rows"><div class="activity-row done"><span class="status-dot"></span><span><span>'+esc(item.content || '')+'</span></span></div></div></div></div>';
-  const card=el.querySelector('.activity-card');
-  card.querySelector('.activity-head').addEventListener('click',()=>{card.classList.toggle('expanded');});
-  document.getElementById('threadInner').appendChild(el);
+function renderHistorySnapshot(history){
+  resetThread(history.backend_session_id ? 'No chat messages in this transcript yet.' : 'Ask about this local workspace.');
+  const messages=Array.isArray(history.messages)?history.messages:[];
+  const trace=Array.isArray(history.trace)?history.trace:[];
+  if(history.backend_session_id){
+    document.getElementById('bridgeState').textContent='resumed';
+    document.getElementById('sendStatus').textContent='Resumed '+compactId(history.backend_session_id);
+    setSessionButtonLabel('Chat: '+compactId(history.backend_session_id));
+  } else {
+    document.getElementById('bridgeState').textContent='new session';
+    document.getElementById('sendStatus').textContent='';
+    setSessionButtonLabel('Chat: New');
+  }
+  for(const item of trace){
+    addTrace(item.type || 'history_tool', {tool:item.tool, kind:item.kind, content:item.content});
+  }
+  for(const msg of messages){
+    if(msg.role==='user')addUserMessage(msg.content||'');
+    else if(msg.role==='assistant')addAssistantMessage(msg.content||'');
+  }
+  scrollThread();
+  setAgentTab('chat');
 }
-async function loadChatHistory(){
+function setSessionButtonLabel(label){
+  const button=document.getElementById('sessionMenuButton');
+  if(button) button.textContent=label;
+}
+function setSessionMenuOpen(open){
+  sessionMenuOpen=!!open;
+  const modal=document.getElementById('sessionModal');
+  const button=document.getElementById('sessionMenuButton');
+  if(modal) modal.hidden=!sessionMenuOpen;
+  if(button) button.setAttribute('aria-expanded', String(sessionMenuOpen));
+  if(sessionMenuOpen){
+    const first=document.querySelector('#sessionMenu button');
+    if(first) first.focus();
+  } else if(document.activeElement && modal && modal.contains(document.activeElement)) {
+    button?.focus();
+  }
+}
+function setApprovalModalOpen(open){
+  const modal=document.getElementById('approvalModal');
+  if(modal) modal.hidden=!open;
+}
+function showApprovalModal(data){
+  pendingApproval=data||null;
+  if(!pendingApproval)return;
+  const prompt=pendingApproval.prompt||{};
+  document.getElementById('approvalTitle').textContent=prompt.title||('Approval · '+(pendingApproval.tool||'tool'));
+  document.getElementById('approvalSubtitle').textContent=(pendingApproval.tier||pendingApproval.risk||'approval') + ' · ' + (pendingApproval.approval_id||'');
+  document.getElementById('approvalSubject').textContent=prompt.subject || pendingApproval.tool || 'Tool request';
+  document.getElementById('approvalReason').textContent=prompt.reason || pendingApproval.reason || '';
+  const options=Array.isArray(pendingApproval.options)&&pendingApproval.options.length
+    ? pendingApproval.options
+    : [{label:'approve once',value:'approve',hint:'run this call'},{label:'cancel',value:'reject',hint:'do not run'}];
+  const actions=document.getElementById('approvalActions');
+  actions.innerHTML=options.map(option=>{
+    const danger=option.value==='reject'?' danger':'';
+    const primary=option.value==='approve'?' primary-action':'';
+    const hint=option.hint?' title="'+esc(option.hint)+'"':'';
+    return '<button class="icon-button'+danger+primary+'" type="button" data-approval-decision="'+esc(option.value)+'"'+hint+'>'+esc(option.label)+'</button>';
+  }).join('');
+  actions.querySelectorAll('[data-approval-decision]').forEach(btn=>btn.addEventListener('click',()=>submitApproval(btn.dataset.approvalDecision)));
+  setAgentTab('trace');
+  setApprovalModalOpen(true);
+  const first=actions.querySelector('[data-approval-decision]');
+  if(first) first.focus();
+}
+async function submitApproval(decision){
+  if(!pendingApproval?.approval_id)return;
+  const approval=pendingApproval;
   try {
-    const history=await api('/api/chat/history');
-    const messages=Array.isArray(history.messages)?history.messages:[];
-    if(history.backend_session_id){
-      document.getElementById('bridgeState').textContent='resumed';
-    }
-    if(!messages.length)return;
-    for(const msg of messages){
-      if(msg.role==='user')addUserMessage(msg.content||'');
-      else if(msg.role==='assistant')addAssistantMessage(msg.content||'');
-      else if(msg.role==='tool')addHistoryToolMessage(msg);
-    }
-    scrollThread();
+    await api('/api/approvals/'+encodeURIComponent(approval.approval_id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})});
+    addTrace('approval_decision', {approval_id:approval.approval_id, decision});
   } catch (err) {
-    addTrace('history_error', JSON.stringify({message:err.message}));
+    addTrace('approval_error', {approval_id:approval.approval_id, message:err.message});
+  } finally {
+    pendingApproval=null;
+    setApprovalModalOpen(false);
+  }
+}
+function renderSessionMenu(sessions){
+  historySessions=Array.isArray(sessions)?sessions:[];
+  const menu=document.getElementById('sessionMenu');
+  if(!menu)return;
+  const rows=historySessions.slice(0,8).map(s=>{
+    const tools=(Array.isArray(s.tools)?s.tools:[]).map(t=>'<span class="session-chip">'+esc(t)+'</span>').join('');
+    const prompt=s.first_prompt || 'Untitled session';
+    const meta=[formatSessionTime(s.last_activity_at||s.started_at), (s.user_messages||0)+' user', (s.assistant_messages||0)+' assistant', s.status||'unknown', compactId(s.session_id)].filter(Boolean).join(' · ');
+    return '<div class="session-row"><div class="session-main"><div class="session-prompt">'+esc(prompt)+'</div><div class="session-meta">'+esc(meta)+'</div>'+(tools?'<div class="session-tools">'+tools+'</div>':'')+'</div><button class="icon-button" type="button" data-resume-session="'+esc(s.session_id)+'">Resume</button></div>';
+  }).join('');
+  const empty=historySessions.length?'':'<div class="session-menu-empty">No previous sessions for this folder.</div>';
+  menu.innerHTML='<div class="session-list"><div class="session-row"><div class="session-main"><div class="session-prompt">New chat</div><div class="session-meta">Start without loading prior folder history</div></div><button class="icon-button" type="button" id="newHistorySession">Start</button></div>'+empty+rows+'</div>';
+  menu.querySelector('#newHistorySession').addEventListener('click',startNewChat);
+  menu.querySelectorAll('[data-resume-session]').forEach(btn=>btn.addEventListener('click',()=>resumeChat(btn.dataset.resumeSession)));
+  if(historySessions.length){
+    document.getElementById('bridgeState').textContent='choose session';
+    setSessionButtonLabel('Chat: Choose '+historySessions.length);
+  } else {
+    document.getElementById('bridgeState').textContent='new session';
+    setSessionButtonLabel('Chat: New');
+  }
+  historySelectionReady=true;
+  setSessionMenuOpen(true);
+}
+async function loadSessionChoices(){
+  try {
+    const result=await api('/api/chat/sessions');
+    renderSessionMenu(result.sessions || []);
+  } catch (err) {
+    addTrace('history_error', {message:err.message});
+    historySelectionReady=true;
+  }
+}
+async function resumeChat(sessionId){
+  if(!sessionId)return;
+  document.getElementById('sendStatus').textContent='Resuming...';
+  try {
+    const history=await api('/api/chat/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sessionId})});
+    setSessionMenuOpen(false);
+    renderHistorySnapshot(history);
+  } catch (err) {
+    document.getElementById('sendStatus').textContent=err.message;
+    addTrace('history_error', {message:err.message, session_id:sessionId});
+  }
+}
+async function startNewChat(){
+  document.getElementById('sendStatus').textContent='Starting new chat...';
+  try {
+    const history=await api('/api/chat/new',{method:'POST'});
+    setSessionMenuOpen(false);
+    renderHistorySnapshot(history);
+  } catch (err) {
+    document.getElementById('sendStatus').textContent=err.message;
+    addTrace('history_error', {message:err.message});
   }
 }
 function ensureAssistantTurn(){
@@ -782,6 +976,16 @@ function appendAssistantText(text){
   scrollThread();
 }
 function scrollThread(){const t=document.getElementById('thread');t.scrollTop=t.scrollHeight;}
+function setAgentTab(tab){
+  const next=tab==='trace'?'trace':'chat';
+  document.getElementById('chatPane')?.classList.toggle('active', next==='chat');
+  document.getElementById('tracePane')?.classList.toggle('active', next==='trace');
+  document.querySelectorAll('[data-agent-tab]').forEach(btn=>{
+    const active=btn.dataset.agentTab===next;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+}
 function handleRelayEvent(type, event){
   const data = event.data || {};
   addTrace(type, JSON.stringify(data));
@@ -791,6 +995,33 @@ function handleRelayEvent(type, event){
   }
   if (type === 'agent_relay_ready') {
     document.getElementById('bridgeState').textContent = 'ready';
+    return;
+  }
+  if (type === 'agent_history_loaded') {
+    document.getElementById('bridgeState').textContent = 'resumed';
+    if(data.backend_session_id) setSessionButtonLabel('Chat: '+compactId(data.backend_session_id));
+    return;
+  }
+  if (type === 'agent_history_new') {
+    document.getElementById('bridgeState').textContent = 'new session';
+    setSessionButtonLabel('Chat: New');
+    return;
+  }
+  if (type === 'agent_approval_required') {
+    document.getElementById('bridgeState').textContent = 'approval required';
+    showApprovalModal(data);
+    return;
+  }
+  if (type === 'agent_approval_resolved') {
+    if(pendingApproval?.approval_id===data.approval_id){
+      pendingApproval=null;
+      setApprovalModalOpen(false);
+    }
+    document.getElementById('bridgeState').textContent = data.approved ? 'running' : 'approval denied';
+    return;
+  }
+  if (type === 'agent_session') {
+    if(data.session_id) setSessionButtonLabel('Chat: '+compactId(data.session_id));
     return;
   }
   if (type === 'agent_turn_started') {
@@ -834,7 +1065,7 @@ es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, J
 [
   'session_started','file_browsed','file_read','tool_execution_requested','session_stopped',
   'agent_turn_requested','agent_relay_ready','agent_turn_started','agent_turn_complete',
-  'agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
+  'agent_history_loaded','agent_history_new','agent_approval_required','agent_approval_resolved','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
   'agent_tool_result','agent_activity','agent_complete','agent_error','agent_event'
 ].forEach(type => {
   es.addEventListener(type, evt => { try { handleRelayEvent(type, JSON.parse(evt.data)); } catch {} });
@@ -843,6 +1074,8 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const prompt = document.getElementById('prompt').value.trim();
   if (!prompt) return;
+  setSessionMenuOpen(false);
+  if(!historySelectionReady) historySelectionReady=true;
   addUserMessage(prompt);
   document.getElementById('prompt').value='';
   activeTurn=null;
@@ -859,7 +1092,12 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
   }
 });
 document.getElementById('prompt').addEventListener('keydown', e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();document.getElementById('composer').requestSubmit();}});
-document.getElementById('traceToggle').addEventListener('click',()=>{traceOpen=!traceOpen;document.getElementById('events').classList.toggle('open',traceOpen);});
+document.querySelectorAll('[data-agent-tab]').forEach(btn=>btn.addEventListener('click',()=>setAgentTab(btn.dataset.agentTab)));
+document.getElementById('sessionMenuButton').addEventListener('click',(e)=>{e.stopPropagation();setSessionMenuOpen(!sessionMenuOpen);});
+document.getElementById('sessionModalClose').addEventListener('click',()=>setSessionMenuOpen(false));
+document.getElementById('sessionModal').addEventListener('click',(e)=>{if(e.target.id==='sessionModal')setSessionMenuOpen(false);});
+document.getElementById('approvalDenyTop').addEventListener('click',()=>submitApproval('reject'));
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape'&&pendingApproval){submitApproval('reject');return;}if(e.key==='Escape'&&sessionMenuOpen)setSessionMenuOpen(false);});
 document.getElementById('refreshFiles').addEventListener('click',()=>{dirCache.clear();loadDir('.');});
 document.getElementById('toggleExplorer').addEventListener('click',()=>{let prefs={explorerVisible:true};try{prefs={...prefs,...JSON.parse(localStorage.getItem(layoutKey)||'{}')};}catch{}saveLayoutPatch({explorerVisible:!prefs.explorerVisible});});
 document.getElementById('toggleAgent').addEventListener('click',()=>{let prefs={agentVisible:true};try{prefs={...prefs,...JSON.parse(localStorage.getItem(layoutKey)||'{}')};}catch{}saveLayoutPatch({agentVisible:!prefs.agentVisible});});
@@ -867,7 +1105,7 @@ applyLayout();
 setupResizers();
 renderTabs();
 renderEmptyViewer();
-loadChatHistory();
+loadSessionChoices();
 loadDir('.').then(()=>{if(currentPath&&currentPath!=='.')openFile(currentPath).catch(()=>{});});
 </script>
 </body>

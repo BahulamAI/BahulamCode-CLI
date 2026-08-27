@@ -9,7 +9,6 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
-import { ApprovalManager } from '../core/approval.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import {
   buildResumeHistory,
@@ -19,6 +18,7 @@ import {
 import { TarangStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
+import { BrowserApprovalManager } from './approval-bridge.mjs';
 
 const __require = createRequire(import.meta.url);
 const VERSION = __require('../../package.json').version;
@@ -35,6 +35,7 @@ export class LocalAgentRelay {
     this.client = null;
     this.toolExecutor = null;
     this.creds = null;
+    this.approvalManager = null;
     this.resumeLoaded = false;
     this.resumeSessionId = null;
     this.historyMode = 'full';
@@ -43,21 +44,92 @@ export class LocalAgentRelay {
     this.jsonlWriter = null;
   }
 
-  async loadHistory() {
-    if (this.resumeLoaded) return this._historySnapshot();
+  async listHistorySessions() {
+    const sessions = await transcriptsForRoot(this.session.root_path);
+    return {
+      ok: true,
+      root_path: this.session.root_path,
+      selected_session_id: this.resumeSessionId || null,
+      sessions: sessions.map(serializeTranscriptSession),
+    };
+  }
+
+  currentHistory() {
+    return this._historySnapshot();
+  }
+
+  async startNewHistory() {
+    if (this.running) {
+      const err = new Error('A local agent turn is already running for this workspace');
+      err.code = 'CONFLICT';
+      throw err;
+    }
+    if (this.turnCount > 0) {
+      const err = new Error('Start a new local workspace session to switch history after a turn has run');
+      err.code = 'CONFLICT';
+      throw err;
+    }
     this.resumeLoaded = true;
+    this.resumeSessionId = null;
+    this.displayHistory = [];
+    this.agentHistory = [];
+    this.jsonlWriter = null;
+    if (this.client) this.client.sessionId = null;
+    this.emit('agent_history_new', {
+      root_path: this.session.root_path,
+    });
+    return this._historySnapshot();
+  }
+
+  async loadHistory(options = {}) {
+    const sessionId = typeof options === 'string' ? options : options.sessionId;
+    if (!sessionId) return this._historySnapshot();
+    return this.resumeHistory(sessionId);
+  }
+
+  async resumeHistory(sessionId) {
+    const requestedSessionId = String(sessionId || '').trim();
+    if (!requestedSessionId) {
+      const err = new Error('session_id is required');
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+    if (this.running) {
+      const err = new Error('A local agent turn is already running for this workspace');
+      err.code = 'CONFLICT';
+      throw err;
+    }
+    if (this.turnCount > 0 && this.resumeSessionId !== requestedSessionId) {
+      const err = new Error('Start a new local workspace session to switch history after a turn has run');
+      err.code = 'CONFLICT';
+      throw err;
+    }
+    if (this.resumeLoaded && this.resumeSessionId === requestedSessionId) return this._historySnapshot();
 
     try {
-      const match = await latestTranscriptForRoot(this.session.root_path);
-      if (!match) return this._historySnapshot();
+      const match = await transcriptForRootBySessionId(this.session.root_path, requestedSessionId);
+      if (!match) {
+        const err = new Error(`No local transcript for this workspace session: ${requestedSessionId}`);
+        err.code = 'NOT_FOUND';
+        throw err;
+      }
 
       const detail = await getSessionDetail(match.sessionId, { filePath: match.filePath });
-      if (!detail) return this._historySnapshot();
+      if (!detail) {
+        const err = new Error(`Local transcript could not be read: ${requestedSessionId}`);
+        err.code = 'NOT_FOUND';
+        throw err;
+      }
 
       const history = buildResumeHistory({ ...detail, recapTailTurns: 8 }, this.historyMode);
       this.resumeSessionId = match.sessionId;
       this.displayHistory = history.displayHistory || [];
       this.agentHistory = history.agentHistory || [];
+      this.resumeLoaded = true;
+      if (this.client) this.client.sessionId = this.resumeSessionId;
+      if (this.jsonlWriter?.sessionId && this.jsonlWriter.sessionId !== this.resumeSessionId) {
+        this.jsonlWriter = null;
+      }
       this._ensureJsonlWriter();
       this.emit('agent_history_loaded', {
         backend_session_id: this.resumeSessionId,
@@ -89,7 +161,7 @@ export class LocalAgentRelay {
       throw err;
     }
 
-    await this.loadHistory();
+    if (!this.resumeLoaded) await this.startNewHistory();
     await this._ensureReady();
 
     this.running = true;
@@ -223,9 +295,19 @@ export class LocalAgentRelay {
   }
 
   async close() {
+    this.approvalManager?.rejectAll?.();
     try {
       await this.jsonlWriter?.close?.();
     } catch {}
+  }
+
+  decideApproval(approvalId, decision = {}) {
+    if (!this.approvalManager) {
+      const err = new Error('Approval bridge is not ready');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    return this.approvalManager.decide(approvalId, decision);
   }
 
   async _ensureReady() {
@@ -257,13 +339,14 @@ export class LocalAgentRelay {
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
 
-    const approval = new ApprovalManager({
-      autoApprove: true,
+    const approval = new BrowserApprovalManager({
+      emit: this.emit,
       cwd: this.session.root_path,
     });
 
     this.creds = creds;
     this.toolExecutor = toolExecutor;
+    this.approvalManager = approval;
     this.client = new TarangStreamClient({
       baseUrl: creds.backendUrl,
       token: creds.token,
@@ -297,8 +380,6 @@ export class LocalAgentRelay {
     const projectResources = this.toolExecutor.getProjectResources();
     const execContext = {
       cwd: this.session.root_path,
-      skip_permissions: true,
-      freeswim: true,
       project_resources: projectResources,
       work_scope: buildWorkScope({
         instruction,
@@ -348,6 +429,7 @@ export class LocalAgentRelay {
       backend_session_id: this.resumeSessionId || null,
       history_mode: this.resumeSessionId ? this.historyMode : 'new',
       messages: browserMessages(this.displayHistory),
+      trace: browserTraceItems(this.displayHistory),
       agent_messages: this.agentHistory.length,
     };
   }
@@ -416,13 +498,38 @@ export class LocalAgentRelay {
   }
 }
 
-async function latestTranscriptForRoot(rootPath) {
+async function transcriptsForRoot(rootPath) {
   const target = realpathOrSelf(rootPath);
   const sessions = await getRecentSessions(Infinity);
-  return sessions.find((session) => {
+  return sessions.filter((session) => {
     const project = session.projectPath || session.project || '';
     return project && realpathOrSelf(project) === target;
-  }) || null;
+  });
+}
+
+async function transcriptForRootBySessionId(rootPath, sessionId) {
+  const sessions = await transcriptsForRoot(rootPath);
+  return sessions.find((session) => session.sessionId === sessionId) || null;
+}
+
+function serializeTranscriptSession(session) {
+  const tools = Array.isArray(session.toolCalls)
+    ? session.toolCalls.map((tool) => `${tool.name} x${tool.count}`).slice(0, 4)
+    : [];
+  return {
+    session_id: session.sessionId,
+    first_prompt: session.firstPrompt || '',
+    project_path: session.projectPath || session.project || '',
+    transcript_path: session.filePath || '',
+    started_at: session.startTime || null,
+    last_activity_at: session.endTime || null,
+    status: session.endStatus || 'unknown',
+    user_messages: session.userMessages || 0,
+    assistant_messages: session.assistantMessages || 0,
+    context_tokens: session.contextTokens || 0,
+    tools,
+    models: Array.isArray(session.models) ? session.models.slice(0, 3) : [],
+  };
 }
 
 function realpathOrSelf(inputPath) {
@@ -450,13 +557,23 @@ function contentDeltaForEvent(event, current) {
 
 function browserMessages(history = []) {
   return history
-    .filter((entry) => entry?.role === 'user' || entry?.role === 'assistant' || entry?.role === 'tool')
+    .filter((entry) => entry?.role === 'user' || entry?.role === 'assistant')
     .map((entry) => ({
       role: entry.role,
       content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || ''),
       timestamp: entry.timestamp || null,
+    }));
+}
+
+function browserTraceItems(history = []) {
+  return history
+    .filter((entry) => entry?.role === 'tool')
+    .map((entry) => ({
+      type: `history_tool_${entry.kind || 'event'}`,
+      timestamp: entry.timestamp || null,
       tool: entry.tool || null,
       kind: entry.kind || null,
+      content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || ''),
     }));
 }
 

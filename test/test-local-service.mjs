@@ -21,6 +21,7 @@ try {
     await import('../src/local-service/machine.mjs');
   const { startLocalWorkspaceService } = await import('../src/local-service/server.mjs');
   const { JsonlWriter } = await import('../src/core/jsonl-writer.mjs');
+  const { BrowserApprovalManager } = await import('../src/local-service/approval-bridge.mjs');
 
   const { session, token } = createLocalWorkspaceSession({ targetPath: workspace });
   assert.equal(session.product, 'bahulam-local-service');
@@ -47,10 +48,26 @@ try {
     /outside the granted workspace root/,
   );
 
+  const approvalEvents = [];
+  const approval = new BrowserApprovalManager({
+    cwd: workspace,
+    emit: (type, data) => approvalEvents.push({ type, data }),
+  });
+  const approvalPromise = approval.check('shell', { command: 'npm install' }, true, { reason: 'Install dependencies' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(approvalEvents[0].type, 'agent_approval_required');
+  assert.equal(approvalEvents[0].data.tool, 'shell');
+  approval.decide(approvalEvents[0].data.approval_id, { decision: 'approve' });
+  const approvalResult = await approvalPromise;
+  assert.equal(approvalResult.approved, true);
+  assert.equal(approvalEvents.some((event) => event.type === 'agent_approval_resolved' && event.data.approved === true), true);
+
   const seededWriter = new JsonlWriter(workspace, 'test');
   seededWriter.setSessionId('resume-local-service');
   seededWriter.writeUserTurn('previous local question');
+  seededWriter.accumulateToolCall('call_history', 'shell', { command: 'ls' });
   seededWriter.accumulateContent('previous local answer');
+  seededWriter.recordToolResult('call_history', 'README.md', false, { tool: 'shell' });
   seededWriter.flushAssistantTurn();
   await seededWriter.close();
 
@@ -78,7 +95,18 @@ try {
     assert.match(html, /id="threadInner"/);
     assert.match(html, /data-resize="left"/);
     assert.match(html, /function renderTable/);
-    assert.match(html, /loadChatHistory/);
+    assert.match(html, /loadSessionChoices/);
+    assert.match(html, /id="sessionMenuButton"/);
+    assert.match(html, /aria-haspopup="dialog"/);
+    assert.match(html, /id="sessionModal"/);
+    assert.match(html, /role="dialog"/);
+    assert.match(html, /id="sessionMenu"/);
+    assert.match(html, /id="chatTab"/);
+    assert.match(html, /id="traceTab"/);
+    assert.doesNotMatch(html, /id="traceToggle"/);
+    assert.match(html, /id="approvalModal"/);
+    assert.match(html, /agent_approval_required/);
+    assert.match(html, /\/api\/approvals\//);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
       assert.doesNotThrow(() => new Function(match[1]));
     }
@@ -87,11 +115,34 @@ try {
     assert.equal(brandRes.status, 200);
     assert.match(brandRes.headers.get('content-type') || '', /^image\//);
 
-    const historyRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/history?token=${encodeURIComponent(token)}`).then((res) => res.json());
+    const sessionListRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/sessions?token=${encodeURIComponent(token)}`).then((res) => res.json());
+    assert.equal(sessionListRes.ok, true);
+    assert.equal(sessionListRes.sessions.some((item) => item.session_id === 'resume-local-service'), true);
+
+    const emptyHistoryRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/history?token=${encodeURIComponent(token)}`).then((res) => res.json());
+    assert.equal(emptyHistoryRes.ok, true);
+    assert.equal(emptyHistoryRes.backend_session_id, null);
+    assert.deepEqual(emptyHistoryRes.messages, []);
+
+    const newHistoryRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/new?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+    }).then((res) => res.json());
+    assert.equal(newHistoryRes.ok, true);
+    assert.equal(newHistoryRes.history_mode, 'new');
+    assert.deepEqual(newHistoryRes.messages, []);
+
+    const historyRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/resume?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: 'resume-local-service' }),
+    }).then((res) => res.json());
     assert.equal(historyRes.ok, true);
     assert.equal(historyRes.backend_session_id, 'resume-local-service');
     assert.equal(historyRes.messages.some((msg) => msg.role === 'user' && msg.content === 'previous local question'), true);
     assert.equal(historyRes.messages.some((msg) => msg.role === 'assistant' && msg.content === 'previous local answer'), true);
+    assert.equal(historyRes.messages.some((msg) => msg.role === 'tool'), false);
+    assert.equal(historyRes.trace.some((item) => item.type === 'history_tool_call' && item.tool === 'shell'), true);
+    assert.equal(historyRes.trace.some((item) => item.type === 'history_tool_result'), true);
 
     const filesRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=README.md`).then((res) => res.json());
     assert.equal(filesRes.type, 'file');
@@ -130,12 +181,13 @@ try {
       assert.match(mockBackend.requests[0].instruction, /say relay ok/);
       assert.equal(mockBackend.requests[0].session_id, 'resume-local-service');
       assert.equal(mockBackend.requests[0].messages.some((msg) => msg.role === 'user' && msg.content === 'previous local question'), true);
-      assert.equal(mockBackend.requests[0].messages.some((msg) => msg.role === 'assistant' && msg.content === 'previous local answer'), true);
+      assert.equal(mockBackend.requests[0].messages.some((msg) => msg.role === 'assistant' && String(msg.content || '').includes('previous local answer')), true);
       assert.equal(mockBackend.requests[0].context.cwd, fs.realpathSync(workspace));
       assert.equal(mockBackend.requests[0].context.model_override, 'test/reasoning');
       assert.equal(mockBackend.requests[0].context.model_mode, 'coding');
       assert.equal(mockBackend.requests[0].context.model_route, 'platform');
       assert.equal(mockBackend.requests[0].context.local_service.session_id, session.id);
+      assert.equal(mockBackend.requests[0].context.skip_permissions, undefined);
 
       const updatedHistory = await fetch(`http://127.0.0.1:${service.port}/api/chat/history?token=${encodeURIComponent(token)}`).then((res) => res.json());
       assert.equal(updatedHistory.messages.some((msg) => msg.role === 'user' && msg.content === 'say relay ok'), true);
