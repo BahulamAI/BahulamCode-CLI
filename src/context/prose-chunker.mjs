@@ -62,7 +62,8 @@ export const TEXT_MIMES = new Set([
   'text/tab-separated-values',
 ]);
 export const PDF_MIMES = new Set(['application/pdf']);
-export const DOCUMENT_MIMES = new Set([...TEXT_MIMES, ...PDF_MIMES]);
+export const NOTEBOOK_MIMES = new Set(['application/x-ipynb+json']);
+export const DOCUMENT_MIMES = new Set([...TEXT_MIMES, ...PDF_MIMES, ...NOTEBOOK_MIMES]);
 
 // Wider set the CLI already supports at the `read_attachment` tool layer.
 // Chunking works fine on any UTF-8 text — retrieval quality on structured
@@ -99,6 +100,7 @@ const EXT_TO_MIME = new Map([
   ['.csv', 'text/csv'],
   ['.tsv', 'text/tab-separated-values'],
   ['.json', 'application/json'],
+  ['.ipynb', 'application/x-ipynb+json'],
   ['.yaml', 'application/x-yaml'],
   ['.yml', 'application/x-yaml'],
   ['.toml', 'application/toml'],
@@ -124,6 +126,87 @@ const EXT_TO_MIME = new Map([
   ['.bash', 'text/x-sh'],
   ['.zsh', 'text/x-sh'],
 ]);
+
+function sourceToText(value) {
+  if (Array.isArray(value)) return value.map(part => String(part ?? '')).join('');
+  if (typeof value === 'string') return value;
+  return '';
+}
+
+function outputText(output) {
+  if (!output || typeof output !== 'object') return '';
+  if (output.output_type === 'error') {
+    const traceback = Array.isArray(output.traceback)
+      ? output.traceback.map(line => String(line ?? '')).join('\n')
+      : '';
+    const header = [output.ename, output.evalue].filter(Boolean).join(': ');
+    return [header, traceback].filter(Boolean).join('\n');
+  }
+  if (output.text) return sourceToText(output.text);
+  const data = output.data && typeof output.data === 'object' ? output.data : null;
+  if (data?.['text/plain']) return sourceToText(data['text/plain']);
+  if (data?.['text/markdown']) return sourceToText(data['text/markdown']);
+  if (data?.['text/html']) return sourceToText(data['text/html']).replace(/<[^>]*>/g, ' ');
+  return '';
+}
+
+function notebookLanguage(notebook) {
+  const languageInfo = notebook?.metadata?.language_info;
+  const kernelspec = notebook?.metadata?.kernelspec;
+  return String(languageInfo?.name || kernelspec?.language || '').trim() || 'python';
+}
+
+export function formatNotebookText(rawNotebook, { maxOutputChars = 12_000 } = {}) {
+  let notebook;
+  try {
+    notebook = typeof rawNotebook === 'string'
+      ? JSON.parse(rawNotebook)
+      : JSON.parse(Buffer.from(rawNotebook || '').toString('utf8'));
+  } catch {
+    return '';
+  }
+
+  const cells = Array.isArray(notebook?.cells) ? notebook.cells : [];
+  if (!cells.length) return '';
+
+  const language = notebookLanguage(notebook);
+  const parts = [
+    `Jupyter notebook (${cells.length} cell${cells.length === 1 ? '' : 's'}, language=${language})`,
+  ];
+
+  cells.forEach((cell, index) => {
+    const type = String(cell?.cell_type || 'raw').toLowerCase();
+    const execution = cell?.execution_count != null ? ` execution_count=${cell.execution_count}` : '';
+    const source = sourceToText(cell?.source).trimEnd();
+    parts.push('');
+    parts.push(`Cell ${index + 1} [${type}${execution}]`);
+    if (type === 'code') {
+      parts.push(`\`\`\`${language}`);
+      parts.push(source);
+      parts.push('```');
+    } else {
+      parts.push(source || '(empty)');
+    }
+
+    const outputs = Array.isArray(cell?.outputs) ? cell.outputs : [];
+    const renderedOutputs = outputs
+      .map(outputText)
+      .map(text => text.trimEnd())
+      .filter(Boolean);
+    if (renderedOutputs.length) {
+      let output = renderedOutputs.join('\n\n');
+      if (output.length > maxOutputChars) {
+        output = `${output.slice(0, maxOutputChars)}\n... [output truncated]`;
+      }
+      parts.push('Output:');
+      parts.push('```text');
+      parts.push(output);
+      parts.push('```');
+    }
+  });
+
+  return parts.join('\n').trim();
+}
 
 /**
  * Best-effort mime for a local file (extension-only, no magic-byte sniff).
@@ -226,6 +309,16 @@ export async function extractFromBytes(buffer, mime, opts = {}) {
     }));
   }
 
+  if (NOTEBOOK_MIMES.has(normalizedMime)) {
+    const text = formatNotebookText(buffer);
+    return chunkText(text).map(c => ({
+      page: null,
+      chunk_no: c.chunk_no,
+      text: c.text,
+      tokens: c.tokens,
+    }));
+  }
+
   if (PDF_MIMES.has(normalizedMime)) {
     const pages = await extractPdfPages(buffer);
     const out = [];
@@ -306,7 +399,7 @@ export async function extractFromPath(absPath, opts = {}) {
   // look like valid UTF-8 text with no NULs in the first probe window,
   // treat as text/plain. This unblocks .sql, .env, Dockerfile, and any
   // other text file we haven't explicitly listed.
-  if (!textMimes.has(mime) && !PDF_MIMES.has(mime)) {
+  if (!textMimes.has(mime) && !PDF_MIMES.has(mime) && !NOTEBOOK_MIMES.has(mime)) {
     if (looksLikeText(buffer)) {
       mime = 'text/plain';
     } else {

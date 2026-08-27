@@ -190,6 +190,35 @@ await test('project overview re-registration refreshes index when project drifts
     }
 });
 
+await test('read_attachment renders Jupyter notebooks instead of rejecting octet-stream', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-notebook-read-'));
+    const notebookPath = path.join(root, 'powerbi-data-extractor-testing.ipynb');
+    fs.writeFileSync(notebookPath, JSON.stringify({
+        metadata: { language_info: { name: 'python' } },
+        cells: [
+            { cell_type: 'markdown', source: ['# Power BI extractor\n', 'Testing notes.'] },
+            {
+                cell_type: 'code',
+                execution_count: 1,
+                source: ['import pandas as pd\n', 'print("loaded")\n'],
+                outputs: [{ output_type: 'stream', name: 'stdout', text: ['loaded\n'] }],
+            },
+        ],
+    }));
+
+    try {
+        const result = await executor.execute('read_attachment', { path: notebookPath });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result._mime, 'application/x-ipynb+json');
+        assert.ok(result.output.includes('Jupyter notebook (2 cells, language=python)'));
+        assert.ok(result.output.includes('Cell 2 [code execution_count=1]'));
+        assert.ok(result.output.includes('```python'));
+        assert.ok(!result.output.includes('Unsupported or empty file'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 await test('search_code routes through the registered project index', async () => {
     const result = await executor.execute('search_code', {
         project_id: projectId,

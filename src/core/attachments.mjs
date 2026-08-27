@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { formatNotebookText } from '../context/prose-chunker.mjs';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 // Text-first document formats we can extract client-side and inline into the
@@ -12,7 +13,7 @@ const DOCUMENT_EXTENSIONS = new Set([
   '.pdf',
   '.txt', '.md', '.mdx', '.rst',
   '.csv', '.tsv', '.log',
-  '.json', '.yaml', '.yml', '.toml', '.ini', '.env',
+  '.json', '.ipynb', '.yaml', '.yml', '.toml', '.ini', '.env',
   '.html', '.htm', '.xml',
 ]);
 const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -557,6 +558,17 @@ function extractPlainText(filePath, { maxChars }) {
   };
 }
 
+function extractNotebookText(filePath, { maxChars }) {
+  const buffer = fs.readFileSync(filePath);
+  const raw = formatNotebookText(buffer);
+  const truncated = raw.length > maxChars;
+  return {
+    text: truncated ? raw.slice(0, maxChars) : raw,
+    pages: 0,
+    truncated,
+  };
+}
+
 /**
  * Load a single document attachment. Reads locally, extracts text, returns
  * a public metadata block plus the extracted text. Errors bubble as
@@ -584,9 +596,12 @@ export async function loadDocumentAttachment(filePath, {
 
   const ext = path.extname(resolved).toLowerCase();
   const isPdf = ext === '.pdf';
+  const isNotebook = ext === '.ipynb';
   const { text, pages, truncated } = isPdf
     ? await extractPdfText(resolved, { maxChars })
-    : extractPlainText(resolved, { maxChars });
+    : isNotebook
+      ? extractNotebookText(resolved, { maxChars })
+      : extractPlainText(resolved, { maxChars });
 
   const buffer = fs.readFileSync(resolved);
   const sha256 = createHash('sha256').update(buffer).digest('hex');
@@ -596,7 +611,7 @@ export async function loadDocumentAttachment(filePath, {
     path: resolved,
     name: path.basename(resolved),
     ext,
-    kind: isPdf ? 'pdf' : 'text',
+    kind: isPdf ? 'pdf' : isNotebook ? 'notebook' : 'text',
     bytes: stat.size,
     chars: text.length,
     pages,

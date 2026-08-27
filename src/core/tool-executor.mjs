@@ -805,7 +805,7 @@ export function createToolExecutor({
             if (!chunks.length) {
                 return {
                     success: false,
-                    output: `Unsupported or empty file (mime=${mime}). Supported text: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, xml, html, log, rst, sql, sh, .env, .ini, Dockerfile, .gitignore — plus any file whose first 8KB is valid UTF-8 (auto-sniffed). For CSV/Excel analysis use read_table; for images use analyze_image. If analyze_image already failed for this file, report that vision error directly instead of retrying with read_attachment.`,
+                    output: `Unsupported or empty file (mime=${mime}). Supported text: pdf, txt, md/mdx, ipynb, csv, tsv, json, yaml, toml, xml, html, log, rst, sql, sh, .env, .ini, Dockerfile, .gitignore — plus any file whose first 8KB is valid UTF-8 (auto-sniffed). For CSV/Excel analysis use read_table; for images use analyze_image. If analyze_image already failed for this file, report that vision error directly instead of retrying with read_attachment.`,
                     _tool: 'read_attachment',
                 };
             }

@@ -164,9 +164,9 @@ await asyncTest('parseAttachmentReferences recognises @clipboard as an image ref
 
 await asyncTest('parseAttachmentReferences recognizes common doc extensions', () => {
   const parsed = parseAttachmentReferences(
-    '@a.txt @b.md @c.mdx @d.csv @e.json @f.yaml @g.toml @h.log @i.rst @j.pdf',
+    '@a.txt @b.md @c.mdx @d.csv @e.json @f.ipynb @g.yaml @h.toml @i.log @j.rst @k.pdf',
   );
-  assert.strictEqual(parsed.documents.length, 10, 'expected 10 doc refs recognized');
+  assert.strictEqual(parsed.documents.length, 11, 'expected 11 doc refs recognized');
   return Promise.resolve();
 });
 
@@ -180,6 +180,30 @@ await asyncTest('loadDocumentAttachment reads a plain markdown file', async () =
   assert.ok(doc.text.includes('Hello **world**'));
   assert.strictEqual(doc.truncated, false);
   assert.ok(doc.sha256 && doc.sha256.length === 64);
+});
+
+await asyncTest('loadDocumentAttachment renders a Jupyter notebook as readable cells', async () => {
+  const p = path.join(docTmp, 'analysis.ipynb');
+  fs.writeFileSync(p, JSON.stringify({
+    metadata: { language_info: { name: 'python' } },
+    cells: [
+      { cell_type: 'markdown', source: ['# Analysis\n', 'Notebook notes.'] },
+      {
+        cell_type: 'code',
+        execution_count: 3,
+        source: ['print("hello")\n'],
+        outputs: [{ output_type: 'stream', name: 'stdout', text: ['hello\n'] }],
+      },
+    ],
+  }));
+  const doc = await loadDocumentAttachment(p);
+  assert.strictEqual(doc.name, 'analysis.ipynb');
+  assert.strictEqual(doc.kind, 'notebook');
+  assert.strictEqual(doc.ext, '.ipynb');
+  assert.ok(doc.text.includes('Jupyter notebook (2 cells, language=python)'));
+  assert.ok(doc.text.includes('Cell 1 [markdown]'));
+  assert.ok(doc.text.includes('```python'));
+  assert.ok(doc.text.includes('Output:'));
 });
 
 await asyncTest('loadDocumentAttachment truncates long text with maxChars', async () => {
