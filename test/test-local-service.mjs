@@ -7,7 +7,9 @@ import * as path from 'node:path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-local-service-'));
 const previousHome = process.env.BAHULAM_HOME;
 const previousBackendUrl = process.env.TARANG_BACKEND_URL;
+const previousLibreOfficePath = process.env.BAHULAM_LIBREOFFICE_PATH;
 process.env.BAHULAM_HOME = path.join(tmp, '.bahulam');
+process.env.BAHULAM_LIBREOFFICE_PATH = path.join(tmp, 'missing-soffice');
 
 try {
   const workspace = path.join(tmp, 'workspace');
@@ -16,6 +18,15 @@ try {
   fs.writeFileSync(path.join(workspace, 'flow.mmd'), 'graph TD\n  A[Start] --> B[Done]\n');
   fs.writeFileSync(path.join(workspace, 'diagram.drawio'), '<mxfile><diagram name="Page-1">abc</diagram></mxfile>\n');
   fs.writeFileSync(path.join(workspace, 'deck.pptx'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  const XLSX = (await import('xlsx')).default || await import('xlsx');
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ['Name', 'Amount', 'Tax'],
+    ['Alpha', 10, { f: 'B2*0.1', v: 1 }],
+    ['Beta', 20, { f: 'B3*0.1', v: 2 }],
+  ]);
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Summary');
+  XLSX.writeFile(workbook, path.join(workspace, 'data.xlsx'));
 
   const { createLocalWorkspaceSession, loadLocalWorkspaceSession, verifyLocalAccessToken } =
     await import('../src/local-service/session-store.mjs');
@@ -54,6 +65,11 @@ try {
   assert.equal(deckListing.file.viewer, 'presentation');
   assert.equal(deckListing.file.text_like, false);
   assert.equal(deckListing.preview, null);
+
+  const workbookListing = listWorkspacePath(session, 'data.xlsx');
+  assert.equal(workbookListing.file.viewer, 'spreadsheet');
+  assert.equal(workbookListing.file.text_like, false);
+  assert.equal(workbookListing.preview, null);
 
   assert.throws(
     () => listWorkspacePath(session, '../outside'),
@@ -110,6 +126,10 @@ try {
     assert.match(html, /\/vendor\/monaco\/vs\/loader\.js/);
     assert.match(html, /function renderCodeEditor/);
     assert.match(html, /function renderMermaidBlocks/);
+    assert.match(html, /function renderSpreadsheetFile/);
+    assert.match(html, /function renderOfficeFile/);
+    assert.match(html, /\/api\/file\/spreadsheet-preview/);
+    assert.match(html, /\/api\/file\/office-preview/);
     assert.match(html, /data-ask-file/);
     assert.match(html, /viewer-note-card/);
     assert.match(html, /loadSessionChoices/);
@@ -124,6 +144,9 @@ try {
     assert.match(html, /id="approvalModal"/);
     assert.match(html, /agent_approval_required/);
     assert.match(html, /\/api\/approvals\//);
+    assert.match(html, /approval-inline/);
+    assert.match(html, /pendingApprovalEl/);
+    assert.match(html, /resolveInlineApproval/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
       assert.doesNotThrow(() => new Function(match[1]));
     }
@@ -183,6 +206,18 @@ try {
     assert.equal(deckRes.file.viewer, 'presentation');
     assert.equal(deckRes.preview, null);
 
+    const workbookPreview = await fetch(`http://127.0.0.1:${service.port}/api/file/spreadsheet-preview?token=${encodeURIComponent(token)}&path=data.xlsx`).then((res) => res.json());
+    assert.equal(workbookPreview.ok, true);
+    assert.equal(workbookPreview.sheet_count, 1);
+    assert.equal(workbookPreview.sheets[0].name, 'Summary');
+    assert.equal(workbookPreview.sheets[0].columns.slice(0, 3).join(','), 'A,B,C');
+    assert.equal(workbookPreview.sheets[0].rows[1].cells[0].value, 'Alpha');
+    assert.equal(workbookPreview.sheets[0].rows[1].cells[2].formula, '=B2*0.1');
+
+    const officePreview = await fetch(`http://127.0.0.1:${service.port}/api/file/office-preview?token=${encodeURIComponent(token)}&path=deck.pptx`).then((res) => res.json());
+    assert.equal(officePreview.ok, false);
+    assert.equal(officePreview.code, 'libreoffice_missing');
+
     const bridgeRes = await fetch(`http://127.0.0.1:${service.port}/api/agent/turn?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -240,6 +275,8 @@ try {
   else process.env.BAHULAM_HOME = previousHome;
   if (previousBackendUrl === undefined) delete process.env.TARANG_BACKEND_URL;
   else process.env.TARANG_BACKEND_URL = previousBackendUrl;
+  if (previousLibreOfficePath === undefined) delete process.env.BAHULAM_LIBREOFFICE_PATH;
+  else process.env.BAHULAM_LIBREOFFICE_PATH = previousLibreOfficePath;
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

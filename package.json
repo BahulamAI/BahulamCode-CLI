@@ -53,6 +53,7 @@
     "monaco-editor": "^0.56.0",
     "pdf-parse": "^1.1.1",
     "tree-sitter-wasms": "^0.1.13",
-    "web-tree-sitter": "^0.26.9"
+    "web-tree-sitter": "^0.26.9",
+    "xlsx": "^0.18.5"
   }
 }
