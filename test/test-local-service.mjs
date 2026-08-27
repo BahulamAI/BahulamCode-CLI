@@ -17,6 +17,17 @@ try {
   fs.writeFileSync(path.join(workspace, 'README.md'), '# Local Workspace\n');
   fs.writeFileSync(path.join(workspace, 'flow.mmd'), 'graph TD\n  A[Start] --> B[Done]\n');
   fs.writeFileSync(path.join(workspace, 'diagram.drawio'), '<mxfile><diagram name="Page-1">abc</diagram></mxfile>\n');
+  fs.writeFileSync(path.join(workspace, 'legacy.ipynb'), JSON.stringify({
+    metadata: { language: 'python' },
+    nbformat: 3,
+    nbformat_minor: 0,
+    worksheets: [{
+      cells: [
+        { cell_type: 'heading', level: 1, source: ['Legacy notebook'] },
+        { cell_type: 'code', input: ['print("hello")\n'], prompt_number: 1, outputs: [{ output_type: 'pyout', text: ['hello\n'] }] },
+      ],
+    }],
+  }));
   fs.writeFileSync(path.join(workspace, 'deck.pptx'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   const XLSX = (await import('xlsx')).default || await import('xlsx');
   const workbook = XLSX.utils.book_new();
@@ -133,6 +144,16 @@ try {
     assert.match(html, /function renderMermaidBlocks/);
     assert.match(html, /function renderSpreadsheetFile/);
     assert.match(html, /function renderOfficeFile/);
+    assert.match(html, /function renderNotebookFile/);
+    assert.match(html, /function notebookCells/);
+    assert.match(html, /worksheets/);
+    assert.match(html, /Auto detect/);
+    assert.match(html, /Jupyter Notebook \(\.ipynb\)/);
+    assert.match(html, /data-preview-maximize/);
+    assert.match(html, /data-preview-new-tab/);
+    assert.match(html, /file-icon-action/);
+    assert.match(html, /function iconSvg/);
+    assert.match(html, /fileIconButton/);
     assert.match(html, /\/api\/file\/spreadsheet-preview/);
     assert.match(html, /\/api\/file\/office-preview/);
     assert.match(html, /data-ask-file/);
@@ -150,6 +171,9 @@ try {
     assert.match(html, /agent_approval_required/);
     assert.match(html, /\/api\/approvals\//);
     assert.match(html, /approval-inline/);
+    assert.match(html, /approval-result-line/);
+    assert.match(html, /approval-approve/);
+    assert.match(html, /approval-reject/);
     assert.match(html, /pendingApprovalEl/);
     assert.match(html, /resolveInlineApproval/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
@@ -207,6 +231,11 @@ try {
     assert.equal(drawioRes.file.viewer, 'drawio');
     assert.equal(drawioRes.file.language, 'xml');
 
+    const legacyNotebookRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=legacy.ipynb`).then((res) => res.json());
+    assert.equal(legacyNotebookRes.file.viewer, 'notebook');
+    assert.equal(legacyNotebookRes.file.kind, 'notebook');
+    assert.match(legacyNotebookRes.preview.content, /worksheets/);
+
     const uploadRes = await fetch(`http://127.0.0.1:${service.port}/api/files/upload?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -236,7 +265,7 @@ try {
     assert.equal(uploadRes.files[0].viewer, 'image');
     assert.equal(uploadRes.files[0].kind, 'image');
     assert.equal(uploadRes.files[1].extension, 'ipynb');
-    assert.equal(uploadRes.files[1].viewer, 'code');
+    assert.equal(uploadRes.files[1].viewer, 'notebook');
     assert.equal(uploadRes.files[1].kind, 'notebook');
     assert.equal(uploadRes.files[1].uploaded, true);
     assert.equal(fs.existsSync(path.join(workspace, uploadRes.files[0].path)), true);

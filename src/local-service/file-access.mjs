@@ -356,7 +356,7 @@ function viewerForKind(kind) {
     case 'document': return 'document';
     case 'presentation': return 'presentation';
     case 'table': return 'table';
-    case 'notebook': return 'code';
+    case 'notebook': return 'notebook';
     case 'code':
     case 'config':
     case 'text':
