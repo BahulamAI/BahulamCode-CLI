@@ -13,6 +13,9 @@ try {
   const workspace = path.join(tmp, 'workspace');
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, 'README.md'), '# Local Workspace\n');
+  fs.writeFileSync(path.join(workspace, 'flow.mmd'), 'graph TD\n  A[Start] --> B[Done]\n');
+  fs.writeFileSync(path.join(workspace, 'diagram.drawio'), '<mxfile><diagram name="Page-1">abc</diagram></mxfile>\n');
+  fs.writeFileSync(path.join(workspace, 'deck.pptx'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
 
   const { createLocalWorkspaceSession, loadLocalWorkspaceSession, verifyLocalAccessToken } =
     await import('../src/local-service/session-store.mjs');
@@ -42,6 +45,15 @@ try {
   const listing = listWorkspacePath(session, '.');
   assert.equal(listing.type, 'directory');
   assert.equal(listing.entries.some((entry) => entry.name === 'README.md'), true);
+
+  const mermaidListing = listWorkspacePath(session, 'flow.mmd');
+  assert.equal(mermaidListing.file.viewer, 'mermaid');
+  assert.equal(mermaidListing.file.text_like, true);
+
+  const deckListing = listWorkspacePath(session, 'deck.pptx');
+  assert.equal(deckListing.file.viewer, 'presentation');
+  assert.equal(deckListing.file.text_like, false);
+  assert.equal(deckListing.preview, null);
 
   assert.throws(
     () => listWorkspacePath(session, '../outside'),
@@ -95,6 +107,11 @@ try {
     assert.match(html, /id="threadInner"/);
     assert.match(html, /data-resize="left"/);
     assert.match(html, /function renderTable/);
+    assert.match(html, /\/vendor\/monaco\/vs\/loader\.js/);
+    assert.match(html, /function renderCodeEditor/);
+    assert.match(html, /function renderMermaidBlocks/);
+    assert.match(html, /data-ask-file/);
+    assert.match(html, /viewer-note-card/);
     assert.match(html, /loadSessionChoices/);
     assert.match(html, /id="sessionMenuButton"/);
     assert.match(html, /aria-haspopup="dialog"/);
@@ -114,6 +131,14 @@ try {
     const brandRes = await fetch(`http://127.0.0.1:${service.port}/assets/bahulam-mark.png`);
     assert.equal(brandRes.status, 200);
     assert.match(brandRes.headers.get('content-type') || '', /^image\//);
+
+    const monacoRes = await fetch(`http://127.0.0.1:${service.port}/vendor/monaco/vs/loader.js`);
+    assert.equal(monacoRes.status, 200);
+    assert.match(monacoRes.headers.get('content-type') || '', /javascript/);
+
+    const mermaidRes = await fetch(`http://127.0.0.1:${service.port}/vendor/mermaid/mermaid.esm.min.mjs`);
+    assert.equal(mermaidRes.status, 200);
+    assert.match(mermaidRes.headers.get('content-type') || '', /javascript/);
 
     const sessionListRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/sessions?token=${encodeURIComponent(token)}`).then((res) => res.json());
     assert.equal(sessionListRes.ok, true);
@@ -147,6 +172,16 @@ try {
     const filesRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=README.md`).then((res) => res.json());
     assert.equal(filesRes.type, 'file');
     assert.equal(filesRes.preview.content, '# Local Workspace\n');
+    assert.equal(filesRes.file.viewer, 'markdown');
+    assert.equal(filesRes.file.language, 'markdown');
+
+    const drawioRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=diagram.drawio`).then((res) => res.json());
+    assert.equal(drawioRes.file.viewer, 'drawio');
+    assert.equal(drawioRes.file.language, 'xml');
+
+    const deckRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=deck.pptx`).then((res) => res.json());
+    assert.equal(deckRes.file.viewer, 'presentation');
+    assert.equal(deckRes.preview, null);
 
     const bridgeRes = await fetch(`http://127.0.0.1:${service.port}/api/agent/turn?token=${encodeURIComponent(token)}`, {
       method: 'POST',
