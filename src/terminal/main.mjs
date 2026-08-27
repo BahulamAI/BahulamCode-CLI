@@ -249,6 +249,7 @@ async function main() {
                               Attach an image via the vision analysis pipeline
     bahulam --resume               Resume last conversation
     bahulam dashboard              Open analytics dashboard
+    bahulam workspace open [path]  Open a local browser workspace
     bahulam login                  Sign in via browser
     bahulam logout                 Sign out and clear credentials
     bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
@@ -261,6 +262,11 @@ async function main() {
     bahulam pair               Pair a device for remote access
     bahulam remote enable      Enable relay connection
     bahulam remote disable     Disable relay connection (kill switch)
+
+  \x1b[1mLocal Workspaces:\x1b[0m
+    bahulam workspace open [path]  Start localhost workspace service
+    bahulam workspace list         List recent local workspace sessions
+    bahulam local open [path]      Alias for workspace open
 
   \x1b[1mAnalytics:\x1b[0m
     bahulam sessions               List recent local sessions
@@ -350,6 +356,12 @@ async function main() {
   if (subcommand === 'remote') {
     const { runRemoteCommand } = await import('../commands/remote.mjs');
     await runRemoteCommand(subcommandArgs);
+    return;
+  }
+
+  if (subcommand === 'workspace' || subcommand === 'workspaces' || subcommand === 'local') {
+    const { runLocalWorkspaceCommand } = await import('../local-service/command.mjs');
+    await runLocalWorkspaceCommand(subcommandArgs, { cwd: process.cwd() });
     return;
   }
 
