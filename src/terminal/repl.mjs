@@ -67,6 +67,15 @@ import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, sync
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
+import {
+  MODEL_CATEGORY_ORDER,
+  formatCategoryBadge,
+  formatCategoryHeading,
+  modelCategory,
+  modelDisplayCategory,
+  modelMatchesCatalogFilter,
+  normalizeCatalogCategory,
+} from './model-catalog-display.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
@@ -493,66 +502,12 @@ function modelCreditBadge(model) {
   return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
 }
 
-function modelCategory(model) {
-  const category = String(model?.category || 'text').trim().toLowerCase();
-  return category === 'chat' ? 'text' : (category || 'text');
-}
-
-function isImageGenerationModel(model) {
-  const text = `${model?.id || ''} ${model?.label || ''}`.toLowerCase();
-  return (
-    text.includes('image generation') ||
-    text.includes('generate image') ||
-    text.includes('gemini-3-pro-image') ||
-    text.includes('nano banana')
-  );
-}
-
-function modelDisplayCategory(model) {
-  const category = modelCategory(model);
-  if (category === 'image') {
-    return isImageGenerationModel(model) ? 'image_generation' : 'image_analysis';
-  }
-  return category;
-}
-
-function normalizeCatalogCategory(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === 'chat') return 'text';
-  if (raw === 'image-analysis' || raw === 'vision') return 'image_analysis';
-  if (raw === 'image-generation' || raw === 'image-gen') return 'image_generation';
-  return raw;
-}
-
-function modelMatchesCatalogFilter(model, filter) {
-  if (!filter) return true;
-  if (filter === 'image') return modelCategory(model) === 'image';
-  return modelDisplayCategory(model) === filter || modelCategory(model) === filter;
-}
-
-function modelCategoryLabel(category) {
-  switch (category) {
-    case 'image': return 'Image models';
-    case 'image_analysis': return 'Image analysis models';
-    case 'image_generation': return 'Image generation models';
-    case 'embedding': return 'Embedding models';
-    case 'audio': return 'Audio models';
-    case 'video': return 'Video models';
-    case 'other': return 'Other models';
-    case 'text': return 'Text models';
-    case 'multimodal': return 'Multimodal models';
-    default: return 'Other models';
-  }
-}
-
 function printModelCatalogRows(rows) {
   for (const m of rows) {
     const badge = modelCreditBadge(m);
-    const tiers = Array.isArray(m.platform_access_tier) && m.platform_access_tier.length
-      ? c.dim(` [${m.platform_access_tier.join(', ')}]`)
-      : '';
-    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16)}${tiers}\n`);
+    const category = formatCategoryBadge(modelDisplayCategory(m));
+    const price = badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16);
+    process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${price} ${category}\n`);
   }
 }
 
@@ -589,15 +544,14 @@ async function printModelCatalog(ctx, filterCategory = null) {
   }
 
   const categories = [...new Set(visible.map(modelDisplayCategory))].sort((a, b) => {
-    const order = ['text', 'image_analysis', 'image_generation', 'image', 'multimodal', 'embedding', 'audio', 'video', 'other'];
-    return (order.indexOf(a) === -1 ? 999 : order.indexOf(a)) -
-      (order.indexOf(b) === -1 ? 999 : order.indexOf(b)) ||
+    return (MODEL_CATEGORY_ORDER.indexOf(a) === -1 ? 999 : MODEL_CATEGORY_ORDER.indexOf(a)) -
+      (MODEL_CATEGORY_ORDER.indexOf(b) === -1 ? 999 : MODEL_CATEGORY_ORDER.indexOf(b)) ||
       a.localeCompare(b);
   });
   for (const category of categories) {
     const rows = visible.filter(m => modelDisplayCategory(m) === category);
     if (!rows.length) continue;
-    process.stderr.write(`\n  ${c.bold(modelCategoryLabel(category))} ${c.dim(`(${rows.length})`)}\n`);
+    process.stderr.write(`\n  ${formatCategoryHeading(category, rows.length)}\n`);
     printModelCatalogRows(rows);
   }
 

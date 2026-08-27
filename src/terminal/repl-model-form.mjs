@@ -10,6 +10,13 @@
 
 import { c, stripAnsi } from './ansi.mjs';
 import { fitAnsiLine, writeOverlayFrame, eraseOverlayFrame } from './repl-format.mjs';
+import {
+  cacheProfileLabel,
+  formatCategoryBadge,
+  isImageGenerationModel,
+  modelCategory,
+  modelDisplayCategory,
+} from './model-catalog-display.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
 
@@ -26,38 +33,6 @@ function formatTokenLimit(value, label) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M ${label}`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}K ${label}`;
   return `${Math.round(n)} ${label}`;
-}
-
-function formatTiers(value) {
-  const tiers = Array.isArray(value) ? value : [];
-  const clean = tiers.map(v => String(v || '').trim()).filter(Boolean);
-  return clean.length ? clean.join(',') : '';
-}
-
-function cacheProfileLabel(value) {
-  if (!value) return '';
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    if (parsed?.type === 'prefix_hash') return 'prefix cache';
-  } catch {
-    // Fall through to the generic cache hint.
-  }
-  return 'cache';
-}
-
-function modelCategory(model) {
-  const category = String(model?.category || 'text').trim().toLowerCase();
-  return category === 'chat' ? 'text' : (category || 'text');
-}
-
-function isImageGenerationModel(model) {
-  const text = `${model?.id || ''} ${model?.label || ''}`.toLowerCase();
-  return (
-    text.includes('image generation') ||
-    text.includes('generate image') ||
-    text.includes('gemini-3-pro-image') ||
-    text.includes('nano banana')
-  );
 }
 
 function optionRowsForRole(catalog, row) {
@@ -141,21 +116,19 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       }
       const label = String(meta.label || '').trim();
       const parts = [];
-      if (label && label !== value) parts.push(label);
-      if (meta.provider) parts.push(String(meta.provider));
-      const category = modelCategory(meta);
-      if (category) parts.push(category);
+      if (label && label !== value) parts.push(c.white(label));
+      if (meta.provider) parts.push(c.dim(String(meta.provider)));
+      const category = modelDisplayCategory(meta);
+      if (category) parts.push(formatCategoryBadge(category));
       const context = formatTokenLimit(meta.context_length, 'ctx');
-      if (context) parts.push(context);
+      if (context) parts.push(c.dim(context));
       const output = formatTokenLimit(meta.max_output, 'out');
-      if (output) parts.push(output);
-      if (meta.supports_tools) parts.push('tools');
-      if (meta.supports_reasoning) parts.push('reasoning');
+      if (output) parts.push(c.dim(output));
+      if (meta.supports_tools) parts.push(c.green('tools'));
+      if (meta.supports_reasoning) parts.push(c.yellow('reasoning'));
       const cache = cacheProfileLabel(meta.cache_profile);
-      if (cache) parts.push(cache);
-      const tiers = formatTiers(meta.platform_access_tier);
-      if (tiers) parts.push(tiers);
-      return parts.join(' · ');
+      if (cache) parts.push(c.cyan(cache));
+      return parts.join(c.dim(' · '));
     };
 
     const render = () => {
@@ -180,7 +153,7 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
         const descText = valueDescription(row);
         const descMaxCols = Math.max(0, Math.min(72, cols - stripAnsi(prefix + suffix).length - 24));
         const desc = descText && descMaxCols > 12
-          ? `  ${c.dim(fitAnsiLine(descText, descMaxCols))}`
+          ? `  ${fitAnsiLine(descText, descMaxCols)}`
           : '';
         const maxValueCols = Math.max(18, cols - stripAnsi(prefix + suffix + desc).length - 1);
         lines.push(fitAnsiLine(`${prefix}${fitAnsiLine(valueLabel(row), maxValueCols)}${suffix}${desc}`, cols - 1));

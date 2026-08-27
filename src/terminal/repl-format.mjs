@@ -11,6 +11,8 @@ import * as path from 'node:path';
 import { c, stripAnsi, formatElapsed, inPlace } from './ansi.mjs';
 import * as rqueue from '../ui/render-queue.mjs';
 
+const ANSI_RESET = '\x1b[0m';
+
 // Transient one-line status writer that is safe under the render queue.
 // Raw inPlace() writes get REDIRECTED into transcript content when the
 // queue is active (cursor codes stripped) — that leaked one line per
@@ -102,7 +104,7 @@ export function fitAnsiLine(text, maxColumns) {
     out += value[i];
     visible++;
   }
-  return `${out}${c.dim('…')}`;
+  return `${out}${ANSI_RESET}${c.dim('…')}`;
 }
 
 // ── PRD-068 §5.14 helpers ────────────────────────────────────────────
