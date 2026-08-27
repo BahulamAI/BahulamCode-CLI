@@ -143,6 +143,53 @@ function sniffImage(buffer) {
   return null;
 }
 
+export function detectImageFile(filePath, { cwd = process.cwd() } = {}) {
+  const resolved = resolveAttachmentPath(filePath, cwd);
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size <= 0) return null;
+
+  const ext = path.extname(resolved).toLowerCase();
+  const probe = Buffer.alloc(Math.min(64, stat.size));
+  let fd = null;
+  try {
+    fd = fs.openSync(resolved, 'r');
+    fs.readSync(fd, probe, 0, probe.length, 0);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+
+  const sniffed = sniffImage(probe);
+  if (sniffed) {
+    return {
+      path: resolved,
+      mime_type: sniffed.mime_type,
+      bytes: stat.size,
+      ext: sniffed.ext,
+      verified: true,
+    };
+  }
+  if (!IMAGE_EXTENSIONS.has(ext)) return null;
+  const mimeType = ext === '.jpg' || ext === '.jpeg'
+    ? 'image/jpeg'
+    : `image/${ext.slice(1)}`;
+  return {
+    path: resolved,
+    mime_type: mimeType,
+    bytes: stat.size,
+    ext,
+    verified: false,
+  };
+}
+
 function pngDimensions(buffer) {
   if (buffer.length < 24) return {};
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };

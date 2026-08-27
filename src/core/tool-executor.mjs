@@ -19,6 +19,7 @@ import { SkillsLoader } from '../skills/loader.mjs';
 import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { detectImageFile } from './attachments.mjs';
 import { streamResponse } from './streaming.mjs';
 import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
@@ -780,6 +781,17 @@ export function createToolExecutor({
                 return { success: false, output: String(err?.message || err), _tool: 'read_attachment' };
             }
 
+            const imageInfo = detectImageFile(abs);
+            if (imageInfo) {
+                return {
+                    success: false,
+                    output: `This file is an image (${imageInfo.mime_type}). read_attachment only extracts text documents. Use analyze_image with a specific question. If analyze_image already failed, report that vision error directly instead of retrying this image with read_attachment.`,
+                    _tool: 'read_attachment',
+                    _path: abs,
+                    _mime: imageInfo.mime_type,
+                };
+            }
+
             const { extractFromPath } = await import('../context/prose-chunker.mjs');
             let mime, chunks;
             try {
@@ -793,7 +805,7 @@ export function createToolExecutor({
             if (!chunks.length) {
                 return {
                     success: false,
-                    output: `Unsupported or empty file (mime=${mime}). Supported text: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, xml, html, log, rst, sql, sh, .env, .ini, Dockerfile, .gitignore — plus any file whose first 8KB is valid UTF-8 (auto-sniffed). For CSV/Excel analysis use read_table; for images use analyze_image. If this is binary, ensure the file has a text extension or use read_table.`,
+                    output: `Unsupported or empty file (mime=${mime}). Supported text: pdf, txt, md/mdx, csv, tsv, json, yaml, toml, xml, html, log, rst, sql, sh, .env, .ini, Dockerfile, .gitignore — plus any file whose first 8KB is valid UTF-8 (auto-sniffed). For CSV/Excel analysis use read_table; for images use analyze_image. If analyze_image already failed for this file, report that vision error directly instead of retrying with read_attachment.`,
                     _tool: 'read_attachment',
                 };
             }

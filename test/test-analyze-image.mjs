@@ -29,6 +29,10 @@ function writePng(filePath) {
   fs.writeFileSync(filePath, png1x1);
 }
 
+function writeJpeg(filePath) {
+  fs.writeFileSync(filePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+}
+
 function saveEnv(keys) {
   return Object.fromEntries(keys.map(key => [key, process.env[key]]));
 }
@@ -151,6 +155,115 @@ await test('tool executor bridges analyze_image calls', async () => {
     assert.strictEqual(result.output, 'Bridge summary.');
   } finally {
     globalThis.fetch = originalFetch;
+    process.chdir(originalCwd);
+    restoreEnv(env);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await test('analyze_image recognizes extensionless JPEG bytes', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCwd = process.cwd();
+  const env = saveEnv(['BAHULAM_HOME', 'B0_TOKEN', 'TARANG_BACKEND_URL']);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-jpeg-'));
+  const file = path.join(tmp, 'image-without-extension');
+  const captured = {};
+
+  try {
+    writeJpeg(file);
+    process.chdir(tmp);
+    process.env.BAHULAM_HOME = path.join(tmp, 'home');
+    process.env.B0_TOKEN = 'cli_test_token';
+    process.env.TARANG_BACKEND_URL = 'https://backend.example';
+    globalThis.fetch = async (url, options) => {
+      captured.body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ summary: 'JPEG summary.', model: 'vision-model' });
+        },
+      };
+    };
+
+    const result = await AnalyzeImageTool.call({
+      path: file,
+      question: 'Describe the image.',
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.output, 'JPEG summary.');
+    assert.strictEqual(captured.body.attachments[0].mime_type, 'image/jpeg');
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.chdir(originalCwd);
+    restoreEnv(env);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await test('analyze_image failure says not to retry via read_attachment', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCwd = process.cwd();
+  const env = saveEnv(['BAHULAM_HOME', 'B0_TOKEN', 'TARANG_BACKEND_URL']);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-fail-'));
+  const file = path.join(tmp, 'one.png');
+
+  try {
+    writePng(file);
+    process.chdir(tmp);
+    process.env.BAHULAM_HOME = path.join(tmp, 'home');
+    process.env.B0_TOKEN = 'cli_test_token';
+    process.env.TARANG_BACKEND_URL = 'https://backend.example';
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      async text() {
+        return JSON.stringify({
+          detail: {
+            code: 'vision_analysis_unavailable',
+            message: 'Vision model returned no visible text answer (finish_reason=length).',
+          },
+        });
+      },
+    });
+
+    const result = await AnalyzeImageTool.call({
+      path: file,
+      question: 'Describe the image.',
+    });
+
+    assert.strictEqual(result.success, false);
+    assert.match(result.output, /do not retry this image with read_attachment/);
+    assert.match(result.output, /provider call completed/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.chdir(originalCwd);
+    restoreEnv(env);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await test('read_attachment routes image files back to analyze_image', async () => {
+  const originalCwd = process.cwd();
+  const env = saveEnv(['BAHULAM_SKIP_AUTO_REGISTER']);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-read-image-'));
+  const file = path.join(tmp, 'one.jpg');
+
+  try {
+    writeJpeg(file);
+    process.chdir(tmp);
+    process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
+
+    const executor = createToolExecutor();
+    const result = await executor.execute('read_attachment', { path: file });
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result._tool, 'read_attachment');
+    assert.strictEqual(result._mime, 'image/jpeg');
+    assert.match(result.output, /Use analyze_image/);
+    assert.match(result.output, /instead of retrying this image with read_attachment/);
+  } finally {
     process.chdir(originalCwd);
     restoreEnv(env);
     fs.rmSync(tmp, { recursive: true, force: true });

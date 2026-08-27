@@ -11,6 +11,16 @@ import {
   publicAttachmentMetadata,
 } from '../core/attachments.mjs';
 
+function visionFailureMessage(message, attachment) {
+  const base = String(message || 'Vision analysis failed').trim().replace(/[.。]+$/g, '');
+  const lower = base.toLowerCase();
+  const guidance = `File was loaded as ${attachment?.mime_type || 'an image'}; do not retry this image with read_attachment.`;
+  if (lower.includes('empty analysis') || lower.includes('no text answer') || lower.includes('no visible text answer') || lower.includes('finish_reason=length')) {
+    return `${base}. ${guidance} The provider call completed but did not return visible answer text; retry analyze_image with a more specific question or switch the configured vision model.`;
+  }
+  return `${base}. ${guidance}`;
+}
+
 export const AnalyzeImageTool = {
   name: 'analyze_image',
   description:
@@ -124,7 +134,7 @@ export const AnalyzeImageTool = {
         : detail.message || detail.error || `Vision analysis failed (${response.status})`;
       return {
         success: false,
-        output: message,
+        output: visionFailureMessage(message, attachment),
         status: response.status,
         detail,
         _tool: 'analyze_image',
