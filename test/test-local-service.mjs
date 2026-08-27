@@ -121,10 +121,15 @@ try {
     assert.match(html, /Subscriptions/);
     assert.match(html, /CLI login needed/);
     assert.match(html, /id="threadInner"/);
+    assert.match(html, /id="attachFiles"/);
+    assert.match(html, /id="fileUpload"/);
+    assert.match(html, /id="uploadTray"/);
+    assert.match(html, /\/api\/files\/upload/);
     assert.match(html, /data-resize="left"/);
     assert.match(html, /function renderTable/);
     assert.match(html, /\/vendor\/monaco\/vs\/loader\.js/);
     assert.match(html, /function renderCodeEditor/);
+    assert.match(html, /function importWithoutAmdDefine/);
     assert.match(html, /function renderMermaidBlocks/);
     assert.match(html, /function renderSpreadsheetFile/);
     assert.match(html, /function renderOfficeFile/);
@@ -202,6 +207,45 @@ try {
     assert.equal(drawioRes.file.viewer, 'drawio');
     assert.equal(drawioRes.file.language, 'xml');
 
+    const uploadRes = await fetch(`http://127.0.0.1:${service.port}/api/files/upload?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: [
+          {
+            name: 'uploaded image.png',
+            mime_type: 'image/png',
+            data_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/l9zI3wAAAABJRU5ErkJggg==',
+          },
+          {
+            name: 'analysis.ipynb',
+            mime_type: 'application/x-ipynb+json',
+            data_base64: Buffer.from(JSON.stringify({
+              cells: [{ cell_type: 'markdown', source: ['# Uploaded notebook\n'] }],
+              metadata: {},
+              nbformat: 4,
+              nbformat_minor: 5,
+            })).toString('base64'),
+          },
+        ],
+      }),
+    }).then((res) => res.json());
+    assert.equal(uploadRes.ok, true);
+    assert.equal(uploadRes.files.length, 2);
+    assert.match(uploadRes.directory, /^bahulam-uploads\//);
+    assert.equal(uploadRes.files[0].viewer, 'image');
+    assert.equal(uploadRes.files[0].kind, 'image');
+    assert.equal(uploadRes.files[1].extension, 'ipynb');
+    assert.equal(uploadRes.files[1].viewer, 'code');
+    assert.equal(uploadRes.files[1].kind, 'notebook');
+    assert.equal(uploadRes.files[1].uploaded, true);
+    assert.equal(fs.existsSync(path.join(workspace, uploadRes.files[0].path)), true);
+    assert.deepEqual(fs.readFileSync(path.join(workspace, uploadRes.files[0].path)).subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    const uploadedImageRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=${encodeURIComponent(uploadRes.files[0].path)}`).then((res) => res.json());
+    assert.equal(uploadedImageRes.file.viewer, 'image');
+    assert.equal(uploadedImageRes.preview, null);
+
     const deckRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=deck.pptx`).then((res) => res.json());
     assert.equal(deckRes.file.viewer, 'presentation');
     assert.equal(deckRes.preview, null);
@@ -240,7 +284,11 @@ try {
       const relayRes = await fetch(`http://127.0.0.1:${service.port}/api/agent/turn?token=${encodeURIComponent(token)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'say relay ok', path: 'README.md' }),
+        body: JSON.stringify({
+          prompt: 'say relay ok',
+          path: 'README.md',
+          attachments: uploadRes.files,
+        }),
       }).then(async (res) => ({ status: res.status, body: await res.json() }));
       assert.equal(relayRes.status, 200);
       assert.equal(relayRes.body.ok, true);
@@ -249,6 +297,10 @@ try {
       assert.equal(mockBackend.requests.length, 1);
       assert.match(mockBackend.requests[0].instruction, /Bahulam Local IDE/);
       assert.match(mockBackend.requests[0].instruction, /say relay ok/);
+      assert.match(mockBackend.requests[0].instruction, /Attached files for this turn:/);
+      assert.match(mockBackend.requests[0].instruction, /suggested_tool=analyze_image/);
+      assert.match(mockBackend.requests[0].instruction, /Use read_attachment\(path=\.\.\.\) for text, PDFs, Markdown, JSON\/YAML, and Jupyter notebooks\./);
+      assert.match(mockBackend.requests[0].instruction, new RegExp(uploadRes.files[0].path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.equal(mockBackend.requests[0].session_id, 'resume-local-service');
       assert.equal(mockBackend.requests[0].messages.some((msg) => msg.role === 'user' && msg.content === 'previous local question'), true);
       assert.equal(mockBackend.requests[0].messages.some((msg) => msg.role === 'assistant' && String(msg.content || '').includes('previous local answer')), true);

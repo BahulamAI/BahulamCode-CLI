@@ -37,6 +37,11 @@ import {
   verifyLocalAccessToken,
 } from './session-store.mjs';
 
+const LOCAL_UPLOAD_DIR = 'bahulam-uploads';
+const DEFAULT_MAX_UPLOAD_FILES = 20;
+const DEFAULT_MAX_UPLOAD_FILE_BYTES = DEFAULT_MAX_RAW_BYTES;
+const DEFAULT_MAX_UPLOAD_BODY_BYTES = 140 * 1024 * 1024;
+
 export async function startLocalWorkspaceService({
   session,
   token,
@@ -240,6 +245,24 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/files/upload') {
+    const body = await readJsonBody(req, envInt('BAHULAM_LOCAL_UPLOAD_MAX_BODY_BYTES', DEFAULT_MAX_UPLOAD_BODY_BYTES));
+    const result = saveUploadedFiles(session, body);
+    emit('file_uploaded', {
+      count: result.files.length,
+      directory: result.directory,
+      files: result.files.map((file) => ({
+        name: file.name,
+        path: file.path,
+        size: file.size,
+        viewer: file.viewer,
+        kind: file.kind,
+      })),
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/file/raw') {
     const requestedPath = url.searchParams.get('path') || session.focus_path;
     if (!requestedPath) {
@@ -324,6 +347,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
       const result = await relay.runTurn({
         prompt: body.prompt,
         path: body.path || session.focus_path || '.',
+        attachments: body.attachments || [],
       });
       sendJson(res, 200, result);
     } catch (err) {
@@ -388,6 +412,104 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
     err.code = 'BAD_REQUEST';
     throw err;
   }
+}
+
+function envInt(name, fallback) {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function saveUploadedFiles(session, body = {}) {
+  const files = Array.isArray(body.files) ? body.files : [];
+  if (!files.length) {
+    const err = new Error('files[] is required');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  if (files.length > DEFAULT_MAX_UPLOAD_FILES) {
+    const err = new Error(`Too many files; max is ${DEFAULT_MAX_UPLOAD_FILES}`);
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+
+  const root = fs.realpathSync(session.root_path);
+  const group = `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomBytes(3).toString('hex')}`;
+  const directory = path.posix.join(LOCAL_UPLOAD_DIR, safePathSegment(session.id), group);
+  const uploadDir = path.join(root, ...directory.split('/'));
+  fs.mkdirSync(uploadDir, { recursive: true });
+
+  const uploaded = files.map((file, index) => {
+    const name = safeFileName(file?.name || `upload-${index + 1}.bin`);
+    const encoded = normalizeBase64Payload(file?.data_base64 || file?.base64 || '');
+    if (!encoded) {
+      const err = new Error(`Uploaded file ${name} is empty or missing data_base64`);
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+    let bytes;
+    try {
+      bytes = Buffer.from(encoded, 'base64');
+    } catch {
+      const err = new Error(`Uploaded file ${name} is not valid base64`);
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+    if (!bytes.length) {
+      const err = new Error(`Uploaded file ${name} is empty`);
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+    if (bytes.length > DEFAULT_MAX_UPLOAD_FILE_BYTES) {
+      const err = new Error(`Uploaded file ${name} exceeds ${DEFAULT_MAX_UPLOAD_FILE_BYTES} bytes`);
+      err.code = 'PAYLOAD_TOO_LARGE';
+      throw err;
+    }
+
+    const target = uniqueUploadTarget(uploadDir, name);
+    fs.writeFileSync(target, bytes);
+    const rel = path.relative(root, target).split(path.sep).join('/');
+    const listing = listWorkspacePath(session, rel);
+    return {
+      ...listing.file,
+      mime_type: file?.mime_type || file?.type || contentTypeForPath(target),
+      upload_path: listing.path,
+      uploaded: true,
+    };
+  });
+
+  return {
+    ok: true,
+    directory,
+    files: uploaded,
+  };
+}
+
+function normalizeBase64Payload(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const comma = raw.indexOf(',');
+  return raw.startsWith('data:') && comma >= 0 ? raw.slice(comma + 1) : raw;
+}
+
+function safePathSegment(value) {
+  return String(value || 'session').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
+}
+
+function safeFileName(value) {
+  const base = path.basename(String(value || 'upload.bin')).replace(/[\u0000-\u001f\u007f]/g, '');
+  const safe = base.replace(/[\\/]+/g, '-').replace(/[^A-Za-z0-9._() -]+/g, '_').trim();
+  if (!safe || safe === '.' || safe === '..') return 'upload.bin';
+  return safe.length > 180 ? `${safe.slice(0, 120)}${path.extname(safe).slice(0, 40)}` : safe;
+}
+
+function uniqueUploadTarget(uploadDir, fileName) {
+  const parsed = path.parse(fileName);
+  for (let i = 0; i < 1000; i += 1) {
+    const suffix = i === 0 ? '' : `-${i + 1}`;
+    const candidate = path.join(uploadDir, `${parsed.name}${suffix}${parsed.ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(uploadDir, `${parsed.name}-${crypto.randomBytes(4).toString('hex')}${parsed.ext}`);
 }
 
 function sendJson(res, status, body) {
@@ -584,9 +706,9 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
 .tabbar{height:36px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:var(--ws-tab);flex:0 0 auto;overflow-x:auto}.tab{height:100%;display:flex;align-items:center;gap:7px;border:0;border-right:1px solid var(--ws-border-subtle);padding:0 9px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;cursor:pointer;max-width:220px;min-width:90px}.tab.active{background:#fff;color:var(--ws-foreground);box-shadow:inset 0 -1.5px 0 var(--ws-foreground)}.tab:hover{background:rgba(27,27,27,.03);color:rgba(27,27,27,.75)}.tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tab-close{border:0;background:transparent;border-radius:4px;color:rgba(27,27,27,.28);cursor:pointer;padding:0 2px}.tab-close:hover{background:rgba(27,27,27,.07);color:rgba(27,27,27,.70)}.tab-muted{flex:1;height:100%;border-left:1px solid var(--ws-border-subtle);min-width:24px}
 .viewer{flex:1;min-height:0;overflow:hidden;background:#fff;display:flex;flex-direction:column}.file-header{min-height:34px;flex:0 0 auto;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 12px;background:rgba(27,27,27,.015);font:12px var(--mono);color:rgba(27,27,27,.50)}.path{min-width:120px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(27,27,27,.08);border-radius:999px;background:#fff;padding:1px 7px;font:10px var(--sans);color:rgba(27,27,27,.48);white-space:nowrap}.file-chip.warn{border-color:#FDE68A;background:#FFFBEB;color:#92400E}.file-actions{margin-left:auto;display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}.file-action{font:11px var(--sans);color:rgba(27,27,27,.50);text-decoration:none;border:1px solid var(--ws-border);border-radius:6px;padding:2px 7px;background:#fff;cursor:pointer}.file-action:hover{color:var(--ws-foreground);background:var(--ws-surface)}select.file-action{height:23px;max-width:160px;padding:1px 24px 1px 7px}.empty{color:var(--ws-faint);padding:24px;font-size:12px}.error{color:var(--ws-error)}
 .monaco-host{flex:1;min-height:0}.code-fallback{flex:1;min-height:0;overflow:auto}.code-wrap{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;min-height:100%;font:12px/1.55 var(--mono)}.line-nums{user-select:none;text-align:right;padding:14px 10px 14px 14px;color:rgba(27,27,27,.25);background:#FAF9F5;border-right:1px solid var(--ws-border-subtle);white-space:pre}.code-pre{margin:0;padding:14px;white-space:pre;overflow:auto;color:#1F2937;background:#fff;min-height:100%}.markdown-preview{flex:1;min-height:0;overflow:auto;max-width:920px;padding:24px 28px;color:rgba(27,27,27,.86);font-size:14px;line-height:1.65}.markdown-preview h1,.markdown-preview h2,.markdown-preview h3{line-height:1.2;margin:18px 0 8px}.markdown-preview p{margin:0 0 12px}.markdown-preview code,.message-content code{font-family:var(--mono);font-size:.92em;background:rgba(27,27,27,.06);border-radius:4px;padding:1px 4px}.markdown-preview pre,.message-content pre{overflow:auto;background:#0D1117;color:#E5E7EB;border-radius:7px;padding:12px}.image-stage{flex:1;min-height:0;display:flex;flex-direction:column;background:#F8F7F2}.image-toolbar{height:34px;flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:0 10px;border-bottom:1px solid var(--ws-border-subtle);background:#fff}.image-preview{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:18px;overflow:auto}.image-preview img{max-width:none;max-height:none;object-fit:contain;border:1px solid var(--ws-border);background:#fff;box-shadow:0 10px 30px rgba(27,27,27,.10);transform-origin:center center}.frame-preview{flex:1;min-height:0;background:#F8F7F2}.frame-preview iframe{width:100%;height:100%;border:0;background:#fff}.table-preview{flex:1;min-height:0;padding:18px;overflow:auto}.table-preview .table-meta{margin:0 0 10px;color:rgba(27,27,27,.42);font:11px var(--mono)}.table-preview table{border-collapse:collapse;font-size:12px;background:#fff}.table-preview th,.table-preview td{border:1px solid var(--ws-border);padding:5px 7px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.table-preview th{background:#F7F5EF;text-align:left;color:rgba(27,27,27,.65);position:sticky;top:0}.table-preview td.formula-cell{background:#F0F9FF;color:#075985}.diagram-preview{flex:1;min-height:0;padding:18px;display:grid;gap:14px;max-width:1100px;overflow:auto}.mermaid-card{border:1px solid var(--ws-border);border-radius:8px;background:#fff;overflow:hidden}.mermaid-output{padding:18px;overflow:auto;min-height:180px;display:flex;align-items:center;justify-content:center}.mermaid-output svg{max-width:100%;height:auto}.mermaid-source{margin:0;border-top:1px solid var(--ws-border-subtle);border-radius:0;background:#FAF9F5;color:rgba(27,27,27,.68);font:11px/1.45 var(--mono);max-height:220px}.viewer-note{flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:#FAF9F5}.viewer-note-card{width:min(520px,100%);max-height:100%;overflow:auto;border:1px solid var(--ws-border);border-radius:8px;background:#fff;padding:18px;box-shadow:0 10px 34px rgba(27,27,27,.05)}.viewer-note-title{font-size:14px;font-weight:750;color:rgba(27,27,27,.84)}.viewer-note-body{margin-top:8px;color:rgba(27,27,27,.56);font-size:12px;line-height:1.55}.viewer-note-actions{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}.binary-preview{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:24px;color:rgba(27,27,27,.50);text-align:center}
-.chat-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(255,255,255,.55)}.chat-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:rgba(27,27,27,.35)}.chat-subtitle{min-width:0;flex:1;font-size:10px;color:rgba(27,27,27,.28);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-tabs{height:32px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:#F7F5EF;padding:0 8px;gap:3px}.agent-tab{height:24px;border:0;border-radius:6px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;font-weight:650;padding:0 9px;cursor:pointer}.agent-tab:hover{background:var(--ws-hover);color:rgba(27,27,27,.76)}.agent-tab.active{background:#fff;color:var(--ws-foreground);box-shadow:0 0 0 1px rgba(27,27,27,.06)}.chat-body{display:flex;flex-direction:column;flex:1;min-height:0}.chat-pane{display:none;flex-direction:column;flex:1;min-height:0}.chat-pane.active{display:flex}.thread{flex:1;min-height:0;overflow:auto;padding:16px 14px 10px;background:rgba(255,255,255,.40)}.thread-inner{display:flex;flex-direction:column;gap:12px}.empty-chat{display:flex;height:100%;align-items:center;justify-content:center;text-align:center;color:rgba(27,27,27,.35);font-size:12px}.session-list{display:flex;flex-direction:column;gap:2px}.session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border-radius:6px;padding:8px}.session-row:hover{background:rgba(27,27,27,.035)}.session-main{min-width:0}.session-prompt{font-size:12px;color:rgba(27,27,27,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta{margin-top:3px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.38);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-tools{margin-top:5px;display:flex;gap:4px;flex-wrap:wrap}.session-chip{border-radius:999px;border:1px solid rgba(27,27,27,.07);background:#F7F5EF;padding:1px 6px;font:10px var(--mono);color:rgba(27,27,27,.48)}.msg{display:flex}.msg.user{justify-content:flex-end}.msg.assistant{justify-content:flex-start}.bubble{max-width:86%;border-radius:16px;padding:10px 12px;font-size:13px;line-height:1.55;word-break:break-word}.user .bubble{background:#1B1B1B;color:#FFFDF7}.assistant-stack{width:100%;max-width:960px;display:flex;flex-direction:column;gap:8px}.assistant-bubble{display:none;max-width:94%;border-radius:16px;background:#F7F5EF;padding:11px 13px;color:rgba(27,27,27,.86);font-size:13px;line-height:1.6}.assistant-bubble:not(:empty){display:block}.message-content p{margin:0 0 10px}.message-content p:last-child{margin-bottom:0}.message-content ul{margin:0 0 10px 18px;padding:0}.message-content li{margin:2px 0}
+.chat-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(255,255,255,.55)}.chat-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:rgba(27,27,27,.35)}.chat-subtitle{min-width:0;flex:1;font-size:10px;color:rgba(27,27,27,.28);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-tabs{height:32px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:#F7F5EF;padding:0 8px;gap:3px}.agent-tab{height:24px;border:0;border-radius:6px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;font-weight:650;padding:0 9px;cursor:pointer}.agent-tab:hover{background:var(--ws-hover);color:rgba(27,27,27,.76)}.agent-tab.active{background:#fff;color:var(--ws-foreground);box-shadow:0 0 0 1px rgba(27,27,27,.06)}.chat-body{display:flex;flex-direction:column;flex:1;min-height:0}.chat-pane{display:none;flex-direction:column;flex:1;min-height:0}.chat-pane.active{display:flex}.thread{flex:1;min-height:0;overflow:auto;padding:16px 14px 10px;background:rgba(255,255,255,.40)}.thread-inner{display:flex;flex-direction:column;gap:12px}.empty-chat{display:flex;height:100%;align-items:center;justify-content:center;text-align:center;color:rgba(27,27,27,.35);font-size:12px}.session-list{display:flex;flex-direction:column;gap:2px}.session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border-radius:6px;padding:8px}.session-row:hover{background:rgba(27,27,27,.035)}.session-main{min-width:0}.session-prompt{font-size:12px;color:rgba(27,27,27,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta{margin-top:3px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.38);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-tools{margin-top:5px;display:flex;gap:4px;flex-wrap:wrap}.session-chip{border-radius:999px;border:1px solid rgba(27,27,27,.07);background:#F7F5EF;padding:1px 6px;font:10px var(--mono);color:rgba(27,27,27,.48)}.msg{display:flex}.msg.user{justify-content:flex-end}.msg.assistant{justify-content:flex-start}.bubble{max-width:86%;border-radius:16px;padding:10px 12px;font-size:13px;line-height:1.55;word-break:break-word}.user .bubble{background:#1B1B1B;color:#FFFDF7}.message-attachments{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.message-attachment{max-width:100%;display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.20);border-radius:999px;background:rgba(255,255,255,.10);color:#FFFDF7;padding:2px 7px;cursor:pointer}.message-attachment span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}.message-attachment small{font:10px var(--mono);opacity:.68}.message-attachment:hover{background:rgba(255,255,255,.17)}.assistant-stack{width:100%;max-width:960px;display:flex;flex-direction:column;gap:8px}.assistant-bubble{display:none;max-width:94%;border-radius:16px;background:#F7F5EF;padding:11px 13px;color:rgba(27,27,27,.86);font-size:13px;line-height:1.6}.assistant-bubble:not(:empty){display:block}.message-content p{margin:0 0 10px}.message-content p:last-child{margin-bottom:0}.message-content ul{margin:0 0 10px 18px;padding:0}.message-content li{margin:2px 0}
 .activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:300px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.trace{display:block;flex:1;min-height:0;overflow:auto;background:#fff;padding:8px}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:7px 4px;color:rgba(27,27,27,.52);white-space:pre-wrap;overflow-wrap:anywhere}.trace-row b{color:var(--ws-primary)}
-.composer{border-top:1px solid var(--ws-border-subtle);background:#FFFDF7;padding:10px 12px}.composer-box{border:1px solid var(--ws-border);border-radius:10px;background:#fff;overflow:hidden}textarea{display:block;width:100%;min-height:84px;max-height:240px;resize:vertical;border:0;padding:10px 11px;background:#fff;color:var(--ws-foreground);outline:none}.composer-actions{height:34px;border-top:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 8px}.status{font-size:11px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}button.primary{height:24px;border:0;border-radius:6px;background:var(--ws-foreground);color:#fff;font-size:11px;font-weight:750;padding:0 10px;cursor:pointer}button.primary:hover{background:#2B2B2B}button.primary:disabled{opacity:.45;cursor:not-allowed}
+.composer{border-top:1px solid var(--ws-border-subtle);background:#FFFDF7;padding:10px 12px}.composer-box{border:1px solid var(--ws-border);border-radius:10px;background:#fff;overflow:hidden}.upload-tray{display:flex;gap:6px;flex-wrap:wrap;padding:8px 9px 0}.upload-tray[hidden]{display:none}.upload-chip{height:24px;display:inline-flex;align-items:center;gap:6px;max-width:100%;border:1px solid rgba(8,145,178,.18);border-radius:999px;background:#F0F9FF;color:#075985;padding:0 4px 0 8px;font-size:11px}.upload-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}.upload-chip-meta{font:10px var(--mono);color:rgba(7,89,133,.58)}.upload-chip button{width:18px;height:18px;border:0;border-radius:999px;background:transparent;color:rgba(7,89,133,.52);cursor:pointer;padding:0}.upload-chip button:hover{background:rgba(8,145,178,.12);color:#075985}textarea{display:block;width:100%;min-height:84px;max-height:240px;resize:vertical;border:0;padding:10px 11px;background:#fff;color:var(--ws-foreground);outline:none}.composer-actions{height:34px;border-top:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 8px}.composer-left{display:flex;align-items:center;gap:6px;min-width:0}.status{font-size:11px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}button.primary{height:24px;border:0;border-radius:6px;background:var(--ws-foreground);color:#fff;font-size:11px;font-weight:750;padding:0 10px;cursor:pointer}button.primary:hover{background:#2B2B2B}button.primary:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:980px){body{overflow:auto}.shell{height:auto;min-height:100vh}.global-links .global-link:not(:last-of-type){display:none}.auth-chip{display:none}main,main.hide-files,main.hide-agent{display:flex;flex-direction:column}.resizer{display:none}.panel{min-height:320px}.files,.agent{border:0;border-bottom:1px solid var(--ws-border-subtle)}.top-actions .badge:not(.local){display:none}.thread{min-height:420px}.bubble{max-width:94%}}
 </style>
 </head>
@@ -654,9 +776,14 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
           <div class="thread" id="thread"><div class="thread-inner" id="threadInner"><div class="empty-chat" id="emptyChat">Ask about this local workspace.</div></div></div>
           <form class="composer" id="composer">
             <div class="composer-box">
+            <div class="upload-tray" id="uploadTray" hidden></div>
             <textarea id="prompt" placeholder="Ask about this local workspace"></textarea>
             <div class="composer-actions">
-              <div class="status" id="sendStatus"></div>
+              <div class="composer-left">
+                <button class="icon-button" id="attachFiles" type="button" title="Attach files" aria-label="Attach files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></button>
+                <input id="fileUpload" type="file" multiple hidden>
+                <div class="status" id="sendStatus"></div>
+              </div>
               <button class="primary" id="send" type="submit">Send</button>
             </div>
             </div>
@@ -723,6 +850,7 @@ let activeEditor = null;
 let activeImageScale = 1;
 let mermaidReady = null;
 let mermaidSeq = 0;
+let pendingAttachments = [];
 
 const LANGUAGES = [
   ['plaintext','Plain text'],['javascript','JavaScript'],['typescript','TypeScript'],['json','JSON'],
@@ -752,6 +880,50 @@ function rawUrl(path){return '/api/file/raw?token=' + encodeURIComponent(token) 
 function basename(p){const parts=String(p||'').split('/').filter(Boolean);return parts.length?parts[parts.length-1]:'Workspace';}
 function extname(p){const name=basename(p).toLowerCase();const i=name.lastIndexOf('.');return i>=0?name.slice(i+1):'';}
 function formatBytes(size){const n=Number(size)||0;if(n<1024)return String(n);if(n<1024*1024)return Math.round(n/1024)+'K';return (n/1024/1024).toFixed(1)+'M';}
+function attachmentHint(file){
+  const kind=String(file?.kind||file?.viewer||'').toLowerCase();
+  const mime=String(file?.mime_type||'').toLowerCase();
+  const ext=extname(file?.path||file?.name||'');
+  if(kind==='image'||mime.startsWith('image/'))return 'vision';
+  if(kind==='spreadsheet'||kind==='table'||['csv','tsv','xlsx','xls','ods'].includes(ext))return 'table';
+  if(['pdf','markdown','text','code','config','notebook'].includes(kind)||['txt','md','mdx','pdf','json','yaml','yml','toml','html','xml','ipynb','log','rst','sql','sh'].includes(ext))return 'read';
+  return 'file';
+}
+function fileToDataBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result||'').split(',').pop()||'');
+    reader.onerror=()=>reject(reader.error||new Error('File read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+function renderUploadTray(){
+  const tray=document.getElementById('uploadTray');
+  if(!tray)return;
+  if(!pendingAttachments.length){tray.hidden=true;tray.innerHTML='';return;}
+  tray.hidden=false;
+  tray.innerHTML=pendingAttachments.map((file,index)=>'<span class="upload-chip" title="'+esc(file.path)+'"><span class="upload-chip-name">'+esc(file.name||basename(file.path))+'</span><span class="upload-chip-meta">'+esc(attachmentHint(file))+' · '+esc(formatBytes(file.size))+'</span><button type="button" data-remove-upload="'+index+'" aria-label="Remove attachment">×</button></span>').join('');
+  tray.querySelectorAll('[data-remove-upload]').forEach(btn=>btn.addEventListener('click',()=>{
+    pendingAttachments.splice(Number(btn.dataset.removeUpload),1);
+    renderUploadTray();
+  }));
+}
+async function uploadFiles(fileList){
+  const files=[...fileList];
+  if(!files.length)return;
+  document.getElementById('sendStatus').textContent='Uploading...';
+  const payload=[];
+  for(const file of files){
+    payload.push({name:file.name||'upload.bin',mime_type:file.type||'',size:file.size||0,data_base64:await fileToDataBase64(file)});
+  }
+  const result=await api('/api/files/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payload})});
+  pendingAttachments.push(...(result.files||[]));
+  renderUploadTray();
+  document.getElementById('sendStatus').textContent='Attached '+pendingAttachments.length+' file'+(pendingAttachments.length===1?'':'s');
+  dirCache.clear();
+  await loadDir('.');
+  if(result.files?.[0]?.path)openFile(result.files[0].path);
+}
 function parentPath(p){const parts=String(p||'.').split('/').filter(Boolean);parts.pop();return parts.length?parts.join('/'):'.';}
 function compactId(id){const value=String(id||'');return value.length>16?value.slice(0,8)+'...'+value.slice(-5):value;}
 function formatSessionTime(value){if(!value)return 'unknown';try{return new Date(value).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}catch{return String(value);}}
@@ -766,13 +938,30 @@ function loadMonaco(){
   });
   return monacoReady;
 }
+async function importWithoutAmdDefine(url){
+  const globalObj=window;
+  const hadDefine=Object.prototype.hasOwnProperty.call(globalObj,'define');
+  const previousDefine=globalObj.define;
+  try{
+    try{Object.defineProperty(globalObj,'define',{value:undefined,writable:true,configurable:true});}
+    catch{try{globalObj.define=undefined;}catch{}}
+    return await import(url);
+  }finally{
+    try{
+      if(hadDefine)Object.defineProperty(globalObj,'define',{value:previousDefine,writable:true,configurable:true});
+      else delete globalObj.define;
+    }catch{
+      try{globalObj.define=previousDefine;}catch{}
+    }
+  }
+}
 async function loadMermaid(){
   if(mermaidReady)return mermaidReady;
-  mermaidReady=import('/vendor/mermaid/mermaid.esm.min.mjs').then(mod=>{
+  mermaidReady=importWithoutAmdDefine('/vendor/mermaid/mermaid.esm.min.mjs').then(mod=>{
     const mermaid=mod.default||mod;
     mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'base',themeVariables:{primaryColor:'#F7F5EF',primaryTextColor:'#1B1B1B',primaryBorderColor:'#D7D3C8',lineColor:'#64748B',fontFamily:'ui-sans-serif, system-ui, sans-serif'}});
     return mermaid;
-  });
+  }).catch(err=>{mermaidReady=null;throw err;});
   return mermaidReady;
 }
 function fileKind(data){
@@ -1231,12 +1420,18 @@ function resetThread(emptyText='Ask about this local workspace.'){
   activeTurn=null;
   document.getElementById('threadInner').innerHTML='<div class="empty-chat" id="emptyChat">'+esc(emptyText)+'</div>';
 }
-function addUserMessage(text){
+function attachmentHtml(attachments){
+  const files=Array.isArray(attachments)?attachments:[];
+  if(!files.length)return '';
+  return '<div class="message-attachments">'+files.map(file=>'<button type="button" class="message-attachment" data-open-upload="'+esc(file.path)+'"><span>'+esc(file.name||basename(file.path))+'</span><small>'+esc(attachmentHint(file))+' · '+esc(formatBytes(file.size))+'</small></button>').join('')+'</div>';
+}
+function addUserMessage(text, attachments=[]){
   document.getElementById('emptyChat')?.remove();
   const el=document.createElement('div');
   el.className='msg user';
-  el.innerHTML='<div class="bubble">'+esc(text)+'</div>';
+  el.innerHTML='<div class="bubble">'+esc(text)+attachmentHtml(attachments)+'</div>';
   document.getElementById('threadInner').appendChild(el);
+  el.querySelectorAll('[data-open-upload]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.openUpload)));
   scrollThread();
 }
 function addAssistantMessage(text){
@@ -1530,7 +1725,7 @@ function handleRelayEvent(type, event){
 const es = new EventSource('/api/events?token=' + encodeURIComponent(token));
 es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, JSON.stringify(e.data || {})); } catch {} };
 [
-  'session_started','file_browsed','file_read','tool_execution_requested','session_stopped',
+  'session_started','file_browsed','file_read','file_uploaded','tool_execution_requested','session_stopped',
   'agent_turn_requested','agent_relay_ready','agent_turn_started','agent_turn_complete',
   'agent_history_loaded','agent_history_new','agent_approval_required','agent_approval_resolved','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
   'agent_tool_result','agent_activity','agent_complete','agent_error','agent_event'
@@ -1539,26 +1734,37 @@ es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, J
 });
 document.getElementById('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const prompt = document.getElementById('prompt').value.trim();
-  if (!prompt) return;
+  const rawPrompt = document.getElementById('prompt').value.trim();
+  const attachments = pendingAttachments.slice();
+  const prompt = rawPrompt || (attachments.length ? 'Review the attached files.' : '');
+  if (!prompt && !attachments.length) return;
   setSessionMenuOpen(false);
   if(!historySelectionReady) historySelectionReady=true;
-  addUserMessage(prompt);
+  addUserMessage(prompt, attachments);
   document.getElementById('prompt').value='';
+  pendingAttachments=[];
+  renderUploadTray();
   activeTurn=null;
   document.getElementById('sendStatus').textContent = 'Sending...';
   document.getElementById('send').disabled = true;
   try {
-    await api('/api/agent/turn', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt, path: currentPath }) });
+    await api('/api/agent/turn', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt, path: currentPath, attachments }) });
   } catch (err) {
     document.getElementById('sendStatus').textContent = err.message;
     document.getElementById('bridgeState').textContent = err.status === 401 ? 'auth required' : 'error';
     addActivity('error', (err.status ? err.status + ' ' : '') + err.message);
+    pendingAttachments=attachments.concat(pendingAttachments);
+    renderUploadTray();
   } finally {
     document.getElementById('send').disabled = false;
   }
 });
 document.getElementById('prompt').addEventListener('keydown', e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();document.getElementById('composer').requestSubmit();}});
+document.getElementById('attachFiles').addEventListener('click',()=>document.getElementById('fileUpload').click());
+document.getElementById('fileUpload').addEventListener('change',async(e)=>{
+  try{await uploadFiles(e.target.files||[]);}catch(err){document.getElementById('sendStatus').textContent=err.message;addActivity('error','Upload failed',{detail:err.message});}
+  finally{e.target.value='';}
+});
 document.querySelectorAll('[data-agent-tab]').forEach(btn=>btn.addEventListener('click',()=>setAgentTab(btn.dataset.agentTab)));
 document.getElementById('sessionMenuButton').addEventListener('click',(e)=>{e.stopPropagation();setSessionMenuOpen(!sessionMenuOpen);});
 document.getElementById('sessionModalClose').addEventListener('click',()=>setSessionMenuOpen(false));

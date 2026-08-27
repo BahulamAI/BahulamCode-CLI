@@ -148,9 +148,10 @@ export class LocalAgentRelay {
     return this._historySnapshot();
   }
 
-  async runTurn({ prompt, path = '.' } = {}) {
+  async runTurn({ prompt, path = '.', attachments = [] } = {}) {
     const instruction = String(prompt || '').trim();
-    if (!instruction) {
+    const turnAttachments = normalizeTurnAttachments(attachments);
+    if (!instruction && !turnAttachments.length) {
       const err = new Error('prompt is required');
       err.code = 'BAD_REQUEST';
       throw err;
@@ -167,7 +168,8 @@ export class LocalAgentRelay {
     this.running = true;
     this.turnCount += 1;
     const turnId = `turn_${Date.now().toString(36)}_${this.turnCount}`;
-    const relayInstruction = this._buildInstruction(instruction, path);
+    const userInstruction = instruction || 'Review the attached files.';
+    const relayInstruction = this._buildInstruction(userInstruction, path, turnAttachments);
     const writer = this._ensureJsonlWriter();
     const turnHistory = new AgentHistoryTurnBuilder();
     let content = '';
@@ -176,17 +178,18 @@ export class LocalAgentRelay {
     let userTurnWritten = false;
     const writeUserTurn = () => {
       if (userTurnWritten) return;
-      writer.writeUserTurn(instruction);
-      writer.writeHistory(instruction);
+      writer.writeUserTurn(userInstruction);
+      writer.writeHistory(userInstruction);
       userTurnWritten = true;
     };
     if (this.client.sessionId) writeUserTurn();
 
     this.emit('agent_turn_started', {
       turn_id: turnId,
-      prompt: instruction.slice(0, 500),
+      prompt: userInstruction.slice(0, 500),
       cwd: this.session.root_path,
       path,
+      attachments: turnAttachments.length,
       backend_url: this.creds.backendUrl,
     });
 
@@ -244,7 +247,7 @@ export class LocalAgentRelay {
       if (!userTurnWritten && this.client.sessionId) writeUserTurn();
       this.displayHistory.push({
         role: 'user',
-        content: instruction,
+        content: userInstruction,
         timestamp: new Date().toISOString(),
         order: this.displayHistory.length,
       });
@@ -258,11 +261,11 @@ export class LocalAgentRelay {
       }
       const structuredTurn = turnHistory.finish();
       if (structuredTurn.length) {
-        this.agentHistory.push({ role: 'user', content: instruction }, ...structuredTurn);
+        this.agentHistory.push({ role: 'user', content: userInstruction }, ...structuredTurn);
       } else if (assistantContent) {
-        this.agentHistory.push({ role: 'user', content: instruction }, { role: 'assistant', content: assistantContent });
+        this.agentHistory.push({ role: 'user', content: userInstruction }, { role: 'assistant', content: assistantContent });
       } else {
-        this.agentHistory.push({ role: 'user', content: instruction });
+        this.agentHistory.push({ role: 'user', content: userInstruction });
       }
       await writer.flush();
 
@@ -406,13 +409,32 @@ export class LocalAgentRelay {
     return execContext;
   }
 
-  _buildInstruction(prompt, currentPath) {
+  _buildInstruction(prompt, currentPath, attachments = []) {
     const lines = [
       'You are running inside Bahulam Local IDE.',
       `The user granted this local workspace root: ${this.session.root_path}`,
     ];
     if (this.session.focus_path) lines.push(`The session focus file is: ${this.session.focus_path}`);
     if (currentPath) lines.push(`The browser currently selected: ${currentPath}`);
+    if (attachments.length) {
+      lines.push('', 'Attached files for this turn:');
+      for (const file of attachments) {
+        const hint = attachmentToolHint(file);
+        const bits = [
+          file.kind || file.viewer || 'file',
+          file.mime_type || '',
+          file.size != null ? `${file.size} bytes` : '',
+          hint ? `suggested_tool=${hint}` : '',
+        ].filter(Boolean).join(', ');
+        lines.push(`- ${file.name || file.path} (${bits}) path=${file.path}`);
+      }
+      lines.push(
+        'Use analyze_image(path=..., question=...) for images.',
+        'Use read_table(path=...) for CSV/TSV/Excel-style tables.',
+        'Use read_attachment(path=...) for text, PDFs, Markdown, JSON/YAML, and Jupyter notebooks.',
+        'For unsupported binary files, inspect metadata or ask before attempting lossy conversion.',
+      );
+    }
     lines.push(
       'Use CLI-local tools for file, shell, code, and document work.',
       'Do not operate outside the granted workspace root unless the user explicitly asks and the local permission layer allows it.',
@@ -496,6 +518,31 @@ export class LocalAgentRelay {
         break;
     }
   }
+}
+
+function normalizeTurnAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .map((file) => ({
+      name: String(file?.name || '').slice(0, 240),
+      path: String(file?.path || file?.upload_path || '').trim(),
+      size: Number.isFinite(Number(file?.size)) ? Number(file.size) : null,
+      mime_type: String(file?.mime_type || '').slice(0, 120),
+      kind: String(file?.kind || file?.viewer || '').slice(0, 80),
+      viewer: String(file?.viewer || '').slice(0, 80),
+    }))
+    .filter((file) => file.path)
+    .slice(0, 20);
+}
+
+function attachmentToolHint(file) {
+  const kind = String(file?.kind || file?.viewer || '').toLowerCase();
+  const mime = String(file?.mime_type || '').toLowerCase();
+  const ext = String(file?.path || file?.name || '').split('.').pop().toLowerCase();
+  if (kind === 'image' || mime.startsWith('image/')) return 'analyze_image';
+  if (kind === 'spreadsheet' || kind === 'table' || ['csv', 'tsv', 'xlsx', 'xls', 'ods'].includes(ext)) return 'read_table';
+  if (['pdf', 'markdown', 'text', 'code', 'config', 'notebook'].includes(kind) || ['txt', 'md', 'mdx', 'pdf', 'json', 'yaml', 'yml', 'toml', 'html', 'xml', 'ipynb', 'log', 'rst', 'sql', 'sh'].includes(ext)) return 'read_attachment';
+  return '';
 }
 
 async function transcriptsForRoot(rootPath) {

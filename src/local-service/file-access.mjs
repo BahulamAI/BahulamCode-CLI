@@ -34,6 +34,7 @@ const EXTENSION_FILE_TYPES = new Map([
   ['dio', { kind: 'drawio', language: 'xml', label: 'Draw.io', textLike: true }],
   ['json', { kind: 'config', language: 'json', label: 'JSON', textLike: true }],
   ['jsonl', { kind: 'config', language: 'json', label: 'JSONL', textLike: true }],
+  ['ipynb', { kind: 'notebook', language: 'json', label: 'Jupyter Notebook', textLike: true }],
   ['yaml', { kind: 'config', language: 'yaml', label: 'YAML', textLike: true }],
   ['yml', { kind: 'config', language: 'yaml', label: 'YAML', textLike: true }],
   ['toml', { kind: 'config', language: 'toml', label: 'TOML', textLike: true }],
@@ -262,6 +263,7 @@ export function contentTypeForPath(filePath) {
     case 'dio':
     case 'json':
     case 'jsonl':
+    case 'ipynb':
     case 'yaml':
     case 'yml':
     case 'toml':
@@ -354,6 +356,7 @@ function viewerForKind(kind) {
     case 'document': return 'document';
     case 'presentation': return 'presentation';
     case 'table': return 'table';
+    case 'notebook': return 'code';
     case 'code':
     case 'config':
     case 'text':
