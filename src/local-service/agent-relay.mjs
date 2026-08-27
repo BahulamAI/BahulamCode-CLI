@@ -5,11 +5,23 @@
  * agent path used by the terminal: TarangStreamClient + local ToolExecutor.
  */
 
+import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
+import { JsonlWriter } from '../core/jsonl-writer.mjs';
+import {
+  buildResumeHistory,
+  getRecentSessions,
+  getSessionDetail,
+} from '../core/local-store.mjs';
 import { TarangStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
+
+const __require = createRequire(import.meta.url);
+const VERSION = __require('../../package.json').version;
 
 export class LocalAgentRelay {
   constructor({ session, emit } = {}) {
@@ -23,6 +35,45 @@ export class LocalAgentRelay {
     this.client = null;
     this.toolExecutor = null;
     this.creds = null;
+    this.resumeLoaded = false;
+    this.resumeSessionId = null;
+    this.historyMode = 'full';
+    this.displayHistory = [];
+    this.agentHistory = [];
+    this.jsonlWriter = null;
+  }
+
+  async loadHistory() {
+    if (this.resumeLoaded) return this._historySnapshot();
+    this.resumeLoaded = true;
+
+    try {
+      const match = await latestTranscriptForRoot(this.session.root_path);
+      if (!match) return this._historySnapshot();
+
+      const detail = await getSessionDetail(match.sessionId, { filePath: match.filePath });
+      if (!detail) return this._historySnapshot();
+
+      const history = buildResumeHistory({ ...detail, recapTailTurns: 8 }, this.historyMode);
+      this.resumeSessionId = match.sessionId;
+      this.displayHistory = history.displayHistory || [];
+      this.agentHistory = history.agentHistory || [];
+      this._ensureJsonlWriter();
+      this.emit('agent_history_loaded', {
+        backend_session_id: this.resumeSessionId,
+        messages: this.displayHistory.length,
+        agent_messages: this.agentHistory.length,
+        root_path: this.session.root_path,
+        transcript_path: match.filePath,
+      });
+    } catch (err) {
+      this.emit('agent_history_error', {
+        message: err.message || String(err),
+        root_path: this.session.root_path,
+      });
+    }
+
+    return this._historySnapshot();
   }
 
   async runTurn({ prompt, path = '.' } = {}) {
@@ -38,14 +89,26 @@ export class LocalAgentRelay {
       throw err;
     }
 
+    await this.loadHistory();
     await this._ensureReady();
 
     this.running = true;
     this.turnCount += 1;
     const turnId = `turn_${Date.now().toString(36)}_${this.turnCount}`;
     const relayInstruction = this._buildInstruction(instruction, path);
+    const writer = this._ensureJsonlWriter();
+    const turnHistory = new AgentHistoryTurnBuilder();
     let content = '';
+    let assistantContent = '';
     let eventCount = 0;
+    let userTurnWritten = false;
+    const writeUserTurn = () => {
+      if (userTurnWritten) return;
+      writer.writeUserTurn(instruction);
+      writer.writeHistory(instruction);
+      userTurnWritten = true;
+    };
+    if (this.client.sessionId) writeUserTurn();
 
     this.emit('agent_turn_started', {
       turn_id: turnId,
@@ -57,16 +120,86 @@ export class LocalAgentRelay {
 
     try {
       const execContext = await this._buildExecContext(relayInstruction);
-      for await (const event of this.client.execute(relayInstruction, execContext)) {
+      for await (const event of this.client.execute(
+        relayInstruction,
+        execContext,
+        this.agentHistory.length ? this.agentHistory : null,
+      )) {
         eventCount += 1;
-        content += this._emitAgentEvent(event, { turnId });
+        writer.writeKeplerEvent(event);
+
+        const contentUpdate = contentDeltaForEvent(event, assistantContent);
+        if (contentUpdate) {
+          assistantContent = contentUpdate.next;
+          if (contentUpdate.delta) {
+            content += contentUpdate.delta;
+            turnHistory.addAssistantText(contentUpdate.delta);
+            writer.accumulateContent(contentUpdate.delta);
+          }
+        }
+
+        if (event.type === 'session_info' && event.data?.session_id) {
+          this.resumeSessionId = this.resumeSessionId || event.data.session_id;
+          if (!writer.sessionId) writer.setSessionId(this.resumeSessionId);
+          writeUserTurn();
+        }
+
+        if (event.type === 'tool_call' || event.type === 'tool_request') {
+          const data = event.data || {};
+          turnHistory.addToolUse(data);
+          writer.accumulateToolCall(data.call_id || data.request_id, data.tool || data.name, data.args || data.input);
+        }
+
+        if (event.type === 'tool_done' || event.type === 'tool_result') {
+          const data = event.data || {};
+          turnHistory.addToolResult(data);
+          writer.recordToolResult(
+            data.call_id || data._callId || data.request_id || data.id || data.tool_use_id,
+            data.output ?? data.result ?? data.message ?? '',
+            data.success === false || data.is_error,
+            data,
+          );
+        }
+
+        if (event.type === 'complete') {
+          writer.setTurnUsage(event.data?.usage, event.data?.model || this.creds?.modelConfig?.reasoning);
+          writer.flushAssistantTurn();
+        }
+
+        this._emitAgentEvent(event, { turnId, contentText: contentUpdate?.delta });
       }
+
+      if (!userTurnWritten && this.client.sessionId) writeUserTurn();
+      this.displayHistory.push({
+        role: 'user',
+        content: instruction,
+        timestamp: new Date().toISOString(),
+        order: this.displayHistory.length,
+      });
+      if (assistantContent) {
+        this.displayHistory.push({
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: new Date().toISOString(),
+          order: this.displayHistory.length,
+        });
+      }
+      const structuredTurn = turnHistory.finish();
+      if (structuredTurn.length) {
+        this.agentHistory.push({ role: 'user', content: instruction }, ...structuredTurn);
+      } else if (assistantContent) {
+        this.agentHistory.push({ role: 'user', content: instruction }, { role: 'assistant', content: assistantContent });
+      } else {
+        this.agentHistory.push({ role: 'user', content: instruction });
+      }
+      await writer.flush();
 
       this.emit('agent_turn_complete', {
         turn_id: turnId,
         event_count: eventCount,
         content_chars: content.length,
         backend_session_id: this.client.sessionId || null,
+        transcript_session_id: writer.sessionId || null,
       });
 
       return {
@@ -75,6 +208,7 @@ export class LocalAgentRelay {
         event_count: eventCount,
         content,
         backend_session_id: this.client.sessionId || null,
+        transcript_session_id: writer.sessionId || null,
       };
     } catch (err) {
       this.emit('agent_error', {
@@ -86,6 +220,12 @@ export class LocalAgentRelay {
     } finally {
       this.running = false;
     }
+  }
+
+  async close() {
+    try {
+      await this.jsonlWriter?.close?.();
+    } catch {}
   }
 
   async _ensureReady() {
@@ -131,12 +271,25 @@ export class LocalAgentRelay {
       approvalManager: approval,
       mode: 'remote',
     });
+    if (this.resumeSessionId) this.client.sessionId = this.resumeSessionId;
+    this._ensureJsonlWriter();
 
     this.emit('agent_relay_ready', {
       backend_url: creds.backendUrl,
       root_path: this.session.root_path,
       tools: toolExecutor.listTools?.().length || 0,
+      backend_session_id: this.client.sessionId || null,
     });
+  }
+
+  _ensureJsonlWriter() {
+    if (!this.jsonlWriter) {
+      this.jsonlWriter = new JsonlWriter(this.session.root_path, VERSION);
+    }
+    if (this.resumeSessionId && !this.jsonlWriter.sessionId) {
+      this.jsonlWriter.setSessionId(this.resumeSessionId);
+    }
+    return this.jsonlWriter;
   }
 
   async _buildExecContext(instruction) {
@@ -189,7 +342,17 @@ export class LocalAgentRelay {
     return lines.join('\n');
   }
 
-  _emitAgentEvent(event, { turnId }) {
+  _historySnapshot() {
+    return {
+      ok: true,
+      backend_session_id: this.resumeSessionId || null,
+      history_mode: this.resumeSessionId ? this.historyMode : 'new',
+      messages: browserMessages(this.displayHistory),
+      agent_messages: this.agentHistory.length,
+    };
+  }
+
+  _emitAgentEvent(event, { turnId, contentText = null }) {
     const type = event?.type || 'unknown';
     const data = event?.data || {};
 
@@ -207,9 +370,9 @@ export class LocalAgentRelay {
         break;
       case 'content_partial':
       case 'content': {
-        const text = data.text || data.content || '';
+        const text = contentText ?? data.text ?? data.content ?? '';
         this.emit('agent_content', { turn_id: turnId, text, partial: type === 'content_partial' });
-        return text;
+        return;
       }
       case 'tool_call':
       case 'tool_request':
@@ -250,8 +413,51 @@ export class LocalAgentRelay {
         this.emit('agent_event', { turn_id: turnId, type, data });
         break;
     }
-    return '';
   }
+}
+
+async function latestTranscriptForRoot(rootPath) {
+  const target = realpathOrSelf(rootPath);
+  const sessions = await getRecentSessions(Infinity);
+  return sessions.find((session) => {
+    const project = session.projectPath || session.project || '';
+    return project && realpathOrSelf(project) === target;
+  }) || null;
+}
+
+function realpathOrSelf(inputPath) {
+  try {
+    return fs.realpathSync(inputPath);
+  } catch {
+    return String(inputPath || '');
+  }
+}
+
+function contentDeltaForEvent(event, current) {
+  const type = event?.type || '';
+  if (type !== 'content_partial' && type !== 'content') return null;
+  const text = event?.data?.text ?? event?.data?.content ?? '';
+  if (!text) return { delta: '', next: current };
+  if (type === 'content_partial') return { delta: text, next: current + text };
+  const delta = current && text.startsWith(current)
+    ? text.slice(current.length)
+    : text === current
+      ? ''
+      : text;
+  const next = current && !text.startsWith(current) ? current + text : text;
+  return { delta, next };
+}
+
+function browserMessages(history = []) {
+  return history
+    .filter((entry) => entry?.role === 'user' || entry?.role === 'assistant' || entry?.role === 'tool')
+    .map((entry) => ({
+      role: entry.role,
+      content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || ''),
+      timestamp: entry.timestamp || null,
+      tool: entry.tool || null,
+      kind: entry.kind || null,
+    }));
 }
 
 function pick(obj, keys) {
