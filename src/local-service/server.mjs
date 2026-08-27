@@ -18,6 +18,7 @@ import {
   contentTypeForPath,
   listWorkspacePath,
   readWorkspaceFile,
+  resolveWorkspacePath,
 } from './file-access.mjs';
 import {
   createOfficePdfPreview,
@@ -41,6 +42,7 @@ const LOCAL_UPLOAD_DIR = 'bahulam-uploads';
 const DEFAULT_MAX_UPLOAD_FILES = 20;
 const DEFAULT_MAX_UPLOAD_FILE_BYTES = DEFAULT_MAX_RAW_BYTES;
 const DEFAULT_MAX_UPLOAD_BODY_BYTES = 140 * 1024 * 1024;
+const DEFAULT_MAX_SAVE_BYTES = 2 * 1024 * 1024;
 
 export async function startLocalWorkspaceService({
   session,
@@ -273,6 +275,19 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/file/save') {
+    const body = await readJsonBody(req, envInt('BAHULAM_LOCAL_SAVE_MAX_BODY_BYTES', DEFAULT_MAX_SAVE_BYTES + 64 * 1024));
+    const result = saveWorkspaceTextFile(session, body);
+    emit('file_saved', {
+      path: result.path,
+      size: result.file?.size ?? null,
+      viewer: result.file?.viewer ?? null,
+      kind: result.file?.kind ?? null,
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/file/raw') {
     const requestedPath = url.searchParams.get('path') || session.focus_path;
     if (!requestedPath) {
@@ -427,6 +442,49 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
 function envInt(name, fallback) {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function saveWorkspaceTextFile(session, body = {}) {
+  const requestedPath = String(body.path || '').trim();
+  const content = body.content;
+  if (!requestedPath) {
+    const err = new Error('path is required');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  if (typeof content !== 'string') {
+    const err = new Error('content must be a string');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+
+  const before = listWorkspacePath(session, requestedPath);
+  if (before.type !== 'file') {
+    const err = new Error('Requested path is not a file');
+    err.code = 'NOT_FILE';
+    throw err;
+  }
+  if (!before.file?.text_like || !before.preview) {
+    const err = new Error('Only text-backed files can be edited in the browser preview');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  if (before.preview.truncated) {
+    const err = new Error('Large truncated previews are read-only in the browser');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes > envInt('BAHULAM_LOCAL_SAVE_MAX_BYTES', DEFAULT_MAX_SAVE_BYTES)) {
+    const err = new Error(`Saved content exceeds ${envInt('BAHULAM_LOCAL_SAVE_MAX_BYTES', DEFAULT_MAX_SAVE_BYTES)} bytes`);
+    err.code = 'PAYLOAD_TOO_LARGE';
+    throw err;
+  }
+
+  const target = resolveWorkspacePath(session, requestedPath);
+  fs.writeFileSync(target, content, 'utf8');
+  return listWorkspacePath(session, requestedPath);
 }
 
 function saveUploadedFiles(session, body = {}) {
@@ -720,6 +778,7 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
 .activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:300px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.trace{display:block;flex:1;min-height:0;overflow:auto;background:#fff;padding:8px}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:7px 4px;color:rgba(27,27,27,.52);white-space:pre-wrap;overflow-wrap:anywhere}.trace-row b{color:var(--ws-primary)}
 .notebook-preview{flex:1;min-height:0;overflow:auto;background:#F7F5EF;padding:14px 14px 40px;display:flex;flex-direction:column;gap:10px}.notebook-meta{font:11px var(--mono);color:rgba(27,27,27,.42);padding:0 6px}.notebook-cell{border:1px solid var(--ws-border-subtle);border-radius:8px;background:#fff;overflow:hidden;box-shadow:0 1px 0 rgba(27,27,27,.02)}.notebook-cell.code{display:grid;grid-template-columns:64px minmax(0,1fr);padding:0;align-items:stretch}.notebook-cell.markdown{padding:16px 20px}.notebook-cell.raw{background:#F7F5EF;padding:12px 16px}.notebook-cell.raw .notebook-cell-body{padding:0}.notebook-cell.raw pre{margin:0;white-space:pre-wrap;font:12px/1.5 var(--mono);color:rgba(27,27,27,.72)}.notebook-cell-body{padding:0}.notebook-markdown{font-size:14px;line-height:1.65;color:rgba(27,27,27,.86)}.notebook-markdown h1,.notebook-markdown h2,.notebook-markdown h3{line-height:1.2;margin:14px 0 8px;color:rgba(27,27,27,.92)}.notebook-markdown h1{font-size:22px;border-bottom:1px solid var(--ws-border-subtle);padding-bottom:4px}.notebook-markdown p{margin:0 0 10px}.notebook-markdown code{font-family:var(--mono);font-size:.92em;background:rgba(27,27,27,.06);border-radius:4px;padding:1px 4px}.notebook-markdown pre{overflow:auto;background:#0D1117;color:#E5E7EB;border-radius:6px;padding:10px}.notebook-prompt{padding:12px 10px 12px 10px;font:11px/1.4 var(--mono);text-align:right;user-select:none;color:#4B6BFB;background:transparent;border-right:1px solid var(--ws-border-subtle);white-space:nowrap;display:flex;align-items:flex-start;justify-content:flex-end}.notebook-prompt.out{color:#A21818}.notebook-prompt.empty{color:transparent;pointer-events:none}.notebook-prompt.in::before{content:"In "}.notebook-prompt.out::before{content:"Out "}.notebook-cell-monaco{background:#FAFBFC;min-height:52px;position:relative;overflow:hidden;padding:6px 0}.notebook-cell-monaco .monaco-editor,.notebook-cell-monaco .monaco-editor .overflow-guard,.notebook-cell-monaco .monaco-editor-background,.notebook-cell-monaco .margin{background:#FAFBFC!important}.notebook-code-fallback{margin:0;padding:8px 12px;background:transparent;color:#1F2937;font:12px/1.5 var(--mono);white-space:pre;overflow:auto}.notebook-cell-outputs{grid-column:1 / -1;display:grid;grid-template-columns:64px minmax(0,1fr);background:#fff;border-top:1px solid var(--ws-border-subtle)}.notebook-output-item{display:contents}.notebook-output-item+.notebook-output-item>.notebook-prompt,.notebook-output-item+.notebook-output-item>.notebook-output-body{border-top:1px solid var(--ws-border-subtle)}.notebook-output-body{padding:8px 12px;overflow:auto;min-width:0;background:#fff}.notebook-stream{margin:0;font:12px/1.5 var(--mono);color:#1F2937;white-space:pre-wrap;word-break:break-word;background:transparent;padding:0}.notebook-stream.stderr{color:#7F1D1D;background:#FEF2F2;padding:6px 8px;border-radius:5px}.notebook-error{margin:0;font:12px/1.5 var(--mono);color:#7F1D1D;background:#FEF2F2;padding:8px 10px;border-radius:5px;white-space:pre-wrap;word-break:break-word;overflow:auto}.notebook-plain{margin:0;font:12px/1.5 var(--mono);color:#1F2937;white-space:pre-wrap;word-break:break-word;background:transparent;padding:0}.notebook-json{margin:0;font:12px/1.5 var(--mono);color:#0F172A;background:#F8FAFC;padding:8px 10px;border-radius:5px;white-space:pre;overflow:auto}.notebook-output-body img{max-width:100%;height:auto;display:block;background:#fff;border-radius:4px}.notebook-output-body iframe{width:100%;min-height:220px;border:1px solid var(--ws-border-subtle);border-radius:5px;background:#fff}.notebook-latex{font-size:14px;color:rgba(27,27,27,.90);padding:6px 0;overflow:auto}.katex-display{margin:6px 0!important}.viewer.maximized{position:fixed;inset:12px;z-index:70;border:1px solid rgba(27,27,27,.12);border-radius:8px;box-shadow:0 24px 80px rgba(27,27,27,.28);background:#fff}.viewer.maximized .diagram-preview,.viewer.maximized .markdown-preview{max-width:none}.viewer.maximized .mermaid-output{min-height:calc(100vh - 220px)}.composer{border-top:1px solid var(--ws-border-subtle);background:#FFFDF7;padding:10px 12px}.composer-box{border:1px solid var(--ws-border);border-radius:10px;background:#fff;overflow:hidden}.upload-tray{display:flex;gap:6px;flex-wrap:wrap;padding:8px 9px 0}.upload-tray[hidden]{display:none}.upload-chip{height:24px;display:inline-flex;align-items:center;gap:6px;max-width:100%;border:1px solid rgba(8,145,178,.18);border-radius:999px;background:#F0F9FF;color:#075985;padding:0 4px 0 8px;font-size:11px}.upload-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}.upload-chip-meta{font:10px var(--mono);color:rgba(7,89,133,.58)}.upload-chip button{width:18px;height:18px;border:0;border-radius:999px;background:transparent;color:rgba(7,89,133,.52);cursor:pointer;padding:0}.upload-chip button:hover{background:rgba(8,145,178,.12);color:#075985}textarea{display:block;width:100%;min-height:84px;max-height:240px;resize:vertical;border:0;padding:10px 11px;background:#fff;color:var(--ws-foreground);outline:none}.composer-actions{height:34px;border-top:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 8px}.composer-left{display:flex;align-items:center;gap:6px;min-width:0}.status{font-size:11px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}button.primary{height:24px;border:0;border-radius:6px;background:var(--ws-foreground);color:#fff;font-size:11px;font-weight:750;padding:0 10px;cursor:pointer}button.primary:hover{background:#2B2B2B}button.primary:disabled{opacity:.45;cursor:not-allowed}
 .approval-inline{transition:opacity .85s ease,transform .85s ease,max-height .85s ease,margin .85s ease}.approval-inline.fading{opacity:0;transform:translateY(-4px);max-height:0;margin:0;pointer-events:none}.approval-inline-actions .approval-approve{background:#ECFDF5;border-color:#A7F3D0;color:#047857}.approval-inline-actions .approval-approve:hover{background:#D1FAE5;color:#065F46}.approval-inline-actions .approval-reject{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}.approval-inline-actions .approval-reject:hover{background:#FEE2E2;color:#991B1B}.approval-inline-actions .approval-secondary{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}.approval-inline-actions .approval-secondary:hover{background:#DBEAFE;color:#1E40AF}.approval-result-line{display:inline-flex;max-width:100%;align-items:center;gap:7px;border:1px solid rgba(27,27,27,.08);border-radius:999px;background:#F7F5EF;color:rgba(27,27,27,.58);padding:5px 9px;font:11px/1.2 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.approval-result-line.approved{background:#ECFDF5;border-color:#A7F3D0;color:#047857}.approval-result-line.denied{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}.approval-result-tool{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
+.file-action:disabled{opacity:.38;cursor:not-allowed}.file-action.unsaved{border-color:rgba(8,145,178,.28);background:#ECFEFF;color:#0E7490}.tab-dirty{width:6px;height:6px;border-radius:999px;background:#0891B2;flex:0 0 auto}.notebook-preview{overflow-y:auto;overflow-x:hidden}.notebook-cell,.notebook-output-body{min-width:0}.notebook-code-fallback,.notebook-json{white-space:pre-wrap;overflow:hidden;overflow-wrap:anywhere}.notebook-output-body{overflow-x:hidden;overflow-y:visible}.notebook-error,.notebook-latex{overflow:hidden;overflow-wrap:anywhere}.notebook-markdown pre,.markdown-preview pre,.message-content pre{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:980px){body{overflow:auto}.shell{height:auto;min-height:100vh}.global-links .global-link:not(:last-of-type){display:none}.auth-chip{display:none}main,main.hide-files,main.hide-agent{display:flex;flex-direction:column}.resizer{display:none}.panel{min-height:320px}.files,.agent{border:0;border-bottom:1px solid var(--ws-border-subtle)}.top-actions .badge:not(.local){display:none}.thread{min-height:420px}.bubble{max-width:94%}}
 </style>
 </head>
@@ -858,11 +917,16 @@ let pendingApproval = null;
 let pendingApprovalEl = null;
 let monacoReady = null;
 let activeEditor = null;
+let activeEditorPath = null;
+let activeEditorOriginal = '';
+let activeNotebookState = null;
 let activeImageScale = 1;
 let mermaidReady = null;
 let mermaidSeq = 0;
 let pendingAttachments = [];
 let previewMaximized = false;
+const unsavedFiles = new Map();
+const dirtyPaths = new Set();
 
 const LANGUAGE_OPTIONS = [
   ['plaintext','Plain text'],['javascript','JavaScript'],['typescript','TypeScript'],['json','JSON'],
@@ -943,8 +1007,8 @@ function compactId(id){const value=String(id||'');return value.length>16?value.s
 function formatSessionTime(value){if(!value)return 'unknown';try{return new Date(value).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}catch{return String(value);}}
 let notebookCellEditors=[];
 let katexReady=null;
-function disposeActiveEditor(){try{activeEditor?.dispose?.();}catch{}activeEditor=null;disposeNotebookCellEditors();}
-function disposeNotebookCellEditors(){for(const ed of notebookCellEditors){try{ed.dispose();}catch{}}notebookCellEditors=[];}
+function disposeActiveEditor(){try{activeEditor?.dispose?.();}catch{}activeEditor=null;activeEditorPath=null;activeEditorOriginal='';activeNotebookState=null;disposeNotebookCellEditors();}
+function disposeNotebookCellEditors(){for(const item of notebookCellEditors){try{(item.editor||item)?.dispose?.();}catch{}}notebookCellEditors=[];}
 function loadMonaco(){
   if(window.monaco)return Promise.resolve(window.monaco);
   if(monacoReady)return monacoReady;
@@ -1044,6 +1108,8 @@ function iconSvg(name){
     external:'<svg '+attrs+'><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>',
     raw:'<svg '+attrs+'><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M10 13h4"></path><path d="M10 17h4"></path></svg>',
     ask:'<svg '+attrs+'><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path><path d="M9 9h6"></path><path d="M9 13h4"></path></svg>',
+    save:'<svg '+attrs+'><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><path d="M17 21v-8H7v8"></path><path d="M7 3v5h8"></path></svg>',
+    edit:'<svg '+attrs+'><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
     plus:'<svg '+attrs+'><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>',
     minus:'<svg '+attrs+'><path d="M5 12h14"></path></svg>',
     reset:'<svg '+attrs+'><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>'
@@ -1055,6 +1121,18 @@ function fileIconButton(attr,name,label){
 }
 function fileIconLink(href,name,label){
   return '<a class="file-action file-icon-action" href="'+esc(href)+'" target="_blank" rel="noreferrer" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+iconSvg(name)+'</a>';
+}
+function canEditFile(data){
+  return Boolean(data?.file?.text_like && data?.preview && data.preview.content != null && !data.preview.truncated);
+}
+function currentSavedText(data){
+  return String(data?.preview?.content ?? '');
+}
+function sourceTextForRender(data){
+  return unsavedFiles.has(data.path) ? unsavedFiles.get(data.path) : currentSavedText(data);
+}
+function renderEditableSource(data,language=null,{auto=true}={}){
+  renderCodeEditor(data,sourceTextForRender(data),language||fileLanguage(data),{auto,originalText:currentSavedText(data)});
 }
 function setPreviewMaximized(open){
   previewMaximized=!!open;
@@ -1086,15 +1164,22 @@ function openCurrentPreviewTab(path){
 }
 function bindHeaderActions(path){
   document.querySelectorAll('[data-ask-file]').forEach(btn=>btn.addEventListener('click',()=>askAgentForFile(btn.dataset.askFile,btn.dataset.askKind)));
+  document.querySelectorAll('[data-save-file]').forEach(btn=>btn.addEventListener('click',()=>saveCurrentFile(btn.dataset.saveFile)));
+  document.querySelectorAll('[data-edit-source]').forEach(btn=>btn.addEventListener('click',()=>{
+    const data=fileCache.get(btn.dataset.editSource);
+    if(data)renderEditableSource(data,fileKind(data)==='notebook'?'json':fileLanguage(data),{auto:false});
+  }));
   document.querySelectorAll('[data-preview-maximize]').forEach(btn=>btn.addEventListener('click',()=>setPreviewMaximized(!previewMaximized)));
   document.querySelectorAll('[data-preview-new-tab]').forEach(btn=>btn.addEventListener('click',()=>openCurrentPreviewTab(btn.dataset.previewNewTab)));
   document.querySelectorAll('[data-language-select]').forEach(sel=>sel.addEventListener('change',()=>{
     const data=fileCache.get(sel.dataset.languageSelect);
     if(!data)return;
     const auto=sel.value==='__auto';
-    if(fileKind(data)==='notebook')renderNotebookFile(data,data.preview?.content||'',auto?null:sel.value,{auto});
-    else renderCodeEditor(data,data.preview?.content||'',auto?fileLanguage(data):sel.value,{auto});
+    if(fileKind(data)==='notebook'&&(!auto&&sel.value==='json'))renderEditableSource(data,'json',{auto:false});
+    else if(fileKind(data)==='notebook')renderNotebookFile(data,sourceTextForRender(data),auto?null:sel.value,{auto});
+    else renderEditableSource(data,auto?fileLanguage(data):sel.value,{auto});
   }));
+  updateSaveButtons(path);
 }
 function askAgentForFile(path,kind){
   const prompt=document.getElementById('prompt');
@@ -1102,7 +1187,7 @@ function askAgentForFile(path,kind){
   prompt.value=label+' at '+path+'. Explain what it contains and call the right local tools if needed.';
   prompt.focus();
 }
-function fileHeader(data,{language=null,languageAuto=false,truncated=false,extraActions=''}={}){
+function fileHeader(data,{language=null,languageAuto=false,truncated=false,extraActions='',editSource=false,save=false}={}){
   const file=data.file||{};
   const kind=fileKind(data);
   const label=file.label||kind;
@@ -1112,17 +1197,87 @@ function fileHeader(data,{language=null,languageAuto=false,truncated=false,extra
     truncated?'<span class="file-chip warn">truncated preview</span>':''
   ].filter(Boolean).join('');
   const lang=language?languageSelect(language,data.path,languageAuto,{includeNotebook:kind==='notebook'}):'';
+  const saveAction=save?fileIconButton('data-save-file="'+esc(data.path)+'" disabled','save','Save file'):'';
+  const editAction=editSource?fileIconButton('data-edit-source="'+esc(data.path)+'"','edit','Edit source'):'';
   const maximize=fileIconButton('data-preview-maximize="'+esc(data.path)+'"',previewMaximized?'minimize':'maximize',previewMaximized?'Exit full screen preview':'Maximize preview');
   const newTab=fileIconButton('data-preview-new-tab="'+esc(data.path)+'"','external','Open preview in new tab');
   const ask=fileIconButton('data-ask-file="'+esc(data.path)+'" data-ask-kind="'+esc(kind)+'"','ask','Ask agent');
   const raw=fileIconLink(rawUrl(data.path),'raw','Open raw file');
-  return '<div class="file-header"><span>◇</span><span class="path">'+esc(data.path)+'</span>'+chips+'<span class="file-actions">'+lang+extraActions+maximize+newTab+ask+raw+'</span></div>';
+  return '<div class="file-header"><span>◇</span><span class="path">'+esc(data.path)+'</span>'+chips+'<span class="file-actions">'+lang+extraActions+saveAction+editAction+maximize+newTab+ask+raw+'</span></div>';
 }
 function renderViewer(html){
   disposeActiveEditor();
   const viewer=document.getElementById('viewer');
   viewer.innerHTML=html;
   viewer.classList.toggle('maximized',previewMaximized);
+}
+function setFileDirty(path,dirty,content=null){
+  if(!path)return;
+  if(dirty){
+    dirtyPaths.add(path);
+    if(content!=null)unsavedFiles.set(path,content);
+  }else{
+    dirtyPaths.delete(path);
+    unsavedFiles.delete(path);
+  }
+  renderTabs();
+  updateSaveButtons(path);
+}
+function updateSaveButtons(path=null){
+  document.querySelectorAll('[data-save-file]').forEach(btn=>{
+    if(path&&btn.dataset.saveFile!==path)return;
+    const dirty=dirtyPaths.has(btn.dataset.saveFile);
+    btn.disabled=!dirty;
+    btn.classList.toggle('unsaved',dirty);
+  });
+}
+function serializeNotebook(notebook){
+  return JSON.stringify(notebook||{},null,2)+'\\n';
+}
+function syncNotebookEditorSources(){
+  if(!activeNotebookState)return;
+  for(const item of notebookCellEditors){
+    if(!item?.cell||!item?.editor)continue;
+    setNotebookCellSource(item.cell,item.editor.getValue());
+  }
+}
+function activeEditableContent(path){
+  if(activeEditor&&activeEditorPath===path)return activeEditor.getValue();
+  if(activeNotebookState&&activeNotebookState.path===path){
+    syncNotebookEditorSources();
+    return serializeNotebook(activeNotebookState.notebook);
+  }
+  if(unsavedFiles.has(path))return unsavedFiles.get(path);
+  return null;
+}
+async function saveCurrentFile(path){
+  const data=fileCache.get(path);
+  if(!data||!canEditFile(data)){
+    document.getElementById('sendStatus').textContent='This file cannot be saved from the browser preview.';
+    return;
+  }
+  const content=activeEditableContent(path);
+  if(content==null)return;
+  const buttons=[...document.querySelectorAll('[data-save-file]')].filter(btn=>btn.dataset.saveFile===path);
+  buttons.forEach(btn=>{btn.disabled=true;});
+  document.getElementById('sendStatus').textContent='Saving '+basename(path)+'...';
+  try{
+    const saved=await api('/api/file/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
+    fileCache.set(saved.path,saved);
+    if(saved.path!==path)fileCache.delete(path);
+    setFileDirty(saved.path,false);
+    if(activeEditorPath===path)activeEditorOriginal=content;
+    if(activeNotebookState?.path===path)activeNotebookState.originalText=content;
+    document.getElementById('sendStatus').textContent='Saved '+basename(saved.path);
+    const parent=parentPath(saved.path);
+    dirCache.delete(parent);
+    if(parent==='.')dirCache.delete('.');
+    await loadDir(parent);
+  }catch(err){
+    document.getElementById('sendStatus').textContent=err.message;
+    addTrace('file_save_failed',{path,message:err.message});
+    updateSaveButtons(path);
+  }
 }
 function applyLayout(){
   let prefs={leftWidth:256,rightWidth:480,explorerVisible:true,agentVisible:true};
@@ -1212,7 +1367,7 @@ function closeTab(path){
 }
 function renderTabs(){
   const bar=document.getElementById('tabbar');
-  const tabs=openTabs.map(tab=>'<button class="tab '+(tab.path===activePath?'active':'')+'" data-tab="'+esc(tab.path)+'" title="'+esc(tab.path)+'"><span>◇</span><span class="tab-name">'+esc(tab.name)+'</span><span class="tab-close" data-close="'+esc(tab.path)+'">×</span></button>').join('');
+  const tabs=openTabs.map(tab=>'<button class="tab '+(tab.path===activePath?'active':'')+'" data-tab="'+esc(tab.path)+'" title="'+esc(tab.path)+'">'+(dirtyPaths.has(tab.path)?'<span class="tab-dirty" title="Unsaved changes"></span>':'')+'<span>◇</span><span class="tab-name">'+esc(tab.name)+'</span><span class="tab-close" data-close="'+esc(tab.path)+'">×</span></button>').join('');
   bar.innerHTML=tabs+'<div class="tab-muted"></div>';
   bar.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',e=>{if(e.target.dataset.close)return;openFile(btn.dataset.tab);}));
   bar.querySelectorAll('[data-close]').forEach(btn=>btn.addEventListener('click',e=>{e.stopPropagation();closeTab(btn.dataset.close);}));
@@ -1242,7 +1397,7 @@ function renderEmptyViewer(){
 }
 function renderFile(data){
   currentPath=data.path;
-  const text=data.preview&&data.preview.content!=null?data.preview.content:null;
+  const text=data.preview&&data.preview.content!=null?sourceTextForRender(data):null;
   const kind=fileKind(data);
   if(kind==='image'){renderImage(data);return;}
   if(kind==='pdf'){renderPdf(data);return;}
@@ -1254,25 +1409,29 @@ function renderFile(data){
   if(kind==='spreadsheet'){renderSpreadsheetFile(data);return;}
   if(kind==='document'||kind==='presentation'){renderOfficeFile(data,kind);return;}
   if(text!=null){
-    const formatted=['json','jsonl'].includes(extname(data.path))?formatJson(text):text;
-    renderCodeEditor(data,formatted,fileLanguage(data));
+    renderCodeEditor(data,text,fileLanguage(data),{originalText:currentSavedText(data)});
     return;
   }
   renderUnsupportedFile(data,kind);
 }
-function renderCodeEditor(data,text,language,{auto=true}={}){
-  const header=fileHeader(data,{language,languageAuto:auto,truncated:Boolean(data.preview&&data.preview.truncated)});
+function renderCodeEditor(data,text,language,{auto=true,originalText=null}={}){
+  const editable=canEditFile(data);
+  const savedText=String(originalText ?? currentSavedText(data));
+  const value=unsavedFiles.has(data.path)?unsavedFiles.get(data.path):String(text||'');
+  const header=fileHeader(data,{language,languageAuto:auto,truncated:Boolean(data.preview&&data.preview.truncated),save:editable});
   const hostId='monaco_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2);
   renderViewer(header+'<div class="monaco-host" data-preview-content id="'+hostId+'"></div>');
   bindHeaderActions(data.path);
   loadMonaco().then(monaco=>{
     const host=document.getElementById(hostId);
     if(!host)return;
+    activeEditorPath=data.path;
+    activeEditorOriginal=savedText;
     activeEditor=monaco.editor.create(host,{
-      value:String(text||''),
+      value,
       language:language||'plaintext',
       theme:'vs',
-      readOnly:true,
+      readOnly:!editable,
       minimap:{enabled:false},
       fontSize:13,
       fontFamily:'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -1286,10 +1445,15 @@ function renderCodeEditor(data,text,language,{auto=true}={}){
       automaticLayout:true,
       smoothScrolling:true
     });
+    activeEditor.onDidChangeModelContent(()=>{
+      const next=activeEditor.getValue();
+      setFileDirty(data.path,next!==activeEditorOriginal,next);
+    });
+    updateSaveButtons(data.path);
   }).catch(err=>{
     addTrace('preview_editor_fallback',{path:data.path,message:err.message});
     const viewer=document.getElementById('viewer');
-    if(viewer) viewer.innerHTML=header+'<div class="code-fallback" data-preview-content>'+renderCode(text)+'</div>';
+    if(viewer) viewer.innerHTML=header+'<div class="code-fallback" data-preview-content>'+renderCode(value)+'</div>';
     bindHeaderActions(data.path);
   });
 }
@@ -1298,16 +1462,28 @@ function renderCode(text){
   const nums=lines.map((_,i)=>i+1).join('\\n');
   return '<div class="code-wrap"><pre class="line-nums">'+nums+'</pre><pre class="code-pre">'+esc(text)+'</pre></div>';
 }
-function formatJson(text){try{return JSON.stringify(JSON.parse(text),null,2);}catch{return text;}}
 function notebookSource(value){
   if(Array.isArray(value))return value.map(notebookSource).join('');
   if(value&&typeof value==='object')return JSON.stringify(value,null,2);
   return String(value ?? '');
 }
+function splitNotebookSource(value){
+  const text=String(value ?? '');
+  if(!text)return [];
+  const lines=text.split('\\n');
+  return lines.map((line,index)=>index<lines.length-1?line+'\\n':line).filter((line,index)=>line||index<lines.length-1);
+}
+function setNotebookCellSource(cell,value){
+  if(!cell||typeof cell!=='object')return;
+  const key=cell.source!=null?'source':cell.input!=null?'input':cell.text!=null?'text':'source';
+  const previous=cell[key];
+  cell[key]=Array.isArray(previous)?splitNotebookSource(value):String(value ?? '');
+}
 function renderNotebookFile(data,text,overrideLanguage=null,{auto=true}={}){
   let notebook;
-  try{notebook=JSON.parse(text||'{}');}catch{
-    renderCodeEditor(data,formatJson(text),fileLanguage(data));
+  const notebookText=sourceTextForRender(data);
+  try{notebook=JSON.parse(notebookText||'{}');}catch{
+    renderCodeEditor(data,notebookText,fileLanguage(data),{originalText:currentSavedText(data)});
     return;
   }
   const cells=notebookCells(notebook);
@@ -1315,7 +1491,7 @@ function renderNotebookFile(data,text,overrideLanguage=null,{auto=true}={}){
   const detected=monacoLanguageForNotebook((notebookMode?null:overrideLanguage)||detectNotebookLanguage(notebook)||'python');
   const language=detected||'python';
   const selectedLanguage=notebookMode?'notebook':language;
-  const header=fileHeader(data,{language:selectedLanguage,languageAuto:auto,truncated:Boolean(data.preview&&data.preview.truncated),extraActions:'<span class="file-chip">'+cells.length+' cells</span>'});
+  const header=fileHeader(data,{language:selectedLanguage,languageAuto:auto,truncated:Boolean(data.preview&&data.preview.truncated),extraActions:'<span class="file-chip">'+cells.length+' cells</span>',save:canEditFile(data),editSource:canEditFile(data)});
   const meta=[
     notebookVersionLabel(notebook),
     languageLabel(language),
@@ -1323,10 +1499,11 @@ function renderNotebookFile(data,text,overrideLanguage=null,{auto=true}={}){
   ].join(' · ');
   const visible=cells.slice(0,200);
   const cellDescriptors=[];
-  const body=visible.length?visible.map((cell,index)=>renderNotebookCell(cell,index,language,cellDescriptors)).join(''):'<div class="empty">No cells.</div>';
+  const body=visible.length?visible.map((cell,index)=>renderNotebookCell(cell,index,language,cellDescriptors,canEditFile(data))).join(''):'<div class="empty">No cells.</div>';
   const truncated=cells.length>200?'<div class="viewer-note-card"><div class="viewer-note-title">Notebook truncated</div><div class="viewer-note-body">Showing first 200 cells in the browser preview.</div></div>':'';
   renderViewer(header+'<div class="notebook-preview" data-preview-content><div class="notebook-meta">'+meta+'</div>'+body+truncated+'</div>');
   bindHeaderActions(data.path);
+  activeNotebookState={path:data.path,notebook,cells,originalText:currentSavedText(data)};
   renderMermaidBlocks();
   void mountNotebookCells(cellDescriptors);
   void renderLatexIn(document.getElementById('viewer'));
@@ -1342,7 +1519,7 @@ function notebookVersionLabel(notebook){
   if(notebook?.nbformat)return 'nbformat '+esc(notebook.nbformat)+'.'+esc(notebook.nbformat_minor||0);
   return 'notebook';
 }
-function renderNotebookCell(cell,index,language,cellDescriptors){
+function renderNotebookCell(cell,index,language,cellDescriptors,editable=false){
   const type=String(cell?.cell_type||'raw').toLowerCase();
   const source=notebookSource(cell?.source ?? cell?.input ?? cell?.text);
   const execCount=cell?.execution_count!=null?String(cell.execution_count):cell?.prompt_number!=null?String(cell.prompt_number):'';
@@ -1354,7 +1531,7 @@ function renderNotebookCell(cell,index,language,cellDescriptors){
     return '<section class="notebook-cell raw" data-cell-type="raw"><div class="notebook-cell-body notebook-raw"><pre>'+esc(source)+'</pre></div></section>';
   }
   const hostId='nbc_'+Date.now().toString(36)+'_'+index+'_'+Math.random().toString(36).slice(2,6);
-  cellDescriptors.push({hostId,source,language});
+  cellDescriptors.push({hostId,source,language,cell,editable});
   const promptText=execCount?'['+esc(execCount)+']':'[ ]';
   const inPrompt='<div class="notebook-prompt in" title="Execution '+esc(execCount||'n/a')+'">'+promptText+':</div>';
   const codeBlock='<div class="notebook-cell-monaco" id="'+hostId+'"><pre class="notebook-code-fallback">'+esc(source)+'</pre></div>';
@@ -1438,13 +1615,13 @@ function renderPdf(data){
   bindHeaderActions(data.path);
 }
 function renderMarkdownFile(data,text){
-  const header=fileHeader(data,{language:'markdown',truncated:Boolean(data.preview&&data.preview.truncated)});
+  const header=fileHeader(data,{language:'markdown',truncated:Boolean(data.preview&&data.preview.truncated),save:canEditFile(data),editSource:canEditFile(data)});
   renderViewer(header+'<div class="markdown-preview" data-preview-content>'+markdown(text)+'</div>');
   bindHeaderActions(data.path);
   renderMermaidBlocks();
 }
 function renderMermaidFile(data,text){
-  const header=fileHeader(data,{language:'markdown',truncated:Boolean(data.preview&&data.preview.truncated)});
+  const header=fileHeader(data,{language:'markdown',truncated:Boolean(data.preview&&data.preview.truncated),save:canEditFile(data),editSource:canEditFile(data)});
   renderViewer(header+'<div class="diagram-preview" data-preview-content>'+mermaidCard(text)+'</div>');
   bindHeaderActions(data.path);
   renderMermaidBlocks();
@@ -1453,7 +1630,7 @@ function renderDrawioFile(data,text){
   const pages=countDrawioPages(text);
   const title=pages>0?'Draw.io diagram with '+pages+' page'+(pages===1?'':'s'):'Draw.io diagram';
   const body=text?renderCode(text):'<div class="viewer-note" data-preview-content><div class="viewer-note-card"><div class="viewer-note-title">'+title+'</div><div class="viewer-note-body">This diagram file is available to the local agent, but the browser renderer is not bundled yet. Use Ask agent to inspect or convert it.</div></div></div>';
-  const header=fileHeader(data,{language:text?'xml':null,truncated:Boolean(data.preview&&data.preview.truncated)});
+  const header=fileHeader(data,{language:text?'xml':null,truncated:Boolean(data.preview&&data.preview.truncated),save:canEditFile(data),editSource:canEditFile(data)});
   renderViewer(header+(text?'<div class="diagram-preview" data-preview-content><div class="viewer-note-card"><div class="viewer-note-title">'+title+'</div><div class="viewer-note-body">Source preview shown for now. A bundled Draw.io renderer can be added without exposing raw binary content.</div></div>'+body+'</div>':body));
   bindHeaderActions(data.path);
 }
@@ -1464,7 +1641,7 @@ function countDrawioPages(text){
 }
 function renderTableFile(data,text){
   const ext=extname(data.path);
-  const header=fileHeader(data,{language:ext==='csv'?'plaintext':'plaintext',truncated:Boolean(data.preview&&data.preview.truncated)});
+  const header=fileHeader(data,{language:ext==='csv'?'plaintext':'plaintext',truncated:Boolean(data.preview&&data.preview.truncated),save:canEditFile(data),editSource:canEditFile(data)});
   renderViewer(header+renderTable(text,ext==='tsv'?'\\t':','));
   bindHeaderActions(data.path);
 }
@@ -1696,8 +1873,7 @@ async function mountNotebookCells(descriptors){
   if(!descriptors||!descriptors.length)return;
   let monaco;
   try{monaco=await loadMonaco();}catch{return;}
-  const wrapPref=descriptors.length>60?'off':'on';
-  for(const {hostId,source,language} of descriptors){
+  for(const {hostId,source,language,cell,editable} of descriptors){
     const host=document.getElementById(hostId);
     if(!host)continue;
     host.querySelector('.notebook-code-fallback')?.remove();
@@ -1713,19 +1889,20 @@ async function mountNotebookCells(descriptors){
         value:String(source||''),
         language:language||'plaintext',
         theme:'vs',
-        readOnly:true,
+        readOnly:!editable,
         minimap:{enabled:false},
         fontSize:13,
         fontFamily:'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
         lineNumbers:'off',
         scrollBeyondLastLine:false,
-        wordWrap:wrapPref,
+        wordWrap:'on',
+        wrappingStrategy:'advanced',
         padding:{top:8,bottom:8},
         tabSize:4,
         renderWhitespace:'none',
         bracketPairColorization:{enabled:true},
         automaticLayout:true,
-        scrollbar:{alwaysConsumeMouseWheel:false,verticalScrollbarSize:0,horizontalScrollbarSize:6,handleMouseWheel:false},
+        scrollbar:{alwaysConsumeMouseWheel:false,verticalScrollbarSize:0,horizontalScrollbarSize:0,handleMouseWheel:false},
         guides:{indentation:false},
         renderLineHighlight:'none',
         overviewRulerLanes:0,
@@ -1741,7 +1918,13 @@ async function mountNotebookCells(descriptors){
       host.replaceChildren(pre);
       continue;
     }
-    notebookCellEditors.push(editor);
+    notebookCellEditors.push({editor,cell});
+    editor.onDidChangeModelContent(()=>{
+      if(!activeNotebookState)return;
+      setNotebookCellSource(cell,editor.getValue());
+      const next=serializeNotebook(activeNotebookState.notebook);
+      setFileDirty(activeNotebookState.path,next!==activeNotebookState.originalText,next);
+    });
     // Auto-size cell to its FULL content — no in-cell vertical scrollbar,
     // no clip. The outer .notebook-preview handles page-level scrolling.
     let lastAppliedHeight=-1;
@@ -2093,7 +2276,7 @@ function handleRelayEvent(type, event){
 const es = new EventSource('/api/events?token=' + encodeURIComponent(token));
 es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, JSON.stringify(e.data || {})); } catch {} };
 [
-  'session_started','file_browsed','file_read','file_uploaded','tool_execution_requested','session_stopped',
+  'session_started','file_browsed','file_read','file_uploaded','file_saved','tool_execution_requested','session_stopped',
   'agent_turn_requested','agent_relay_ready','agent_turn_started','agent_turn_complete',
   'agent_history_loaded','agent_history_new','agent_approval_required','agent_approval_resolved','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
   'agent_tool_result','agent_activity','agent_complete','agent_error','agent_event'

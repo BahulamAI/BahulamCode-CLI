@@ -136,6 +136,12 @@ try {
     assert.match(html, /id="fileUpload"/);
     assert.match(html, /id="uploadTray"/);
     assert.match(html, /\/api\/files\/upload/);
+    assert.match(html, /\/api\/file\/save/);
+    assert.match(html, /data-save-file/);
+    assert.match(html, /data-edit-source/);
+    assert.match(html, /function saveCurrentFile/);
+    assert.match(html, /function setNotebookCellSource/);
+    assert.match(html, /readOnly:!editable/);
     assert.match(html, /data-resize="left"/);
     assert.match(html, /function renderTable/);
     assert.match(html, /\/vendor\/monaco\/vs\/loader\.js/);
@@ -227,6 +233,23 @@ try {
     assert.equal(filesRes.file.viewer, 'markdown');
     assert.equal(filesRes.file.language, 'markdown');
 
+    const saveRes = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'README.md', content: '# Local Workspace\n\nEdited in browser.\n' }),
+    }).then((res) => res.json());
+    assert.equal(saveRes.ok, true);
+    assert.equal(saveRes.path, 'README.md');
+    assert.equal(saveRes.preview.content, '# Local Workspace\n\nEdited in browser.\n');
+    assert.equal(fs.readFileSync(path.join(workspace, 'README.md'), 'utf8'), '# Local Workspace\n\nEdited in browser.\n');
+
+    const rejectedSave = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'deck.pptx', content: 'not a deck' }),
+    });
+    assert.equal(rejectedSave.status, 400);
+
     const drawioRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=diagram.drawio`).then((res) => res.json());
     assert.equal(drawioRes.file.viewer, 'drawio');
     assert.equal(drawioRes.file.language, 'xml');
@@ -235,6 +258,17 @@ try {
     assert.equal(legacyNotebookRes.file.viewer, 'notebook');
     assert.equal(legacyNotebookRes.file.kind, 'notebook');
     assert.match(legacyNotebookRes.preview.content, /worksheets/);
+
+    const legacyNotebook = JSON.parse(legacyNotebookRes.preview.content);
+    legacyNotebook.worksheets[0].cells[1].input = ['print("saved")\n'];
+    const notebookSaveRes = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'legacy.ipynb', content: JSON.stringify(legacyNotebook, null, 2) + '\n' }),
+    }).then((res) => res.json());
+    assert.equal(notebookSaveRes.file.viewer, 'notebook');
+    const savedNotebook = JSON.parse(fs.readFileSync(path.join(workspace, 'legacy.ipynb'), 'utf8'));
+    assert.equal(savedNotebook.worksheets[0].cells[1].input[0], 'print("saved")\n');
 
     const uploadRes = await fetch(`http://127.0.0.1:${service.port}/api/files/upload?token=${encodeURIComponent(token)}`, {
       method: 'POST',
