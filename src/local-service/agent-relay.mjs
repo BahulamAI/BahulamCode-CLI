@@ -45,6 +45,8 @@ export class LocalAgentRelay {
     this.approvalAutoMode = false;
     this.pendingFollowups = [];
     this.flushingFollowups = false;
+    this.cancellationRequested = false;
+    this.cancellationEventEmitted = false;
   }
 
   async listHistorySessions() {
@@ -169,6 +171,8 @@ export class LocalAgentRelay {
     await this._ensureReady();
 
     this.running = true;
+    this.cancellationRequested = false;
+    this.cancellationEventEmitted = false;
     this.turnCount += 1;
     const turnId = `turn_${Date.now().toString(36)}_${this.turnCount}`;
     const userInstruction = instruction || 'Review the attached files.';
@@ -248,9 +252,20 @@ export class LocalAgentRelay {
         await this._flushQueuedFollowups();
       }
 
-      this._markUndeliveredFollowupsQueued();
+      const wasCancelled = this.cancellationRequested || Boolean(this.client?._cancelled);
+      this._markUndeliveredFollowupsQueued(wasCancelled ? 'Task cancelled' : '');
+      if (!userTurnWritten && (this.client.sessionId || wasCancelled)) writeUserTurn();
+      if (wasCancelled) {
+        writer.writeKeplerEvent({
+          type: 'cancelled',
+          data: {
+            task_id: this.client?.currentTaskId || null,
+            reason: 'Cancelled by user',
+          },
+        });
+        writer.flushAssistantTurn();
+      }
 
-      if (!userTurnWritten && this.client.sessionId) writeUserTurn();
       this.displayHistory.push({
         role: 'user',
         content: userInstruction,
@@ -274,6 +289,29 @@ export class LocalAgentRelay {
         this.agentHistory.push({ role: 'user', content: userInstruction });
       }
       await writer.flush();
+
+      if (wasCancelled) {
+        if (!this.cancellationEventEmitted) {
+          this.cancellationEventEmitted = true;
+          this.emit('agent_turn_cancelled', {
+            turn_id: turnId,
+            event_count: eventCount,
+            content_chars: content.length,
+            backend_session_id: this.client.sessionId || null,
+            transcript_session_id: writer.sessionId || null,
+            reason: 'Cancelled by user',
+          });
+        }
+        return {
+          ok: false,
+          status: 'cancelled',
+          turn_id: turnId,
+          event_count: eventCount,
+          content,
+          backend_session_id: this.client.sessionId || null,
+          transcript_session_id: writer.sessionId || null,
+        };
+      }
 
       this.emit('agent_turn_complete', {
         turn_id: turnId,
@@ -318,6 +356,29 @@ export class LocalAgentRelay {
       throw err;
     }
     return this.approvalManager.decide(approvalId, decision);
+  }
+
+  async cancelTurn(reason = 'Cancelled by user') {
+    const taskId = this.client?.currentTaskId || null;
+    if (!this.running || !this.client) {
+      return { ok: true, status: 'idle', task_id: taskId };
+    }
+    this.cancellationRequested = true;
+    this._markUndeliveredFollowupsQueued(reason);
+    try {
+      this.approvalManager?.rejectAll?.(reason);
+    } catch {}
+    try {
+      await this.client.cancel();
+    } catch {}
+    const result = {
+      ok: true,
+      status: 'cancelled',
+      task_id: taskId,
+      reason,
+    };
+    this.emit('agent_cancel_requested', result);
+    return result;
   }
 
   setApprovalAutoMode(enabled, { emit = true } = {}) {
@@ -662,6 +723,18 @@ export class LocalAgentRelay {
       case 'user_intervention_delivered':
       case 'user_intervention_queued':
         this.emit('agent_followup_event', { turn_id: turnId, type, data });
+        break;
+      case 'cancelled':
+        this.cancellationRequested = true;
+        if (!this.cancellationEventEmitted) {
+          this.cancellationEventEmitted = true;
+          this.emit('agent_turn_cancelled', {
+            turn_id: turnId,
+            task_id: data.task_id || this.client?.currentTaskId || null,
+            reason: data.reason || 'Cancelled by user',
+            data,
+          });
+        }
         break;
       case 'sub_agent_start':
       case 'sub_agent_complete':

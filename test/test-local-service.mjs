@@ -133,6 +133,29 @@ try {
   assert.equal(relayFollowupJsonl[0].data.role, 'user');
   assert.equal(relayFollowupEvents.some((event) => event.type === 'tool_call'), false);
 
+  const relayCancelEvents = [];
+  let relayCancelCalls = 0;
+  let relayRejectAllReason = '';
+  const relayForCancel = new LocalAgentRelay({
+    session,
+    emit: (type, data) => relayCancelEvents.push({ type, data }),
+  });
+  relayForCancel.running = true;
+  relayForCancel.client = {
+    currentTaskId: 'task-cancel',
+    cancel: async () => { relayCancelCalls += 1; },
+  };
+  relayForCancel.approvalManager = {
+    rejectAll: (reason) => { relayRejectAllReason = reason; },
+  };
+  const relayCancelResult = await relayForCancel.cancelTurn('Cancelled by user');
+  assert.equal(relayCancelResult.status, 'cancelled');
+  assert.equal(relayCancelResult.task_id, 'task-cancel');
+  assert.equal(relayForCancel.cancellationRequested, true);
+  assert.equal(relayCancelCalls, 1);
+  assert.equal(relayRejectAllReason, 'Cancelled by user');
+  assert.equal(relayCancelEvents.some((event) => event.type === 'agent_cancel_requested'), true);
+
   const seededWriter = new JsonlWriter(workspace, 'test');
   seededWriter.setSessionId('resume-local-service');
   seededWriter.writeUserTurn('previous local question');
@@ -173,6 +196,9 @@ try {
     assert.match(html, /\/api\/file\/save/);
     assert.match(html, /\/api\/approvals\/mode/);
     assert.match(html, /\/api\/agent\/followup/);
+    assert.match(html, /\/api\/agent\/cancel/);
+    assert.match(html, /id="stopAgent"/);
+    assert.match(html, /Stop/);
     assert.match(html, /data-save-file/);
     assert.match(html, /data-edit-source/);
     assert.match(html, /function saveCurrentFile/);
@@ -222,7 +248,10 @@ try {
     assert.match(html, /resolveInlineApproval/);
     assert.match(html, /function setApprovalAutoMode/);
     assert.match(html, /function setTurnRunning/);
+    assert.match(html, /function stopAgentTurn/);
+    assert.match(html, /function finishCancelledTurn/);
     assert.match(html, /followupMessage/);
+    assert.match(html, /agent_turn_cancelled/);
     assert.match(html, /status==='queued_next_turn'\|\|status==='no_task'/);
     assert.doesNotMatch(html, /status==='queued_next_turn'\|\|status==='no_task'\|\|status==='error'/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
@@ -268,6 +297,14 @@ try {
       body: JSON.stringify({ prompt: 'one more thing' }),
     });
     assert.equal(followupNoTurn.status, 409);
+
+    const cancelIdleRes = await fetch(`http://127.0.0.1:${service.port}/api/agent/cancel?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Cancelled by user' }),
+    }).then((res) => res.json());
+    assert.equal(cancelIdleRes.ok, true);
+    assert.equal(cancelIdleRes.status, 'idle');
 
     const newHistoryRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/new?token=${encodeURIComponent(token)}`, {
       method: 'POST',
