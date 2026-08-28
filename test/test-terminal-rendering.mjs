@@ -510,7 +510,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   // Local slash commands that are useful during a running turn should not be
   // delivered as follow-up instructions.
   assert.ok(replSource.includes('function isExecutionSlashCommand(instruction)'));
-  assert.ok(replSource.includes("return command === '/watch';"));
+  assert.ok(replSource.includes("command === '/watch'"));
+  assert.ok(replSource.includes("command === '/auto'"));
   assert.ok(replSource.includes('await handleCommand(instruction, ctx);'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
   assert.ok(replSource.includes('[F2] details'));

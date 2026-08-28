@@ -5078,7 +5078,7 @@ export async function startTerminalRepl() {
 
     function isExecutionSlashCommand(instruction) {
       const command = String(instruction || '').trim().split(/\s+/, 1)[0].toLowerCase();
-      return command === '/watch';
+      return command === '/watch' || command === '/auto';
     }
 
     async function submitExecutionInstruction() {
