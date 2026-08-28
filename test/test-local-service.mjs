@@ -247,6 +247,10 @@ try {
     assert.match(html, /pendingApprovalEl/);
     assert.match(html, /resolveInlineApproval/);
     assert.match(html, /function setApprovalAutoMode/);
+    assert.match(html, /function handleLocalSlashCommand/);
+    assert.match(html, /command!=='\/auto'/);
+    assert.match(html, /if\(await handleLocalSlashCommand\(rawPrompt\)\)/);
+    assert.match(html, /\/auto full is available only in the terminal CLI/);
     assert.match(html, /function setTurnRunning/);
     assert.match(html, /function stopAgentTurn/);
     assert.match(html, /function finishCancelledTurn/);

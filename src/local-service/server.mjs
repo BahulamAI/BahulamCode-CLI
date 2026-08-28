@@ -2351,6 +2351,40 @@ async function setApprovalAutoMode(enabled){
     addTrace('approval_mode_error',{message:err.message});
   }
 }
+async function handleLocalSlashCommand(rawPrompt){
+  const text=String(rawPrompt||'').trim();
+  if(!text.startsWith('/'))return false;
+  const parts=text.split(/\\s+/).filter(Boolean);
+  const command=String(parts[0]||'').toLowerCase();
+  if(command!=='/auto')return false;
+  const mode=String(parts[1]||'on').toLowerCase();
+  if(['on','enable','enabled','true','1'].includes(mode)){
+    await setApprovalAutoMode(true);
+    document.getElementById('sendStatus').textContent='Auto mode on';
+    addTrace('command',{command:'/auto on',mode:'auto'});
+    return true;
+  }
+  if(['off','disable','disabled','false','0'].includes(mode)){
+    await setApprovalAutoMode(false);
+    document.getElementById('sendStatus').textContent='Auto mode off';
+    addTrace('command',{command:'/auto off',mode:'ask'});
+    return true;
+  }
+  if(mode==='status'){
+    const modeLabel=approvalAutoMode?'auto':'ask';
+    document.getElementById('sendStatus').textContent='Approval mode: '+modeLabel;
+    addTrace('command',{command:'/auto status',mode:modeLabel});
+    return true;
+  }
+  if(['full','dangerous','yolo'].includes(mode)){
+    document.getElementById('sendStatus').textContent='/auto full is available only in the terminal CLI';
+    addTrace('command_ignored',{command:text,reason:'full auto is not exposed in the browser workspace'});
+    return true;
+  }
+  document.getElementById('sendStatus').textContent='Usage: /auto [on|off|status]';
+  addTrace('command_error',{command:text,message:'Usage: /auto [on|off|status]'});
+  return true;
+}
 function followupMessage(data){
   const status=String(data?.status||'');
   if(status==='accepted')return 'Follow-up sent to running agent';
@@ -2525,6 +2559,10 @@ es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, J
 document.getElementById('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const rawPrompt = document.getElementById('prompt').value.trim();
+  if(await handleLocalSlashCommand(rawPrompt)){
+    document.getElementById('prompt').value='';
+    return;
+  }
   const attachments = pendingAttachments.slice();
   const prompt = rawPrompt || (attachments.length ? 'Review the attached files.' : '');
   if (!prompt && !attachments.length) return;
