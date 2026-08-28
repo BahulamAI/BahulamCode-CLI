@@ -2090,7 +2090,7 @@ function renderEvent(event) {
       // is visible by emitting a small dim transcript line too, dedup'd
       // per (agentType, tool). Queue-active mode keeps its clean spinner
       // + window; the fallback line is only for the "otherwise blind"
-      // case that surfaced in 2.6.17 reports.
+      // case that surfaced in earlier local terminal reports.
       if (!rqueue.isActive()) {
         const label = data?.label || '';
         const hint = label ? ` · ${label}` : '';

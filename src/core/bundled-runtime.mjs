@@ -165,7 +165,7 @@ function _clearLicenseActivationState() {
   if (process.platform === 'darwin') {
     try {
       spawnSync('security',
-        ['delete-generic-password', '-s', 'com.axplusb.agent.runtime', '-a', 'af_state'],
+        ['delete-generic-password', '-s', 'ai.bahulam.agent.runtime', '-a', 'af_state'],
         { stdio: 'ignore' });
     } catch { /* best-effort */ }
   }

@@ -2,7 +2,7 @@
  * Bahulam local service.
  *
  * Localhost-only HTTP surface for browser workspaces. This module intentionally
- * does not depend on Pulse or the terminal REPL daemon.
+ * does not depend on the terminal REPL daemon.
  */
 
 import * as crypto from 'node:crypto';

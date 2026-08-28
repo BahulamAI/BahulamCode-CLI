@@ -202,11 +202,7 @@ export async function runHistoryCommand(args = []) {
   process.stdout.write(formatHistoryReport(history, limit));
 }
 
-// Dashboard removed — now using Bahulam Pulse (pulse/cli.js)
-
-export async function _runDashboardCommand_REMOVED() { /* see pulse/cli.js */ }
-
-export async function _OLD_runDashboardCommand(args = []) {
+export async function runDashboardCommand(args = []) {
   const requestedPort = parseNumber(readOption(args, '--port', '4318'), 4318);
   const host = readOption(args, '--host', '127.0.0.1') || '127.0.0.1';
   const shouldOpen = !hasFlag(args, '--no-open');
@@ -272,7 +268,7 @@ export async function _OLD_runDashboardCommand(args = []) {
   const actualPort = typeof address === 'object' && address ? address.port : requestedPort;
   const url = `http://${host}:${actualPort}`;
 
-  process.stderr.write(`\x1b[36mb0 dashboard\x1b[0m ${url}\n`);
+  process.stderr.write(`\x1b[36mBahulam dashboard\x1b[0m ${url}\n`);
   process.stderr.write(`\x1b[2mReading local analytics from ${getStorePaths().bahulamDir}\x1b[0m\n`);
   process.stderr.write(`\x1b[2mPress Ctrl+C to stop the dashboard server.\x1b[0m\n`);
 

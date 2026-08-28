@@ -1,4 +1,4 @@
-# @bahulamai/code
+# @bahulam/code
 
 **Bahulam Code** is Bahulam's AI coding agent for terminal-first software work.
 It inspects a repo, plans changes, runs tools, asks for human approval, resumes
@@ -19,13 +19,13 @@ ship with are design decisions — ones we chose not to make.
 ## Install
 
 ```bash
-npm install -g @bahulamai/code@latest
+npm install -g @bahulam/code@latest
 ```
 
 Run without global install:
 
 ```bash
-npx @bahulamai/code@latest
+npx @bahulam/code@latest
 ```
 
 ## Start the CLI
@@ -59,19 +59,13 @@ bahulam-code --help             Full command reference
 Inside the REPL, type `/help` for slash commands (models, cache, approvals,
 skills, workflows, session tools).
 
-## 2.6.1 Highlights
+## 0.1.7 Highlights
 
-- Published under both `@bahulam/code` and `@bahulamai/code` scopes.
-- Full removal of legacy `b0` references from CLI help, error messages,
-  analytics headers, internal comments, and Pulse dashboard.
-
-## 2.6.0 Highlights
-
-- Rebrand: `@bahulamai/b0` → `@bahulamai/code`; binary `b0` → `bahulam-code`.
-- Redesigned fixed input dock — labeled "Bahulam Code" identity, colored
-  border, horizontal and vertical margins, meta row showing project, git
-  branch, turn count, and token usage.
-- Extended session-context meta line under the input dock.
+- Published as `@bahulam/code`.
+- Local browser workspaces through `bahulam workspace open`.
+- Image analysis and image generation tools for agent workflows.
+- Shared project-aware lint resolver for TS/TSX, JS/JSX, MDX, Python, Go, and Rust.
+- Full shell output is preserved for the agent while terminal cards stay compact.
 
 ## Development
 
@@ -85,9 +79,8 @@ See [RELEASE.md](./RELEASE.md) for the merge, PR, and npm publish checklist.
 ## Links
 
 - Website: https://bahulam.ai
-- Company: https://axplusb.tech
 - Repository: https://github.com/raviakasapu/codekepler-npm
 
 ## License
 
-MIT
+Apache-2.0

@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { startTerminalRepl } from './repl.mjs';
 import {
+  runDashboardCommand,
   runSessionsCommand,
   runStatsCommand,
   runHistoryCommand,
@@ -145,16 +146,7 @@ async function main() {
         }
       }
     } catch {}
-    // Fallback: launch Bahulam Pulse Next.js dashboard
-    const { spawn } = await import('node:child_process');
-    const { fileURLToPath } = await import('node:url');
-    const path = await import('node:path');
-    const cliPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'pulse', 'cli.js');
-    const child = spawn(process.execPath, [cliPath, ...subcommandArgs], {
-      stdio: 'inherit',
-      env: process.env,
-    });
-    child.on('exit', (code) => process.exit(code ?? 0));
+    await runDashboardCommand(subcommandArgs);
     return;
   }
 

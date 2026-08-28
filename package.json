@@ -10,7 +10,6 @@
   },
   "files": [
     "src/",
-    "pulse/",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -38,11 +37,10 @@
     "deepseek",
     "claude",
     "gpt",
-    "gemini",
-    "axplusb"
+    "gemini"
   ],
   "license": "Apache-2.0",
-  "author": "axplusb.tech <hello@axplusb.tech>",
+  "author": "Bahulam <hello@bahulam.ai>",
   "homepage": "https://bahulam.ai/code",
   "repository": {
     "type": "git",
