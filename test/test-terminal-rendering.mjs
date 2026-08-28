@@ -151,9 +151,10 @@ test('uses concise structured tool summaries', () => {
   );
 });
 
-test('sub-agent running line shows full query and hides model', () => {
+test('sub-agent running line shows user-readable query and hides model', () => {
   resetSubAgents();
   const query = '[Thoroughness: thorough] What is the codekepler-deploy-dashboard docker setup and backend deployment flow?';
+  const visibleQuery = 'What is the codekepler-deploy-dashboard docker setup and backend deployment flow?';
   const rendered = stripAnsi(renderSubAgentOpen({
     type: 'explore',
     model: 'deepseek/deepseek-v4-flash',
@@ -161,7 +162,8 @@ test('sub-agent running line shows full query and hides model', () => {
   }));
   resetSubAgents();
 
-  assert.ok(rendered.includes(`"${query}"`), 'expected full query to render');
+  assert.ok(rendered.includes(`"${visibleQuery}"`), 'expected user-readable query to render');
+  assert.ok(!rendered.includes('[Thoroughness:'), 'handoff metadata should be hidden');
   assert.ok(rendered.includes('▸ running'), 'expected running status');
   assert.ok(!rendered.includes('deepseek/deepseek-v4-flash'), 'model should be hidden');
 });
@@ -277,6 +279,21 @@ test('long shell tool heads wrap without hiding command text', () => {
     cwd: '/tmp',
   }));
   assert.ok(observed.includes('observed 15.0s tail'));
+});
+
+test('shell git diff card shows a useful multi-row preview', () => {
+  const output = Array.from({ length: 12 }, (_, i) => `+ changed line ${i}`).join('\n');
+  const rendered = stripAnsi(formatCard({
+    tool: 'shell',
+    args: { command: 'git diff development...feature -- src/app.ts' },
+    result: { success: true, output, args: { command: 'git diff development...feature -- src/app.ts' } },
+    columns: 120,
+    cwd: '/tmp',
+  }));
+  assert.ok(rendered.includes('+ changed line 0'));
+  assert.ok(rendered.includes('+ changed line 7'));
+  assert.ok(!rendered.includes('+ changed line 8'));
+  assert.ok(rendered.includes('+ 4 more rows'));
 });
 
 test('shell card compacts leading cd wrappers', () => {
@@ -404,7 +421,8 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('function writeExploreSnapshot(summary = exploreSummary())'));
   assert.ok(renderSource.includes('function shouldPrintExploreSnapshot()'));
   assert.ok(renderSource.includes('if (shouldPrintExploreSnapshot()) writeExploreSnapshot();'));
-  assert.ok(renderSource.includes('drawPinnedStatus(rendered)'));
+  assert.ok(renderSource.includes('function fitStatusLine(line)'));
+  assert.ok(renderSource.includes('drawPinnedStatus(fitted)'));
   assert.ok(renderSource.includes('clearPinnedStatus()'));
   assert.ok(replSource.includes('showSubAgentTools'));
   assert.ok(replSource.includes('foldSubAgentToolCall(data)'));
@@ -460,7 +478,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
-  assert.ok(replSource.includes("function renderSlashHint(line = '', { preserveSelection = false } = {})"));
+  assert.ok(replSource.includes("function renderSlashHintNow(line = '', { preserveSelection = false } = {})"));
+  assert.ok(replSource.includes("function renderSlashHint(line = '', opts = {})"));
   assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
   assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows))'));
   assert.ok(replSource.includes('function acceptSlashHint()'));
@@ -468,7 +487,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function selectedSlashCommandFor(line)'));
   assert.ok(replSource.includes("typeof rl._refreshLine === 'function'"));
   assert.ok(replSource.includes('readline.cursorTo(process.stderr, col)'));
-  assert.ok(replSource.includes('readline.moveCursor(process.stderr, 0, 1)'));
+  assert.ok(replSource.includes('function writeHintFrame(frame)'));
+  assert.ok(replSource.includes('writeHintFrame(frame);'));
   assert.ok(replSource.includes("item.command.padEnd(13)"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
   assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));

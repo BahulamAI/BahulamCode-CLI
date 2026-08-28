@@ -3,9 +3,9 @@
  * Ported from tarang-cli (Python) ws/executor.py with enhanced patterns.
  */
 
-import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
+import { resolveLintCommand } from './lint-resolver.mjs';
 
 // ── Command Classification ──────────────────────────────────
 
@@ -53,6 +53,13 @@ const COMMAND_PROFILES = {
             /^\s*$/,
         ],
         keepPatterns: [/error/i, /warning/i],
+    },
+    git: {
+        patterns: [/^\s*git\s+(diff|show|status)\b/i],
+        successLimit: 50000,
+        failureLimit: 12000,
+        noisePatterns: [/^\s*$/],
+        keepPatterns: [],
     },
     run: {
         patterns: [/python\s/i, /node\s/i, /go run/i, /cargo run/i, /npm start/i, /npm run dev/i],
@@ -142,33 +149,22 @@ export function filterOutput(output, command, success = true) {
 // ── Auto-Lint ───────────────────────────────────────────────
 
 /** Auto-lint a file after write/edit. Returns lint output or null. */
-export function autoLint(filePath) {
+export function autoLint(filePath, options = {}) {
     if (!filePath || !fs.existsSync(filePath)) return null;
-    const ext = path.extname(filePath);
-    let cmd;
+    const lint = resolveLintCommand(filePath, {
+        projectRoot: options.projectRoot || process.cwd(),
+        projectCommands: options.projectCommands || {},
+        allowProjectScript: false,
+    });
+    if (!lint?.command) return null;
 
     try {
-        switch (ext) {
-            case '.py':
-                cmd = `python3 -m py_compile "${filePath}" 2>&1`;
-                break;
-            case '.js': case '.mjs': case '.cjs':
-                cmd = `node --check "${filePath}" 2>&1`;
-                break;
-            case '.ts': case '.tsx':
-                if (fs.existsSync('node_modules/.bin/tsc'))
-                    cmd = `npx tsc --noEmit --pretty "${filePath}" 2>&1`;
-                break;
-            case '.go':
-                cmd = `go vet "${filePath}" 2>&1`;
-                break;
-            case '.rs':
-                cmd = `rustfmt --check "${filePath}" 2>&1`;
-                break;
-        }
-
-        if (!cmd) return null;
-        const output = execSync(cmd, { stdio: 'pipe', timeout: 15_000, encoding: 'utf-8' });
+        const output = execSync(lint.command, {
+            cwd: lint.cwd,
+            stdio: 'pipe',
+            timeout: 15_000,
+            encoding: 'utf-8',
+        });
         return output.trim() || null;
     } catch (err) {
         const output = (err.stderr || err.stdout || '').toString().trim();

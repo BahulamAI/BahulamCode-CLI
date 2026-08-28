@@ -37,36 +37,50 @@ import * as queue from '../ui/render-queue.mjs';
 // Max inner-tool lines shown under the spinner during a sub-agent run.
 const SUB_AGENT_WINDOW_ROWS = 7;
 
+function statusWidth() {
+  return Math.max(8, (process.stderr.columns || process.stdout.columns || 120) - 1);
+}
+
+function fitStatusLine(line) {
+  return fitAnsiLine(String(line ?? '').replace(/[\r\n]+/g, ' '), statusWidth());
+}
+
+function fitStatusLines(lines) {
+  return (Array.isArray(lines) ? lines : [lines]).map(fitStatusLine);
+}
+
 function presentStatus(rendered) {
   // Watch panel override: when active, render the watch panel entries as a
   // multi-line status block instead of the normal spinner/status line.
   if (watchState.active) {
     const lines = watchState.visible();
     if (lines.length) {
+      const fitted = fitStatusLines(lines);
       if (queue.isActive()) {
-        queue.statusBlock(lines);
+        queue.statusBlock(fitted);
       } else if (isInputDockMounted()) {
-        drawPinnedStatus(lines.join('\n'));
+        drawPinnedStatus(fitted.join('\n'));
       } else {
-        inPlace(lines.join('\n'));
+        inPlace(fitted.join('\n'));
       }
       return;
     }
   }
+  const fitted = fitStatusLine(rendered);
   if (queue.isActive()) {
     const win = runtime.subAgentWindow;
     if (win?.active && win.lines.length) {
       queue.statusBlock([
-        rendered,
-        ...win.lines.slice(-SUB_AGENT_WINDOW_ROWS).map(l => `    ${c.dim(l)}`),
+        fitted,
+        ...fitStatusLines(win.lines.slice(-SUB_AGENT_WINDOW_ROWS).map(l => `    ${c.dim(l)}`)),
       ]);
       return;
     }
-    queue.status(rendered);
+    queue.status(fitted);
     return;
   }
-  if (isInputDockMounted()) { drawPinnedStatus(rendered); return; }
-  inPlace(rendered);
+  if (isInputDockMounted()) { drawPinnedStatus(fitted); return; }
+  inPlace(fitted);
 }
 
 /** Push a line into the live sub-agent tool window (dedup consecutive). */

@@ -26,6 +26,7 @@ import { HookRunner } from '../config/hook-runner.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
+import { resolveLintCommand } from './lint-resolver.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -488,15 +489,6 @@ export function createToolExecutor({
 
     // ── Auto-lint after file writes ────────────────────────────
 
-    const LINT_COMMANDS = {
-        '.py':  (file) => `python3 -m py_compile "${file}" 2>&1`,
-        '.js':  (file) => `npx eslint --no-eslintrc --rule '{}' "${file}" 2>&1 || true`,
-        '.ts':  (file) => `npx tsc --noEmit --pretty "${file}" 2>&1 || true`,
-        '.tsx': (file) => `npx tsc --noEmit --pretty "${file}" 2>&1 || true`,
-        '.go':  (file) => `go vet "${file}" 2>&1`,
-        '.rs':  (file) => `rustfmt --check "${file}" 2>&1`,
-    };
-
     // tsc --pretty and eslint emit ANSI codes (including background-red
     // highlights) which bleed when our renderer slices the first 80 chars.
     // Strip color codes so the stored lint string is always plain text.
@@ -504,15 +496,19 @@ export function createToolExecutor({
     function stripAnsi(s) { return String(s || '').replace(ANSI_RE, ''); }
 
     function autoLint(filePath) {
-        const ext = path.extname(filePath);
-        const cmdFn = LINT_COMMANDS[ext];
-        if (!cmdFn) return null;
+        const project = projectRegistry.projectForPath(filePath);
+        const lint = resolveLintCommand(filePath, {
+            projectRoot: project?.resource?.root || projectRootFor(filePath),
+            projectCommands: project?.resource?.commands || {},
+            allowProjectScript: false,
+        });
+        if (!lint?.command) return null;
 
         try {
-            const output = execSync(cmdFn(filePath), {
+            const output = execSync(lint.command, {
                 encoding: 'utf-8',
                 timeout: 15_000,
-                cwd: process.cwd(),
+                cwd: lint.cwd,
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
             });
@@ -1024,10 +1020,12 @@ export function createToolExecutor({
                     filteredLines: rawOutput.split('\n').length,
                 }
                 : filterOutput(rawOutput, args.command, success);
+            const agentOutput = observationTimeout && timedOut ? filtered.output : rawOutput;
 
             return {
                 success,
-                output: filtered.output,
+                output: agentOutput,
+                output_preview: filtered.output,
                 exit_code: exitCode,
                 _tool: 'shell',
                 _classification: args._classification,
@@ -1666,24 +1664,44 @@ print('OK: replaced')
             try {
                 throwIfAborted(options.signal);
                 const filePath = await resolvePath(args.file_path || args.path, args);
-                const ext = path.extname(filePath);
-                let cmd;
-                if (ext === '.py') cmd = `python3 -m ruff check "${filePath}" 2>&1 || true`;
-                else if (['.js', '.mjs', '.ts', '.tsx'].includes(ext)) cmd = `npx eslint "${filePath}" 2>&1 || true`;
-                else return { success: true, issues: [], message: 'No linter for this file type', _tool: 'lint_check' };
-
-                const output = await occRegistry.call('shell', {
-                    command: cmd,
-                    timeout: 30_000,
-                    description: `Lint: ${path.basename(filePath)}`,
-                    cwd: projectRootFor(filePath),
-                    signal: options.signal,
+                const project = projectRegistry.projectForPath(filePath);
+                const lint = resolveLintCommand(filePath, {
+                    projectRoot: project?.resource?.root || projectRootFor(filePath),
+                    projectCommands: project?.resource?.commands || {},
+                    allowProjectScript: true,
                 });
-                const rawOutput = typeof output === 'string' ? output : String(output);
+                if (!lint?.command) {
+                    return {
+                        success: true,
+                        issues: [],
+                        message: 'No project-aware linter for this path or file type',
+                        _tool: 'lint_check',
+                    };
+                }
+
+                const shellResult = await executeToolWithHooks('shell', {
+                    command: lint.command,
+                    timeout: 30_000,
+                    description: `Lint: ${path.basename(filePath)} (${lint.source})`,
+                    cwd: lint.cwd,
+                }, options);
+                const rawOutput = typeof shellResult?.output === 'string'
+                    ? shellResult.output
+                    : (typeof shellResult === 'string' ? shellResult : String(shellResult));
                 if (/^Error:\s*Command cancelled by user/i.test(rawOutput)) {
                     return { success: false, output: 'Cancelled by user', _cancelled: true, _tool: 'lint_check' };
                 }
-                return { success: true, output: rawOutput, issues: rawOutput.split('\n').filter(Boolean), _tool: 'lint_check' };
+                const normalizedOutput = rawOutput === '(no output)' ? '' : rawOutput;
+                return {
+                    success: true,
+                    output: normalizedOutput || 'No lint issues found.',
+                    command: lint.command,
+                    cwd: lint.cwd,
+                    language: lint.language,
+                    lint_source: lint.source,
+                    issues: normalizedOutput.split('\n').filter(Boolean),
+                    _tool: 'lint_check',
+                };
             } catch (err) {
                 if (isAbortError(err) || options.signal?.aborted) return cancelledToolResult('lint_check');
                 return { success: false, output: err.message, _tool: 'lint_check' };

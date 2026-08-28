@@ -58,7 +58,7 @@ await test('_buildToolDefs returns tool definitions', async () => {
 await test('_buildSystemPrompt includes context', async () => {
     const agent = new LocalAgent({ apiKey: 'test', toolExecutor: executor });
     const prompt = agent._buildSystemPrompt({ cwd: '/tmp/project', gitBranch: 'main' });
-    assert.ok(prompt.includes('Tarang'));
+    assert.ok(prompt.includes('Bahulam'));
     assert.ok(prompt.includes('/tmp/project'));
     assert.ok(prompt.includes('main'));
 });
@@ -73,6 +73,68 @@ await test('first event is status with model info', async () => {
     }
     assert.strictEqual(events[0].type, 'status');
     assert.ok(events[0].data.message.includes('Local mode'));
+});
+
+await test('local tool result event carries full output and display preview separately', async () => {
+    const toolResult = {
+        success: true,
+        output: 'full shell output\nline 2',
+        output_preview: 'full shell output\n... (truncated)',
+        _tool: 'shell',
+    };
+    const fakeExecutor = {
+        async execute(name, input) {
+            assert.strictEqual(name, 'shell');
+            assert.deepStrictEqual(input, { command: 'diff sample' });
+            return toolResult;
+        },
+    };
+    const agent = new LocalAgent({
+        apiKey: 'test',
+        toolExecutor: fakeExecutor,
+        maxTurns: 2,
+    });
+
+    let callCount = 0;
+    let secondTurnMessages = [];
+    agent._callLLM = async (_systemPrompt, messages) => {
+        callCount++;
+        if (callCount === 1) {
+            return {
+                content: [{
+                    type: 'tool_use',
+                    id: 'call_shell_1',
+                    name: 'shell',
+                    input: { command: 'diff sample' },
+                }],
+                stopReason: 'tool_use',
+                usage: null,
+            };
+        }
+        secondTurnMessages = messages;
+        return {
+            content: [{ type: 'text', text: 'done' }],
+            stopReason: 'end_turn',
+            usage: null,
+        };
+    };
+
+    const events = [];
+    for await (const event of agent.execute('inspect diff')) events.push(event);
+
+    const done = events.find(event => event.type === 'tool_done');
+    assert.ok(done, 'expected tool_done event');
+    assert.strictEqual(done.data.call_id, 'call_shell_1');
+    assert.strictEqual(done.data.tool, 'shell');
+    assert.strictEqual(done.data.output, toolResult.output);
+    assert.strictEqual(done.data.output_preview, toolResult.output_preview);
+
+    const modelToolResult = secondTurnMessages
+        .flatMap(message => Array.isArray(message.content) ? message.content : [])
+        .find(block => block.type === 'tool_result' && block.tool_use_id === 'call_shell_1');
+    assert.ok(modelToolResult, 'expected tool_result to be passed back to model');
+    assert.strictEqual(modelToolResult.content, toolResult.output);
+    assert.strictEqual(modelToolResult.content.includes(toolResult.output_preview), false);
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

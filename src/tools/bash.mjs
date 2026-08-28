@@ -18,6 +18,7 @@ function stripAnsi(str) {
 
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
 const TIMEOUT_TAIL_BYTES = 64 * 1024;
+const TRUNCATION_MARKER = '\n[output truncated at 1MB]';
 
 export const BashTool = {
     name: 'shell',
@@ -55,6 +56,8 @@ export const BashTool = {
             let stderr = '';
             let stdoutTail = '';
             let stderrTail = '';
+            let stdoutTruncated = false;
+            let stderrTruncated = false;
             let killed = false;
             let cancelled = false;
             let exitCode = null;
@@ -98,13 +101,17 @@ export const BashTool = {
 
             proc.stdout.on('data', (chunk) => {
                 const text = chunk.toString();
-                stdout = appendHead(stdout, text, MAX_OUTPUT_BYTES);
+                const next = appendHead(stdout, text, MAX_OUTPUT_BYTES);
+                if (next.length < stdout.length + text.length) stdoutTruncated = true;
+                stdout = next;
                 stdoutTail = appendTail(stdoutTail, text, TIMEOUT_TAIL_BYTES);
             });
 
             proc.stderr.on('data', (chunk) => {
                 const text = chunk.toString();
-                stderr = appendHead(stderr, text, MAX_OUTPUT_BYTES);
+                const next = appendHead(stderr, text, MAX_OUTPUT_BYTES);
+                if (next.length < stderr.length + text.length) stderrTruncated = true;
+                stderr = next;
                 stderrTail = appendTail(stderrTail, text, TIMEOUT_TAIL_BYTES);
             });
 
@@ -116,13 +123,8 @@ export const BashTool = {
             proc.on('close', (code) => {
                 exitCode = code;
 
-                // Truncate if over limit
-                if (stdout.length > MAX_OUTPUT_BYTES) {
-                    stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + '\n[output truncated at 1MB]';
-                }
-                if (stderr.length > MAX_OUTPUT_BYTES) {
-                    stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + '\n[output truncated at 1MB]';
-                }
+                if (stdoutTruncated) stdout += TRUNCATION_MARKER;
+                if (stderrTruncated) stderr += TRUNCATION_MARKER;
 
                 // Strip ANSI by default
                 stdout = stripAnsi(stdout);

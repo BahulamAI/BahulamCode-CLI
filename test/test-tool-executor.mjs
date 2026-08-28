@@ -352,6 +352,22 @@ await test('shell runs echo', async () => {
     assert.ok(result.output.includes('hello_tarang'));
 });
 
+await test('shell keeps full output for the agent and filtered preview for display', async () => {
+    const command = `node -e "for (let i = 0; i < 120; i++) console.log('line ' + i + ' ' + 'x'.repeat(80))"`;
+    const result = await executor.execute('shell', { command });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes('line 119'), 'full agent output should include tail lines');
+    assert.ok(result.output_preview.includes('truncated'), 'display preview should still be capped');
+    assert.ok(!result.output_preview.includes('line 119'), 'display preview should not be the full output');
+});
+
+await test('shell marks agent output when the hard 1MB capture limit is reached', async () => {
+    const command = `node -e "process.stdout.write('x'.repeat(1024 * 1024 + 128))"`;
+    const result = await executor.execute('shell', { command });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes('[output truncated at 1MB]'), 'agent output should include truncation marker');
+});
+
 await test('shell command substitution is approval-gated, not blocked', async () => {
     // Reclassified 2026-08-19: backticks/$() → contained + highRisk
     // (explicit approval) instead of hard-blocked. Dangerous payloads
@@ -502,7 +518,7 @@ await test('unknown tool returns error', async () => {
 // Test 9: validate_structure checks files
 await test('validate_structure checks files', async () => {
     const result = await executor.execute('validate_structure', {
-        expected: ['package.json', 'src/index.mjs', 'missing_file.xyz'],
+        expected: ['package.json', 'src/terminal/main.mjs', 'missing_file.xyz'],
     });
     assert.strictEqual(result.success, false);
     assert.deepStrictEqual(result.missing, ['missing_file.xyz']);

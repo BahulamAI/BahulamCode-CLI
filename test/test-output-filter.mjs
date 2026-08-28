@@ -45,12 +45,18 @@ test('detects cargo build', () => {
     assert.strictEqual(detectCommandType('cargo build'), 'build');
 });
 
-test('defaults to run', () => {
-    assert.strictEqual(detectCommandType('echo hello'), 'run');
-    assert.strictEqual(detectCommandType('ls -la'), 'run');
+test('detects git inspection commands', () => {
+    assert.strictEqual(detectCommandType('git diff --name-status main...feature'), 'git');
+    assert.strictEqual(detectCommandType('git show --stat HEAD'), 'git');
+    assert.strictEqual(detectCommandType('git status --short'), 'git');
 });
 
-test('filterOutput removes npm WARN noise for install', () => {
+test('defaults to generic output profile', () => {
+    assert.strictEqual(detectCommandType('echo hello'), 'default');
+    assert.strictEqual(detectCommandType('ls -la'), 'default');
+});
+
+test('filterOutput preserves important npm WARN lines for install', () => {
     const output = [
         'npm WARN deprecated some-pkg',
         'npm WARN peer dep missing',
@@ -59,24 +65,42 @@ test('filterOutput removes npm WARN noise for install', () => {
         'actual content here',
     ].join('\n');
     const filtered = filterOutput(output, 'npm install');
-    assert.ok(!filtered.includes('npm WARN'));
+    assert.ok(filtered.output.includes('npm WARN deprecated some-pkg'));
+    assert.strictEqual(filtered.commandType, 'install');
 });
 
 test('filterOutput truncates long output', () => {
     const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
     const output = lines.join('\n');
     const filtered = filterOutput(output, 'npm install');
-    assert.ok(filtered.includes('truncated'));
+    assert.ok(filtered.output.includes('truncated'));
+    assert.strictEqual(filtered.truncated, true);
+});
+
+test('git diff output gets a larger review budget than generic shell output', () => {
+    const output = Array.from({ length: 300 }, (_, i) => `+ changed line ${i} `.padEnd(80, 'x')).join('\n');
+    const generic = filterOutput(output, 'cat diff.txt');
+    const git = filterOutput(output, 'git diff development...feature');
+    assert.strictEqual(generic.truncated, true);
+    assert.strictEqual(git.truncated, false);
+    assert.ok(git.output.includes('+ changed line 299'));
 });
 
 test('filterOutput passes through short output', () => {
     const output = 'hello\nworld';
     const filtered = filterOutput(output, 'echo hello');
-    assert.strictEqual(filtered, output);
+    assert.strictEqual(filtered.output, output);
+    assert.strictEqual(filtered.commandType, 'default');
 });
 
-test('null output returns null', () => {
-    assert.strictEqual(filterOutput(null, 'echo'), null);
+test('null output returns empty metadata result', () => {
+    assert.deepStrictEqual(filterOutput(null, 'echo'), {
+        output: '',
+        commandType: 'default',
+        truncated: false,
+        originalLines: 0,
+        filteredLines: 0,
+    });
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

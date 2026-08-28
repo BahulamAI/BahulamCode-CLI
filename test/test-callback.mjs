@@ -2,7 +2,7 @@
  * Unit tests for Callback Client.
  */
 
-import { sendCallback, sendSkippedCallback } from '../src/core/callback-client.mjs';
+import { llmToolResultContent, sendCallback, sendSkippedCallback } from '../src/core/callback-client.mjs';
 import * as http from 'node:http';
 import assert from 'node:assert';
 
@@ -101,6 +101,17 @@ await test('skipped callback sends correct payload', async () => {
     assert.strictEqual(receivedBody.call_id, 'call1');
     assert.strictEqual(receivedBody.result.skipped, true);
     assert.strictEqual(receivedBody.result.message, 'User said no');
+});
+
+await test('LLM shell result uses full output instead of display preview', async () => {
+    const payload = JSON.parse(llmToolResultContent('shell', {
+        success: true,
+        output: 'full shell output\nline 2',
+        output_preview: 'short UI preview',
+    }));
+
+    assert.deepStrictEqual(payload, { output: 'full shell output\nline 2' });
+    assert.strictEqual(JSON.stringify(payload).includes('short UI preview'), false);
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

@@ -1,37 +1,20 @@
 /**
- * Lint Tool — run linters and type checkers.
+ * Legacy lint tool wrapper.
  *
- * Always safe: read-only, no side effects (unless --fix).
- * Agent should use this instead of shell("ruff check .").
- *
- * Execution: direct on host (no sandbox needed for read-only).
- * With --fix: routes through sandbox if available.
+ * The active model-facing tool is `lint_check` in core/tool-executor.mjs.
+ * Keep this wrapper resolver-backed so older imports cannot drift back to a
+ * separate linter command table.
  */
 
 import { BashTool } from './bash.mjs';
-
-const LINTERS = {
-    ruff:    { cmd: (p, fix) => `ruff check ${fix ? '--fix ' : ''}${p}`, lang: 'python' },
-    mypy:    { cmd: (p) => `mypy ${p} --no-error-summary`, lang: 'python' },
-    pyright: { cmd: (p) => `pyright ${p}`, lang: 'python' },
-    pylint:  { cmd: (p) => `pylint ${p} --output-format=text`, lang: 'python' },
-    eslint:  { cmd: (p, fix) => `eslint ${fix ? '--fix ' : ''}${p}`, lang: 'javascript' },
-    tsc:     { cmd: () => 'tsc --noEmit', lang: 'typescript' },
-    flake8:  { cmd: (p) => `flake8 ${p}`, lang: 'python' },
-    biome:   { cmd: (p, fix) => `biome check ${fix ? '--fix ' : ''}${p}`, lang: 'javascript' },
-};
+import { resolveLintCommand } from '../core/lint-resolver.mjs';
 
 export const LintTool = {
     name: 'Lint',
-    description: 'Run a linter or type checker. Fast, read-only (unless --fix). Use this instead of Bash for code checking.',
+    description: 'Run the project-aware linter or syntax checker for a file or directory.',
     inputSchema: {
         type: 'object',
         properties: {
-            tool: {
-                type: 'string',
-                enum: Object.keys(LINTERS),
-                description: 'Which linter to run',
-            },
             path: {
                 type: 'string',
                 description: 'File or directory to lint (default: ".")',
@@ -39,33 +22,31 @@ export const LintTool = {
             },
             fix: {
                 type: 'boolean',
-                description: 'Apply auto-fixes (default: false)',
+                description: 'Auto-fix is not supported by the resolver-backed lint wrapper.',
                 default: false,
             },
         },
-        required: ['tool'],
     },
-    validateInput(input) {
-        const errors = [];
-        if (!input.tool) errors.push('tool is required');
-        if (input.tool && !LINTERS[input.tool]) errors.push(`Unknown linter: ${input.tool}. Supported: ${Object.keys(LINTERS).join(', ')}`);
-        return errors;
+    validateInput(input = {}) {
+        if (input.fix) return ['fix=true is not supported here; run an explicit shell command for fixes'];
+        return [];
     },
-    async call(input) {
-        const linter = LINTERS[input.tool];
-        if (!linter) return `Unknown linter: ${input.tool}`;
-
+    async call(input = {}) {
         const targetPath = input.path || '.';
-        const command = linter.cmd(targetPath, input.fix);
-
-        const result = await BashTool.call({
-            command,
-            timeout: 30000, // linters should be fast
-            description: `Lint: ${input.tool} ${targetPath}`,
+        const lint = resolveLintCommand(targetPath, {
+            projectRoot: process.cwd(),
+            allowProjectScript: true,
         });
+        if (!lint?.command) {
+            return `No project-aware linter for path or file type: ${targetPath}`;
+        }
 
-        return result;
+        return await BashTool.call({
+            command: lint.command,
+            timeout: 30000,
+            cwd: lint.cwd,
+            description: `Lint: ${targetPath} (${lint.source})`,
+        });
     },
-    // Metadata for execution policy
-    _executionPolicy: 'direct', // no sandbox for read-only; 'contained' if fix=true
+    _executionPolicy: 'direct',
 };

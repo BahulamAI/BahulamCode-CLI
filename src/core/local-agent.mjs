@@ -167,11 +167,11 @@ const TOOL_SCHEMAS = [
     },
     {
         name: 'lint_check',
-        description: 'Run linter on a file. Uses ruff for Python, eslint for JS/TS.',
+        description: 'Run the project-aware linter or syntax checker for a file or directory.',
         input_schema: {
             type: 'object',
             properties: {
-                file_path: { type: 'string', description: 'Path to the file to lint' },
+                file_path: { type: 'string', description: 'Path to the file or directory to lint' },
             },
             required: ['file_path'],
         },
@@ -303,13 +303,24 @@ export class LocalAgent {
 
                     // Execute locally
                     let result;
+                    const toolStart = Date.now();
                     try {
                         result = await this.toolExecutor.execute(name, input || {});
                     } catch (err) {
                         result = { success: false, output: `Error: ${err.message}` };
                     }
+                    const durationMs = Date.now() - toolStart;
 
-                    yield { type: 'tool_done', data: { tool: name, duration_ms: 0 } };
+                    yield {
+                        type: 'tool_done',
+                        data: {
+                            ...result,
+                            call_id: id,
+                            tool: name,
+                            args: input || {},
+                            duration_ms: durationMs,
+                        },
+                    };
 
                     assistantContent.push(block);
                     messages.push({ role: 'assistant', content: assistantContent.slice() });

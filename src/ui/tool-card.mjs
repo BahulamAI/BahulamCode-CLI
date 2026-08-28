@@ -159,7 +159,7 @@ export function summarizeResult(tool, data) {
         // Multi-row preview: first N rows + a "+ M more" tail so long
         // outputs (e.g. `ls`) surface their scale instead of collapsing
         // to a single first line with no hint that more exists.
-        const { preview, remaining } = outputPreviewRows(data, shellPreviewRows());
+        const { preview, remaining } = outputPreviewRows(data, shellPreviewRows(data));
         if (!preview) return { text: 'ok', tone: 'success' };
         if (remaining === 0) return { text: preview, tone: 'success' };
         const tail = paint.text.dim(`+ ${remaining} more row${remaining === 1 ? '' : 's'}`);
@@ -434,9 +434,13 @@ function outputPreviewRows(data, n, perRow = 200) {
 // Default rows shown in the shell result preview. Overridable via env for
 // power users; keep it small — the result line rides above every command
 // and eats vertical space in a long session.
-function shellPreviewRows() {
+function shellPreviewRows(data = {}) {
   const raw = parseInt(process.env.BAHULAM_SHELL_PREVIEW_ROWS ?? '', 10);
-  return Number.isFinite(raw) && raw >= 1 ? raw : 2;
+  if (Number.isFinite(raw) && raw >= 1) return raw;
+  const command = String(data?.args?.command || data?.command || '');
+  if (/^\s*git\s+(diff|show)\b/i.test(command)) return 8;
+  if (/^\s*git\s+status\b/i.test(command)) return 8;
+  return 2;
 }
 
 function lineCount(s) {

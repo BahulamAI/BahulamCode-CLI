@@ -132,10 +132,18 @@ export function inPlace(text) {
   }
   if (text) {
     write(text + '\n');
-    _lastLineCount = text.split('\n').length;
+    _lastLineCount = physicalLineCount(text);
   } else {
     _lastLineCount = 0;
   }
+}
+
+function physicalLineCount(text) {
+  const width = Math.max(1, process.stderr.columns || process.stdout.columns || 80);
+  return String(text || '').split('\n').reduce((total, line) => {
+    const cells = visibleWidth(line);
+    return total + Math.max(1, Math.ceil(cells / width));
+  }, 0);
 }
 
 // ── Status Bar (persistent bottom) ──
