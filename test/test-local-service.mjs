@@ -47,6 +47,7 @@ try {
   const { startLocalWorkspaceService } = await import('../src/local-service/server.mjs');
   const { JsonlWriter } = await import('../src/core/jsonl-writer.mjs');
   const { BrowserApprovalManager } = await import('../src/local-service/approval-bridge.mjs');
+  const { LocalAgentRelay } = await import('../src/local-service/agent-relay.mjs');
 
   const { session, token } = createLocalWorkspaceSession({ targetPath: workspace });
   assert.equal(session.product, 'bahulam-local-service');
@@ -96,10 +97,41 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(approvalEvents[0].type, 'agent_approval_required');
   assert.equal(approvalEvents[0].data.tool, 'shell');
+  assert.deepEqual(approvalEvents[0].data.options.map((option) => option.value), ['approve', 'reject']);
   approval.decide(approvalEvents[0].data.approval_id, { decision: 'approve' });
   const approvalResult = await approvalPromise;
   assert.equal(approvalResult.approved, true);
   assert.equal(approvalEvents.some((event) => event.type === 'agent_approval_resolved' && event.data.approved === true), true);
+
+  const relayFollowupEvents = [];
+  const relayFollowupCalls = [];
+  const relayFollowupJsonl = [];
+  const relayForFollowup = new LocalAgentRelay({
+    session,
+    emit: (type, data) => relayFollowupEvents.push({ type, data }),
+  });
+  relayForFollowup.running = true;
+  relayForFollowup.client = {
+    currentTaskId: 'task-followup',
+    sendIntervention: async (instruction, opts) => {
+      relayFollowupCalls.push({ instruction, opts });
+      return { status: 'accepted', interventionId: opts.idempotencyKey };
+    },
+  };
+  relayForFollowup._ensureJsonlWriter = () => ({
+    writeKeplerEvent: (event) => relayFollowupJsonl.push(event),
+  });
+  const relayFollowupResult = await relayForFollowup.sendFollowup({ instruction: 'switch to the safer plan' });
+  assert.equal(relayFollowupResult.status, 'accepted');
+  assert.equal(relayFollowupResult.role, 'user');
+  assert.equal(relayFollowupResult.message_type, 'user_intervention');
+  assert.equal(relayFollowupResult.priority, 'high');
+  assert.equal(relayFollowupCalls.length, 1);
+  assert.equal(relayFollowupCalls[0].instruction, 'switch to the safer plan');
+  assert.equal(relayFollowupCalls[0].opts.priority, 'high');
+  assert.equal(relayFollowupJsonl[0].type, 'user_intervention');
+  assert.equal(relayFollowupJsonl[0].data.role, 'user');
+  assert.equal(relayFollowupEvents.some((event) => event.type === 'tool_call'), false);
 
   const seededWriter = new JsonlWriter(workspace, 'test');
   seededWriter.setSessionId('resume-local-service');
@@ -131,12 +163,16 @@ try {
     assert.match(html, /src="\/assets\/bahulam-mark\.png"/);
     assert.match(html, /Subscriptions/);
     assert.match(html, /CLI login needed/);
+    assert.match(html, /id="approvalAuto"/);
+    assert.match(html, /Auto off/);
     assert.match(html, /id="threadInner"/);
     assert.match(html, /id="attachFiles"/);
     assert.match(html, /id="fileUpload"/);
     assert.match(html, /id="uploadTray"/);
     assert.match(html, /\/api\/files\/upload/);
     assert.match(html, /\/api\/file\/save/);
+    assert.match(html, /\/api\/approvals\/mode/);
+    assert.match(html, /\/api\/agent\/followup/);
     assert.match(html, /data-save-file/);
     assert.match(html, /data-edit-source/);
     assert.match(html, /function saveCurrentFile/);
@@ -177,11 +213,18 @@ try {
     assert.match(html, /agent_approval_required/);
     assert.match(html, /\/api\/approvals\//);
     assert.match(html, /approval-inline/);
+    assert.match(html, /activity-approval/);
+    assert.match(html, /activityApprovalHtml/);
     assert.match(html, /approval-result-line/);
     assert.match(html, /approval-approve/);
     assert.match(html, /approval-reject/);
     assert.match(html, /pendingApprovalEl/);
     assert.match(html, /resolveInlineApproval/);
+    assert.match(html, /function setApprovalAutoMode/);
+    assert.match(html, /function setTurnRunning/);
+    assert.match(html, /followupMessage/);
+    assert.match(html, /status==='queued_next_turn'\|\|status==='no_task'/);
+    assert.doesNotMatch(html, /status==='queued_next_turn'\|\|status==='no_task'\|\|status==='error'/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
       assert.doesNotThrow(() => new Function(match[1]));
     }
@@ -206,6 +249,25 @@ try {
     assert.equal(emptyHistoryRes.ok, true);
     assert.equal(emptyHistoryRes.backend_session_id, null);
     assert.deepEqual(emptyHistoryRes.messages, []);
+
+    const approvalModeRes = await fetch(`http://127.0.0.1:${service.port}/api/approvals/mode?token=${encodeURIComponent(token)}`).then((res) => res.json());
+    assert.equal(approvalModeRes.ok, true);
+    assert.equal(approvalModeRes.auto, false);
+    const approvalModeOnRes = await fetch(`http://127.0.0.1:${service.port}/api/approvals/mode?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto: true }),
+    }).then((res) => res.json());
+    assert.equal(approvalModeOnRes.ok, true);
+    assert.equal(approvalModeOnRes.mode, 'auto');
+    assert.equal(approvalModeOnRes.auto, true);
+
+    const followupNoTurn = await fetch(`http://127.0.0.1:${service.port}/api/agent/followup?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'one more thing' }),
+    });
+    assert.equal(followupNoTurn.status, 409);
 
     const newHistoryRes = await fetch(`http://127.0.0.1:${service.port}/api/chat/new?token=${encodeURIComponent(token)}`, {
       method: 'POST',

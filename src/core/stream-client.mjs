@@ -820,7 +820,7 @@ export class TarangStreamClient {
             tool,
             args || {},
             true,
-            { risk, reason },
+            { risk, reason, tool_id, call_id: tool_id, request_id: tool_id },
         );
 
         // Map ApprovalManager decision to framework scope
@@ -930,9 +930,10 @@ export class TarangStreamClient {
     }
 
     /**
-     * Submit a live-steering follow-up on the current running task (PRD-081 §5.2).
-     * Unlike resume(), this does NOT pause/unpause — the text is queued and
-     * delivered at the next tool boundary.
+     * Submit a live-steering user follow-up on the current running task
+     * (PRD-081 §5.2). Unlike resume(), this does NOT pause/unpause — the text
+     * is queued and delivered at the next tool boundary as a high-priority user
+     * intervention, never as a tool call.
      *
      * Returns a status object; callers should NOT swallow errors:
      *   { status: 'accepted', interventionId }        — queued on backend, SSE ack forthcoming
@@ -946,6 +947,7 @@ export class TarangStreamClient {
      * @param {string} [opts.idempotencyKey]  Optional client-generated id.
      *                                        Auto-generated when omitted; pass the same key
      *                                        for retries to stay idempotent.
+     * @param {string} [opts.priority]        User-message priority metadata.
      */
     async sendIntervention(instruction, opts = {}) {
         if (!this.currentTaskId) {
@@ -967,6 +969,9 @@ export class TarangStreamClient {
                     body: JSON.stringify({
                         instruction: text,
                         intervention_id: interventionId,
+                        role: 'user',
+                        message_type: 'user_intervention',
+                        priority: opts.priority || 'high',
                     }),
                 },
             );

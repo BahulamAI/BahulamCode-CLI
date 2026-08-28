@@ -12,6 +12,30 @@ export class BrowserApprovalManager extends ApprovalManager {
     this.pending = new Map();
   }
 
+  setAutoMode(enabled) {
+    this.autoApprove = false;
+    this.approveAll = Boolean(enabled);
+    if (!enabled) this.approvedToolTypes.clear();
+    return this.browserSummary();
+  }
+
+  browserSummary() {
+    const summary = this.getSummary();
+    return {
+      mode: this.approveAll ? 'auto' : 'ask',
+      auto: Boolean(this.approveAll),
+      total: summary.total,
+      approved: summary.approved,
+      denied: summary.denied,
+      trust: summary.trust,
+    };
+  }
+
+  _optionsFor(tier, toolName, args) {
+    return super._optionsFor(tier, toolName, args)
+      .filter((option) => option.value === 'approve' || option.value === 'reject');
+  }
+
   async _prompt(toolName, args, context = {}) {
     const tier = context.tier;
     const why = context.reason || context.why || '';
@@ -21,6 +45,8 @@ export class BrowserApprovalManager extends ApprovalManager {
 
     this.emit('agent_approval_required', {
       approval_id: approvalId,
+      tool_id: context.tool_id || context.call_id || context.request_id || '',
+      call_id: context.call_id || context.request_id || context.tool_id || '',
       tool: toolName,
       args: args || {},
       tier,
@@ -43,6 +69,8 @@ export class BrowserApprovalManager extends ApprovalManager {
         this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note: '' });
         this.emit('agent_approval_resolved', {
           approval_id: approvalId,
+          tool_id: context.tool_id || context.call_id || context.request_id || '',
+          call_id: context.call_id || context.request_id || context.tool_id || '',
           tool: toolName,
           approved: false,
           reason,
@@ -83,7 +111,7 @@ export class BrowserApprovalManager extends ApprovalManager {
     }
   }
 
-  _decisionResult(decision, { approvalId, toolName, args, tier, prompt }) {
+  _decisionResult(decision, { approvalId, toolName, args, tier, prompt, context = {} }) {
     const value = normalizeDecision(decision);
     const note = String(decision?.reason || decision?.note || '').trim();
 
@@ -91,20 +119,20 @@ export class BrowserApprovalManager extends ApprovalManager {
       case 'approve':
         this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once', prompt });
-        this.emitResolved(approvalId, toolName, true, 'once');
+        this.emitResolved(approvalId, toolName, true, 'once', '', context);
         return { approved: true, tier, scope: 'once' };
 
       case 'allow-session': {
         if (!this.policy.hitl?.allowSessionTrust) {
           this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
           this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once', prompt });
-          this.emitResolved(approvalId, toolName, true, 'once');
+          this.emitResolved(approvalId, toolName, true, 'once', '', context);
           return { approved: true, tier, scope: 'once' };
         }
         const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'SESSION' });
         this.history.push({ tool: toolName, decision: 'session-trust', tier, time: Date.now(), rule_id: rule.id });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'SESSION', rule_id: rule.id, prompt });
-        this.emitResolved(approvalId, toolName, true, 'SESSION');
+        this.emitResolved(approvalId, toolName, true, 'SESSION', '', context);
         return { approved: true, tier, scope: 'SESSION', rule_id: rule.id };
       }
 
@@ -112,13 +140,13 @@ export class BrowserApprovalManager extends ApprovalManager {
         if (!this.policy.hitl?.allowProjectTrust) {
           this.history.push({ tool: toolName, decision: 'yes', tier, time: Date.now() });
           this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve', scope: 'once', prompt });
-          this.emitResolved(approvalId, toolName, true, 'once');
+          this.emitResolved(approvalId, toolName, true, 'once', '', context);
           return { approved: true, tier, scope: 'once' };
         }
         const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'PROJECT' });
         this.history.push({ tool: toolName, decision: 'project-trust', tier, time: Date.now(), rule_id: rule.id });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'PROJECT', rule_id: rule.id, prompt });
-        this.emitResolved(approvalId, toolName, true, 'PROJECT');
+        this.emitResolved(approvalId, toolName, true, 'PROJECT', '', context);
         return { approved: true, tier, scope: 'PROJECT', rule_id: rule.id };
       }
 
@@ -126,14 +154,14 @@ export class BrowserApprovalManager extends ApprovalManager {
         this.approvedToolTypes.add(toolName);
         this.history.push({ tool: toolName, decision: 'type-approve', tier, time: Date.now() });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'type-approve', scope: 'session', prompt });
-        this.emitResolved(approvalId, toolName, true, 'type');
+        this.emitResolved(approvalId, toolName, true, 'type', '', context);
         return { approved: true, tier, scope: 'type' };
 
       case 'allow-all':
         this.approveAll = true;
         this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve-all', scope: 'session', prompt });
-        this.emitResolved(approvalId, toolName, true, 'all');
+        this.emitResolved(approvalId, toolName, true, 'all', '', context);
         return { approved: true, tier, scope: 'all' };
 
       case 'reject':
@@ -142,15 +170,17 @@ export class BrowserApprovalManager extends ApprovalManager {
         this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
         this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason, prompt });
         this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note });
-        this.emitResolved(approvalId, toolName, false, 'once', reason);
+        this.emitResolved(approvalId, toolName, false, 'once', reason, context);
         return { approved: false, tier, reason };
       }
     }
   }
 
-  emitResolved(approvalId, toolName, approved, scope, reason = '') {
+  emitResolved(approvalId, toolName, approved, scope, reason = '', context = {}) {
     this.emit('agent_approval_resolved', {
       approval_id: approvalId,
+      tool_id: context.tool_id || context.call_id || context.request_id || '',
+      call_id: context.call_id || context.request_id || context.tool_id || '',
       tool: toolName,
       approved,
       scope,

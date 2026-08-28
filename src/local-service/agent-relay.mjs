@@ -42,6 +42,9 @@ export class LocalAgentRelay {
     this.displayHistory = [];
     this.agentHistory = [];
     this.jsonlWriter = null;
+    this.approvalAutoMode = false;
+    this.pendingFollowups = [];
+    this.flushingFollowups = false;
   }
 
   async listHistorySessions() {
@@ -242,7 +245,10 @@ export class LocalAgentRelay {
         }
 
         this._emitAgentEvent(event, { turnId, contentText: contentUpdate?.delta });
+        await this._flushQueuedFollowups();
       }
+
+      this._markUndeliveredFollowupsQueued();
 
       if (!userTurnWritten && this.client.sessionId) writeUserTurn();
       this.displayHistory.push({
@@ -286,6 +292,7 @@ export class LocalAgentRelay {
         transcript_session_id: writer.sessionId || null,
       };
     } catch (err) {
+      this._markUndeliveredFollowupsQueued(err.message || String(err));
       this.emit('agent_error', {
         turn_id: turnId,
         code: err.code || 'agent_relay_error',
@@ -311,6 +318,126 @@ export class LocalAgentRelay {
       throw err;
     }
     return this.approvalManager.decide(approvalId, decision);
+  }
+
+  setApprovalAutoMode(enabled, { emit = true } = {}) {
+    this.approvalAutoMode = Boolean(enabled);
+    if (this.approvalManager) this.approvalManager.setAutoMode(this.approvalAutoMode);
+    const state = this.approvalMode();
+    if (emit) this.emit('agent_approval_mode', state);
+    return state;
+  }
+
+  approvalMode() {
+    return {
+      ok: true,
+      mode: this.approvalAutoMode ? 'auto' : 'ask',
+      auto: this.approvalAutoMode,
+      summary: this.approvalManager?.browserSummary?.() || null,
+    };
+  }
+
+  async sendFollowup({ instruction } = {}) {
+    const text = String(instruction || '').trim();
+    if (!text) {
+      const err = new Error('instruction is required');
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+    if (!this.running || !this.client) {
+      const err = new Error('No running agent turn to follow up');
+      err.code = 'CONFLICT';
+      throw err;
+    }
+
+    const item = {
+      instruction: text,
+      role: 'user',
+      messageType: 'user_intervention',
+      priority: 'high',
+      idempotencyKey: `local-followup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+    if (!this.client.currentTaskId) {
+      this.pendingFollowups.push(item);
+      const result = {
+        ok: true,
+        status: 'waiting_for_task',
+        intervention_id: item.idempotencyKey,
+        task_id: null,
+      };
+      this.emit('agent_followup_status', {
+        ...result,
+        instruction: text.slice(0, 500),
+      });
+      return result;
+    }
+    return this._sendFollowupNow(item);
+  }
+
+  async _flushQueuedFollowups() {
+    if (this.flushingFollowups || !this.client?.currentTaskId || !this.pendingFollowups.length) return;
+    this.flushingFollowups = true;
+    try {
+      while (this.pendingFollowups.length && this.client?.currentTaskId) {
+        const item = this.pendingFollowups.shift();
+        await this._sendFollowupNow(item);
+      }
+    } finally {
+      this.flushingFollowups = false;
+    }
+  }
+
+  _markUndeliveredFollowupsQueued(error = '') {
+    while (this.pendingFollowups.length) {
+      const item = this.pendingFollowups.shift();
+      const failed = Boolean(error);
+      this.emit('agent_followup_status', {
+        ok: !failed,
+        status: failed ? 'error' : 'queued_next_turn',
+        intervention_id: item.idempotencyKey,
+        task_id: this.client?.currentTaskId || null,
+        instruction: item.instruction.slice(0, 500),
+        error: error || null,
+        role: item.role || 'user',
+        message_type: item.messageType || 'user_intervention',
+        priority: item.priority || 'high',
+      });
+    }
+  }
+
+  async _sendFollowupNow(item) {
+    const result = await this.client.sendIntervention(item.instruction, {
+      idempotencyKey: item.idempotencyKey,
+      priority: item.priority || 'high',
+    });
+    const payload = {
+      ok: result.status !== 'error',
+      status: result.status || 'unknown',
+      intervention_id: result.interventionId || item.idempotencyKey,
+      task_id: this.client.currentTaskId || null,
+      role: item.role || 'user',
+      message_type: item.messageType || 'user_intervention',
+      priority: item.priority || 'high',
+      error: result.error || null,
+      http_status: result.httpStatus || null,
+    };
+    this._ensureJsonlWriter().writeKeplerEvent({
+      type: 'user_intervention',
+      data: {
+        instruction: item.instruction,
+        task_id: payload.task_id,
+        intervention_id: payload.intervention_id,
+        status: payload.status,
+        role: payload.role,
+        message_type: payload.message_type,
+        priority: payload.priority,
+      },
+    });
+    this.emit('agent_followup_status', {
+      ...payload,
+      instruction: item.instruction.slice(0, 500),
+    });
+    return payload;
   }
 
   async _ensureReady() {
@@ -346,6 +473,7 @@ export class LocalAgentRelay {
       emit: this.emit,
       cwd: this.session.root_path,
     });
+    approval.setAutoMode(this.approvalAutoMode);
 
     this.creds = creds;
     this.toolExecutor = toolExecutor;
@@ -365,6 +493,7 @@ export class LocalAgentRelay {
       root_path: this.session.root_path,
       tools: toolExecutor.listTools?.().length || 0,
       backend_session_id: this.client.sessionId || null,
+      approval_mode: this.approvalAutoMode ? 'auto' : 'ask',
     });
   }
 
@@ -501,6 +630,38 @@ export class LocalAgentRelay {
           internal: Boolean(data.internal || data.sub_agent),
           sub_agent: data.sub_agent || null,
         });
+        break;
+      case 'approval_required':
+        this.emit('agent_approval_event', {
+          turn_id: turnId,
+          state: 'required',
+          approval_id: data.tool_id || data.approval_id || '',
+          tool: data.tool || '',
+          call_id: data.call_id || data.request_id || data.tool_id || '',
+          args: data.args || {},
+          tier: data.tier || data.risk || '',
+          reason: data.reason || '',
+          data,
+        });
+        break;
+      case 'approval_granted':
+      case 'approval_denied':
+        this.emit('agent_approval_event', {
+          turn_id: turnId,
+          state: type === 'approval_granted' ? 'granted' : 'denied',
+          approval_id: data.tool_id || data.approval_id || '',
+          tool: data.tool || '',
+          call_id: data.call_id || data.request_id || data.tool_id || '',
+          args: data.args || {},
+          tier: data.tier || data.risk || '',
+          reason: data.reason || '',
+          data,
+        });
+        break;
+      case 'user_intervention_accepted':
+      case 'user_intervention_delivered':
+      case 'user_intervention_queued':
+        this.emit('agent_followup_event', { turn_id: turnId, type, data });
         break;
       case 'sub_agent_start':
       case 'sub_agent_complete':

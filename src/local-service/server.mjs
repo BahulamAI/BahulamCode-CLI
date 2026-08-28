@@ -240,6 +240,20 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/approvals/mode') {
+    const relay = getAgentRelay(session);
+    sendJson(res, 200, relay.approvalMode());
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/approvals/mode') {
+    const body = await readJsonBody(req);
+    const relay = getAgentRelay(session);
+    const result = relay.setApprovalAutoMode(Boolean(body.auto ?? body.enabled));
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
     const approvalId = decodeURIComponent(url.pathname.slice('/api/approvals/'.length));
     const body = await readJsonBody(req);
@@ -383,6 +397,16 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
       });
       throw err;
     }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent/followup') {
+    const body = await readJsonBody(req);
+    const instruction = String(body.prompt || body.instruction || '').slice(0, 500);
+    emit('agent_followup_requested', { instruction });
+    const relay = getAgentRelay(session);
+    const result = await relay.sendFollowup({ instruction: body.prompt || body.instruction });
+    sendJson(res, 200, result);
     return;
   }
 
@@ -766,6 +790,7 @@ button,textarea,input{font:inherit}button{color:inherit}.shell{display:flex;flex
 .topbar{height:38px;display:flex;align-items:center;gap:12px;border-bottom:1px solid rgba(27,27,27,.06);background:rgba(255,255,255,.80);backdrop-filter:blur(10px);padding:0 16px;flex:0 0 auto}.terminal-icon{width:16px;height:16px;color:rgba(27,27,27,.30);flex:0 0 auto}.workspace-name{font-size:14px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-kind{font-size:12px;color:rgba(27,27,27,.30)}.top-actions{margin-left:auto;display:flex;align-items:center;gap:6px;min-width:0}
 .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid var(--ws-border);background:#fff;padding:2px 8px;font-size:10px;font-weight:500;color:rgba(27,27,27,.58);white-space:nowrap}.badge.local{border-color:#BBF7D0;background:var(--ws-success-bg);color:var(--ws-success)}.badge.local:before{content:"";width:6px;height:6px;border-radius:999px;background:#10B981}
 .icon-button{height:26px;min-width:26px;border:1px solid rgba(27,27,27,.10);border-radius:6px;background:#fff;color:rgba(27,27,27,.64);display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 8px;cursor:pointer;font-size:11px;font-weight:500;transition:background .15s ease,color .15s ease,border-color .15s ease}.icon-button:hover{background:#F7F5EF;color:var(--ws-foreground)}.icon-button[aria-pressed="true"]{background:rgba(27,27,27,.08);border-color:rgba(27,27,27,.10);color:#1B1B1B}.icon-button svg{width:14px;height:14px}
+.auto-toggle{height:26px;display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(27,27,27,.10);border-radius:999px;background:#fff;padding:0 8px 0 6px;color:rgba(27,27,27,.55);font-size:11px;font-weight:650;cursor:pointer;white-space:nowrap}.auto-toggle:hover{background:#F7F5EF;color:rgba(27,27,27,.76)}.auto-toggle input{position:absolute;opacity:0;pointer-events:none}.toggle-track{width:28px;height:16px;border-radius:999px;background:#D6D3CB;position:relative;transition:background .15s ease}.toggle-track:before{content:"";position:absolute;width:12px;height:12px;border-radius:999px;left:2px;top:2px;background:#fff;box-shadow:0 1px 2px rgba(27,27,27,.25);transition:transform .15s ease}.auto-toggle input:checked+.toggle-track{background:#0891B2}.auto-toggle input:checked+.toggle-track:before{transform:translateX(12px)}.auto-toggle input:focus-visible+.toggle-track{outline:2px solid rgba(8,145,178,.35);outline-offset:2px}
 .menubar{height:28px;display:flex;align-items:center;gap:2px;border-bottom:1px solid rgba(27,27,27,.06);background:#F7F5EF;padding:0 12px;flex:0 0 auto;user-select:none;position:relative;z-index:20}.menu-item{height:22px;border:0;background:transparent;border-radius:5px;padding:0 8px;color:rgba(27,27,27,.58);font-size:12px;cursor:pointer}.menu-item:hover{background:var(--ws-hover);color:rgba(27,27,27,.86)}.menubar-spacer{flex:1}.session-menu-wrap{display:flex;align-items:center}.session-menu-button{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-modal-backdrop,.approval-modal-backdrop{position:fixed;inset:0;z-index:80;display:flex;align-items:flex-start;justify-content:center;background:rgba(27,27,27,.28);padding:92px 16px 24px}.approval-modal-backdrop{z-index:90;background:rgba(27,27,27,.36)}.session-modal-backdrop[hidden],.approval-modal-backdrop[hidden]{display:none}.session-dialog,.approval-dialog{width:min(620px,100%);max-height:min(620px,calc(100vh - 128px));display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(27,27,27,.12);border-radius:8px;background:#FFFDF7;box-shadow:0 24px 70px rgba(27,27,27,.22)}.approval-dialog{width:min(680px,100%)}.session-dialog-head,.approval-dialog-head{height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--ws-border-subtle);padding:0 12px}.session-dialog-title,.approval-dialog-title{font-size:13px;font-weight:750;color:rgba(27,27,27,.80)}.session-dialog-subtitle,.approval-dialog-subtitle{margin-top:1px;font:10px var(--mono);color:rgba(27,27,27,.38);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-menu{display:block;overflow:auto;padding:6px}.session-menu-empty{padding:10px;color:rgba(27,27,27,.42);font-size:12px}.approval-body{padding:12px;overflow:auto}.approval-subject{border:1px solid var(--ws-border);border-radius:7px;background:#fff;padding:10px;font:12px/1.45 var(--mono);color:rgba(27,27,27,.72);white-space:pre-wrap;overflow-wrap:anywhere}.approval-reason{margin-top:10px;color:rgba(27,27,27,.58);font-size:12px;line-height:1.5}.approval-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;border-top:1px solid var(--ws-border-subtle);padding:10px 12px;background:#F7F5EF}.approval-actions .danger{border-color:rgba(185,28,28,.24);color:#B91C1C}.approval-actions .primary-action{background:#1B1B1B;color:#FFFDF7;border-color:#1B1B1B}.approval-inline{width:100%;max-width:960px;border:1px solid rgba(217,119,6,.22);border-radius:10px;background:#FFFBEB;overflow:hidden;box-shadow:0 8px 24px rgba(146,64,14,.08)}.approval-inline.done{border-color:rgba(27,27,27,.08);background:#F7F5EF;box-shadow:none}.approval-inline-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-bottom:1px solid rgba(217,119,6,.14)}.approval-inline-title{font-size:12px;font-weight:800;color:#92400E}.approval-inline-meta{font:10px var(--mono);color:rgba(146,64,14,.62);white-space:nowrap}.approval-inline-subject{margin:10px 11px 0;border:1px solid rgba(217,119,6,.18);border-radius:7px;background:#fff;padding:9px;font:11px/1.45 var(--mono);color:rgba(27,27,27,.74);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}.approval-inline-reason{padding:8px 11px 10px;color:rgba(27,27,27,.58);font-size:12px;line-height:1.45}.approval-inline-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:9px 11px;border-top:1px solid rgba(217,119,6,.12);background:rgba(255,255,255,.58)}
 main{--left-w:256px;--right-w:480px;display:grid;grid-template-columns:var(--left-w) 6px minmax(360px,1fr) 6px var(--right-w);flex:1;min-height:0}.panel{min-width:0;background:var(--ws-panel);overflow:hidden}.files{background:rgba(255,255,255,.52)}.work{display:flex;flex-direction:column;background:#fff}.agent{background:rgba(255,255,255,.58);display:flex;flex-direction:column}.resizer{background:transparent;border-left:1px solid var(--ws-border-subtle);border-right:1px solid transparent;cursor:col-resize;position:relative}.resizer:hover,.resizer.dragging{background:rgba(8,145,178,.08);border-left-color:rgba(8,145,178,.25)}
 main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}main.hide-files .files,main.hide-files .left-resizer{display:none}main.hide-agent{grid-template-columns:var(--left-w) 6px minmax(360px,1fr) 0 0}main.hide-agent .agent,main.hide-agent .right-resizer{display:none}
@@ -775,7 +800,7 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
 .viewer{flex:1;min-height:0;overflow:hidden;background:#fff;display:flex;flex-direction:column}.file-header{min-height:34px;flex:0 0 auto;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 12px;background:rgba(27,27,27,.015);font:12px var(--mono);color:rgba(27,27,27,.50)}.path{min-width:120px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(27,27,27,.08);border-radius:999px;background:#fff;padding:1px 7px;font:10px var(--sans);color:rgba(27,27,27,.48);white-space:nowrap}.file-chip.warn{border-color:#FDE68A;background:#FFFBEB;color:#92400E}.file-actions{margin-left:auto;display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}.file-action{font:11px var(--sans);color:rgba(27,27,27,.50);text-decoration:none;border:1px solid var(--ws-border);border-radius:6px;padding:2px 7px;background:#fff;cursor:pointer}.file-action:hover{color:var(--ws-foreground);background:var(--ws-surface)}.file-icon-action{width:24px;height:24px;min-width:24px;padding:0;display:inline-flex;align-items:center;justify-content:center}.file-icon-action svg{width:13px;height:13px;display:block}select.file-action{height:23px;max-width:190px;padding:1px 24px 1px 7px}.empty{color:var(--ws-faint);padding:24px;font-size:12px}.error{color:var(--ws-error)}
 .monaco-host{flex:1;min-height:0}.code-fallback{flex:1;min-height:0;overflow:auto}.code-wrap{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;min-height:100%;font:12px/1.55 var(--mono)}.line-nums{user-select:none;text-align:right;padding:14px 10px 14px 14px;color:rgba(27,27,27,.25);background:#FAF9F5;border-right:1px solid var(--ws-border-subtle);white-space:pre}.code-pre{margin:0;padding:14px;white-space:pre;overflow:auto;color:#1F2937;background:#fff;min-height:100%}.markdown-preview{flex:1;min-height:0;overflow:auto;max-width:920px;padding:24px 28px;color:rgba(27,27,27,.86);font-size:14px;line-height:1.65}.markdown-preview h1,.markdown-preview h2,.markdown-preview h3{line-height:1.2;margin:18px 0 8px}.markdown-preview p{margin:0 0 12px}.markdown-preview code,.message-content code{font-family:var(--mono);font-size:.92em;background:rgba(27,27,27,.06);border-radius:4px;padding:1px 4px}.markdown-preview pre,.message-content pre{overflow:auto;background:#0D1117;color:#E5E7EB;border-radius:7px;padding:12px}.image-stage{flex:1;min-height:0;display:flex;flex-direction:column;background:#F8F7F2}.image-toolbar{height:34px;flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:0 10px;border-bottom:1px solid var(--ws-border-subtle);background:#fff}.image-preview{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:18px;overflow:auto}.image-preview img{max-width:100%;max-height:100%;object-fit:contain;border:1px solid var(--ws-border);background:#fff;box-shadow:0 10px 30px rgba(27,27,27,.10);transform-origin:center center}.frame-preview{flex:1;min-height:0;background:#F8F7F2}.frame-preview iframe{width:100%;height:100%;border:0;background:#fff}.table-preview{flex:1;min-height:0;padding:18px;overflow:auto}.table-preview .table-meta{margin:0 0 10px;color:rgba(27,27,27,.42);font:11px var(--mono)}.table-preview table{border-collapse:collapse;font-size:12px;background:#fff}.table-preview th,.table-preview td{border:1px solid var(--ws-border);padding:5px 7px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.table-preview th{background:#F7F5EF;text-align:left;color:rgba(27,27,27,.65);position:sticky;top:0}.table-preview td.formula-cell{background:#F0F9FF;color:#075985}.diagram-preview{flex:1;min-height:0;padding:18px;display:grid;gap:14px;max-width:none;overflow:auto}.mermaid-card{border:1px solid var(--ws-border);border-radius:8px;background:#fff;overflow:hidden;display:flex;flex-direction:column}.mermaid-output{padding:18px;overflow:auto;min-height:220px;display:flex;align-items:center;justify-content:center}.mermaid-output svg{width:100%;max-width:100%;height:auto;display:block}.mermaid-source{margin:0;border-top:1px solid var(--ws-border-subtle);border-radius:0;background:#FAF9F5;color:rgba(27,27,27,.68);font:11px/1.45 var(--mono);max-height:220px;overflow:auto;padding:10px 12px;white-space:pre}.viewer-note{flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:#FAF9F5}.viewer-note-card{width:min(520px,100%);max-height:100%;overflow:auto;border:1px solid var(--ws-border);border-radius:8px;background:#fff;padding:18px;box-shadow:0 10px 34px rgba(27,27,27,.05)}.viewer-note-title{font-size:14px;font-weight:750;color:rgba(27,27,27,.84)}.viewer-note-body{margin-top:8px;color:rgba(27,27,27,.56);font-size:12px;line-height:1.55}.viewer-note-actions{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}.binary-preview{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:24px;color:rgba(27,27,27,.50);text-align:center}
 .chat-head{height:36px;border-bottom:1px solid var(--ws-border-subtle);display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(255,255,255,.55)}.chat-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:rgba(27,27,27,.35)}.chat-subtitle{min-width:0;flex:1;font-size:10px;color:rgba(27,27,27,.28);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-tabs{height:32px;display:flex;align-items:center;border-bottom:1px solid var(--ws-border-subtle);background:#F7F5EF;padding:0 8px;gap:3px}.agent-tab{height:24px;border:0;border-radius:6px;background:transparent;color:rgba(27,27,27,.45);font-size:11px;font-weight:650;padding:0 9px;cursor:pointer}.agent-tab:hover{background:var(--ws-hover);color:rgba(27,27,27,.76)}.agent-tab.active{background:#fff;color:var(--ws-foreground);box-shadow:0 0 0 1px rgba(27,27,27,.06)}.chat-body{display:flex;flex-direction:column;flex:1;min-height:0}.chat-pane{display:none;flex-direction:column;flex:1;min-height:0}.chat-pane.active{display:flex}.thread{flex:1;min-height:0;overflow:auto;padding:16px 14px 10px;background:rgba(255,255,255,.40)}.thread-inner{display:flex;flex-direction:column;gap:12px}.empty-chat{display:flex;height:100%;align-items:center;justify-content:center;text-align:center;color:rgba(27,27,27,.35);font-size:12px}.session-list{display:flex;flex-direction:column;gap:2px}.session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border-radius:6px;padding:8px}.session-row:hover{background:rgba(27,27,27,.035)}.session-main{min-width:0}.session-prompt{font-size:12px;color:rgba(27,27,27,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta{margin-top:3px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.38);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-tools{margin-top:5px;display:flex;gap:4px;flex-wrap:wrap}.session-chip{border-radius:999px;border:1px solid rgba(27,27,27,.07);background:#F7F5EF;padding:1px 6px;font:10px var(--mono);color:rgba(27,27,27,.48)}.msg{display:flex}.msg.user{justify-content:flex-end}.msg.assistant{justify-content:flex-start}.bubble{max-width:86%;border-radius:16px;padding:10px 12px;font-size:13px;line-height:1.55;word-break:break-word}.user .bubble{background:#1B1B1B;color:#FFFDF7}.message-attachments{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.message-attachment{max-width:100%;display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.20);border-radius:999px;background:rgba(255,255,255,.10);color:#FFFDF7;padding:2px 7px;cursor:pointer}.message-attachment span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}.message-attachment small{font:10px var(--mono);opacity:.68}.message-attachment:hover{background:rgba(255,255,255,.17)}.assistant-stack{width:100%;max-width:960px;display:flex;flex-direction:column;gap:8px}.assistant-bubble{display:none;max-width:94%;border-radius:16px;background:#F7F5EF;padding:11px 13px;color:rgba(27,27,27,.86);font-size:13px;line-height:1.6}.assistant-bubble:not(:empty){display:block}.message-content p{margin:0 0 10px}.message-content p:last-child{margin-bottom:0}.message-content ul{margin:0 0 10px 18px;padding:0}.message-content li{margin:2px 0}
-.activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:300px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.trace{display:block;flex:1;min-height:0;overflow:auto;background:#fff;padding:8px}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:7px 4px;color:rgba(27,27,27,.52);white-space:pre-wrap;overflow-wrap:anywhere}.trace-row b{color:var(--ws-primary)}
+.activity-card{display:none;overflow:hidden;border:1px solid var(--ws-border);border-radius:8px;background:#FFFDF7;font-size:12px}.activity-card.active{display:block}.activity-head{height:28px;width:100%;border:0;background:transparent;display:flex;align-items:center;gap:8px;padding:0 9px;cursor:pointer;color:rgba(27,27,27,.68)}.activity-head:hover{background:#F7F5EF}.activity-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;font-weight:650}.activity-rollup{font-size:10px;color:rgba(27,27,27,.38)}.activity-rows{border-top:1px solid rgba(27,27,27,.05);padding:7px 9px;max-height:96px;overflow:auto;display:flex;flex-direction:column;gap:5px}.activity-card.expanded .activity-rows{max-height:360px}.activity-row{display:flex;align-items:flex-start;gap:7px;color:rgba(27,27,27,.65);font-size:11px;line-height:1.35}.activity-row .status-dot{width:8px;height:8px;border-radius:999px;background:rgba(27,27,27,.18);margin-top:4px;flex:0 0 auto}.activity-row.running .status-dot{background:#0891B2}.activity-row.done .status-dot{background:#059669}.activity-row.error .status-dot{background:#DC2626}.activity-row.approval .status-dot{background:#D97706}.activity-row.thinking{font-style:italic;color:rgba(27,27,27,.48)}.activity-main{display:block;min-width:0;flex:1}.activity-message{display:block}.activity-row pre{display:none;margin:4px 0 0;max-height:120px;overflow:auto;border-radius:6px;background:rgba(27,27,27,.04);padding:6px;font:10px/1.4 var(--mono);color:rgba(27,27,27,.62);white-space:pre-wrap}.activity-card.expanded .activity-row pre{display:block}.activity-approval{margin-top:7px;border:1px solid rgba(217,119,6,.20);border-radius:7px;background:#FFFBEB;overflow:hidden;transition:opacity .85s ease,transform .85s ease,max-height .85s ease,margin .85s ease}.activity-approval.fading{opacity:0;transform:translateY(-4px);max-height:0;margin:0;pointer-events:none}.activity-approval-head{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(217,119,6,.12);padding:6px 8px}.activity-approval-title{font-size:11px;font-weight:800;color:#92400E}.activity-approval-meta{font:10px var(--mono);color:rgba(146,64,14,.58);white-space:nowrap}.activity-approval-subject{margin:7px 8px 0;border:1px solid rgba(217,119,6,.14);border-radius:5px;background:#fff;padding:7px;font:10px/1.45 var(--mono);color:rgba(27,27,27,.72);white-space:pre-wrap;overflow-wrap:anywhere;max-height:130px;overflow:auto}.activity-approval-reason{padding:6px 8px 8px;color:rgba(27,27,27,.56);font-size:11px;line-height:1.45}.activity-approval-actions{display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap;border-top:1px solid rgba(217,119,6,.12);background:rgba(255,255,255,.58);padding:7px 8px}.activity-result{margin-top:6px}.trace{display:block;flex:1;min-height:0;overflow:auto;background:#fff;padding:8px}.trace-row{font:11px/1.45 var(--mono);border-bottom:1px solid rgba(27,27,27,.05);padding:7px 4px;color:rgba(27,27,27,.52);white-space:pre-wrap;overflow-wrap:anywhere}.trace-row b{color:var(--ws-primary)}
 .notebook-preview{flex:1;min-height:0;overflow:auto;background:#F7F5EF;padding:14px 14px 40px;display:flex;flex-direction:column;gap:10px}.notebook-meta{font:11px var(--mono);color:rgba(27,27,27,.42);padding:0 6px}.notebook-cell{border:1px solid var(--ws-border-subtle);border-radius:8px;background:#fff;overflow:hidden;box-shadow:0 1px 0 rgba(27,27,27,.02)}.notebook-cell.code{display:grid;grid-template-columns:64px minmax(0,1fr);padding:0;align-items:stretch}.notebook-cell.markdown{padding:16px 20px}.notebook-cell.raw{background:#F7F5EF;padding:12px 16px}.notebook-cell.raw .notebook-cell-body{padding:0}.notebook-cell.raw pre{margin:0;white-space:pre-wrap;font:12px/1.5 var(--mono);color:rgba(27,27,27,.72)}.notebook-cell-body{padding:0}.notebook-markdown{font-size:14px;line-height:1.65;color:rgba(27,27,27,.86)}.notebook-markdown h1,.notebook-markdown h2,.notebook-markdown h3{line-height:1.2;margin:14px 0 8px;color:rgba(27,27,27,.92)}.notebook-markdown h1{font-size:22px;border-bottom:1px solid var(--ws-border-subtle);padding-bottom:4px}.notebook-markdown p{margin:0 0 10px}.notebook-markdown code{font-family:var(--mono);font-size:.92em;background:rgba(27,27,27,.06);border-radius:4px;padding:1px 4px}.notebook-markdown pre{overflow:auto;background:#0D1117;color:#E5E7EB;border-radius:6px;padding:10px}.notebook-prompt{padding:12px 10px 12px 10px;font:11px/1.4 var(--mono);text-align:right;user-select:none;color:#4B6BFB;background:transparent;border-right:1px solid var(--ws-border-subtle);white-space:nowrap;display:flex;align-items:flex-start;justify-content:flex-end}.notebook-prompt.out{color:#A21818}.notebook-prompt.empty{color:transparent;pointer-events:none}.notebook-prompt.in::before{content:"In "}.notebook-prompt.out::before{content:"Out "}.notebook-cell-monaco{background:#FAFBFC;min-height:52px;position:relative;overflow:hidden;padding:6px 0}.notebook-cell-monaco .monaco-editor,.notebook-cell-monaco .monaco-editor .overflow-guard,.notebook-cell-monaco .monaco-editor-background,.notebook-cell-monaco .margin{background:#FAFBFC!important}.notebook-code-fallback{margin:0;padding:8px 12px;background:transparent;color:#1F2937;font:12px/1.5 var(--mono);white-space:pre;overflow:auto}.notebook-cell-outputs{grid-column:1 / -1;display:grid;grid-template-columns:64px minmax(0,1fr);background:#fff;border-top:1px solid var(--ws-border-subtle)}.notebook-output-item{display:contents}.notebook-output-item+.notebook-output-item>.notebook-prompt,.notebook-output-item+.notebook-output-item>.notebook-output-body{border-top:1px solid var(--ws-border-subtle)}.notebook-output-body{padding:8px 12px;overflow:auto;min-width:0;background:#fff}.notebook-stream{margin:0;font:12px/1.5 var(--mono);color:#1F2937;white-space:pre-wrap;word-break:break-word;background:transparent;padding:0}.notebook-stream.stderr{color:#7F1D1D;background:#FEF2F2;padding:6px 8px;border-radius:5px}.notebook-error{margin:0;font:12px/1.5 var(--mono);color:#7F1D1D;background:#FEF2F2;padding:8px 10px;border-radius:5px;white-space:pre-wrap;word-break:break-word;overflow:auto}.notebook-plain{margin:0;font:12px/1.5 var(--mono);color:#1F2937;white-space:pre-wrap;word-break:break-word;background:transparent;padding:0}.notebook-json{margin:0;font:12px/1.5 var(--mono);color:#0F172A;background:#F8FAFC;padding:8px 10px;border-radius:5px;white-space:pre;overflow:auto}.notebook-output-body img{max-width:100%;height:auto;display:block;background:#fff;border-radius:4px}.notebook-output-body iframe{width:100%;min-height:220px;border:1px solid var(--ws-border-subtle);border-radius:5px;background:#fff}.notebook-latex{font-size:14px;color:rgba(27,27,27,.90);padding:6px 0;overflow:auto}.katex-display{margin:6px 0!important}.viewer.maximized{position:fixed;inset:12px;z-index:70;border:1px solid rgba(27,27,27,.12);border-radius:8px;box-shadow:0 24px 80px rgba(27,27,27,.28);background:#fff}.viewer.maximized .diagram-preview,.viewer.maximized .markdown-preview{max-width:none}.viewer.maximized .mermaid-output{min-height:calc(100vh - 220px)}.composer{border-top:1px solid var(--ws-border-subtle);background:#FFFDF7;padding:10px 12px}.composer-box{border:1px solid var(--ws-border);border-radius:10px;background:#fff;overflow:hidden}.upload-tray{display:flex;gap:6px;flex-wrap:wrap;padding:8px 9px 0}.upload-tray[hidden]{display:none}.upload-chip{height:24px;display:inline-flex;align-items:center;gap:6px;max-width:100%;border:1px solid rgba(8,145,178,.18);border-radius:999px;background:#F0F9FF;color:#075985;padding:0 4px 0 8px;font-size:11px}.upload-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}.upload-chip-meta{font:10px var(--mono);color:rgba(7,89,133,.58)}.upload-chip button{width:18px;height:18px;border:0;border-radius:999px;background:transparent;color:rgba(7,89,133,.52);cursor:pointer;padding:0}.upload-chip button:hover{background:rgba(8,145,178,.12);color:#075985}textarea{display:block;width:100%;min-height:84px;max-height:240px;resize:vertical;border:0;padding:10px 11px;background:#fff;color:var(--ws-foreground);outline:none}.composer-actions{height:34px;border-top:1px solid var(--ws-border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 8px}.composer-left{display:flex;align-items:center;gap:6px;min-width:0}.status{font-size:11px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}button.primary{height:24px;border:0;border-radius:6px;background:var(--ws-foreground);color:#fff;font-size:11px;font-weight:750;padding:0 10px;cursor:pointer}button.primary:hover{background:#2B2B2B}button.primary:disabled{opacity:.45;cursor:not-allowed}
 .approval-inline{transition:opacity .85s ease,transform .85s ease,max-height .85s ease,margin .85s ease}.approval-inline.fading{opacity:0;transform:translateY(-4px);max-height:0;margin:0;pointer-events:none}.approval-inline-actions .approval-approve{background:#ECFDF5;border-color:#A7F3D0;color:#047857}.approval-inline-actions .approval-approve:hover{background:#D1FAE5;color:#065F46}.approval-inline-actions .approval-reject{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}.approval-inline-actions .approval-reject:hover{background:#FEE2E2;color:#991B1B}.approval-inline-actions .approval-secondary{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}.approval-inline-actions .approval-secondary:hover{background:#DBEAFE;color:#1E40AF}.approval-result-line{display:inline-flex;max-width:100%;align-items:center;gap:7px;border:1px solid rgba(27,27,27,.08);border-radius:999px;background:#F7F5EF;color:rgba(27,27,27,.58);padding:5px 9px;font:11px/1.2 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.approval-result-line.approved{background:#ECFDF5;border-color:#A7F3D0;color:#047857}.approval-result-line.denied{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}.approval-result-tool{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
 .file-action:disabled{opacity:.38;cursor:not-allowed}.file-action.unsaved{border-color:rgba(8,145,178,.28);background:#ECFEFF;color:#0E7490}.tab-dirty{width:6px;height:6px;border-radius:999px;background:#0891B2;flex:0 0 auto}.notebook-preview{overflow-y:auto;overflow-x:hidden}.notebook-cell,.notebook-output-body{min-width:0}.notebook-code-fallback,.notebook-json{white-space:pre-wrap;overflow:hidden;overflow-wrap:anywhere}.notebook-output-body{overflow-x:hidden;overflow-y:visible}.notebook-error,.notebook-latex{overflow:hidden;overflow-wrap:anywhere}.notebook-markdown pre,.markdown-preview pre,.message-content pre{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -808,6 +833,11 @@ main.hide-files{grid-template-columns:0 0 minmax(360px,1fr) 6px var(--right-w)}m
     <div class="workspace-name">${rootName}</div>
     <div class="workspace-kind">${escapeHtml(session.kind)}</div>
     <div class="top-actions">
+      <label class="auto-toggle" id="approvalAutoWrap" title="Auto-approve routine tool approvals for this browser session">
+        <input id="approvalAuto" type="checkbox">
+        <span class="toggle-track"></span>
+        <span id="approvalAutoLabel">Auto off</span>
+      </label>
       <span class="badge local">local</span>
       <span class="badge">${escapeHtml(session.id)}</span>
       <button class="icon-button" id="toggleExplorer" type="button" title="Hide file explorer" aria-label="Toggle file explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
@@ -909,12 +939,16 @@ const fileCache = new Map();
 let activePath = null;
 let activeTurn = null;
 let turnSeq = 0;
+let turnRunning = false;
+const queuedFollowups = [];
+const queuedFollowupIds = new Set();
 let historySelectionReady = false;
 let historySessions = [];
 let sessionMenuOpen = false;
 let traceCount = 0;
 let pendingApproval = null;
 let pendingApprovalEl = null;
+let approvalAutoMode = false;
 let monacoReady = null;
 let activeEditor = null;
 let activeEditorPath = null;
@@ -2028,33 +2062,55 @@ function showApprovalModal(data){
   pendingApproval=data||null;
   if(!pendingApproval)return;
   setApprovalModalOpen(false);
-  if(pendingApprovalEl)pendingApprovalEl.remove();
-  const prompt=pendingApproval.prompt||{};
-  const options=Array.isArray(pendingApproval.options)&&pendingApproval.options.length
-    ? pendingApproval.options
-    : [{label:'approve once',value:'approve',hint:'run this call'},{label:'cancel',value:'reject',hint:'do not run'}];
-  const el=document.createElement('div');
-  el.className='msg assistant';
-  const actions=options.map(option=>{
-    const intent=approvalButtonClass(option.value);
-    const hint=option.hint?' title="'+esc(option.hint)+'"':'';
-    return '<button class="icon-button'+intent+'" type="button" data-approval-decision="'+esc(option.value)+'"'+hint+'>'+esc(option.label)+'</button>';
-  }).join('');
-  el.innerHTML='<div class="approval-inline" data-inline-approval="'+esc(pendingApproval.approval_id||'')+'"><div class="approval-inline-head"><div class="approval-inline-title">'+esc(prompt.title||('Approval · '+(pendingApproval.tool||'tool')))+'</div><div class="approval-inline-meta">'+esc((pendingApproval.tier||pendingApproval.risk||'approval') + ' · ' + (pendingApproval.approval_id||''))+'</div></div><div class="approval-inline-subject">'+esc(prompt.subject || pendingApproval.tool || 'Tool request')+'</div><div class="approval-inline-reason">'+esc(prompt.reason || pendingApproval.reason || '')+'</div><div class="approval-inline-actions">'+actions+'</div></div>';
-  document.getElementById('emptyChat')?.remove();
-  document.getElementById('threadInner').appendChild(el);
-  pendingApprovalEl=el;
-  el.querySelectorAll('[data-approval-decision]').forEach(btn=>btn.addEventListener('click',()=>submitApproval(btn.dataset.approvalDecision)));
+  pendingApprovalEl=attachApprovalToActivity(pendingApproval);
   setAgentTab('chat');
   scrollThread();
-  const first=el.querySelector('[data-approval-decision]');
+  const first=document.querySelector('[data-approval-decision]');
   if(first) first.focus();
+}
+function approvalActivityKey(approval){
+  return approval?.call_id || approval?.tool_id || approval?.request_id || approval?.approval_id || approval?.tool || 'approval';
+}
+function attachApprovalToActivity(approval){
+  const turn=ensureAssistantTurn();
+  const key=approvalActivityKey(approval);
+  let row=turn.byKey.get(key);
+  const prompt=approval?.prompt||{};
+  if(!row){
+    row={key,level:'approval',message:approval?.tool || prompt.subject || 'Tool approval',ts:Date.now(),kind:'tool',detail:approval?.args?JSON.stringify(approval.args,null,2):''};
+    turn.activity.push(row);
+    turn.byKey.set(key,row);
+  }
+  row.level='approval';
+  row.kind='tool';
+  row.message=row.message || approval?.tool || prompt.subject || 'Tool approval';
+  row.approval=approval;
+  row.approvalResult=null;
+  row.approvalFading=false;
+  renderActivity(turn);
+  return {turn,key};
 }
 function approvalButtonClass(value){
   const decision=String(value||'');
   if(decision==='reject')return ' approval-reject';
   if(decision==='approve')return ' approval-approve';
   return ' approval-secondary';
+}
+function approvalOptions(approval){
+  return Array.isArray(approval?.options)&&approval.options.length
+    ? approval.options.filter(option=>['approve','reject'].includes(String(option.value||'')))
+    : [{label:'approve once',value:'approve',hint:'run this call'},{label:'cancel',value:'reject',hint:'do not run'}];
+}
+function activityApprovalHtml(approval,fading=false){
+  if(!approval)return '';
+  const prompt=approval.prompt||{};
+  const options=approvalOptions(approval);
+  const actions=options.map(option=>{
+    const intent=approvalButtonClass(option.value);
+    const hint=option.hint?' title="'+esc(option.hint)+'"':'';
+    return '<button class="icon-button'+intent+'" type="button" data-approval-id="'+esc(approval.approval_id||'')+'" data-approval-decision="'+esc(option.value)+'"'+hint+'>'+esc(option.label)+'</button>';
+  }).join('');
+  return '<div class="activity-approval '+(fading?'fading':'')+'" data-inline-approval="'+esc(approval.approval_id||'')+'"><div class="activity-approval-head"><div class="activity-approval-title">'+esc(prompt.title||('Approval · '+(approval.tool||'tool')))+'</div><div class="activity-approval-meta">'+esc((approval.tier||approval.risk||'approval') + ' · ' + compactId(approval.approval_id||''))+'</div></div><div class="activity-approval-subject">'+esc(prompt.subject || approval.tool || 'Tool request')+'</div><div class="activity-approval-reason">'+esc(prompt.reason || approval.reason || '')+'</div><div class="activity-approval-actions">'+actions+'</div></div>';
 }
 function approvalLineHtml(approval,decision,message=''){
   const approved=decision!=='reject';
@@ -2065,22 +2121,30 @@ function approvalLineHtml(approval,decision,message=''){
   const reason=message?(' · '+message):'';
   return '<div class="approval-result-line '+(approved?'approved':'denied')+'" title="'+esc(prompt.subject||tool)+'"><span>'+label+'</span><span class="approval-result-tool">'+esc(tool+scope+reason)+'</span></div>';
 }
+function findApprovalRow(approval){
+  const key=approvalActivityKey(approval);
+  if(activeTurn?.byKey?.has(key))return {turn:activeTurn,row:activeTurn.byKey.get(key)};
+  return null;
+}
 function resolveInlineApproval(decision,message,approval=pendingApproval){
-  if(!pendingApprovalEl)return;
-  const holder=pendingApprovalEl;
-  const card=pendingApprovalEl.querySelector('.approval-inline');
-  if(!card)return;
+  const found=findApprovalRow(approval);
+  if(!found)return;
   pendingApprovalEl=null;
-  card.classList.add('done','fading');
+  found.row.approvalFading=true;
+  renderActivity(found.turn);
   setTimeout(()=>{
-    holder.innerHTML=approvalLineHtml(approval,decision,message);
+    found.row.approval=null;
+    found.row.approvalFading=false;
+    found.row.approvalResult={approval,decision,message};
+    found.row.level=decision==='reject'?'error':'running';
+    renderActivity(found.turn);
     scrollThread();
   },850);
 }
 async function submitApproval(decision){
   if(!pendingApproval?.approval_id)return;
   const approval=pendingApproval;
-  pendingApprovalEl?.querySelectorAll('[data-approval-decision]').forEach(btn=>{btn.disabled=true;});
+  document.querySelectorAll('[data-approval-decision]').forEach(btn=>{btn.disabled=true;});
   try {
     await api('/api/approvals/'+encodeURIComponent(approval.approval_id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})});
     addTrace('approval_decision', {approval_id:approval.approval_id, decision});
@@ -2166,7 +2230,7 @@ function addActivity(level,message,opts={}){
   const key=opts.key||null;
   let row=key?turn.byKey.get(key):null;
   if(row){Object.assign(row,{level,message,...opts});}
-  else{row={level,message,ts:Date.now(),...opts};turn.activity.push(row);if(key)turn.byKey.set(key,row);}
+  else{row={key,level,message,ts:Date.now(),...opts};turn.activity.push(row);if(key)turn.byKey.set(key,row);}
   renderActivity(turn);
 }
 function renderActivity(turn){
@@ -2179,7 +2243,13 @@ function renderActivity(turn){
   const tools=rows.filter(r=>r.kind==='tool').length;
   const errors=rows.filter(r=>r.level==='error').length;
   card.querySelector('.activity-rollup').textContent=[tools?tools+' tools':'',errors?errors+' errors':''].filter(Boolean).join(' · ');
-  card.querySelector('.activity-rows').innerHTML=rows.slice(card.classList.contains('expanded')?0:-4).map(r=>'<div class="activity-row '+esc(r.level||'')+'"><span class="status-dot"></span><span><span>'+esc(r.message)+'</span>'+(r.detail?'<pre>'+esc(r.detail)+'</pre>':'')+'</span></div>').join('');
+  card.querySelector('.activity-rows').innerHTML=rows.slice(card.classList.contains('expanded')?0:-4).map(r=>{
+    const approval=r.approval?activityApprovalHtml(r.approval,r.approvalFading):'';
+    const result=r.approvalResult?'<div class="activity-result">'+approvalLineHtml(r.approvalResult.approval,r.approvalResult.decision,r.approvalResult.message)+'</div>':'';
+    const detail=r.detail?'<pre>'+esc(r.detail)+'</pre>':'';
+    return '<div class="activity-row '+esc(r.level||'')+'" data-activity-key="'+esc(r.key||'')+'"><span class="status-dot"></span><span class="activity-main"><span class="activity-message">'+esc(r.message)+'</span>'+approval+result+detail+'</span></div>';
+  }).join('');
+  card.querySelectorAll('[data-approval-decision]').forEach(btn=>btn.addEventListener('click',()=>submitApproval(btn.dataset.approvalDecision)));
 }
 function appendAssistantText(text){
   const turn=ensureAssistantTurn();
@@ -2198,6 +2268,86 @@ function setAgentTab(tab){
     btn.setAttribute('aria-selected', String(active));
   });
 }
+function setTurnRunning(running){
+  turnRunning=Boolean(running);
+  const send=document.getElementById('send');
+  const prompt=document.getElementById('prompt');
+  if(send)send.textContent=turnRunning?'Follow up':'Send';
+  if(prompt)prompt.placeholder=turnRunning?'Send a follow-up to the running agent':'Ask about this local workspace';
+}
+function setApprovalAutoUi(enabled){
+  approvalAutoMode=Boolean(enabled);
+  const input=document.getElementById('approvalAuto');
+  const label=document.getElementById('approvalAutoLabel');
+  if(input)input.checked=approvalAutoMode;
+  if(label)label.textContent=approvalAutoMode?'Auto on':'Auto off';
+}
+async function loadApprovalMode(){
+  try{
+    const result=await api('/api/approvals/mode');
+    setApprovalAutoUi(Boolean(result.auto));
+  }catch(err){
+    addTrace('approval_mode_error',{message:err.message});
+  }
+}
+async function setApprovalAutoMode(enabled){
+  setApprovalAutoUi(enabled);
+  try{
+    const result=await api('/api/approvals/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto:enabled})});
+    setApprovalAutoUi(Boolean(result.auto));
+    addTrace('approval_mode',{mode:result.mode});
+  }catch(err){
+    setApprovalAutoUi(!enabled);
+    addTrace('approval_mode_error',{message:err.message});
+  }
+}
+function followupMessage(data){
+  const status=String(data?.status||'');
+  if(status==='accepted')return 'Follow-up sent to running agent';
+  if(status==='delivered')return 'Follow-up delivered to agent';
+  if(status==='queued')return 'Follow-up queued';
+  if(status==='waiting_for_task')return 'Follow-up waiting for agent task';
+  if(status==='duplicate')return 'Follow-up already sent';
+  if(status==='queued_next_turn')return 'Follow-up queued for next turn';
+  if(status==='error')return 'Follow-up failed';
+  return 'Follow-up status: '+(status||'unknown');
+}
+function shouldQueueFollowup(result){
+  const status=String(result?.status||'');
+  return status==='queued_next_turn'||status==='no_task';
+}
+function queueFollowupNextTurn(prompt,attachments=[],path=currentPath,reason='',id=''){
+  prompt=String(prompt||'').trim();
+  if(!prompt)return;
+  const key=id||prompt;
+  if(queuedFollowupIds.has(key))return;
+  queuedFollowupIds.add(key);
+  queuedFollowups.push({prompt,attachments,path,id:key});
+  document.getElementById('sendStatus').textContent=reason||'Queued for next turn';
+}
+async function runAgentTurn(prompt,attachments=[],path=currentPath,{displayed=false}={}){
+  if(!displayed)addUserMessage(prompt,attachments);
+  activeTurn=null;
+  setTurnRunning(true);
+  document.getElementById('sendStatus').textContent='Sending...';
+  try{
+    await api('/api/agent/turn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,path,attachments})});
+  }catch(err){
+    document.getElementById('sendStatus').textContent=err.message;
+    document.getElementById('bridgeState').textContent=err.status===401?'auth required':'error';
+    setTurnRunning(false);
+    addActivity('error',(err.status?err.status+' ':'')+err.message);
+    pendingAttachments=attachments.concat(pendingAttachments);
+    renderUploadTray();
+  }
+}
+function runNextQueuedFollowup(){
+  if(turnRunning||!queuedFollowups.length)return;
+  const next=queuedFollowups.shift();
+  queuedFollowupIds.delete(next.id);
+  document.getElementById('sendStatus').textContent='Running queued follow-up...';
+  runAgentTurn(next.prompt,next.attachments,next.path,{displayed:true});
+}
 function handleRelayEvent(type, event){
   const data = event.data || {};
   addTrace(type, JSON.stringify(data));
@@ -2207,6 +2357,11 @@ function handleRelayEvent(type, event){
   }
   if (type === 'agent_relay_ready') {
     document.getElementById('bridgeState').textContent = 'ready';
+    if(data.approval_mode)setApprovalAutoUi(data.approval_mode==='auto');
+    return;
+  }
+  if (type === 'agent_approval_mode') {
+    setApprovalAutoUi(Boolean(data.auto));
     return;
   }
   if (type === 'agent_history_loaded') {
@@ -2222,6 +2377,14 @@ function handleRelayEvent(type, event){
   if (type === 'agent_approval_required') {
     document.getElementById('bridgeState').textContent = 'approval required';
     showApprovalModal(data);
+    return;
+  }
+  if (type === 'agent_approval_event') {
+    if(data.state==='required'){
+      addActivity('approval', data.tool || 'Tool approval', {key:data.call_id||data.approval_id||data.tool, kind:'tool', detail:data.args?JSON.stringify(data.args,null,2):''});
+    } else if(data.state==='granted'||data.state==='denied') {
+      addActivity(data.state==='granted'?'running':'error', (data.tool||'tool')+' '+data.state, {key:data.call_id||data.approval_id||data.tool, kind:'tool'});
+    }
     return;
   }
   if (type === 'agent_approval_resolved') {
@@ -2240,19 +2403,34 @@ function handleRelayEvent(type, event){
   if (type === 'agent_turn_started') {
     activeTurn=null;
     ensureAssistantTurn();
+    setTurnRunning(true);
     document.getElementById('bridgeState').textContent = 'running';
     return;
   }
   if (type === 'agent_turn_complete') {
     if(activeTurn){activeTurn.active=false;renderActivity(activeTurn);activeTurn=null;}
+    setTurnRunning(false);
     document.getElementById('bridgeState').textContent = 'ready';
     document.getElementById('sendStatus').textContent = 'Done';
+    runNextQueuedFollowup();
     return;
   }
   if (type === 'agent_error') {
+    setTurnRunning(false);
     document.getElementById('bridgeState').textContent = 'error';
     document.getElementById('sendStatus').textContent = data.message || data.error || 'Agent error';
     addActivity('error', data.message || data.error || 'Agent error', {detail: data.code || ''});
+    return;
+  }
+  if (type === 'agent_followup_status') {
+    addActivity(data.ok===false?'error':'thinking', followupMessage(data), {key:data.intervention_id||'followup', kind:'followup', detail:data.error||data.instruction||''});
+    if(shouldQueueFollowup(data))queueFollowupNextTurn(data.instruction||'',[],currentPath,followupMessage(data),data.intervention_id||'');
+    document.getElementById('sendStatus').textContent=followupMessage(data);
+    return;
+  }
+  if (type === 'agent_followup_event') {
+    const inner=data.data||{};
+    addActivity('done', followupMessage({status:String(data.type||'').replace('user_intervention_',''), intervention_id:inner.intervention_id}), {key:inner.intervention_id||data.type, kind:'followup', detail:inner.delivered_at_tool||''});
     return;
   }
   if (type === 'agent_tool_call') {
@@ -2278,7 +2456,7 @@ es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, J
 [
   'session_started','file_browsed','file_read','file_uploaded','file_saved','tool_execution_requested','session_stopped',
   'agent_turn_requested','agent_relay_ready','agent_turn_started','agent_turn_complete',
-  'agent_history_loaded','agent_history_new','agent_approval_required','agent_approval_resolved','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
+  'agent_history_loaded','agent_history_new','agent_approval_mode','agent_approval_event','agent_approval_required','agent_approval_resolved','agent_followup_requested','agent_followup_status','agent_followup_event','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
   'agent_tool_result','agent_activity','agent_complete','agent_error','agent_event'
 ].forEach(type => {
   es.addEventListener(type, evt => { try { handleRelayEvent(type, JSON.parse(evt.data)); } catch {} });
@@ -2295,19 +2473,35 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
   document.getElementById('prompt').value='';
   pendingAttachments=[];
   renderUploadTray();
+  const followup=turnRunning;
+  if(followup){
+    const attachmentLines=attachments.length?('\\n\\nAttached files for this follow-up:\\n'+attachments.map(file=>'- '+(file.name||basename(file.path))+' path='+file.path).join('\\n')):'';
+    document.getElementById('sendStatus').textContent = 'Sending follow-up...';
+    try {
+      const result=await api('/api/agent/followup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt: prompt+attachmentLines }) });
+      document.getElementById('sendStatus').textContent = followupMessage(result);
+      if(shouldQueueFollowup(result))queueFollowupNextTurn(prompt+attachmentLines,attachments,currentPath,followupMessage(result),result.intervention_id||'');
+      if(result.ok===false)addActivity('error', followupMessage(result), {key:result.intervention_id||'followup', kind:'followup', detail:result.error||''});
+    } catch (err) {
+      document.getElementById('sendStatus').textContent = err.message;
+      addActivity('error', (err.status ? err.status + ' ' : '') + err.message);
+      pendingAttachments=attachments.concat(pendingAttachments);
+      renderUploadTray();
+    }
+    return;
+  }
   activeTurn=null;
+  setTurnRunning(true);
   document.getElementById('sendStatus').textContent = 'Sending...';
-  document.getElementById('send').disabled = true;
   try {
     await api('/api/agent/turn', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt, path: currentPath, attachments }) });
   } catch (err) {
     document.getElementById('sendStatus').textContent = err.message;
     document.getElementById('bridgeState').textContent = err.status === 401 ? 'auth required' : 'error';
+    setTurnRunning(false);
     addActivity('error', (err.status ? err.status + ' ' : '') + err.message);
     pendingAttachments=attachments.concat(pendingAttachments);
     renderUploadTray();
-  } finally {
-    document.getElementById('send').disabled = false;
   }
 });
 document.getElementById('prompt').addEventListener('keydown', e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();document.getElementById('composer').requestSubmit();}});
@@ -2321,6 +2515,7 @@ document.getElementById('sessionMenuButton').addEventListener('click',(e)=>{e.st
 document.getElementById('sessionModalClose').addEventListener('click',()=>setSessionMenuOpen(false));
 document.getElementById('sessionModal').addEventListener('click',(e)=>{if(e.target.id==='sessionModal')setSessionMenuOpen(false);});
 document.getElementById('approvalDenyTop').addEventListener('click',()=>submitApproval('reject'));
+document.getElementById('approvalAuto').addEventListener('change',e=>setApprovalAutoMode(e.target.checked));
 document.addEventListener('keydown',(e)=>{if(e.key==='Escape'&&pendingApproval){submitApproval('reject');return;}if(e.key==='Escape'&&sessionMenuOpen){setSessionMenuOpen(false);return;}if(e.key==='Escape'&&previewMaximized)setPreviewMaximized(false);});
 document.getElementById('refreshFiles').addEventListener('click',()=>{dirCache.clear();loadDir('.');});
 document.getElementById('toggleExplorer').addEventListener('click',()=>{let prefs={explorerVisible:true};try{prefs={...prefs,...JSON.parse(localStorage.getItem(layoutKey)||'{}')};}catch{}saveLayoutPatch({explorerVisible:!prefs.explorerVisible});});
@@ -2329,6 +2524,7 @@ applyLayout();
 setupResizers();
 renderTabs();
 renderEmptyViewer();
+loadApprovalMode();
 loadSessionChoices();
 loadDir('.').then(()=>{if(currentPath&&currentPath!=='.')openFile(currentPath).catch(()=>{});});
 </script>

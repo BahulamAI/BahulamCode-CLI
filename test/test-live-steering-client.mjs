@@ -97,12 +97,43 @@ await test('sendIntervention posts to /api/intervention/{task_id} with instructi
   assert.strictEqual(stub.calls.length, 1);
   const { url, opts } = stub.calls[0];
   assert.strictEqual(url, 'http://backend/api/intervention/task-xyz');
+  assert.notStrictEqual(url, 'http://backend/api/callback');
   assert.strictEqual(opts.method, 'POST');
   const body = JSON.parse(opts.body);
   assert.strictEqual(body.instruction, 'also update the tests');
   assert.strictEqual(body.intervention_id, 'iv-1');
+  assert.strictEqual(body.role, 'user');
+  assert.strictEqual(body.message_type, 'user_intervention');
+  assert.strictEqual(body.priority, 'high');
   assert.strictEqual(r.status, 'accepted');
   assert.strictEqual(r.interventionId, 'iv-1');
+});
+
+await test('sendIntervention preserves explicit high-priority user metadata', async () => {
+  const c = makeClient();
+  const stub = stubFetchOnce(() => jsonResponse({
+    status: 'accepted',
+    task_id: 'task-xyz',
+    intervention_id: 'iv-meta',
+  }));
+  await c.sendIntervention('live correction', {
+    idempotencyKey: 'iv-meta',
+    priority: 'high',
+  });
+  stub.restore();
+  const sent = JSON.parse(stub.calls[0].opts.body);
+  assert.deepStrictEqual(
+    {
+      role: sent.role,
+      message_type: sent.message_type,
+      priority: sent.priority,
+    },
+    {
+      role: 'user',
+      message_type: 'user_intervention',
+      priority: 'high',
+    },
+  );
 });
 
 await test('sendIntervention auto-generates an idempotency key when none supplied', async () => {
