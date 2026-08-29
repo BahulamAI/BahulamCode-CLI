@@ -833,7 +833,7 @@ export function getHistory(n = 50) {
 
 export function getStorePaths() {
   return {
-    keplerDir: KEPLER_DIR,
+    bahulamDir: KEPLER_DIR,
     projectsDir: PROJECTS_DIR,
     historyPath: path.join(KEPLER_DIR, 'history.jsonl'),
   };

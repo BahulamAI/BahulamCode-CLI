@@ -1,8 +1,8 @@
 /**
- * Unit tests for TarangStreamClient SSE parsing.
+ * Unit tests for BahulamStreamClient SSE parsing.
  */
 
-import { TarangStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
+import { BahulamStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
 import * as telemetry from '../src/telemetry/index.mjs';
 import * as http from 'node:http';
 import assert from 'node:assert';
@@ -71,7 +71,7 @@ await test('parses status event', async () => {
         { event: 'status', data: { message: 'Starting...' } },
         { event: 'complete', data: { summary: 'Done', changes: 1 } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -102,7 +102,7 @@ await test('parses SSE id and retry fields', async () => {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -140,7 +140,7 @@ await test('reconnects to task events after mid-stream drop', async () => {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -194,7 +194,7 @@ await test('reconnect after tool_call does not duplicate local tool execution', 
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -240,7 +240,7 @@ await test('reconnect replays complete when task finished while disconnected', a
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -283,7 +283,7 @@ await test('stale approval callback surfaces a continuation error', async () => 
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -329,7 +329,7 @@ await test('tool_call triggers execution, callback, and tool_result', async () =
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -365,7 +365,7 @@ await test('forwarded sub-agent tool_call preserves metadata on local tool_resul
         },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -402,7 +402,7 @@ await test('tool_result with file_diff yields structured file_diff event', async
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -477,7 +477,7 @@ await test('pause gates local tool execution until resume', async () => {
 
     let executedAt = 0;
     let resumedAt = 0;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -523,7 +523,7 @@ await test('client cancel ends stream without redundant cancelled status', async
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -560,7 +560,7 @@ await test('server-side tool_done with file_diff also yields file_diff event', a
         },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -581,7 +581,7 @@ await test('error event yielded', async () => {
     const { server, port } = await createMockServer([
         { event: 'error', data: { message: 'Something went wrong', fatal: true } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -605,7 +605,7 @@ await test('401 yields auth error', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'bad',
         openRouterKey: 'test',
@@ -640,7 +640,7 @@ await test('429 yields friendly rate limit error', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -669,7 +669,7 @@ await test('429 credit exhaustion preserves billing guidance', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -690,7 +690,7 @@ await test('plan event with milestones', async () => {
         { event: 'plan', data: { milestones: [{ name: 'Setup', status: 'pending' }, { name: 'Build', status: 'pending' }] } },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -713,7 +713,7 @@ await test('server-side tool_call is not executed locally', async () => {
         { event: 'tool_done', data: { call_id: 'mcp1', tool: 'mcp_demo', success: true, server_side: true } },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -754,7 +754,7 @@ await test('summarizeSession posts transcript with auth and product headers', as
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test-token',
         toolExecutor: mockToolExecutor,

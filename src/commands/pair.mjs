@@ -30,7 +30,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { generateKeyPairSync, createPrivateKey, createPublicKey } from 'node:crypto';
 import { promisify } from 'node:util';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 
 const GATEWAY = (process.env.BAHULAM_GATEWAY_URL || 'https://gateway.bahulam.ai').replace(/\/+$/, '').replace(/\/v1$/, '');
 const RESET = '\x1b[0m';
@@ -42,7 +42,7 @@ const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 
 export async function runPairCommand(args = []) {
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
   const creds = auth.loadCredentials();
   if (!creds.token) {
     process.stderr.write(`${RED}Not logged in. Run ${BOLD}bahulam login${RESET}${RED} first.${RESET}\n`);

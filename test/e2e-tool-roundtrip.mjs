@@ -48,13 +48,13 @@ await test('list_files returns array of files', async () => {
 });
 
 // Test: search_code finds pattern in files
-await test('search_code finds TarangStreamClient', async () => {
+await test('search_code finds BahulamStreamClient', async () => {
     const result = await executor.execute('search_code', {
-        pattern: 'TarangStreamClient',
+        pattern: 'BahulamStreamClient',
         path: 'src/core',
     });
     assert.strictEqual(result.success, true);
-    assert.ok(result.output.includes('TarangStreamClient'));
+    assert.ok(result.output.includes('BahulamStreamClient'));
 });
 
 // Test: get_file_info returns file metadata

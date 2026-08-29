@@ -11,7 +11,7 @@
  */
 
 import { c } from './ansi.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 
 // ── Agent Definitions ────────────────────────────────────────
 
@@ -296,7 +296,7 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
     projectRoot: execContext.project_root || null,
   });
 
-  const client = new TarangStreamClient({
+  const client = new BahulamStreamClient({
     baseUrl: creds.backendUrl,
     token: creds.token,
     toolExecutor,

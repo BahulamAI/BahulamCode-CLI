@@ -5,7 +5,7 @@
  * sends the same bounded attachment shape used by the preflight vision path to
  * the authenticated backend `/api/vision/analyze` endpoint.
  */
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import {
   loadImageAttachment,
   publicAttachmentMetadata,
@@ -88,7 +88,7 @@ export const AnalyzeImageTool = {
       };
     }
 
-    const creds = new TarangAuth().loadCredentials();
+    const creds = new BahulamAuth().loadCredentials();
     if (!creds.backendUrl || !creds.token) {
       return {
         success: false,

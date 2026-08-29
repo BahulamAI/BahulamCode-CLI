@@ -1,5 +1,5 @@
 /**
- * Callback Client — POST tool results back to Tarang backend.
+ * Callback Client — POST tool results back to Bahulam backend.
  * Implements retry with backoff: 2 retries, 500ms delay.
  * 4xx: no retry. 5xx/network: retry.
  */

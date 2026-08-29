@@ -104,7 +104,7 @@ export class JsonlWriter {
     if (this._pendingKeplerEvents.length > 0) {
       const pending = this._pendingKeplerEvents;
       this._pendingKeplerEvents = [];
-      for (const event of pending) this.writeKeplerEvent(event);
+      for (const event of pending) this.writeBahulamEvent(event);
     }
     // Flush any buffered entries now that we have a path
     if (this._buffer.length > 0) this._flush();
@@ -146,7 +146,7 @@ export class JsonlWriter {
    * Write a Bahulam UI/SSE event for exact-ish terminal replay on /resume.
    * This is a Bahulam extension; cc-lens readers should ignore unknown types.
    */
-  writeKeplerEvent(event) {
+  writeBahulamEvent(event) {
     if (!event || !event.type) return;
     const sanitized = sanitizeEventValue({
       type: event.type,

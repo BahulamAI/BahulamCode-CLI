@@ -10,7 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { loadKeplerMemory } from '../config/memory-loader.mjs';
+import { loadBahulamMemory } from '../config/memory-loader.mjs';
 
 /**
  * Load all CLAUDE.md files and merge them in order.
@@ -89,7 +89,7 @@ export function buildSystemPrompt({ cwd, tools, override, addDirs } = {}) {
         parts.push(f.content);
     }
 
-    for (const f of loadKeplerMemory({ cwd })) {
+    for (const f of loadBahulamMemory({ cwd })) {
         parts.push(f.content);
     }
 

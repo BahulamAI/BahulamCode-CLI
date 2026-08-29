@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { resolveWebUrl } from '../core/backend-url.mjs';
 import { LocalAgentRelay } from './agent-relay.mjs';
 import {
@@ -722,7 +722,7 @@ function staticContentType(filePath) {
 
 function localAuthInfo() {
   try {
-    const credentials = new TarangAuth().loadCredentials();
+    const credentials = new BahulamAuth().loadCredentials();
     return {
       authenticated: Boolean(credentials.token),
       backendUrl: credentials.backendUrl || '',

@@ -8,7 +8,7 @@
  */
 
 import { resolveBackendUrl } from '../core/backend-url.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { listLocalAgents, syncAgentsToBackend, agentToSpec, agentContentHash } from '../agents/scaffold.mjs';
 import { parseAgentDefinition } from '../agents/parser.mjs';
 import fs from 'node:fs';
@@ -56,7 +56,7 @@ function printAgentUsage() {
 // ── Helpers ────────────────────────────────────────────────────
 
 function getAuth() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
         process.stderr.write(`${RED}✗ Not authenticated. Run bahulam-code login first.${RESET}\n`);
@@ -66,7 +66,7 @@ function getAuth() {
 }
 
 function getBaseUrl() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     return auth.loadCredentials().backendUrl || resolveBackendUrl();
 }
 

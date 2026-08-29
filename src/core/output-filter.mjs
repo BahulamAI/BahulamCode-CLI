@@ -1,6 +1,6 @@
 /**
  * Output Filter — Smart shell output filtering + auto-lint.
- * Ported from tarang-cli (Python) ws/executor.py with enhanced patterns.
+ * Ported from tarang-cli (Python, legacy) ws/executor.py with enhanced patterns.
  */
 
 import * as fs from 'node:fs';

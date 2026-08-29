@@ -11,11 +11,11 @@
  *   bahulam-code --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
  */
 
-import { TarangStreamClient } from './stream-client.mjs';
+import { BahulamStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
 import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
 // daemon wiring — headless (and `bahulam daemonize`) also starts the socket
 // server + relay bridge when eventlog is enabled. Without this the daemon
@@ -58,7 +58,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     };
 
     // ── Auth ──
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
         emit({ type: 'error', error: 'Not logged in. Run: bahulam login' });
@@ -99,7 +99,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         };
         log(`Local mode: ${localModel}`);
     } else {
-        client = new TarangStreamClient({
+        client = new BahulamStreamClient({
             baseUrl: creds.backendUrl,
             token: creds.token,
             toolExecutor,

@@ -16,7 +16,7 @@ import {
 import { parseArgs } from '../config/cli-args.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { bahulamHome } from '../core/paths.mjs';
-import { TarangAuth as Auth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth as Auth } from '../auth/bahulam-auth.mjs';
 
 // ── Subcommands ──
 
@@ -183,8 +183,8 @@ async function main() {
   }
 
   if (subcommand === 'login') {
-    const { TarangAuth } = await import('../auth/tarang-auth.mjs');
-    const auth = new TarangAuth();
+    const { BahulamAuth } = await import('../auth/bahulam-auth.mjs');
+    const auth = new BahulamAuth();
     try {
       telemetry.track('login_shown', { method: 'cli_subcommand' });
       await auth.login();
@@ -198,8 +198,8 @@ async function main() {
   }
 
   if (subcommand === 'logout') {
-    const { TarangAuth } = await import('../auth/tarang-auth.mjs');
-    const auth = new TarangAuth();
+    const { BahulamAuth } = await import('../auth/bahulam-auth.mjs');
+    const auth = new BahulamAuth();
     const success = auth.logout();
     if (success) {
       process.stderr.write('\x1b[32m✓ Signed out. Credentials cleared.\x1b[0m\n');

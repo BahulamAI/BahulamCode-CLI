@@ -2,7 +2,7 @@
  * E2E SSE Flow Tests — full stream lifecycle against mock server.
  */
 
-import { TarangStreamClient } from '../src/core/stream-client.mjs';
+import { BahulamStreamClient } from '../src/core/stream-client.mjs';
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
 import * as http from 'node:http';
 import assert from 'node:assert';
@@ -57,7 +57,7 @@ await test('happy path: status → tool_call → callback → complete', async (
         }
     });
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test', openRouterKey: 'test', toolExecutor: executor,
     });
@@ -85,7 +85,7 @@ await test('error event ends stream', async () => {
         }
     });
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test', openRouterKey: 'test', toolExecutor: executor,
     });
@@ -101,7 +101,7 @@ await test('error event ends stream', async () => {
 
 // Test: Network error produces error event
 await test('network error produces error event', async () => {
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: 'http://127.0.0.1:1', // nothing listening
         token: 'test', openRouterKey: 'test', toolExecutor: executor,
     });
