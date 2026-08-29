@@ -31,7 +31,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { exec, execSync } from 'node:child_process';
 
 /**
  * Create a tool executor that bridges Bahulam tool names to OCC tools.
@@ -495,7 +495,24 @@ export function createToolExecutor({
     const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
     function stripAnsi(s) { return String(s || '').replace(ANSI_RE, ''); }
 
-    function autoLint(filePath) {
+    function runAutoLintCommand(lint) {
+        return new Promise((resolve) => {
+            exec(lint.command, {
+                encoding: 'utf-8',
+                timeout: 15_000,
+                cwd: lint.cwd,
+                maxBuffer: 1_000_000,
+                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
+            }, (err, stdout = '', stderr = '') => {
+                const output = err
+                    ? stripAnsi(stderr || stdout || '').trim()
+                    : stripAnsi(stdout || stderr || '').trim();
+                resolve(output || null);
+            });
+        });
+    }
+
+    async function autoLint(filePath) {
         const project = projectRegistry.projectForPath(filePath);
         const lint = resolveLintCommand(filePath, {
             projectRoot: project?.resource?.root || projectRootFor(filePath),
@@ -504,23 +521,7 @@ export function createToolExecutor({
         });
         if (!lint?.command) return null;
 
-        try {
-            const output = execSync(lint.command, {
-                encoding: 'utf-8',
-                timeout: 15_000,
-                cwd: lint.cwd,
-                stdio: ['pipe', 'pipe', 'pipe'],
-                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
-            });
-            const trimmed = stripAnsi(output).trim();
-            if (!trimmed) return null;
-            return trimmed;
-        } catch (err) {
-            // Non-zero exit means lint errors found
-            const output = stripAnsi(err.stderr || err.stdout || '').trim();
-            if (!output) return null;
-            return output;
-        }
+        return runAutoLintCommand(lint);
     }
 
     // ── Post-edit verification hint ──────────────────────────────
@@ -1143,7 +1144,7 @@ export function createToolExecutor({
             updateProjectIndex(filePath);
 
             // Auto-lint the written file
-            const lintOutput = autoLint(filePath);
+            const lintOutput = await autoLint(filePath);
             if (lintOutput) {
                 wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;
@@ -1236,9 +1237,21 @@ export function createToolExecutor({
         // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
+            const searchText = args.search ?? args.old_string ?? args.oldString;
+            const replaceText = args.replace ?? args.new_string ?? args.newString;
+            const replaceAll = args.replace_all === true || args.replaceAll === true;
+            if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
+                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'edit_file' };
+            }
+            if (typeof searchText !== 'string' || searchText.length === 0) {
+                return { success: false, output: 'Error: edit_file requires a non-empty search string.', _tool: 'edit_file' };
+            }
+            if (typeof replaceText !== 'string') {
+                return { success: false, output: 'Error: edit_file requires a replacement string.', _tool: 'edit_file' };
+            }
             const filePath = await resolvePath(rawPath, args);
             const before = readTextIfExists(filePath);
-            const writeCheck = validateWrite(filePath, args.replace, projectRootFor(filePath));
+            const writeCheck = validateWrite(filePath, replaceText, projectRootFor(filePath));
             if (!writeCheck.safe) {
                 return { success: false, output: `BLOCKED: ${writeCheck.reason}`, _tool: 'edit_file', _blocked: true };
             }
@@ -1256,46 +1269,51 @@ export function createToolExecutor({
             try {
                 result = await occRegistry.call('edit_file', {
                     file_path: filePath,
-                    search: args.search,
-                    replace: args.replace,
-                    replace_all: args.replace_all || false,
+                    search: searchText,
+                    replace: replaceText,
+                    replace_all: replaceAll,
                 });
             } catch (editErr) {
-                // OCC Edit failed (string not found) — fallback to Python replacement
+                // OCC Edit failed (string not found) — fallback to direct text replacement.
                 try {
-                    const search = args.search.replace(/'/g, "\\'").replace(/\n/g, "\\n");
-                    const replace = args.replace.replace(/'/g, "\\'").replace(/\n/g, "\\n");
-                    const pyCmd = `python3 -c "
-import sys
-with open('${filePath}', 'r') as f: content = f.read()
-old = '''${args.search}'''
-new = '''${args.replace}'''
-if old not in content:
-    print('ERROR: search string not found in file', file=sys.stderr)
-    sys.exit(1)
-content = content.replace(old, new, 1)
-with open('${filePath}', 'w') as f: f.write(content)
-print('OK: replaced')
-"`;
-                    const fallbackResult = execSync(pyCmd, {
-                        encoding: 'utf-8',
-                        timeout: 5000,
-                        cwd: projectRootFor(filePath),
-                    });
-                    result = `Edited ${filePath} (via fallback): ${fallbackResult.trim()}`;
-                } catch (sedErr) {
-                    return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${sedErr?.message || 'unknown'}. Try shell(sed) manually.`, _tool: 'edit_file' };
+                    const content = fs.readFileSync(filePath, 'utf-8');
+                    if (!content.includes(searchText)) {
+                        throw new Error('search string not found in file');
+                    }
+                    const nextContent = replaceAll
+                        ? content.split(searchText).join(replaceText)
+                        : content.replace(searchText, replaceText);
+                    if (nextContent !== content) {
+                        fs.writeFileSync(filePath, nextContent, 'utf-8');
+                    }
+                    result = `Edited ${filePath} (via fallback): OK: replaced`;
+                } catch (fallbackErr) {
+                    return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${fallbackErr?.message || 'unknown'}. Re-read the target range and provide an exact search string.`, _tool: 'edit_file' };
                 }
             }
 
             const wrapped = wrapResult(result, 'edit_file');
             const after = readTextIfExists(filePath);
+            if (wrapped.success !== false && before === after) {
+                const relativePath = path.relative(projectRootFor(filePath), filePath) || path.basename(filePath);
+                return {
+                    success: false,
+                    output: `edit_file made no changes to ${relativePath}. The search string may already be replaced, the replacement may be identical, or the target content may have drifted. Re-read the target range before trying a different edit.`,
+                    _tool: 'edit_file',
+                    _no_change: true,
+                    no_change: true,
+                    file_path: filePath,
+                    relative_path: relativePath,
+                    lines_added: 0,
+                    lines_removed: 0,
+                };
+            }
             attachFileDiff(wrapped, filePath, before, after);
             updateProjectIndex(filePath);
             _hasEdited = true;
 
             // Auto-lint the edited file
-            const lintOutput = autoLint(filePath);
+            const lintOutput = await autoLint(filePath);
             if (lintOutput) {
                 wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;

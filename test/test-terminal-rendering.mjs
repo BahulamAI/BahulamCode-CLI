@@ -432,7 +432,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
   assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
   assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(renderSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(renderSource.includes("process.env.BAHULAM_BLOCK_SEPARATOR || 'space'"));
   assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
   assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
   // renderBlockBoundary('thinking'|'content') calls fire from the event
@@ -523,7 +523,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('writeHintFrame(frame);'));
   assert.ok(replSource.includes("item.command.padEnd(13)"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
-  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
+  assert.ok(replSource.includes("process.env.BAHULAM_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
   // Empty-Enter branch now clears the phantom prompt line(s) before
@@ -531,7 +531,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   // phantom prompt lines".
   assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
-  assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
+  assert.ok(replSource.includes("process.env.BAHULAM_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes('function insertPromptText'));
   assert.ok(replSource.includes('_suppressBracketedPasteLines'));
   assert.ok(replSource.includes('_promptHasInsertedPaste'));
@@ -922,6 +922,23 @@ test('redacts sensitive config diff previews and details', () => {
   assert.ok(!prompt.includes('new-secret'));
 });
 
+test('edit_file no-op results render as warning instead of successful zero diff', () => {
+  const rendered = stripAnsi(formatCard({
+    tool: 'edit_file',
+    args: { file_path: 'src/opentab/sources.py' },
+    result: {
+      success: false,
+      output: 'edit_file made no changes to src/opentab/sources.py',
+      _no_change: true,
+      lines_added: 0,
+      lines_removed: 0,
+    },
+    columns: 120,
+  }));
+  assert.ok(rendered.includes('no changes'));
+  assert.ok(!rendered.includes('+0 −0'));
+});
+
 test('mission report omits old title and keeps tools/time on one line', () => {
   const rendered = stripAnsi(renderMissionReport({
     task: 'fix auth',
@@ -1166,7 +1183,7 @@ test('Phase 4b: formatCard fits terminal width at 40/60/80 cols', () => {
 });
 
 test('Phase 4c: plain mode strips ANSI from tool cards', () => {
-  // Non-TTY / KEPLER_PLAIN=1 / --plain — output must be deterministic and
+  // Non-TTY / BAHULAM_PLAIN=1 / --plain — output must be deterministic and
   // parseable by scripts. Any ANSI escape leaking through breaks that.
   _setTermForTesting({ isTTY: false, color: false, colorLevel: 'none', plain: true });
   try {

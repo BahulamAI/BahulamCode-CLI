@@ -191,6 +191,23 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks }) 
                     result = await hooks.runPostToolUse(block.name, result);
                 }
 
+                const resultStagnation = stagnation.recordResult(block.name, block.input || {}, result);
+                if (resultStagnation.detected) {
+                    yield {
+                        type: 'stagnation',
+                        tool: block.name,
+                        count: resultStagnation.count,
+                        kind: resultStagnation.kind,
+                        target: resultStagnation.target,
+                    };
+                    result = {
+                        ...(typeof result === 'object' && result !== null ? result : {}),
+                        success: false,
+                        output: stagnationMessage(block.name, resultStagnation.count, resultStagnation),
+                        _stagnation: true,
+                    };
+                }
+
                 yield { type: 'result', tool: block.name, result };
 
                 toolResults.push({

@@ -133,7 +133,7 @@ import { safeCwd } from './repl-utils.mjs';
 import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
 
 export function blockSeparatorMode() {
-  return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
+  return String(process.env.BAHULAM_BLOCK_SEPARATOR || 'space').toLowerCase();
 }
 
 export function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {

@@ -84,6 +84,9 @@ export function summarizeResult(tool, data, args = {}) {
   if (data._blocked) {
     return { text: firstOutputLine(data) || 'blocked', tone: 'danger' };
   }
+  if (isNoChangeEditResult(tool, data)) {
+    return { text: 'no changes', tone: 'warn' };
+  }
   if (data._observation_timeout) {
     const ms = data._observation_timeout_ms;
     const duration = typeof ms === 'number' ? formatDuration(ms) : '';
@@ -137,6 +140,9 @@ export function summarizeResult(tool, data, args = {}) {
     case 'write_file':
     case 'write_project': {
       const delta = diffDelta(data);
+      if (tool === 'edit_file' && delta === '+0 −0') {
+        return { text: 'no changes', tone: 'warn' };
+      }
       if (delta) return { text: delta, tone: 'success' };
       return { text: 'updated', tone: 'success' };
     }
@@ -531,6 +537,12 @@ function diffDelta(data) {
   const a = add ?? 0;
   const r = rem ?? 0;
   return `+${a} −${r}`;
+}
+
+function isNoChangeEditResult(tool, data = {}) {
+  if (tool !== 'edit_file') return false;
+  if (data._no_change || data.no_change) return true;
+  return data.success !== false && data.lines_added === 0 && data.lines_removed === 0;
 }
 
 function tone(text, t) {

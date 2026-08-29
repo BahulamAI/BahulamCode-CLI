@@ -118,13 +118,13 @@ function applyEnvOverrides(settings) {
     if (process.env.CLAUDE_CODE_THINKING === '1') settings.alwaysThinkingEnabled = true;
     if (process.env.CLAUDE_CODE_DISABLE_CRON === '1') settings.cronEnabled = false;
     if (process.env.CLAUDE_CODE_ENABLE_TASKS === '1') settings.enableTeams = true;
-    const stagnationEnabled = process.env.KEPLER_STAGNATION_DETECTION;
+    const stagnationEnabled = process.env.BAHULAM_STAGNATION_DETECTION;
     if (stagnationEnabled !== undefined) {
         settings.stagnationDetection = ['1', 'true', 'yes', 'on'].includes(
             stagnationEnabled.toLowerCase(),
         );
     }
-    const stagnationThreshold = process.env.KEPLER_STAGNATION_THRESHOLD;
+    const stagnationThreshold = process.env.BAHULAM_STAGNATION_THRESHOLD;
     if (stagnationThreshold) {
         const n = parseInt(stagnationThreshold, 10);
         if (Number.isInteger(n) && n >= 2) settings.stagnationThreshold = n;

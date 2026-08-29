@@ -4424,7 +4424,7 @@ export async function startTerminalRepl() {
   // Proxy stream: swallows writes when the dock owns the input row so
   // readline's echoes and _refreshLine cursor moves can't fight the dock's
   // absolute cursor placement (PRD-081 §5.1 — cursor race). When the dock
-  // is not mounted (plain-mode fallback, KEPLER_FIXED_INPUT=0, non-TTY),
+  // is not mounted (plain-mode fallback, BAHULAM_FIXED_INPUT=0, non-TTY),
   // writes pass through so history navigation / backspace still redraw.
   const readlineOutputProxy = new _WritableStream({
     write(chunk, _enc, cb) {
@@ -4471,7 +4471,7 @@ export async function startTerminalRepl() {
     // 3 rows fits comfortably in the dock's reservation without leaking
     // past the safety row.
     if (isInputDockMounted()) return 3;
-    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
+    const raw = process.env.BAHULAM_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return Math.min(8, n);
@@ -4744,14 +4744,14 @@ export async function startTerminalRepl() {
   //   1. If the terminal supports bracketed paste, we hold flushing until we
   //      see the ESC[201~ end marker — reliable regardless of paste latency.
   //   2. Otherwise we fall back to a short timer that merges bursts arriving
-  //      within KEPLER_PASTE_FLUSH_MS.
+  //      within BAHULAM_PASTE_FLUSH_MS.
   let _lineInFlight = false;
   const _queuedLines = [];
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
   function pasteFlushDelayMs() {
-    const raw = Number.parseInt(process.env.KEPLER_PASTE_FLUSH_MS || '35', 10);
+    const raw = Number.parseInt(process.env.BAHULAM_PASTE_FLUSH_MS || '35', 10);
     return Number.isFinite(raw) && raw >= 0 ? Math.min(250, raw) : 35;
   }
 

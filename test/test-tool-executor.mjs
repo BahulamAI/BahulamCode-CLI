@@ -25,7 +25,20 @@ function test(name, fn) {
 console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
-const unregisteredExecutor = createToolExecutor();
+await executor.waitForAutoRegister();
+
+function createExecutorWithoutAutoRegister() {
+    const previous = process.env.BAHULAM_SKIP_AUTO_REGISTER;
+    process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
+    try {
+        return createToolExecutor();
+    } finally {
+        if (previous == null) delete process.env.BAHULAM_SKIP_AUTO_REGISTER;
+        else process.env.BAHULAM_SKIP_AUTO_REGISTER = previous;
+    }
+}
+
+const unregisteredExecutor = createExecutorWithoutAutoRegister();
 await test('directory tools reject paths before project registration', async () => {
     const result = await unregisteredExecutor.execute('list_files', {
         path: path.join(process.cwd(), 'package.json'),
@@ -505,6 +518,110 @@ await test('write_file allows sensitive config with redacted diff', async () => 
         assert.ok(fs.existsSync(testPath));
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+await test('edit_file rejects no-op edits before linting unchanged files', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-noop-'));
+    const file = path.join(root, 'sources.py');
+    fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="noop-edit"\n');
+    fs.writeFileSync(file, 'VALUE = "already done"\n');
+
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        const result = await editExecutor.execute('edit_file', {
+            path: file,
+            search: 'VALUE = "already done"',
+            replace: 'VALUE = "already done"',
+        });
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result._no_change, true);
+        assert.strictEqual(result.lines_added, 0);
+        assert.strictEqual(result.lines_removed, 0);
+        assert.ok(result.output.includes('made no changes'));
+        assert.strictEqual(result.lint, undefined);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'VALUE = "already done"\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('edit_file accepts legacy old_string/new_string aliases', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-alias-'));
+    const file = path.join(root, 'sources.py');
+    fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="alias-edit"\n');
+    fs.writeFileSync(file, 'name = "old"\nother = "old"\n');
+
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        const result = await editExecutor.execute('edit_file', {
+            file_path: file,
+            old_string: '"old"',
+            new_string: '"new"',
+            replace_all: true,
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'name = "new"\nother = "new"\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('edit_file auto-lint keeps the event loop responsive', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-async-lint-'));
+    const bin = path.join(root, 'bin');
+    const file = path.join(root, 'app.js');
+    const marker = path.join(root, 'lint-started');
+    const done = path.join(root, 'lint-done');
+    const fakeNode = path.join(bin, 'node');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"async-lint"}\n');
+    fs.writeFileSync(file, 'const value = "old";\n');
+    fs.writeFileSync(fakeNode, [
+        '#!/bin/sh',
+        `printf started > "${marker.replace(/"/g, '\\"')}"`,
+        'sleep 1',
+        `printf done > "${done.replace(/"/g, '\\"')}"`,
+        'echo "All checks passed!"',
+    ].join('\n'));
+    fs.chmodSync(fakeNode, 0o755);
+
+    const previousPath = process.env.PATH;
+    let sawLintWhileRunning = false;
+    let interval = null;
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        process.env.PATH = `${bin}${path.delimiter}${previousPath || ''}`;
+        interval = setInterval(() => {
+            if (fs.existsSync(marker) && !fs.existsSync(done)) {
+                sawLintWhileRunning = true;
+            }
+        }, 5);
+
+        const result = await editExecutor.execute('edit_file', {
+            path: file,
+            search: '"old"',
+            replace: '"new"',
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.ok(result.lint.includes('All checks passed'));
+        assert.strictEqual(sawLintWhileRunning, true);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'const value = "new";\n');
+    } finally {
+        if (interval) clearInterval(interval);
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });
 
