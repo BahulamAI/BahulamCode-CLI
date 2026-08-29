@@ -1,0 +1,32 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "deepseek/deepseek-chat-v3-0324",
+  "timestamp": "2026-06-06T19:38:20.240204",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "errors": 0,
+  "pass_rate": 0.0,
+  "total_cost_usd": 0.075,
+  "avg_cost_usd": 0.075,
+  "results": [
+    {
+      "instance_id": "pallets__flask-4045",
+      "repo": "pallets/flask",
+      "model": "deepseek/deepseek-chat-v3-0324",
+      "timestamp": "2026-06-06T19:36:44.592761",
+      "orca": {
+        "success": true,
+        "duration_s": 93.3,
+        "cost_usd": 0.075449,
+        "tools": 11
+      },
+      "patch_lines": 155,
+      "tests": {
+        "passed": false,
+        "exit_code": 4
+      },
+      "status": "FAIL"
+    }
+  ]
+}

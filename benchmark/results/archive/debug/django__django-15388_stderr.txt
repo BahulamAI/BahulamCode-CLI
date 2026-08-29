@@ -1,0 +1,35 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: read_file
+[headless] Tool: search_files
+[headless] Tool: list_files
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: search_files
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: git_diff
+[headless] Done: 19 tools, 58.4s, $0.241
+
+--- Response ---
+Perfect! The fix is minimal and surgical. Let me verify that the fix makes sense by understanding what it does:
+
+1. **Before**: When a file changes in a template directory, it always triggers a reload
+2. **After**: When a file changes in a template directory, it only triggers a reload if the file is NOT a Python file (`.py`, `.pyc`, `.pyo`)
+
+This makes sense because:
+- Template files typically have extensions like `.html`, `.jinja2`, `.txt`, etc.
+- Python files (`.py`, `.pyc`, `.pyo`) are not templates and shouldn't trigger a template reload
+- The test case `test_non_template_changed_in_template_directory` checks that when a Python file (the test file itself) is in a template directory, it should NOT trigger a reload
+
+The fix is correct and all tests pass!

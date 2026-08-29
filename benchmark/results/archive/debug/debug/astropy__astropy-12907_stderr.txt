@@ -1,0 +1,22 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_code
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: git_diff
+[headless] Done: 8 tools, 125.1s, $0.056
+
+--- Response ---
+The fix is correct. Let me verify by tracing through the example:
+
+**`Pix2Sky_TAN() & cm`** where `cm = Linear1D(10) & Linear1D(5)`:
+
+1. `_separable` recursively computes `cm`'s separability matrix as the 2×2 identity `[[1,0],[0,1]]` (each linear output depends only on its own input).
+
+2. In the outer `_cstack`, the right side is this 2×2 matrix (an ndarray, not a Model). **The bug** was on line 245: `cright[-right.shape[0]:, -right.shape[1]:] = 1` — this stuffed the bottom-right 2×2 block with all-ones, destroying the identity matrix from the nested compound model. **The fix** changes it to `= right`, preserving the actual values.
+
+Result: `[[T,T,F,F], [T,T,F,F], [F,F,T,F], [F,F,F,T]]` — matching the expected output from the issue.

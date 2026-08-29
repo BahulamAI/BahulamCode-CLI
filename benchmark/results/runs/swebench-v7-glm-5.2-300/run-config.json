@@ -1,0 +1,22 @@
+{
+  "run_name": "swebench-v7-glm-5.2-300",
+  "date": "2026-07-17",
+  "dataset": "princeton-nlp/SWE-bench_Lite",
+  "n_instances": 300,
+  "model": "z-ai/glm-5.2",
+  "sub_agent_models": {
+    "explore": "minimax/minimax-m3",
+    "plan": "deepseek/deepseek-v4-pro",
+    "verify": "google/gemini-2.5-flash",
+    "debug": "deepseek/deepseek-reasoner",
+    "refactor": "deepseek/deepseek-chat-v3-0324"
+  },
+  "gateway": "OpenRouterGateway",
+  "framework_version": "3.2.7",
+  "parallel": 1,
+  "timeout_s": 600,
+  "docker_eval_workers": 6,
+  "vm": "VM1 D16s_v3 @ 20.9.77.9",
+  "run_id": "kepler-v7-full300-20260717-1609",
+  "note": "GLM 5.2 as main coder, parallel=1 (avoids sympy worktree race). Sub-agents fired ~3 times across 300 instances. Highest Kepler resolve rate on record."
+}

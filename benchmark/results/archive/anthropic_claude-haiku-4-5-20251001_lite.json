@@ -1,0 +1,32 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "anthropic/claude-haiku-4-5-20251001",
+  "timestamp": "2026-06-05T23:13:11.954491",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "errors": 0,
+  "pass_rate": 0.0,
+  "total_cost_usd": 0.294,
+  "avg_cost_usd": 0.294,
+  "results": [
+    {
+      "instance_id": "django__django-11422",
+      "repo": "django/django",
+      "model": "anthropic/claude-haiku-4-5-20251001",
+      "timestamp": "2026-06-05T23:11:38.322144",
+      "orca": {
+        "success": true,
+        "duration_s": 70.8,
+        "cost_usd": 0.293612,
+        "tools": 36
+      },
+      "patch_lines": 16,
+      "tests": {
+        "passed": false,
+        "exit_code": 1
+      },
+      "status": "FAIL"
+    }
+  ]
+}

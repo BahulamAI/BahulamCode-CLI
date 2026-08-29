@@ -1,0 +1,25 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: git_diff
+[headless] Done: 7 tools, 30.0s, $0.078
+
+--- Response ---
+Excellent! The fix is complete. Here's what I did:
+
+## Summary
+
+**Issue:** When using `python -m django shell -c` with Python code containing function definitions, the code would fail with `NameError` because imports and variables defined in the code weren't accessible within function scopes.
+
+**Root Cause:** The `exec()` calls on lines 87 and 93 were not passing a globals dictionary, which meant the code was executed in the current scope. This caused issues with function definitions that tried to reference imported modules or variables.
+
+**Fix:** Added an empty dictionary `{}` as the second argument to both `exec()` calls:
+- Line 87: `exec(options['command'], {})`
+- Line 93: `exec(sys.stdin.read(), {})`
+
+This ensures that the executed code runs in an isolated namespace with a minimal set of globals, which is the standard Python practice and matches how the `python -c` command works. The fix allows function definitions to work correctly because they now have access to the proper global scope.

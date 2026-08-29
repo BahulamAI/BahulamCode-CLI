@@ -1,0 +1,25 @@
+{
+  "run_id": "swebench-v2-flash-300",
+  "date": "2026-06-13",
+  "benchmark": "SWE-bench Lite",
+  "dataset": "princeton-nlp/SWE-bench_Lite",
+  "instances": 300,
+  "coder_model": "deepseek/deepseek-v4-flash",
+  "planner_model": "deepseek/deepseek-v4-pro",
+  "gateway": "OpenRouterV2Gateway",
+  "framework_version": "3.0.0",
+  "infrastructure": {
+    "operating_brief": true,
+    "preflight_planning": true,
+    "stagnation_detection": "enhanced",
+    "memory": false,
+    "timeout_s": 600,
+    "preflight_timeout_s": 120,
+    "parallel_per_vm": 1,
+    "vm_count": 4,
+    "vm_sizes": ["D4s_v3"],
+    "auto_lint": true,
+    "verification_hint": false
+  },
+  "notes": "First 100 on 5 VMs, remaining 200 on 4 VMs. Verification hint not deployed for this run."
+}

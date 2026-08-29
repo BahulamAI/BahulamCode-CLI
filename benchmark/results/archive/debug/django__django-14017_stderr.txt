@@ -1,0 +1,49 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_files
+/bin/sh: def: command not found
+rg: Q(: IO error for operation on Q(: No such file or directory (os error 2)
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: git_diff
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Tool: shell
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: run_tests
+[headless] Tool: git_diff
+[headless] Tool: run_tests
+[headless] Tool: run_tests
+[headless] Done: 30 tools, 88.6s, $0.323
+
+--- Response ---
+Perfect! The fix is complete and all tests pass. 
+
+## Summary
+
+The issue was that the `Q` class's `_combine` method would raise a `TypeError` when trying to combine with any non-Q object, even if that object was a conditional expression like `Exists`.
+
+**The fix:** Modified the `_combine` method in `/private/tmp/orca-swe-bench/django__django/466920f6/django/db/models/query_utils.py` to check if the `other` object has a `conditional` attribute set to `True`. If it does, it converts it to a Q object before combining. This allows expressions like `Q() | Exists(...)` to work correctly.
+
+The change is minimal and surgical:
+- It only affects the type checking logic in `_combine`
+- It preserves backward compatibility by still raising `TypeError` for non-conditional, non-Q objects
+- All existing tests pass, including the new test case

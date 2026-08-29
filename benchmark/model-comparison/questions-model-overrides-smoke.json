@@ -1,0 +1,20 @@
+{
+  "schema": "kepler.model-comparison-questions/1",
+  "source": "model override resolver smoke",
+  "date": "2026-07-20",
+  "notes": "Small persistent-mode smoke for session/local model_overrides and agent_spec payloads. Keeps token spend low before running the full comparison set.",
+  "questions": [
+    {
+      "q": 1,
+      "text": "Use explore to inspect '/Users/sree/Sites/Tarang Orca/codekepler-deploy-dashboard' and tell me what this repo is responsible for.",
+      "tests": "Primary can delegate exploration while model overrides are present",
+      "expected": "Identifies local Docker/deploy dashboard purpose with evidence"
+    },
+    {
+      "q": 2,
+      "text": "Based on the same repo context, list the backend services and their exposed local ports.",
+      "tests": "Persistent session continuity after a model-override first turn",
+      "expected": "Uses prior context and gives backend service names/ports"
+    }
+  ]
+}

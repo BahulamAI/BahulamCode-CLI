@@ -1,0 +1,25 @@
+[headless] Indexing project...
+[headless] Index ready
+[headless] Tool: search_code
+[headless] Tool: grep
+[headless] Tool: read_file
+[headless] Tool: edit_file
+[headless] Tool: read_file
+[headless] Tool: git_diff
+[headless] Done: 6 tools, 27.2s, $0.067
+
+--- Response ---
+Perfect! The fix is complete. 
+
+## Summary
+
+I've successfully fixed the issue by changing the default `FILE_UPLOAD_PERMISSIONS` setting from `None` to `0o644` in `/private/tmp/orca-swe-bench/django__django/e7fd69d0/django/conf/global_settings.py` at line 307.
+
+**What was changed:**
+- **File**: `django/conf/global_settings.py`
+- **Line 307**: Changed `FILE_UPLOAD_PERMISSIONS = None` to `FILE_UPLOAD_PERMISSIONS = 0o644`
+
+**Why this fixes the issue:**
+The problem described in the issue was that uploaded files had inconsistent permissions depending on whether they went through `MemoryUploadedFile` or `TemporaryUploadedFile`. When using `tempfile.NamedTemporaryFile` + `os.rename`, the resulting file permissions would be `0o0600` on some systems due to Python's tempfile module's security considerations. By setting a default of `0o644`, all uploaded files will now have consistent, readable permissions regardless of the upload handler used.
+
+This change aligns with the test expectation in `tests/test_utils/tests.py:1102` which asserts that `default_storage.file_permissions_mode` should equal `0o644`.

@@ -1,0 +1,29 @@
+{
+  "instances": 300,
+  "patched": 298,
+  "patch_rate": 99.3,
+  "tested": 143,
+  "test_rate": 47.7,
+  "total_cost_usd": 6.15,
+  "avg_cost_usd": 0.02,
+  "avg_duration_s": 166.0,
+  "avg_tools_per_instance": 19.0,
+  "tool_breakdown": {
+    "grep": 1296,
+    "read_file": 1212,
+    "search_code": 990,
+    "shell": 871,
+    "get_project_overview": 355,
+    "edit_file": 279,
+    "run_tests": 211,
+    "analyze_code": 196,
+    "git_diff": 191,
+    "list_files": 55,
+    "search_files": 21,
+    "git_status": 12,
+    "write_file": 5,
+    "bash": 1,
+    "validate_file": 1,
+    "graphql": 1
+  }
+}

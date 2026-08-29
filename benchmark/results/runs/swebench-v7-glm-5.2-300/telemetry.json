@@ -1,0 +1,23 @@
+{
+  "n": 300,
+  "patched": 235,
+  "patch_rate_pct": 78.3,
+  "resolved": 183,
+  "unresolved": 46,
+  "empty_patch": 65,
+  "docker_errors": 6,
+  "resolve_rate_pct": 61.0,
+  "resolve_per_patch_pct": 77.9,
+  "timeouts": 18,
+  "sub_agent_invocations_instances": 3,
+  "cost_usd_total": 25.8016,
+  "cost_usd_avg": 0.086,
+  "tokens": {
+    "input_total": 98965403,
+    "output_total": 1399139,
+    "cache_read_total": 93345656,
+    "cache_hit_pct": 94.3
+  },
+  "tools_total": 7545,
+  "tools_avg": 25.1
+}

@@ -1,0 +1,22 @@
+{
+  "benchmark": "swe-bench-lite",
+  "model": "deepseek/deepseek-v4-pro",
+  "timestamp": "2026-06-06T05:50:47.527545",
+  "total": 1,
+  "passed": 0,
+  "failed": 0,
+  "errors": 1,
+  "pass_rate": 0.0,
+  "total_cost_usd": 0,
+  "avg_cost_usd": 0.0,
+  "results": [
+    {
+      "instance_id": "django__django-15790",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-pro",
+      "timestamp": "2026-06-06T05:45:47.510828",
+      "status": "error",
+      "error": "Clone failed: Command '['git', 'clone', 'https://github.com/django/django.git', '/tmp/orca-swe-bench/django__django/c627226d']' timed out after 300 seconds"
+    }
+  ]
+}

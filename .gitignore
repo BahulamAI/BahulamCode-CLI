@@ -1,0 +1,24 @@
+node_modules/
+__pycache__/
+
+# macOS Finder metadata — never track
+.DS_Store
+**/.DS_Store
+
+.kepler
+.kepler/*
+
+.bahulam
+.bahulam/*
+
+.tarang
+.tarang/*
+
+.npmrc
+benchmark/.venv/
+benchmark/model-comparison/results/
+.vercel
+.env*
+
+# Ephemeral benchmark run artifacts (large, machine-generated)
+benchmark/results/runs/

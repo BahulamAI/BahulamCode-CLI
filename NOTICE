@@ -1,0 +1,39 @@
+Bahulam Code
+Copyright 2026 Bahulam
+
+This product includes software developed by Bahulam
+(https://bahulam.ai).
+
+------------------------------------------------------------------------
+Upstream and third-party attribution
+------------------------------------------------------------------------
+
+The CLI runtime derives, in part, from the open-source open-claude-code
+project. Original work bears its own copyright and license terms; those
+files remain governed by their upstream licenses, and any modifications
+to them by Bahulam are additionally licensed under Apache License,
+Version 2.0 as declared in the LICENSE file at the root of this project.
+
+The Bahulam runtime bundle (@bahulam/runtime-<platform>-<arch>) ships
+with a PyArmor-obfuscated Python payload that is proprietary to
+Bahulam and is NOT covered by the Apache License. It is distributed
+under a separate end-user license embedded in the runtime as a signed
+license JWT. Use of the runtime requires accepting that license.
+
+Third-party npm dependencies listed in package.json are the property of
+their respective owners and are used under the terms of the licenses
+they publish. See the individual package license files under
+node_modules/*/LICENSE for the specific terms of each dependency.
+
+------------------------------------------------------------------------
+Trademarks
+------------------------------------------------------------------------
+
+"Bahulam", the Bahulam wordmark, the ∞ mark, and "Orca" are trademarks
+of Bahulam. The Apache License, Section 6, does not grant permission
+to use these names, marks, or logos, except as required to describe the
+origin of the software or to reproduce the content of this NOTICE file.
+
+Forks and derivative works must select a distinct name and mark; the
+Bahulam and Orca marks may not be used to name, brand, or promote any
+derivative or competing distribution without prior written permission.

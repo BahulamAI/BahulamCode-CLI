@@ -1,0 +1,3138 @@
+{
+  "results": [
+    {
+      "instance_id": "django__django-12708",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:23:54.914231",
+      "kepler": {
+        "success": true,
+        "duration_s": 286.6,
+        "cost_usd": 0.032309,
+        "tools": 37,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 5,
+          "grep": 20,
+          "read_file": 6,
+          "edit_file": 1,
+          "git_diff": 1,
+          "shell": 1,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 325876,
+          "output_tokens": 16556,
+          "cache_read": 153344,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py\nindex 61f88401ab..1f521cfc5c 100644\n--- a/django/db/backends/base/schema.py\n+++ b/django/db/backends/base/schema.py\n@@ -393,7 +393,7 @@ class BaseDatabaseSchemaEditor:\n         news = {tuple(fields) for fields in new_index_together}\n         # Deleted indexes\n         for fields in olds.difference(news):\n-            self._delete_composed_index(model, fields, {'index': True}, self.sql_delete_index)\n+            self._delete_composed_index(model, fields, {'index': True, 'unique': False}, self.sql_delete_index)\n         # Created indexes\n         for field_names in news.difference(olds):\n             fields = [model._meta.get_field(field) for field in field_names]\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12747",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:29:13.202661",
+      "kepler": {
+        "success": true,
+        "duration_s": 268.9,
+        "cost_usd": 0.028429,
+        "tools": 29,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 6,
+          "analyze_code": 2,
+          "read_file": 8,
+          "grep": 6,
+          "edit_file": 3,
+          "git_diff": 1,
+          "search_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 285580,
+          "output_tokens": 15151,
+          "cache_read": 96128,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 17,
+      "model_patch": "diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\nindex 16dff6a1cd..dcc7c58564 100644\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -243,6 +243,11 @@ class Collector:\n         new_objs = self.add(objs, source, nullable,\n                             reverse_dependency=reverse_dependency)\n         if not new_objs:\n+            # If the queryset is empty, store it in fast_deletes so the\n+            # model label appears in the deleted counter (for consistency\n+            # with fast-deletable models).\n+            if hasattr(objs, '_raw_delete'):\n+                self.fast_deletes.append(objs)\n             return\n \n         model = new_objs[0].__class__\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12856",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:34:14.387006",
+      "kepler": {
+        "success": true,
+        "duration_s": 133.5,
+        "cost_usd": 0.022488,
+        "tools": 25,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 11,
+          "read_file": 8,
+          "edit_file": 1,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 241386,
+          "output_tokens": 4240,
+          "cache_read": 83712,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-12908",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:37:00.658346",
+      "kepler": {
+        "success": true,
+        "duration_s": 179.9,
+        "cost_usd": 0.019258,
+        "tools": 22,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 4,
+          "grep": 7,
+          "edit_file": 1,
+          "git_diff": 1,
+          "shell": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 207079,
+          "output_tokens": 3450,
+          "cache_read": 79232,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 13,
+      "model_patch": "diff --git a/django/db/models/query.py b/django/db/models/query.py\nindex e0eeccefa6..b706c38537 100644\n--- a/django/db/models/query.py\n+++ b/django/db/models/query.py\n@@ -1140,6 +1140,7 @@ class QuerySet:\n         \"\"\"\n         assert not self.query.is_sliced, \\\n             \"Cannot create distinct fields once a slice has been taken.\"\n+        self._not_support_combined_queries('distinct')\n         obj = self._chain()\n         obj.query.add_distinct_fields(*field_names)\n         return obj\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12915",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:40:33.499499",
+      "kepler": {
+        "success": true,
+        "duration_s": 254.9,
+        "cost_usd": 0.03277,
+        "tools": 34,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 14,
+          "edit_file": 2,
+          "git_diff": 2,
+          "shell": 10,
+          "analyze_code": 2,
+          "git_status": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 344529,
+          "output_tokens": 9793,
+          "cache_read": 112000,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 27,
+      "model_patch": "diff --git a/django/contrib/staticfiles/handlers.py b/django/contrib/staticfiles/handlers.py\nindex 711d8864ad..27dbf91126 100644\n--- a/django/contrib/staticfiles/handlers.py\n+++ b/django/contrib/staticfiles/handlers.py\n@@ -7,6 +7,8 @@ from django.contrib.staticfiles.views import serve\n from django.core.handlers.asgi import ASGIHandler\n from django.core.handlers.exception import response_for_exception\n from django.core.handlers.wsgi import WSGIHandler, get_path_info\n+from asgiref.sync import sync_to_async\n+\n from django.http import Http404\n \n \n@@ -52,6 +54,12 @@ class StaticFilesHandlerMixin:\n         except Http404 as e:\n             return response_for_exception(request, e)\n \n+    async def get_response_async(self, request):\n+        try:\n+            return await sync_to_async(self.serve)(request)\n+        except Http404 as e:\n+            return response_for_exception(request, e)\n+\n \n class StaticFilesHandler(StaticFilesHandlerMixin, WSGIHandler):\n     \"\"\"\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-12983",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:45:20.363528",
+      "kepler": {
+        "success": true,
+        "duration_s": 76.0,
+        "cost_usd": 0.006701,
+        "tools": 8,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 68537,
+          "output_tokens": 2960,
+          "cache_read": 48896,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/utils/text.py b/django/utils/text.py\nindex fb5f6298c4..3ba4bbb3f4 100644\n--- a/django/utils/text.py\n+++ b/django/utils/text.py\n@@ -403,7 +403,7 @@ def slugify(value, allow_unicode=False):\n     else:\n         value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')\n     value = re.sub(r'[^\\w\\s-]', '', value.lower()).strip()\n-    return re.sub(r'[-\\s]+', '-', value)\n+    return re.sub(r'[-\\s]+', '-', value).strip('-_')\n \n \n def camel_case_to_spaces(value):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13028",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:47:08.678603",
+      "kepler": {
+        "success": true,
+        "duration_s": 119.3,
+        "cost_usd": 0.022158,
+        "tools": 25,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "grep": 10,
+          "analyze_code": 1,
+          "read_file": 3,
+          "edit_file": 1,
+          "git_diff": 1,
+          "shell": 6
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 236658,
+          "output_tokens": 4770,
+          "cache_read": 99968,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 17,
+      "model_patch": "diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py\nindex ce18098fd2..afdd8b834c 100644\n--- a/django/db/models/sql/query.py\n+++ b/django/db/models/sql/query.py\n@@ -1124,7 +1124,10 @@ class Query(BaseExpression):\n \n     def check_filterable(self, expression):\n         \"\"\"Raise an error if expression cannot be used in a WHERE clause.\"\"\"\n-        if not getattr(expression, 'filterable', True):\n+        if (\n+            not getattr(expression, 'filterable', True) and\n+            not hasattr(expression, '_meta')\n+        ):\n             raise NotSupportedError(\n                 expression.__class__.__name__ + ' is disallowed in the filter '\n                 'clause.'\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13033",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:49:40.756643",
+      "kepler": {
+        "success": true,
+        "duration_s": 121.4,
+        "cost_usd": 0.018004,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 6,
+          "grep": 10,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 195063,
+          "output_tokens": 2492,
+          "cache_read": 81408,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13158",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:52:13.442566",
+      "kepler": {
+        "success": true,
+        "duration_s": 103.8,
+        "cost_usd": 0.017441,
+        "tools": 21,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "grep": 13,
+          "analyze_code": 3,
+          "list_files": 1,
+          "read_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 188550,
+          "output_tokens": 2620,
+          "cache_read": 71424,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13220",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:54:30.042339",
+      "kepler": {
+        "success": true,
+        "duration_s": 93.6,
+        "cost_usd": 0.009622,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "run_tests": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 97879,
+          "output_tokens": 4518,
+          "cache_read": 47744,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 46,
+      "model_patch": "diff --git a/django/core/exceptions.py b/django/core/exceptions.py\nindex dc084b8692..d1afe1cb7a 100644\n--- a/django/core/exceptions.py\n+++ b/django/core/exceptions.py\n@@ -163,6 +163,40 @@ class ValidationError(Exception):\n             error_dict.setdefault(NON_FIELD_ERRORS, []).extend(self.error_list)\n         return error_dict\n \n+    def __eq__(self, other):\n+        if not isinstance(other, ValidationError):\n+            return NotImplemented\n+        if hasattr(self, 'error_dict') and hasattr(other, 'error_dict'):\n+            if self.error_dict.keys() != other.error_dict.keys():\n+                return False\n+            return all(\n+                self._error_list_equal(self.error_dict[k], other.error_dict[k])\n+                for k in self.error_dict\n+            )\n+        if hasattr(self, 'error_list') and hasattr(other, 'error_list'):\n+            if hasattr(self, 'error_dict') or hasattr(other, 'error_dict'):\n+                return False\n+            return self._error_list_equal(self.error_list, other.error_list)\n+        return (\n+            self.message == other.message and\n+            self.code == other.code and\n+            self.params == other.params\n+        )\n+\n+    @staticmethod\n+    def _error_list_equal(list1, list2):\n+        if len(list1) != len(list2):\n+            return False\n+        remaining = list(list2)\n+        for item1 in list1:\n+            for i, item2 in enumerate(remaining):\n+                if item1 == item2:\n+                    remaining.pop(i)\n+                    break\n+            else:\n+                return False\n+        return True\n+\n     def __iter__(self):\n         if hasattr(self, 'error_dict'):\n             for field, errors in self.error_dict.items():\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13230",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:56:36.264741",
+      "kepler": {
+        "success": true,
+        "duration_s": 74.2,
+        "cost_usd": 0.007546,
+        "tools": 11,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "analyze_code": 1,
+          "read_file": 3,
+          "grep": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 80990,
+          "output_tokens": 1427,
+          "cache_read": 29184,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13265",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:58:23.336370",
+      "kepler": {
+        "success": true,
+        "duration_s": 113.1,
+        "cost_usd": 0.013263,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 4,
+          "read_file": 3,
+          "grep": 9,
+          "analyze_code": 1,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 142364,
+          "output_tokens": 2503,
+          "cache_read": 63360,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13315",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:00:48.797496",
+      "kepler": {
+        "success": true,
+        "duration_s": 204.8,
+        "cost_usd": 0.023675,
+        "tools": 26,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 7,
+          "read_file": 9,
+          "grep": 7,
+          "edit_file": 1,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 248036,
+          "output_tokens": 7512,
+          "cache_read": 102912,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/forms/models.py b/django/forms/models.py\nindex 5d115458a1..f993bb9c98 100644\n--- a/django/forms/models.py\n+++ b/django/forms/models.py\n@@ -100,7 +100,7 @@ def apply_limit_choices_to_to_formfield(formfield):\n     if hasattr(formfield, 'queryset') and hasattr(formfield, 'get_limit_choices_to'):\n         limit_choices_to = formfield.get_limit_choices_to()\n         if limit_choices_to is not None:\n-            formfield.queryset = formfield.queryset.complex_filter(limit_choices_to)\n+            formfield.queryset = formfield.queryset.complex_filter(limit_choices_to).distinct()\n \n \n def fields_for_model(model, fields=None, exclude=None, widgets=None,\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13321",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:04:46.152905",
+      "kepler": {
+        "success": true,
+        "duration_s": 92.5,
+        "cost_usd": 0.007466,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "run_tests": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 74972,
+          "output_tokens": 3994,
+          "cache_read": 52992,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 18,
+      "model_patch": "diff --git a/django/contrib/sessions/backends/base.py b/django/contrib/sessions/backends/base.py\nindex 187e14b1b7..bc38f48e98 100644\n--- a/django/contrib/sessions/backends/base.py\n+++ b/django/contrib/sessions/backends/base.py\n@@ -132,7 +132,11 @@ class SessionBase:\n \n     def _legacy_decode(self, session_data):\n         # RemovedInDjango40Warning: pre-Django 3.1 format will be invalid.\n-        encoded_data = base64.b64decode(session_data.encode('ascii'))\n+        try:\n+            encoded_data = base64.b64decode(session_data.encode('ascii'))\n+        except Exception:\n+            # base64 decoding errors \u2014 return empty session.\n+            return {}\n         try:\n             # could produce ValueError if there is no ':'\n             hash, serialized = encoded_data.split(b':', 1)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13401",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:06:51.068804",
+      "kepler": {
+        "success": true,
+        "duration_s": 144.1,
+        "cost_usd": 0.016166,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 2,
+          "grep": 10,
+          "list_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 175056,
+          "output_tokens": 2283,
+          "cache_read": 66048,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13447",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:09:47.387725",
+      "kepler": {
+        "success": true,
+        "duration_s": 244.6,
+        "cost_usd": 0.094151,
+        "tools": 25,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "read_file": 3,
+          "edit_file": 4,
+          "grep": 3,
+          "run_tests": 1,
+          "shell": 8,
+          "search_files": 1,
+          "list_files": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 1038313,
+          "output_tokens": 3902,
+          "cache_read": 235264,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 40,
+      "model_patch": "diff --git a/django/contrib/admin/sites.py b/django/contrib/admin/sites.py\nindex 837dabfea8..66388d26b7 100644\n--- a/django/contrib/admin/sites.py\n+++ b/django/contrib/admin/sites.py\n@@ -430,7 +430,7 @@ class AdminSite:\n                     return HttpResponsePermanentRedirect(path)\n         raise Http404\n \n-    def _build_app_dict(self, request, label=None):\n+    def build_app_dict(self, request, label=None):\n         \"\"\"\n         Build the app dictionary. The optional `label` parameter filters models\n         of a specific app.\n@@ -464,6 +464,7 @@ class AdminSite:\n                 'name': capfirst(model._meta.verbose_name_plural),\n                 'object_name': model._meta.object_name,\n                 'perms': perms,\n+                'model': model,\n                 'admin_url': None,\n                 'add_url': None,\n             }\n@@ -503,7 +504,7 @@ class AdminSite:\n         Return a sorted list of all the installed apps that have been\n         registered in this site.\n         \"\"\"\n-        app_dict = self._build_app_dict(request)\n+        app_dict = self.build_app_dict(request)\n \n         # Sort the apps alphabetically.\n         app_list = sorted(app_dict.values(), key=lambda x: x['name'].lower())\n@@ -534,7 +535,7 @@ class AdminSite:\n         return TemplateResponse(request, self.index_template or 'admin/index.html', context)\n \n     def app_index(self, request, app_label, extra_context=None):\n-        app_dict = self._build_app_dict(request, app_label)\n+        app_dict = self.build_app_dict(request, app_label)\n         if not app_dict:\n             raise Http404('The requested admin page does not exist.')\n         # Sort the models alphabetically within each app.\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13448",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:14:24.258607",
+      "kepler": {
+        "success": true,
+        "duration_s": 117.9,
+        "cost_usd": 0.016123,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 4,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 172659,
+          "output_tokens": 3241,
+          "cache_read": 97920,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/db/backends/base/creation.py b/django/db/backends/base/creation.py\nindex 503f7f56fd..093bb59943 100644\n--- a/django/db/backends/base/creation.py\n+++ b/django/db/backends/base/creation.py\n@@ -74,7 +74,7 @@ class BaseDatabaseCreation:\n         # and store it on the connection. This slightly horrific process is so people\n         # who are testing on databases without transactions or who are using\n         # a TransactionTestCase still get a clean database on every test run.\n-        if serialize:\n+        if serialize and self.connection.settings_dict['TEST']['MIGRATE']:\n             self.connection._test_serialized_contents = self.serialize_db_to_string()\n \n         call_command('createcachetable', database=self.connection.alias)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-13551",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:16:54.325917",
+      "kepler": {
+        "success": true,
+        "duration_s": 81.7,
+        "cost_usd": 0.006623,
+        "tools": 10,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 5,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 68929,
+          "output_tokens": 2332,
+          "cache_read": 33664,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13590",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:18:48.950450",
+      "kepler": {
+        "success": true,
+        "duration_s": 92.7,
+        "cost_usd": 0.01249,
+        "tools": 18,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 3,
+          "grep": 10,
+          "analyze_code": 2,
+          "read_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 134146,
+          "output_tokens": 2316,
+          "cache_read": 56448,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-13658",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:20:54.115767",
+      "kepler": {
+        "success": true,
+        "duration_s": 79.3,
+        "cost_usd": 0.012833,
+        "tools": 13,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 3,
+          "grep": 3,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 139060,
+          "output_tokens": 1765,
+          "cache_read": 56832,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 19,
+      "model_patch": "diff --git a/django/core/management/__init__.py b/django/core/management/__init__.py\nindex 1ba093e51f..4e30a28f33 100644\n--- a/django/core/management/__init__.py\n+++ b/django/core/management/__init__.py\n@@ -344,7 +344,12 @@ class ManagementUtility:\n         # Preprocess options to extract --settings and --pythonpath.\n         # These options could affect the commands that are available, so they\n         # must be processed early.\n-        parser = CommandParser(usage='%(prog)s subcommand [options] [args]', add_help=False, allow_abbrev=False)\n+        parser = CommandParser(\n+            prog=self.prog_name,\n+            usage='%(prog)s subcommand [options] [args]',\n+            add_help=False,\n+            allow_abbrev=False,\n+        )\n         parser.add_argument('--settings')\n         parser.add_argument('--pythonpath')\n         parser.add_argument('args', nargs='*')  # catch-all\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-15819",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:22:45.908620",
+      "kepler": {
+        "success": true,
+        "duration_s": 137.9,
+        "cost_usd": 0.010272,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 6,
+          "shell": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 99010,
+          "output_tokens": 7564,
+          "cache_read": 28416,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-15851",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:25:35.948425",
+      "kepler": {
+        "success": false,
+        "duration_s": 600,
+        "cost_usd": 0,
+        "tools": 0,
+        "tool_breakdown": {},
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {}
+      },
+      "status": "kepler_failed",
+      "error": "Timeout"
+    },
+    {
+      "instance_id": "django__django-15902",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:36:08.285084",
+      "kepler": {
+        "success": true,
+        "duration_s": 254.6,
+        "cost_usd": 0.030721,
+        "tools": 31,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 7,
+          "analyze_code": 2,
+          "read_file": 13,
+          "edit_file": 1,
+          "run_tests": 2,
+          "git_diff": 1,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 317901,
+          "output_tokens": 11724,
+          "cache_read": 129536,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/forms/formsets.py b/django/forms/formsets.py\nindex 3adbc6979a..70521b4562 100644\n--- a/django/forms/formsets.py\n+++ b/django/forms/formsets.py\n@@ -32,6 +32,8 @@ class ManagementForm(Form):\n     as well.\n     \"\"\"\n \n+    template_name = \"django/forms/div.html\"\n+\n     TOTAL_FORMS = IntegerField(widget=HiddenInput)\n     INITIAL_FORMS = IntegerField(widget=HiddenInput)\n     # MIN_NUM_FORM_COUNT and MAX_NUM_FORM_COUNT are output with the rest of the\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-15996",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:40:56.068072",
+      "kepler": {
+        "success": true,
+        "duration_s": 79.9,
+        "cost_usd": 0.007887,
+        "tools": 11,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 3,
+          "grep": 1,
+          "shell": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 80268,
+          "output_tokens": 3684,
+          "cache_read": 31360,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16041",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:42:48.017234",
+      "kepler": {
+        "success": true,
+        "duration_s": 122.9,
+        "cost_usd": 0.014625,
+        "tools": 15,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 4,
+          "read_file": 3,
+          "grep": 2,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 154392,
+          "output_tokens": 4055,
+          "cache_read": 38528,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 21,
+      "model_patch": "diff --git a/django/forms/formsets.py b/django/forms/formsets.py\nindex 57676428ff..782c4d17a2 100644\n--- a/django/forms/formsets.py\n+++ b/django/forms/formsets.py\n@@ -257,12 +257,14 @@ class BaseFormSet(RenderableFormMixin):\n \n     @property\n     def empty_form(self):\n+        form_kwargs = self.get_form_kwargs(None)\n+        form_kwargs.pop(\"empty_permitted\", None)\n         form = self.form(\n             auto_id=self.auto_id,\n             prefix=self.add_prefix(\"__prefix__\"),\n             empty_permitted=True,\n             use_required_attribute=False,\n-            **self.get_form_kwargs(None),\n+            **form_kwargs,\n             renderer=self.renderer,\n         )\n         self.add_fields(form, None)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16046",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:23:55.322490",
+      "kepler": {
+        "success": true,
+        "duration_s": 96.4,
+        "cost_usd": 0.010853,
+        "tools": 13,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "grep": 1,
+          "read_file": 5,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 112285,
+          "output_tokens": 4154,
+          "cache_read": 41216,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/utils/numberformat.py b/django/utils/numberformat.py\nindex 488d6a77cd..e952af3fdc 100644\n--- a/django/utils/numberformat.py\n+++ b/django/utils/numberformat.py\n@@ -68,7 +68,7 @@ def format(\n             str_number = \"{:f}\".format(number)\n     else:\n         str_number = str(number)\n-    if str_number[0] == \"-\":\n+    if str_number and str_number[0] == \"-\":\n         sign = \"-\"\n         str_number = str_number[1:]\n     # decimal part\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16139",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:25:57.928336",
+      "kepler": {
+        "success": true,
+        "duration_s": 78.6,
+        "cost_usd": 0.005724,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "git_status": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 61441,
+          "output_tokens": 1080,
+          "cache_read": 28928,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/contrib/auth/forms.py b/django/contrib/auth/forms.py\nindex b3cfc6723c..f6c4b7fc2f 100644\n--- a/django/contrib/auth/forms.py\n+++ b/django/contrib/auth/forms.py\n@@ -163,7 +163,7 @@ class UserChangeForm(forms.ModelForm):\n         super().__init__(*args, **kwargs)\n         password = self.fields.get(\"password\")\n         if password:\n-            password.help_text = password.help_text.format(\"../password/\")\n+            password.help_text = password.help_text.format(f\"../../{self.instance.pk}/password/\")\n         user_permissions = self.fields.get(\"user_permissions\")\n         if user_permissions:\n             user_permissions.queryset = user_permissions.queryset.select_related(\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16229",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:27:43.823940",
+      "kepler": {
+        "success": true,
+        "duration_s": 172.2,
+        "cost_usd": 0.018834,
+        "tools": 18,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 6,
+          "read_file": 7,
+          "grep": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 188657,
+          "output_tokens": 10305,
+          "cache_read": 44544,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16255",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:31:01.345766",
+      "kepler": {
+        "success": true,
+        "duration_s": 89.3,
+        "cost_usd": 0.009635,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 6
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 103434,
+          "output_tokens": 1810,
+          "cache_read": 48896,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/contrib/sitemaps/__init__.py b/django/contrib/sitemaps/__init__.py\nindex 27756d9d96..b40ad806ed 100644\n--- a/django/contrib/sitemaps/__init__.py\n+++ b/django/contrib/sitemaps/__init__.py\n@@ -168,7 +168,7 @@ class Sitemap:\n         if callable(self.lastmod):\n             try:\n                 return max([self.lastmod(item) for item in self.items()])\n-            except TypeError:\n+            except (TypeError, ValueError):\n                 return None\n         else:\n             return self.lastmod\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16379",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:32:57.731308",
+      "kepler": {
+        "success": true,
+        "duration_s": 74.4,
+        "cost_usd": 0.005409,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 57975,
+          "output_tokens": 1063,
+          "cache_read": 32512,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 20,
+      "model_patch": "diff --git a/django/core/cache/backends/filebased.py b/django/core/cache/backends/filebased.py\nindex 631da49444..ed3cb0d579 100644\n--- a/django/core/cache/backends/filebased.py\n+++ b/django/core/cache/backends/filebased.py\n@@ -91,8 +91,12 @@ class FileBasedCache(BaseCache):\n     def has_key(self, key, version=None):\n         fname = self._key_to_file(key, version)\n         if os.path.exists(fname):\n-            with open(fname, \"rb\") as f:\n-                return not self._is_expired(f)\n+            try:\n+                with open(fname, \"rb\") as f:\n+                    return not self._is_expired(f)\n+            except FileNotFoundError:\n+                # The file may have been removed by another process.\n+                return False\n         return False\n \n     def _cull(self):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16400",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:34:38.821184",
+      "kepler": {
+        "success": true,
+        "duration_s": 403.2,
+        "cost_usd": 0.02597,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 8,
+          "analyze_code": 3,
+          "read_file": 7
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 227670,
+          "output_tokens": 30444,
+          "cache_read": 39296,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16408",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:41:48.636218",
+      "kepler": {
+        "success": true,
+        "duration_s": 173.3,
+        "cost_usd": 0.022194,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 7,
+          "grep": 9,
+          "read_file": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 225337,
+          "output_tokens": 10634,
+          "cache_read": 69120,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16527",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:45:08.634332",
+      "kepler": {
+        "success": true,
+        "duration_s": 97.1,
+        "cost_usd": 0.009124,
+        "tools": 11,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 97994,
+          "output_tokens": 1691,
+          "cache_read": 43520,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 13,
+      "model_patch": "diff --git a/django/contrib/admin/templatetags/admin_modify.py b/django/contrib/admin/templatetags/admin_modify.py\nindex 9df4b7aadb..5b742af46a 100644\n--- a/django/contrib/admin/templatetags/admin_modify.py\n+++ b/django/contrib/admin/templatetags/admin_modify.py\n@@ -100,6 +100,7 @@ def submit_row(context):\n                 and context.get(\"show_delete\", True)\n             ),\n             \"show_save_as_new\": not is_popup\n+            and has_add_permission\n             and has_change_permission\n             and change\n             and save_as,\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16595",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:47:13.486768",
+      "kepler": {
+        "success": true,
+        "duration_s": 103.0,
+        "cost_usd": 0.015834,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 3,
+          "read_file": 4,
+          "grep": 9,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 169442,
+          "output_tokens": 3246,
+          "cache_read": 79616,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16816",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:49:23.114024",
+      "kepler": {
+        "success": true,
+        "duration_s": 174.7,
+        "cost_usd": 0.020124,
+        "tools": 18,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "analyze_code": 1,
+          "read_file": 4,
+          "grep": 6,
+          "search_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 200121,
+          "output_tokens": 11740,
+          "cache_read": 68096,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16820",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:52:44.785672",
+      "kepler": {
+        "success": true,
+        "duration_s": 359.8,
+        "cost_usd": 0.02465,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 10,
+          "read_file": 8,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 266431,
+          "output_tokens": 3730,
+          "cache_read": 121728,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-16873",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:59:10.883350",
+      "kepler": {
+        "success": true,
+        "duration_s": 70.8,
+        "cost_usd": 0.00576,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 62107,
+          "output_tokens": 948,
+          "cache_read": 36224,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 15,
+      "model_patch": "diff --git a/django/template/defaultfilters.py b/django/template/defaultfilters.py\nindex 03676533b7..671971a846 100644\n--- a/django/template/defaultfilters.py\n+++ b/django/template/defaultfilters.py\n@@ -587,7 +587,8 @@ def join(value, arg, autoescape=True):\n     try:\n         if autoescape:\n             value = [conditional_escape(v) for v in value]\n-        data = conditional_escape(arg).join(value)\n+            arg = conditional_escape(arg)\n+        data = arg.join(value)\n     except TypeError:  # Fail silently if arg isn't iterable.\n         return value\n     return mark_safe(data)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "django__django-16910",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:00:48.320306",
+      "kepler": {
+        "success": true,
+        "duration_s": 172.5,
+        "cost_usd": 0.02454,
+        "tools": 18,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 10,
+          "grep": 5,
+          "read_file": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 263714,
+          "output_tokens": 4479,
+          "cache_read": 132736,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-17051",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:04:07.844454",
+      "kepler": {
+        "success": true,
+        "duration_s": 103.3,
+        "cost_usd": 0.015006,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "grep": 11,
+          "read_file": 1,
+          "shell": 5
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 161558,
+          "output_tokens": 2590,
+          "cache_read": 82688,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "django__django-17087",
+      "repo": "django/django",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:06:19.347410",
+      "kepler": {
+        "success": true,
+        "duration_s": 82.6,
+        "cost_usd": 0.005917,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 62329,
+          "output_tokens": 1705,
+          "cache_read": 32128,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/django/db/migrations/serializer.py b/django/db/migrations/serializer.py\nindex d88cda6e20..06657ebaab 100644\n--- a/django/db/migrations/serializer.py\n+++ b/django/db/migrations/serializer.py\n@@ -168,7 +168,7 @@ class FunctionTypeSerializer(BaseSerializer):\n         ):\n             klass = self.value.__self__\n             module = klass.__module__\n-            return \"%s.%s.%s\" % (module, klass.__name__, self.value.__name__), {\n+            return \"%s.%s.%s\" % (module, klass.__qualname__, self.value.__name__), {\n                 \"import %s\" % module\n             }\n         # Further error checking\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pydata__xarray-5131",
+      "repo": "pydata/xarray",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:08:08.983130",
+      "kepler": {
+        "success": true,
+        "duration_s": 49.5,
+        "cost_usd": 0.004139,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 43939,
+          "output_tokens": 1024,
+          "cache_read": 16384,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/xarray/core/groupby.py b/xarray/core/groupby.py\nindex 8a097251..af5abd9a 100644\n--- a/xarray/core/groupby.py\n+++ b/xarray/core/groupby.py\n@@ -436,7 +436,7 @@ class GroupBy(SupportsArithmetic):\n         return zip(self._unique_coord.values, self._iter_grouped())\n \n     def __repr__(self):\n-        return \"{}, grouped over {!r} \\n{!r} groups with labels {}.\".format(\n+        return \"{}, grouped over {!r}\\n{!r} groups with labels {}.\".format(\n             self.__class__.__name__,\n             self._unique_coord.name,\n             self._unique_coord.size,\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-5859",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:09:06.007568",
+      "kepler": {
+        "success": true,
+        "duration_s": 153.3,
+        "cost_usd": 0.015269,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 3,
+          "edit_file": 1,
+          "bash": 1,
+          "shell": 6,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 156637,
+          "output_tokens": 6512,
+          "cache_read": 67840,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 17,
+      "model_patch": "diff --git a/pylint/checkers/misc.py b/pylint/checkers/misc.py\nindex 69149e61a..a9e9912bd 100644\n--- a/pylint/checkers/misc.py\n+++ b/pylint/checkers/misc.py\n@@ -121,9 +121,9 @@ class EncodingChecker(BaseChecker):\n \n         notes = \"|\".join(re.escape(note) for note in self.config.notes)\n         if self.config.notes_rgx:\n-            regex_string = rf\"#\\s*({notes}|{self.config.notes_rgx})\\b\"\n+            regex_string = rf\"#\\s*({notes}|{self.config.notes_rgx})(?!\\w)\"\n         else:\n-            regex_string = rf\"#\\s*({notes})\\b\"\n+            regex_string = rf\"#\\s*({notes})(?!\\w)\"\n \n         self._fixme_pattern = re.compile(regex_string, re.I)\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6506",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:11:45.114850",
+      "kepler": {
+        "success": true,
+        "duration_s": 238.4,
+        "cost_usd": 0.017181,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 4,
+          "edit_file": 2,
+          "git_diff": 1,
+          "run_tests": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 184569,
+          "output_tokens": 3168,
+          "cache_read": 59136,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 33,
+      "model_patch": "diff --git a/pylint/lint/run.py b/pylint/lint/run.py\nindex 778e64441..a47d41bc7 100644\n--- a/pylint/lint/run.py\n+++ b/pylint/lint/run.py\n@@ -13,7 +13,7 @@ from typing import Any\n \n from pylint import config\n from pylint.config.config_initialization import _config_initialization\n-from pylint.config.exceptions import ArgumentPreprocessingError\n+from pylint.config.exceptions import ArgumentPreprocessingError, _UnrecognizedOptionError\n from pylint.config.utils import _preprocess_options\n from pylint.constants import full_version\n from pylint.lint.base_options import _make_run_options\n@@ -132,9 +132,15 @@ group are mutually exclusive.\",\n         linter.disable(\"I\")\n         linter.enable(\"c-extension-no-member\")\n \n-        args = _config_initialization(\n-            linter, args, reporter, config_file=self._rcfile, verbose_mode=self.verbose\n-        )\n+        try:\n+            args = _config_initialization(\n+                linter, args, reporter, config_file=self._rcfile, verbose_mode=self.verbose\n+            )\n+        except _UnrecognizedOptionError as exc:\n+            msg = \", \".join(exc.options)\n+            print(f\"Unrecognized option found: {msg}\", file=sys.stderr)\n+            print(\"usage: pylint [options]\", file=sys.stderr)\n+            sys.exit(2)\n \n         if linter.config.jobs < 0:\n             print(\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7080",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:15:48.855867",
+      "kepler": {
+        "success": true,
+        "duration_s": 112.5,
+        "cost_usd": 0.028835,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 6,
+          "read_file": 4,
+          "grep": 9
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 309555,
+          "output_tokens": 5416,
+          "cache_read": 135552,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7114",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:17:46.895164",
+      "kepler": {
+        "success": true,
+        "duration_s": 194.3,
+        "cost_usd": 0.019253,
+        "tools": 21,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 3,
+          "shell": 9,
+          "grep": 2,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 182906,
+          "output_tokens": 15510,
+          "cache_read": 60544,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7228",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:21:08.121347",
+      "kepler": {
+        "success": true,
+        "duration_s": 138.3,
+        "cost_usd": 0.029227,
+        "tools": 22,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 9,
+          "read_file": 8,
+          "edit_file": 2,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 312738,
+          "output_tokens": 6005,
+          "cache_read": 86784,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 44,
+      "model_patch": "diff --git a/pylint/config/option.py b/pylint/config/option.py\nindex 5043fe765..7af2ec962 100644\n--- a/pylint/config/option.py\n+++ b/pylint/config/option.py\n@@ -23,7 +23,12 @@ def _csv_validator(_, name, value):\n def _regexp_validator(_, name, value):\n     if hasattr(value, \"pattern\"):\n         return value\n-    return re.compile(value)\n+    try:\n+        return re.compile(value)\n+    except re.error as e:\n+        raise optparse.OptionValueError(\n+            f\"option {name}: invalid regex value: {value!r} ({e})\"\n+        ) from e\n \n \n # pylint: disable=unused-argument\n@@ -38,13 +43,18 @@ def _regexp_paths_csv_validator(\n         return value\n     patterns = []\n     for val in _csv_validator(_, name, value):\n-        patterns.append(\n-            re.compile(\n-                str(pathlib.PureWindowsPath(val)).replace(\"\\\\\", \"\\\\\\\\\")\n-                + \"|\"\n-                + pathlib.PureWindowsPath(val).as_posix()\n+        try:\n+            patterns.append(\n+                re.compile(\n+                    str(pathlib.PureWindowsPath(val)).replace(\"\\\\\", \"\\\\\\\\\")\n+                    + \"|\"\n+                    + pathlib.PureWindowsPath(val).as_posix()\n+                )\n             )\n-        )\n+        except re.error as e:\n+            raise optparse.OptionValueError(\n+                f\"option {name}: invalid regex value: {val!r} ({e})\"\n+            ) from e\n     return patterns\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7993",
+      "repo": "pylint-dev/pylint",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:23:32.095466",
+      "kepler": {
+        "success": true,
+        "duration_s": 203.7,
+        "cost_usd": 0.010855,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 3,
+          "grep": 5
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 87262,
+          "output_tokens": 16675,
+          "cache_read": 27136,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-11143",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:27:03.725916",
+      "kepler": {
+        "success": true,
+        "duration_s": 73.0,
+        "cost_usd": 0.007086,
+        "tools": 8,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 72285,
+          "output_tokens": 3222,
+          "cache_read": 27136,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 13,
+      "model_patch": "diff --git a/src/_pytest/assertion/rewrite.py b/src/_pytest/assertion/rewrite.py\nindex 157903faf..9bf79f1e1 100644\n--- a/src/_pytest/assertion/rewrite.py\n+++ b/src/_pytest/assertion/rewrite.py\n@@ -676,6 +676,7 @@ class AssertionRewriter(ast.NodeVisitor):\n                 expect_docstring\n                 and isinstance(item, ast.Expr)\n                 and isinstance(item.value, ast.Constant)\n+                and isinstance(item.value.value, str)\n             ):\n                 doc = item.value.value\n                 if self.is_rewrite_disabled(doc):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-11148",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:28:22.967784",
+      "kepler": {
+        "success": true,
+        "duration_s": 180.7,
+        "cost_usd": 0.013097,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 8,
+          "read_file": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 120729,
+          "output_tokens": 12398,
+          "cache_read": 33024,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5103",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:31:30.318679",
+      "kepler": {
+        "success": true,
+        "duration_s": 533.9,
+        "cost_usd": 0.020454,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "list_files": 1,
+          "analyze_code": 1,
+          "read_file": 5,
+          "grep": 3,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 157355,
+          "output_tokens": 34955,
+          "cache_read": 57216,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5221",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:23:56.347250",
+      "kepler": {
+        "success": true,
+        "duration_s": 110.9,
+        "cost_usd": 0.012576,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "grep": 11,
+          "shell": 2,
+          "analyze_code": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 134285,
+          "output_tokens": 2722,
+          "cache_read": 41728,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5227",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:25:53.595549",
+      "kepler": {
+        "success": true,
+        "duration_s": 40.4,
+        "cost_usd": 0.004666,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "grep": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 49514,
+          "output_tokens": 1165,
+          "cache_read": 31104,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/src/_pytest/logging.py b/src/_pytest/logging.py\nindex 757cb2797..08670d2b2 100644\n--- a/src/_pytest/logging.py\n+++ b/src/_pytest/logging.py\n@@ -15,7 +15,7 @@ from _pytest.compat import dummy_context_manager\n from _pytest.config import create_terminal_writer\n from _pytest.pathlib import Path\n \n-DEFAULT_LOG_FORMAT = \"%(filename)-25s %(lineno)4d %(levelname)-8s %(message)s\"\n+DEFAULT_LOG_FORMAT = \"%(levelname)-8s %(name)s:%(filename)s:%(lineno)d %(message)s\"\n DEFAULT_LOG_DATE_FORMAT = \"%H:%M:%S\"\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5413",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:26:40.336520",
+      "kepler": {
+        "success": true,
+        "duration_s": 135.4,
+        "cost_usd": 0.020984,
+        "tools": 25,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 3,
+          "read_file": 5,
+          "grep": 10,
+          "edit_file": 1,
+          "git_status": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 222993,
+          "output_tokens": 5079,
+          "cache_read": 99200,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 17,
+      "model_patch": "diff --git a/src/_pytest/_code/code.py b/src/_pytest/_code/code.py\nindex c4ed961ac..9af346242 100644\n--- a/src/_pytest/_code/code.py\n+++ b/src/_pytest/_code/code.py\n@@ -449,6 +449,11 @@ class ExceptionInfo:\n             return \"<ExceptionInfo for raises contextmanager>\"\n         return \"<ExceptionInfo %s tblen=%d>\" % (self.typename, len(self.traceback))\n \n+    def __str__(self):\n+        if self._excinfo is None:\n+            return \"<ExceptionInfo for raises contextmanager>\"\n+        return str(self.value)\n+\n     def exconly(self, tryshort=False):\n         \"\"\" return the exception as a string\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5495",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:29:02.223995",
+      "kepler": {
+        "success": true,
+        "duration_s": 231.5,
+        "cost_usd": 0.028722,
+        "tools": 34,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 5,
+          "read_file": 7,
+          "edit_file": 3,
+          "run_tests": 3,
+          "shell": 9,
+          "grep": 5
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 290954,
+          "output_tokens": 14089,
+          "cache_read": 105216,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 40,
+      "model_patch": "diff --git a/src/_pytest/assertion/util.py b/src/_pytest/assertion/util.py\nindex 762e5761d..c70dff742 100644\n--- a/src/_pytest/assertion/util.py\n+++ b/src/_pytest/assertion/util.py\n@@ -259,8 +259,14 @@ def _compare_eq_sequence(left, right, verbose=0):\n     len_right = len(right)\n     for i in range(min(len_left, len_right)):\n         if left[i] != right[i]:\n+            if isinstance(left, bytes) or isinstance(right, bytes):\n+                extra_left = repr(bytes([left[i]]))\n+                extra_right = repr(bytes([right[i]]))\n+            else:\n+                extra_left = saferepr(left[i])\n+                extra_right = saferepr(right[i])\n             explanation += [\n-                \"At index {} diff: {!r} != {!r}\".format(i, left[i], right[i])\n+                \"At index {} diff: {} != {}\".format(i, extra_left, extra_right)\n             ]\n             break\n     len_diff = len_left - len_right\n@@ -268,11 +274,16 @@ def _compare_eq_sequence(left, right, verbose=0):\n     if len_diff:\n         if len_diff > 0:\n             dir_with_more = \"Left\"\n-            extra = saferepr(left[len_right])\n+            raw_extra = left[len_right]\n         else:\n             len_diff = 0 - len_diff\n             dir_with_more = \"Right\"\n-            extra = saferepr(right[len_left])\n+            raw_extra = right[len_left]\n+\n+        if isinstance(left, bytes) or isinstance(right, bytes):\n+            extra = repr(bytes([raw_extra]))\n+        else:\n+            extra = saferepr(raw_extra)\n \n         if len_diff == 1:\n             explanation += [\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5692",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:33:00.634133",
+      "kepler": {
+        "success": true,
+        "duration_s": 165.6,
+        "cost_usd": 0.024937,
+        "tools": 31,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 4,
+          "analyze_code": 1,
+          "read_file": 5,
+          "edit_file": 3,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 11,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 267323,
+          "output_tokens": 4880,
+          "cache_read": 121344,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 29,
+      "model_patch": "diff --git a/src/_pytest/junitxml.py b/src/_pytest/junitxml.py\nindex 15c630b1d..d804fc424 100644\n--- a/src/_pytest/junitxml.py\n+++ b/src/_pytest/junitxml.py\n@@ -8,9 +8,11 @@ Based on initial code from Ross Lawley.\n Output conforms to https://github.com/jenkinsci/xunit-plugin/blob/master/\n src/main/resources/org/jenkinsci/plugins/xunit/types/model/xsd/junit-10.xsd\n \"\"\"\n+import datetime\n import functools\n import os\n import re\n+import socket\n import sys\n import time\n \n@@ -663,9 +665,11 @@ class LogXML:\n             name=self.suite_name,\n             errors=self.stats[\"error\"],\n             failures=self.stats[\"failure\"],\n+            hostname=socket.gethostname(),\n             skipped=self.stats[\"skipped\"],\n             tests=numtests,\n             time=\"%.3f\" % suite_time_delta,\n+            timestamp=datetime.datetime.now().isoformat(),\n         )\n         logfile.write(Junit.testsuites([suite_node]).unicode(indent=0))\n         logfile.close()\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-6116",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:35:52.559374",
+      "kepler": {
+        "success": true,
+        "duration_s": 94.5,
+        "cost_usd": 0.014332,
+        "tools": 21,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "grep": 12,
+          "analyze_code": 1,
+          "shell": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 154135,
+          "output_tokens": 2556,
+          "cache_read": 58752,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7168",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:37:33.354026",
+      "kepler": {
+        "success": true,
+        "duration_s": 214.1,
+        "cost_usd": 0.016887,
+        "tools": 13,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 7
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 159864,
+          "output_tokens": 13882,
+          "cache_read": 57472,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 23,
+      "model_patch": "diff --git a/src/_pytest/_io/saferepr.py b/src/_pytest/_io/saferepr.py\nindex 23af4d0bb..e136d73f4 100644\n--- a/src/_pytest/_io/saferepr.py\n+++ b/src/_pytest/_io/saferepr.py\n@@ -19,9 +19,14 @@ def _format_repr_exception(exc: BaseException, obj: Any) -> str:\n         raise\n     except BaseException as exc:\n         exc_info = \"unpresentable exception ({})\".format(_try_repr_or_str(exc))\n-    return \"<[{} raised in repr()] {} object at 0x{:x}>\".format(\n-        exc_info, obj.__class__.__name__, id(obj)\n-    )\n+    try:\n+        return \"<[{} raised in repr()] {} object at 0x{:x}>\".format(\n+            exc_info, type(obj).__name__, id(obj)\n+        )\n+    except (KeyboardInterrupt, SystemExit):\n+        raise\n+    except BaseException:\n+        return \"<[{} raised in repr()] object at 0x{:x}>\".format(exc_info, id(obj))\n \n \n def _ellipsize(s: str, maxsize: int) -> str:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7220",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:41:13.933435",
+      "kepler": {
+        "success": true,
+        "duration_s": 67.1,
+        "cost_usd": 0.008829,
+        "tools": 10,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 4,
+          "analyze_code": 1,
+          "grep": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 92163,
+          "output_tokens": 2968,
+          "cache_read": 41856,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7373",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:42:27.282949",
+      "kepler": {
+        "success": true,
+        "duration_s": 151.9,
+        "cost_usd": 0.021664,
+        "tools": 28,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 8,
+          "grep": 14,
+          "edit_file": 1,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 229112,
+          "output_tokens": 5802,
+          "cache_read": 93568,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 31,
+      "model_patch": "diff --git a/src/_pytest/mark/evaluate.py b/src/_pytest/mark/evaluate.py\nindex 759191668..063099286 100644\n--- a/src/_pytest/mark/evaluate.py\n+++ b/src/_pytest/mark/evaluate.py\n@@ -10,25 +10,7 @@ from typing import Optional\n from ..outcomes import fail\n from ..outcomes import TEST_OUTCOME\n from .structures import Mark\n-from _pytest.config import Config\n from _pytest.nodes import Item\n-from _pytest.store import StoreKey\n-\n-\n-evalcache_key = StoreKey[Dict[str, Any]]()\n-\n-\n-def cached_eval(config: Config, expr: str, d: Dict[str, object]) -> Any:\n-    default = {}  # type: Dict[str, object]\n-    evalcache = config._store.setdefault(evalcache_key, default)\n-    try:\n-        return evalcache[expr]\n-    except KeyError:\n-        import _pytest._code\n-\n-        exprcode = _pytest._code.compile(expr, mode=\"eval\")\n-        evalcache[expr] = x = eval(exprcode, d)\n-        return x\n \n \n class MarkEvaluator:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7432",
+      "repo": "pytest-dev/pytest",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:45:05.897125",
+      "kepler": {
+        "success": true,
+        "duration_s": 87.3,
+        "cost_usd": 0.01103,
+        "tools": 13,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "analyze_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 6
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 113847,
+          "output_tokens": 4357,
+          "cache_read": 48768,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/src/_pytest/skipping.py b/src/_pytest/skipping.py\nindex 7bd975e5a..c9bdfee89 100644\n--- a/src/_pytest/skipping.py\n+++ b/src/_pytest/skipping.py\n@@ -291,7 +291,7 @@ def pytest_runtest_makereport(item: Item, call: CallInfo[None]):\n             else:\n                 rep.outcome = \"passed\"\n                 rep.wasxfail = xfailed.reason\n-    elif (\n+    if (\n         item._store.get(skipped_by_mark_key, True)\n         and rep.skipped\n         and type(rep.longrepr) is tuple\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8713",
+      "repo": "sphinx-doc/sphinx",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:46:39.595442",
+      "kepler": {
+        "success": true,
+        "duration_s": 90.4,
+        "cost_usd": 0.012935,
+        "tools": 18,
+        "tool_breakdown": {
+          "search_code": 3,
+          "get_project_overview": 2,
+          "read_file": 4,
+          "grep": 8,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 138030,
+          "output_tokens": 2848,
+          "cache_read": 51200,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8721",
+      "repo": "sphinx-doc/sphinx",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:48:23.428371",
+      "kepler": {
+        "success": true,
+        "duration_s": 75.1,
+        "cost_usd": 0.009841,
+        "tools": 10,
+        "tool_breakdown": {
+          "search_code": 3,
+          "get_project_overview": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 104133,
+          "output_tokens": 2603,
+          "cache_read": 60160,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sphinx/ext/viewcode.py b/sphinx/ext/viewcode.py\nindex a7d52a91c..060604e25 100644\n--- a/sphinx/ext/viewcode.py\n+++ b/sphinx/ext/viewcode.py\n@@ -182,6 +182,8 @@ def collect_pages(app: Sphinx) -> Generator[Tuple[str, Dict[str, Any], str], Non\n     env = app.builder.env\n     if not hasattr(env, '_viewcode_modules'):\n         return\n+    if app.builder.name.startswith(\"epub\") and not env.config.viewcode_enable_epub:\n+        return\n     highlighter = app.builder.highlighter  # type: ignore\n     urito = app.builder.get_relative_uri\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8801",
+      "repo": "sphinx-doc/sphinx",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:49:52.643159",
+      "kepler": {
+        "success": true,
+        "duration_s": 192.7,
+        "cost_usd": 0.050389,
+        "tools": 27,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 8,
+          "grep": 10,
+          "analyze_code": 1,
+          "read_file": 3,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 539329,
+          "output_tokens": 10273,
+          "cache_read": 98176,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 21,
+      "model_patch": "diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py\nindex 477aae247..d3cc555fa 100644\n--- a/sphinx/ext/autodoc/importer.py\n+++ b/sphinx/ext/autodoc/importer.py\n@@ -307,9 +307,12 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable\n                 analyzer = ModuleAnalyzer.for_module(modname)\n                 analyzer.analyze()\n                 for (ns, name), docstring in analyzer.attr_docs.items():\n-                    if ns == qualname and name not in members:\n-                        members[name] = ObjectMember(name, INSTANCEATTR, class_=cls,\n-                                                     docstring='\\n'.join(docstring))\n+                    if ns == qualname:\n+                        if name not in members:\n+                            members[name] = ObjectMember(name, INSTANCEATTR, class_=cls,\n+                                                         docstring='\\n'.join(docstring))\n+                        elif members[name].docstring is None:\n+                            members[name].docstring = '\\n'.join(docstring)\n             except (AttributeError, PycodeError):\n                 pass\n     except AttributeError:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-11400",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:53:18.833236",
+      "kepler": {
+        "success": true,
+        "duration_s": 80.5,
+        "cost_usd": 0.013772,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 3,
+          "edit_file": 1,
+          "run_tests": 1,
+          "shell": 2,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 148451,
+          "output_tokens": 2288,
+          "cache_read": 68992,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 17,
+      "model_patch": "diff --git a/sympy/printing/ccode.py b/sympy/printing/ccode.py\nindex 30a07a7b59..48e4c0562b 100644\n--- a/sympy/printing/ccode.py\n+++ b/sympy/printing/ccode.py\n@@ -248,6 +248,11 @@ def _print_For(self, expr):\n                 '{step}) {{\\n{body}\\n}}').format(target=target, start=start,\n                 stop=stop, step=step, body=body)\n \n+    def _print_sinc(self, expr):\n+        from sympy import Ne, Piecewise, sin\n+        _piecewise = Piecewise((sin(expr.args[0])/expr.args[0], Ne(expr.args[0], 0)), (1, True))\n+        return self._print(_piecewise)\n+\n     def _print_sign(self, func):\n         return '((({0}) > 0) - (({0}) < 0))'.format(self._print(func.args[0]))\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-11870",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:55:02.147742",
+      "kepler": {
+        "success": true,
+        "duration_s": 144.1,
+        "cost_usd": 0.018468,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 3,
+          "shell": 5,
+          "search_code": 3,
+          "list_files": 1,
+          "analyze_code": 1,
+          "read_file": 3,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 200967,
+          "output_tokens": 2114,
+          "cache_read": 50688,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-11897",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:57:49.282334",
+      "kepler": {
+        "success": true,
+        "duration_s": 232.6,
+        "cost_usd": 0.012273,
+        "tools": 16,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "analyze_code": 1,
+          "grep": 7,
+          "read_file": 5
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 103669,
+          "output_tokens": 16347,
+          "cache_read": 30592,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-12171",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:02:05.329486",
+      "kepler": {
+        "success": true,
+        "duration_s": 296.7,
+        "cost_usd": 0.060433,
+        "tools": 78,
+        "tool_breakdown": {
+          "search_code": 6,
+          "get_project_overview": 3,
+          "read_file": 14,
+          "edit_file": 2,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 22,
+          "list_files": 2,
+          "grep": 27
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 647164,
+          "output_tokens": 12159,
+          "cache_read": 294784,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 44,
+      "model_patch": "diff --git a/sympy/core/basic.py b/sympy/core/basic.py\nindex b992b45c26..fe91845cae 100644\n--- a/sympy/core/basic.py\n+++ b/sympy/core/basic.py\n@@ -1,6 +1,6 @@\n \"\"\"Base class for all the objects in SymPy\"\"\"\n from __future__ import print_function, division\n-from collections import Mapping\n+from collections.abc import Mapping\n \n from .assumptions import BasicMeta, ManagedProperties\n from .cache import cacheit\ndiff --git a/sympy/plotting/plot.py b/sympy/plotting/plot.py\nindex 664602d6ba..6268b99c06 100644\n--- a/sympy/plotting/plot.py\n+++ b/sympy/plotting/plot.py\n@@ -25,7 +25,7 @@\n from __future__ import print_function, division\n \n import inspect\n-from collections import Callable\n+from collections.abc import Callable\n import warnings\n import sys\n \ndiff --git a/sympy/printing/mathematica.py b/sympy/printing/mathematica.py\nindex 4c2ffd81e1..3730b3a346 100644\n--- a/sympy/printing/mathematica.py\n+++ b/sympy/printing/mathematica.py\n@@ -109,6 +109,13 @@ def _print_Integral(self, expr):\n     def _print_Sum(self, expr):\n         return \"Hold[Sum[\" + ', '.join(self.doprint(a) for a in expr.args) + \"]]\"\n \n+    def _print_Derivative(self, expr):\n+        return \"D[%s]\" % (self.stringify(expr.args, \", \"))\n+\n+    def _print_Float(self, expr):\n+        res = str(expr)\n+        return res.replace('e', '*^')\n+\n \n def mathematica_code(expr, **settings):\n     r\"\"\"Converts an expr to a string of the Wolfram Mathematica code\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12236",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:07:24.820654",
+      "kepler": {
+        "success": true,
+        "duration_s": 89.8,
+        "cost_usd": 0.011213,
+        "tools": 9,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 3,
+          "grep": 2,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 118846,
+          "output_tokens": 2874,
+          "cache_read": 65536,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-12419",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:09:17.454141",
+      "kepler": {
+        "success": true,
+        "duration_s": 307.1,
+        "cost_usd": 0.058685,
+        "tools": 57,
+        "tool_breakdown": {
+          "get_project_overview": 3,
+          "search_code": 14,
+          "read_file": 8,
+          "edit_file": 1,
+          "shell": 16,
+          "grep": 14,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 628389,
+          "output_tokens": 11834,
+          "cache_read": 209536,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 18,
+      "model_patch": "diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py\nindex b4d759836e..1cb0cf4df5 100644\n--- a/sympy/matrices/expressions/matexpr.py\n+++ b/sympy/matrices/expressions/matexpr.py\n@@ -476,10 +476,8 @@ def conjugate(self):\n         return self\n \n     def _entry(self, i, j):\n-        if i == j:\n-            return S.One\n-        else:\n-            return S.Zero\n+        from sympy.functions.special.tensor_functions import KroneckerDelta\n+        return KroneckerDelta(i, j)\n \n     def _eval_determinant(self):\n         return S.One\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12454",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:14:47.797747",
+      "kepler": {
+        "success": true,
+        "duration_s": 105.0,
+        "cost_usd": 0.015268,
+        "tools": 17,
+        "tool_breakdown": {
+          "search_code": 3,
+          "get_project_overview": 1,
+          "grep": 5,
+          "analyze_code": 1,
+          "shell": 2,
+          "read_file": 2,
+          "edit_file": 1,
+          "run_tests": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 163017,
+          "output_tokens": 3311,
+          "cache_read": 65408,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/matrices/matrices.py b/sympy/matrices/matrices.py\nindex 90ea232faf..c600fe88e2 100644\n--- a/sympy/matrices/matrices.py\n+++ b/sympy/matrices/matrices.py\n@@ -1112,7 +1112,7 @@ def is_upper(self):\n         \"\"\"\n         return all(self[i, j].is_zero\n                    for i in range(1, self.rows)\n-                   for j in range(i))\n+                   for j in range(min(i, self.cols)))\n \n     @property\n     def is_zero(self):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-12481",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:16:56.067569",
+      "kepler": {
+        "success": true,
+        "duration_s": 83.0,
+        "cost_usd": 0.007922,
+        "tools": 8,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "run_tests": 1,
+          "shell": 2,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 82191,
+          "output_tokens": 2918,
+          "cache_read": 46720,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 20,
+      "model_patch": "diff --git a/sympy/combinatorics/permutations.py b/sympy/combinatorics/permutations.py\nindex 136ed5a478..4ac1c2ef3b 100644\n--- a/sympy/combinatorics/permutations.py\n+++ b/sympy/combinatorics/permutations.py\n@@ -895,12 +895,8 @@ def __new__(cls, *args, **kwargs):\n         # counting starts from 1.\n \n         temp = flatten(args)\n-        if has_dups(temp):\n-            if is_cycle:\n-                raise ValueError('there were repeated elements; to resolve '\n-                'cycles use Cycle%s.' % ''.join([str(tuple(c)) for c in args]))\n-            else:\n-                raise ValueError('there were repeated elements.')\n+        if has_dups(temp) and not is_cycle:\n+            raise ValueError('there were repeated elements.')\n         temp = set(temp)\n \n         if not is_cycle and \\\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13031",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:18:42.263315",
+      "kepler": {
+        "success": true,
+        "duration_s": 181.5,
+        "cost_usd": 0.016244,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 3,
+          "shell": 8,
+          "search_code": 4,
+          "read_file": 2,
+          "grep": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 173029,
+          "output_tokens": 3730,
+          "cache_read": 54784,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-13043",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:22:07.569881",
+      "kepler": {
+        "success": true,
+        "duration_s": 160.5,
+        "cost_usd": 0.012587,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "run_tests": 2,
+          "edit_file": 1,
+          "shell": 4,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 119801,
+          "output_tokens": 10029,
+          "cache_read": 59648,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 24,
+      "model_patch": "diff --git a/sympy/integrals/intpoly.py b/sympy/integrals/intpoly.py\nindex fc72bd206f..5044429a35 100644\n--- a/sympy/integrals/intpoly.py\n+++ b/sympy/integrals/intpoly.py\n@@ -569,7 +569,8 @@ def decompose(expr, separate=False):\n             degrees = [(sum(degree_list(monom, *symbols)), monom)\n                        for monom in expr.args]\n             if separate:\n-                return [monom[1] for monom in degrees]\n+                return [monom[1] for monom in sorted(degrees,\n+                                                     key=lambda monom: monom[1].sort_key())]\n             else:\n                 for monom in degrees:\n                     degree, term = monom\n@@ -593,7 +594,7 @@ def decompose(expr, separate=False):\n         poly_dict[0] = expr\n \n     if separate:\n-        return list(poly_dict.values())\n+        return sorted(list(poly_dict.values()), key=lambda expr: expr.sort_key())\n     return poly_dict\n \n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13146",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:25:11.134052",
+      "kepler": {
+        "success": true,
+        "duration_s": 224.7,
+        "cost_usd": 0.024207,
+        "tools": 30,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "shell": 12,
+          "read_file": 5,
+          "grep": 5,
+          "edit_file": 2,
+          "write_file": 1,
+          "analyze_code": 2,
+          "search_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 252189,
+          "output_tokens": 8391,
+          "cache_read": 104832,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 33,
+      "model_patch": "diff --git a/sympy/core/basic.py b/sympy/core/basic.py\nindex 2ad720d35a..66d9d24c34 100644\n--- a/sympy/core/basic.py\n+++ b/sympy/core/basic.py\n@@ -1,6 +1,10 @@\n \"\"\"Base class for all the objects in SymPy\"\"\"\n from __future__ import print_function, division\n-from collections import Mapping, defaultdict\n+try:\n+    from collections import Mapping\n+except ImportError:\n+    from collections.abc import Mapping\n+from collections import defaultdict\n from itertools import chain\n \n from .assumptions import BasicMeta, ManagedProperties\ndiff --git a/sympy/plotting/plot.py b/sympy/plotting/plot.py\nindex d5abe84da9..b5bdf7f478 100644\n--- a/sympy/plotting/plot.py\n+++ b/sympy/plotting/plot.py\n@@ -25,7 +25,10 @@\n from __future__ import print_function, division\n \n import inspect\n-from collections import Callable\n+try:\n+    from collections import Callable\n+except ImportError:\n+    from collections.abc import Callable\n import warnings\n import sys\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13177",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:29:20.759899",
+      "kepler": {
+        "success": true,
+        "duration_s": 81.5,
+        "cost_usd": 0.008481,
+        "tools": 9,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 89473,
+          "output_tokens": 2379,
+          "cache_read": 54656,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 15,
+      "model_patch": "diff --git a/sympy/core/mod.py b/sympy/core/mod.py\nindex 11c800704b..bd08823d68 100644\n--- a/sympy/core/mod.py\n+++ b/sympy/core/mod.py\n@@ -39,7 +39,8 @@ def doit(p, q):\n             if p.is_infinite or q.is_infinite or p is nan or q is nan:\n                 return nan\n             if (p == q or p == -q or\n-                    p.is_Pow and p.exp.is_Integer and p.base == q or\n+                    p.is_Pow and p.exp.is_Integer and p.base == q\n+                    and p.base.is_integer or\n                     p.is_integer and q == 1):\n                 return S.Zero\n \n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13437",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:23:57.109958",
+      "kepler": {
+        "success": true,
+        "duration_s": 92.4,
+        "cost_usd": 0.010401,
+        "tools": 10,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 4,
+          "run_tests": 1,
+          "shell": 1,
+          "grep": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 107632,
+          "output_tokens": 3967,
+          "cache_read": 61696,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-13471",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:25:51.097891",
+      "kepler": {
+        "success": true,
+        "duration_s": 86.8,
+        "cost_usd": 0.009438,
+        "tools": 11,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "grep": 4,
+          "analyze_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 99267,
+          "output_tokens": 2801,
+          "cache_read": 45312,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/core/numbers.py b/sympy/core/numbers.py\nindex 7bc96e68eb..965d0021b9 100644\n--- a/sympy/core/numbers.py\n+++ b/sympy/core/numbers.py\n@@ -1042,7 +1042,7 @@ def __new__(cls, num, dps=None, prec=None, precision=None):\n                 # it's a hexadecimal (coming from a pickled object)\n                 # assume that it is in standard form\n                 num = list(num)\n-                num[1] = long(num[1], 16)\n+                num[1] = int(num[1].rstrip('L'), 16)\n                 _mpf_ = tuple(num)\n             else:\n                 if len(num) == 4:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13480",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:27:39.970908",
+      "kepler": {
+        "success": true,
+        "duration_s": 59.0,
+        "cost_usd": 0.006323,
+        "tools": 8,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "shell": 3,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 67551,
+          "output_tokens": 1354,
+          "cache_read": 38784,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/functions/elementary/hyperbolic.py b/sympy/functions/elementary/hyperbolic.py\nindex 2a4555d919..5fbb73c786 100644\n--- a/sympy/functions/elementary/hyperbolic.py\n+++ b/sympy/functions/elementary/hyperbolic.py\n@@ -587,7 +587,7 @@ def eval(cls, arg):\n                 x, m = _peeloff_ipi(arg)\n                 if m:\n                     cothm = coth(m)\n-                    if cotm is S.ComplexInfinity:\n+                    if cothm is S.ComplexInfinity:\n                         return coth(x)\n                     else: # cothm == 0\n                         return tanh(x)\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13647",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:29:03.223184",
+      "kepler": {
+        "success": true,
+        "duration_s": 83.7,
+        "cost_usd": 0.008487,
+        "tools": 9,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "analyze_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "run_tests": 2,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 87540,
+          "output_tokens": 3382,
+          "cache_read": 63872,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/matrices/common.py b/sympy/matrices/common.py\nindex 056d9bc497..4aa75e4d77 100644\n--- a/sympy/matrices/common.py\n+++ b/sympy/matrices/common.py\n@@ -86,7 +86,7 @@ def entry(i, j):\n                 return self[i, j]\n             elif pos <= j < pos + other.cols:\n                 return other[i, j - pos]\n-            return self[i, j - pos - other.cols]\n+            return self[i, j - other.cols]\n \n         return self._new(self.rows, self.cols + other.cols,\n                          lambda i, j: entry(i, j))\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-13773",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:30:49.463784",
+      "kepler": {
+        "success": true,
+        "duration_s": 86.4,
+        "cost_usd": 0.006806,
+        "tools": 11,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 5,
+          "grep": 4
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 68186,
+          "output_tokens": 3717,
+          "cache_read": 40704,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-20590",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:32:39.114725",
+      "kepler": {
+        "success": true,
+        "duration_s": 105.9,
+        "cost_usd": 0.014292,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 4,
+          "analyze_code": 2,
+          "read_file": 5,
+          "grep": 8
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 152440,
+          "output_tokens": 3179,
+          "cache_read": 69248,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-20639",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:34:47.046387",
+      "kepler": {
+        "success": true,
+        "duration_s": 88.0,
+        "cost_usd": 0.005819,
+        "tools": 8,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 1,
+          "edit_file": 1,
+          "git_diff": 1,
+          "run_tests": 1,
+          "shell": 2
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 59715,
+          "output_tokens": 2473,
+          "cache_read": 25856,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py\nindex df7452ee87..ea3b9f1b90 100644\n--- a/sympy/printing/pretty/pretty.py\n+++ b/sympy/printing/pretty/pretty.py\n@@ -1954,7 +1954,7 @@ def _print_Pow(self, power):\n             if e is S.NegativeOne:\n                 return prettyForm(\"1\")/self._print(b)\n             n, d = fraction(e)\n-            if n is S.One and d.is_Atom and not e.is_Integer and self._settings['root_notation']:\n+            if n is S.One and d.is_Integer and not e.is_Integer and self._settings['root_notation']:\n                 return self._print_nth_root(b, e)\n             if e.is_Rational and e < 0:\n                 return prettyForm(\"1\")/self._print(Pow(b, -e, evaluate=False))\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-21055",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:36:38.856723",
+      "kepler": {
+        "success": true,
+        "duration_s": 68.1,
+        "cost_usd": 0.007346,
+        "tools": 12,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 5,
+          "grep": 3
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 77860,
+          "output_tokens": 1881,
+          "cache_read": 29824,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21171",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:38:09.290081",
+      "kepler": {
+        "success": true,
+        "duration_s": 98.9,
+        "cost_usd": 0.017085,
+        "tools": 19,
+        "tool_breakdown": {
+          "search_code": 2,
+          "get_project_overview": 1,
+          "grep": 12,
+          "list_files": 2,
+          "analyze_code": 1,
+          "read_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 183547,
+          "output_tokens": 3141,
+          "cache_read": 68608,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21379",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:40:10.744323",
+      "kepler": {
+        "success": true,
+        "duration_s": 125.9,
+        "cost_usd": 0.019076,
+        "tools": 17,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 2,
+          "grep": 6,
+          "shell": 2,
+          "search_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 205269,
+          "output_tokens": 3342,
+          "cache_read": 100864,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21612",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:42:39.154918",
+      "kepler": {
+        "success": true,
+        "duration_s": 211.9,
+        "cost_usd": 0.012401,
+        "tools": 9,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "read_file": 4,
+          "grep": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 107236,
+          "output_tokens": 15275,
+          "cache_read": 34944,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21614",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:46:32.975267",
+      "kepler": {
+        "success": true,
+        "duration_s": 109.5,
+        "cost_usd": 0.018028,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 3,
+          "analyze_code": 1,
+          "grep": 10,
+          "list_files": 1,
+          "read_file": 2,
+          "validate_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 195350,
+          "output_tokens": 2480,
+          "cache_read": 88448,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21627",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:48:44.589850",
+      "kepler": {
+        "success": true,
+        "duration_s": 75.7,
+        "cost_usd": 0.006941,
+        "tools": 13,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 4,
+          "read_file": 3,
+          "grep": 5
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 70646,
+          "output_tokens": 3239,
+          "cache_read": 22400,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-21847",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:50:22.834528",
+      "kepler": {
+        "success": true,
+        "duration_s": 103.5,
+        "cost_usd": 0.010228,
+        "tools": 7,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "edit_file": 1,
+          "run_tests": 1,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 100443,
+          "output_tokens": 6598,
+          "cache_read": 68352,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 23,
+      "model_patch": "diff --git a/sympy/polys/monomials.py b/sympy/polys/monomials.py\nindex 0e84403307..d2cd3451e5 100644\n--- a/sympy/polys/monomials.py\n+++ b/sympy/polys/monomials.py\n@@ -127,7 +127,7 @@ def itermonomials(variables, max_degrees, min_degrees=None):\n                 for variable in item:\n                     if variable != 1:\n                         powers[variable] += 1\n-                if max(powers.values()) >= min_degree:\n+                if sum(powers.values()) >= min_degree:\n                     monomials_list_comm.append(Mul(*item))\n             yield from set(monomials_list_comm)\n         else:\n@@ -139,7 +139,7 @@ def itermonomials(variables, max_degrees, min_degrees=None):\n                 for variable in item:\n                     if variable != 1:\n                         powers[variable] += 1\n-                if max(powers.values()) >= min_degree:\n+                if sum(powers.values()) >= min_degree:\n                     monomials_list_non_comm.append(Mul(*item))\n             yield from set(monomials_list_non_comm)\n     else:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-22005",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:52:28.571578",
+      "kepler": {
+        "success": true,
+        "duration_s": 90.2,
+        "cost_usd": 0.012161,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 4,
+          "run_tests": 2,
+          "git_diff": 2,
+          "grep": 2,
+          "edit_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 126320,
+          "output_tokens": 4401,
+          "cache_read": 55808,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/solvers/polysys.py b/sympy/solvers/polysys.py\nindex b9809fd4e9..674322d4eb 100644\n--- a/sympy/solvers/polysys.py\n+++ b/sympy/solvers/polysys.py\n@@ -240,7 +240,7 @@ def _solve_reduced_system(system, gens, entry=False):\n \n         univariate = list(filter(_is_univariate, basis))\n \n-        if len(univariate) == 1:\n+        if len(univariate) == 1 and len(gens) == 1:\n             f = univariate.pop()\n         else:\n             raise NotImplementedError(filldedent('''\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-22714",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:54:21.251550",
+      "kepler": {
+        "success": true,
+        "duration_s": 201.7,
+        "cost_usd": 0.01765,
+        "tools": 16,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "grep": 1,
+          "shell": 9,
+          "edit_file": 1,
+          "run_tests": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 172059,
+          "output_tokens": 12026,
+          "cache_read": 63232,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/geometry/point.py b/sympy/geometry/point.py\nindex 73c20334d0..11bad7ff9c 100644\n--- a/sympy/geometry/point.py\n+++ b/sympy/geometry/point.py\n@@ -152,7 +152,7 @@ def __new__(cls, *args, **kwargs):\n                         'warn' or 'ignore'.'''))\n         if any(coords[dim:]):\n             raise ValueError('Nonzero coordinates cannot be removed.')\n-        if any(a.is_number and im(a) for a in coords):\n+        if any(a.is_number and im(a).is_zero is False for a in coords):\n             raise ValueError('Imaginary coordinates are not permitted.')\n         if not all(isinstance(a, Expr) for a in coords):\n             raise TypeError('Coordinates must be valid SymPy expressions.')\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-22840",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-13T23:58:05.172609",
+      "kepler": {
+        "success": true,
+        "duration_s": 176.7,
+        "cost_usd": 0.019204,
+        "tools": 18,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 3,
+          "read_file": 2,
+          "analyze_code": 2,
+          "grep": 9
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 208393,
+          "output_tokens": 2491,
+          "cache_read": 80640,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-23117",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:01:24.408186",
+      "kepler": {
+        "success": true,
+        "duration_s": 74.5,
+        "cost_usd": 0.006583,
+        "tools": 8,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 2,
+          "edit_file": 2,
+          "run_tests": 1,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 70282,
+          "output_tokens": 1431,
+          "cache_read": 40448,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 14,
+      "model_patch": "diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py\nindex 6490a655a4..4d839e4f9b 100644\n--- a/sympy/tensor/array/ndim_array.py\n+++ b/sympy/tensor/array/ndim_array.py\n@@ -195,6 +195,8 @@ def f(pointer):\n                 return [pointer], ()\n \n             result = []\n+            if len(pointer) == 0:\n+                return [], (0,)\n             elems, shapes = zip(*[f(i) for i in pointer])\n             if len(set(shapes)) != 1:\n                 raise ValueError(\"could not determine shape unambiguously\")\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-23191",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:03:00.677777",
+      "kepler": {
+        "success": true,
+        "duration_s": 130.2,
+        "cost_usd": 0.016514,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 5,
+          "grep": 2,
+          "list_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 176425,
+          "output_tokens": 3532,
+          "cache_read": 65024,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-23262",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:05:34.342077",
+      "kepler": {
+        "success": true,
+        "duration_s": 114.6,
+        "cost_usd": 0.016679,
+        "tools": 20,
+        "tool_breakdown": {
+          "get_project_overview": 2,
+          "search_code": 6,
+          "read_file": 3,
+          "grep": 8,
+          "list_files": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 178880,
+          "output_tokens": 3223,
+          "cache_read": 93184,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-24066",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:07:50.816506",
+      "kepler": {
+        "success": true,
+        "duration_s": 91.8,
+        "cost_usd": 0.005706,
+        "tools": 4,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 50827,
+          "output_tokens": 6285,
+          "cache_read": 18816,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-24102",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:09:44.625756",
+      "kepler": {
+        "success": true,
+        "duration_s": 113.3,
+        "cost_usd": 0.015323,
+        "tools": 14,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 1,
+          "read_file": 4,
+          "grep": 7,
+          "analyze_code": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 164747,
+          "output_tokens": 2755,
+          "cache_read": 55552,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    },
+    {
+      "instance_id": "sympy__sympy-24152",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:12:00.218963",
+      "kepler": {
+        "success": true,
+        "duration_s": 72.2,
+        "cost_usd": 0.006343,
+        "tools": 8,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 1,
+          "edit_file": 1,
+          "run_tests": 1,
+          "shell": 1,
+          "git_diff": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 66427,
+          "output_tokens": 2026,
+          "cache_read": 33280,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 19,
+      "model_patch": "diff --git a/sympy/physics/quantum/tensorproduct.py b/sympy/physics/quantum/tensorproduct.py\nindex 78accaf295..cc89cbd4ad 100644\n--- a/sympy/physics/quantum/tensorproduct.py\n+++ b/sympy/physics/quantum/tensorproduct.py\n@@ -246,9 +246,10 @@ def _eval_expand_tensorproduct(self, **hints):\n             if isinstance(args[i], Add):\n                 for aa in args[i].args:\n                     tp = TensorProduct(*args[:i] + (aa,) + args[i + 1:])\n-                    if isinstance(tp, TensorProduct):\n-                        tp = tp._eval_expand_tensorproduct()\n-                    add_args.append(tp)\n+                    c_part, nc_part = tp.args_cnc()\n+                    if len(nc_part) == 1 and isinstance(nc_part[0], TensorProduct):\n+                        nc_part = (nc_part[0]._eval_expand_tensorproduct(),)\n+                    add_args.append(Mul(*c_part)*Mul(*nc_part))\n                 break\n \n         if add_args:\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-24213",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:13:34.296568",
+      "kepler": {
+        "success": true,
+        "duration_s": 86.1,
+        "cost_usd": 0.009712,
+        "tools": 9,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 2,
+          "read_file": 2,
+          "edit_file": 1,
+          "run_tests": 2,
+          "shell": 1
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 102817,
+          "output_tokens": 2547,
+          "cache_read": 49664,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 23,
+      "model_patch": "diff --git a/sympy/physics/units/unitsystem.py b/sympy/physics/units/unitsystem.py\nindex a436880c4b..f3c1694730 100644\n--- a/sympy/physics/units/unitsystem.py\n+++ b/sympy/physics/units/unitsystem.py\n@@ -176,10 +176,13 @@ def _collect_factor_and_dimension(self, expr):\n                 addend_factor, addend_dim = \\\n                     self._collect_factor_and_dimension(addend)\n                 if dim != addend_dim:\n-                    raise ValueError(\n-                        'Dimension of \"{}\" is {}, '\n-                        'but it should be {}'.format(\n-                            addend, addend_dim, dim))\n+                    if not self.get_dimension_system().equivalent_dims(\n+                            dim, addend_dim):\n+                        raise ValueError(\n+                            'Dimension of \"{}\" is {}, '\n+                            'but it should be {}'.format(\n+                                addend, addend_dim, dim))\n+                    dim = addend_dim\n                 factor += addend_factor\n             return factor, dim\n         elif isinstance(expr, Derivative):\n",
+      "status": "patched"
+    },
+    {
+      "instance_id": "sympy__sympy-24909",
+      "repo": "sympy/sympy",
+      "model": "deepseek/deepseek-v4-flash",
+      "timestamp": "2026-06-14T00:15:23.420686",
+      "kepler": {
+        "success": true,
+        "duration_s": 154.6,
+        "cost_usd": 0.019734,
+        "tools": 19,
+        "tool_breakdown": {
+          "get_project_overview": 1,
+          "search_code": 5,
+          "read_file": 7,
+          "grep": 6
+        },
+        "sub_agents": [],
+        "stagnation_triggers": 0,
+        "usage": {
+          "input_tokens": 202245,
+          "output_tokens": 8512,
+          "cache_read": 55808,
+          "cache_write": 0
+        }
+      },
+      "patch_lines": 0,
+      "model_patch": "",
+      "status": "no_changes",
+      "error": "Kepler made no file changes"
+    }
+  ]
+}
