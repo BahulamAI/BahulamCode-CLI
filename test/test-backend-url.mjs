@@ -15,30 +15,22 @@ async function withEnv(env, fn) {
   }
 }
 
+// Legacy 'treetop' env now falls back to production (dev URL removed for open-source)
 await withEnv({ TARANG_ENV: 'treetop' }, async () => {
   const { resolveBackendUrl, resolveWebUrl } = await loadResolver();
-  assert.equal(
-    resolveBackendUrl(),
-    'https://codekepler-backend-dev.kindisland-9034322d.eastus.azurecontainerapps.io',
-  );
-  assert.equal(resolveWebUrl(), 'https://treetop.bahulam.ai');
+  assert.equal(resolveBackendUrl(), 'https://api.bahulam.ai');
+  assert.equal(resolveWebUrl(), 'https://bahulam.ai');
 });
 
 await withEnv({ TARANG_ENV: 'development' }, async () => {
   const { resolveBackendUrl, resolveWebUrl } = await loadResolver();
-  assert.equal(
-    resolveBackendUrl(),
-    'https://api.bahulam.ai',
-  );
+  assert.equal(resolveBackendUrl(), 'https://api.bahulam.ai');
   assert.equal(resolveWebUrl(), 'https://bahulam.ai');
 });
 
 await withEnv({ TARANG_ENV: 'production' }, async () => {
   const { resolveBackendUrl, resolveWebUrl } = await loadResolver();
-  assert.equal(
-    resolveBackendUrl(),
-    'https://api.bahulam.ai',
-  );
+  assert.equal(resolveBackendUrl(), 'https://api.bahulam.ai');
   assert.equal(resolveWebUrl(), 'https://bahulam.ai');
 });
 
