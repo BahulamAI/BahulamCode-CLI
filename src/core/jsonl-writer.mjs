@@ -17,13 +17,13 @@ import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
 import { bahulamHome } from './paths.mjs';
 
-const KEPLER_DIR = bahulamHome();
+const BAHULAM_DIR = bahulamHome();
 const FLUSH_INTERVAL_MS = 500;
 
 /**
  * Sanitize a cwd path into a project slug for the directory name.
  * /Users/sree/Sites/myproject → -Users-sree-Sites-myproject
- * Mirrors the Claude Code / kepler-cli convention.
+ * Mirrors the Claude Code / Bahulam CLI convention.
  */
 function sanitizePath(p) {
   return p.replace(/\//g, '-').replace(/^-/, '-');
@@ -67,7 +67,7 @@ export class JsonlWriter {
     this.version = version;
     this.sessionId = null; // set by setSessionId() when backend assigns it
     this.slug = sanitizePath(cwd);
-    this.projectDir = path.join(KEPLER_DIR, 'projects', this.slug);
+    this.projectDir = path.join(BAHULAM_DIR, 'projects', this.slug);
 
     // UUID chain for parent linking (cc-lens replay)
     this.lastUuid = null;
@@ -85,7 +85,7 @@ export class JsonlWriter {
     this._turnToolResults = []; // [{tool_use_id, content, is_error}, ...]
     this._turnUsage = null;
     this._turnModel = null;
-    this._pendingKeplerEvents = [];
+    this._pendingBahulamEvents = [];
 
     // Git branch (captured once at construction)
     this._gitBranch = this._detectGitBranch();
@@ -101,9 +101,9 @@ export class JsonlWriter {
     this.sessionId = id;
     this._transcriptPath = path.join(this.projectDir, `${id}.jsonl`);
     this._ready = true;
-    if (this._pendingKeplerEvents.length > 0) {
-      const pending = this._pendingKeplerEvents;
-      this._pendingKeplerEvents = [];
+    if (this._pendingBahulamEvents.length > 0) {
+      const pending = this._pendingBahulamEvents;
+      this._pendingBahulamEvents = [];
       for (const event of pending) this.writeBahulamEvent(event);
     }
     // Flush any buffered entries now that we have a path
@@ -154,12 +154,12 @@ export class JsonlWriter {
     });
 
     if (!this.sessionId) {
-      this._pendingKeplerEvents.push(sanitized);
+      this._pendingBahulamEvents.push(sanitized);
       return;
     }
 
     const entry = {
-      type: 'kepler_event',
+      type: 'bahulam_event',
       timestamp: new Date().toISOString(),
       cwd: this.cwd,
       sessionId: this.sessionId,
@@ -204,8 +204,8 @@ export class JsonlWriter {
       content: normalizeToolResultContent(output),
       is_error: !!isError,
     };
-    const kepler = compactToolResultMetadata(metadata);
-    if (kepler) entry.bahulam = kepler;
+    const bahulamMeta = compactToolResultMetadata(metadata);
+    if (bahulamMeta) entry.bahulam = bahulamMeta;
     this._turnToolResults.push(entry);
   }
 
@@ -305,7 +305,7 @@ export class JsonlWriter {
       project: this.cwd,
       sessionId: this.sessionId,
     };
-    const historyPath = path.join(KEPLER_DIR, 'history.jsonl');
+    const historyPath = path.join(BAHULAM_DIR, 'history.jsonl');
     fs.promises.appendFile(historyPath, JSON.stringify(entry) + '\n', { mode: 0o600 })
       .catch(() => {}); // best effort
   }
@@ -393,7 +393,7 @@ export class JsonlWriter {
       fs.mkdirSync(this.projectDir, { recursive: true, mode: 0o700 });
     } catch { /* ignore */ }
     try {
-      fs.mkdirSync(path.join(KEPLER_DIR, 'projects'), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(path.join(BAHULAM_DIR, 'projects'), { recursive: true, mode: 0o700 });
     } catch { /* ignore */ }
   }
 

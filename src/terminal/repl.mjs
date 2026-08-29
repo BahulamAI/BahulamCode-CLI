@@ -1586,8 +1586,8 @@ function foldSubAgentToolResult(data = {}) {
     fold.entries.push(entry);
   }
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
-  const summary = summarizeResult(tool, data);
   entry.args = entry.args && Object.keys(entry.args).length ? entry.args : args;
+  const summary = summarizeResult(tool, data, entry.args);
   entry.result = data;
   entry.durationMs = durationMs;
   entry.outcome = summary.text || '';

@@ -151,6 +151,38 @@ test('uses concise structured tool summaries', () => {
   );
 });
 
+test('read_file cards do not render false 0-line outcomes for backend payload variants', () => {
+  const contentCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py' },
+    result: { success: true, content: 'class Account:\n    pass\n' },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(contentCard.includes('2 lines'), contentCard);
+  assert.ok(!contentCard.includes('0 lines'), contentCard);
+
+  const nestedResultCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py' },
+    result: { success: true, result: { line_count: 105 } },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(nestedResultCard.includes('105 lines'), nestedResultCard);
+
+  const rangeFallbackCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py', start_line: 1, end_line: 105 },
+    result: { success: true },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(rangeFallbackCard.includes('lines 1-105'), rangeFallbackCard);
+  assert.ok(rangeFallbackCard.includes('105 lines'), rangeFallbackCard);
+  assert.ok(!rangeFallbackCard.includes('0 lines'), rangeFallbackCard);
+});
+
 test('sub-agent running line shows user-readable query and hides model', () => {
   resetSubAgents();
   const query = '[Thoroughness: thorough] What is the codekepler-deploy-dashboard docker setup and backend deployment flow?';

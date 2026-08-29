@@ -391,7 +391,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
 
   if (data._blocked) session.blockedOps++;
 
-  const { text, tone: t } = summarizeResult(tool, data);
+  const { text, tone: t } = summarizeResult(tool, data, data.args || {});
   // Em dash reads more like prose than a system arrow.
   const arrow = shellResultTool(tool)
     ? `${paint.text.dim('result')} ${paint.text.dim('—')}`

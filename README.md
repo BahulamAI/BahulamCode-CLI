@@ -79,7 +79,7 @@ See [RELEASE.md](./RELEASE.md) for the merge, PR, and npm publish checklist.
 ## Links
 
 - Website: https://bahulam.ai
-- Repository: https://github.com/raviakasapu/codekepler-npm
+- Repository: https://github.com/BahulamAI/BahulamCode-CLI
 
 ## License
 

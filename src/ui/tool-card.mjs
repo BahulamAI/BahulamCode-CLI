@@ -78,7 +78,7 @@ const paintShellAdapter = {
  *
  * @returns {{ text: string, tone: 'success'|'warn'|'danger'|'dim' }}
  */
-export function summarizeResult(tool, data) {
+export function summarizeResult(tool, data, args = {}) {
   if (!data) return { text: '', tone: 'dim' };
 
   if (data._blocked) {
@@ -111,7 +111,8 @@ export function summarizeResult(tool, data) {
 
   switch (tool) {
     case 'read_file': {
-      const lines = data._total_lines || lineCount(data.output || data.output_preview);
+      const lines = readFileLineCount(data, args);
+      if (lines == null) return { text: 'read', tone: 'success' };
       return { text: `${lines} line${lines === 1 ? '' : 's'}`, tone: 'success' };
     }
     case 'read_files':
@@ -448,6 +449,64 @@ function lineCount(s) {
   return String(s).split('\n').filter(Boolean).length;
 }
 
+function physicalLineCount(text) {
+  const value = String(text ?? '').replace(/\r\n?/g, '\n');
+  if (!value) return 0;
+  const lines = value.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.length;
+}
+
+function readFileLineCount(data = {}, args = {}) {
+  const explicit = explicitReadLineCount(data);
+  if (explicit != null) return explicit;
+
+  const text = firstReadTextPayload(data);
+  if (text != null) return physicalLineCount(text);
+
+  const range = requestedRangeLineCount(args || data?.args || {});
+  if (range != null) return range;
+
+  return null;
+}
+
+function explicitReadLineCount(data = {}) {
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['_total_lines', 'line_count', 'lines_count', 'total_lines', 'lineCount', 'totalLines']) {
+    const value = data[key];
+    if (value == null || value === '') continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) return Math.floor(number);
+  }
+  if (Array.isArray(data.lines)) return data.lines.length;
+  if (data.result && typeof data.result === 'object' && data.result !== data) {
+    return explicitReadLineCount(data.result);
+  }
+  return null;
+}
+
+function firstReadTextPayload(data = {}) {
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['content', 'text', 'output', 'output_preview', 'message']) {
+    if (typeof data[key] === 'string') return data[key];
+  }
+  if (data.result && typeof data.result === 'object' && data.result !== data) {
+    return firstReadTextPayload(data.result);
+  }
+  return null;
+}
+
+function requestedRangeLineCount(args = {}) {
+  const start = Number(args.start_line ?? args.startLine);
+  const end = Number(args.end_line ?? args.endLine);
+  if (Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start) {
+    return Math.floor(end - start + 1);
+  }
+  const limit = Number(args.limit ?? args.max_lines ?? args.maxLines);
+  if (Number.isFinite(limit) && limit >= 0) return Math.floor(limit);
+  return null;
+}
+
 function countMatches(data) {
   if (typeof data?.match_count === 'number') return data.match_count;
   return lineCount(data?.output);
@@ -577,7 +636,7 @@ export function formatCard({ tool, args, result, durationMs, indent, columns, cw
   const cols = columns || term().columns || 120;
   const head = formatCardHead(tool, args, { indent, columns: cols, cwd });
 
-  const summary = summarizeResult(tool, result);
+  const summary = summarizeResult(tool, result, args);
   const duration = formatDuration(durationMs ?? result?.duration_ms ?? (result?.duration_s != null ? result.duration_s * 1000 : null));
 
   if (!summary.text && !duration) return head;

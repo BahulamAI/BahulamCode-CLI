@@ -44,7 +44,7 @@
   "homepage": "https://bahulam.ai/code",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/raviakasapu/codekepler-npm.git"
+    "url": "git+https://github.com/BahulamAI/BahulamCode-CLI.git"
   },
   "dependencies": {
     "mermaid": "^11.17.2",
