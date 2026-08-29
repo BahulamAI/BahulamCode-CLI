@@ -34,9 +34,7 @@ function readEnv() {
     NO_COLOR: env.NO_COLOR,
     FORCE_COLOR: env.FORCE_COLOR,
     BAHULAM_PLAIN: env.BAHULAM_PLAIN,
-    KEPLER_PLAIN: env.KEPLER_PLAIN,
     BAHULAM_TTY_MODE: env.BAHULAM_TTY_MODE,
-    KEPLER_TTY_MODE: env.KEPLER_TTY_MODE,
     COLORTERM: (env.COLORTERM || '').toLowerCase(),
     TERM: (env.TERM || '').toLowerCase(),
     TERM_PROGRAM: env.TERM_PROGRAM || '',
@@ -48,7 +46,6 @@ function detectColorLevel(env, isTTY) {
   // Hard opt-out (https://no-color.org). Honored even on TTYs.
   if (env.NO_COLOR !== undefined && env.NO_COLOR !== '') return 'none';
   if (env.BAHULAM_PLAIN === '1') return 'none';
-  if (env.KEPLER_PLAIN === '1') return 'none';
 
   // Hard opt-in. FORCE_COLOR=1|2|3 maps to ansi16|ansi256|truecolor.
   // FORCE_COLOR with no value or =true falls through to detection.
@@ -84,7 +81,6 @@ function detectColorLevel(env, isTTY) {
 
 function detectUnicode(env) {
   if (env.BAHULAM_PLAIN === '1') return false;
-  if (env.KEPLER_PLAIN === '1') return false;
   // Most modern terminals on macOS/Linux handle UTF-8.
   // Windows ConEmu / older terminals are the main holdouts; conservative
   // fallback when LANG and LC_* are missing or explicitly POSIX.
@@ -95,8 +91,8 @@ function detectUnicode(env) {
 }
 
 function detectTtyMode(env) {
-  const raw = String(env.BAHULAM_TTY_MODE || env.KEPLER_TTY_MODE || '').trim().toLowerCase();
-  if (env.BAHULAM_PLAIN === '1' || env.KEPLER_PLAIN === '1') return 'plain';
+  const raw = String(env.BAHULAM_TTY_MODE || '').trim().toLowerCase();
+  if (env.BAHULAM_PLAIN === '1') return 'plain';
   if (raw === 'stable' || raw === 'simple' || raw === 'static' || raw === 'transcript') return 'stable';
   return 'rich';
 }

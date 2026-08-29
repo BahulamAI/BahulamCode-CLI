@@ -87,10 +87,10 @@ export const AgentTool = {
             settings: {
                 stream: false,
                 stagnationDetection: !['0', 'false', 'no', 'off'].includes(
-                    (process.env.KEPLER_STAGNATION_DETECTION ?? '0').toLowerCase(),
+                    (process.env.BAHULAM_STAGNATION_DETECTION ?? '0').toLowerCase(),
                 ),
                 stagnationThreshold: Number.parseInt(
-                    process.env.KEPLER_STAGNATION_THRESHOLD
+                    process.env.BAHULAM_STAGNATION_THRESHOLD
                     ?? '3',
                     10,
                 ),

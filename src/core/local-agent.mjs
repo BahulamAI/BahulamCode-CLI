@@ -58,15 +58,16 @@ const TOOL_SCHEMAS = [
     },
     {
         name: 'edit_file',
-        description: 'Search for a string in a file and replace it. The old_string must match exactly (including whitespace).',
+        description: 'Search for a string in a file and replace it. The search string must match exactly, including whitespace.',
         input_schema: {
             type: 'object',
             properties: {
                 file_path: { type: 'string', description: 'Path to the file' },
-                old_string: { type: 'string', description: 'Exact string to find in the file' },
-                new_string: { type: 'string', description: 'Replacement string' },
+                search: { type: 'string', description: 'Exact string to find in the file' },
+                replace: { type: 'string', description: 'Replacement string' },
+                replace_all: { type: 'boolean', description: 'Replace every occurrence instead of only the first match' },
             },
-            required: ['file_path', 'old_string', 'new_string'],
+            required: ['file_path', 'search', 'replace'],
         },
     },
     {
@@ -310,6 +311,26 @@ export class LocalAgent {
                         result = { success: false, output: `Error: ${err.message}` };
                     }
                     const durationMs = Date.now() - toolStart;
+                    const resultStagnation = stagnation.recordResult(name, input || {}, result);
+                    if (resultStagnation.detected) {
+                        const message = stagnationMessage(name, resultStagnation.count, resultStagnation);
+                        result = {
+                            ...result,
+                            success: false,
+                            output: message,
+                            _stagnation: true,
+                        };
+                        yield {
+                            type: 'stagnation',
+                            data: {
+                                tool: name,
+                                count: resultStagnation.count,
+                                message,
+                                kind: resultStagnation.kind,
+                                target: resultStagnation.target,
+                            },
+                        };
+                    }
 
                     yield {
                         type: 'tool_done',

@@ -16,7 +16,7 @@
  *
  * Behavior:
  *   - 120ms per frame.
- *   - Suppressed entirely when stdout is not a TTY or when KEPLER_PLAIN=1.
+ *   - Suppressed entirely when stdout is not a TTY or when BAHULAM_PLAIN=1.
  *     The `start`/`stop` API is still safe to call (no-op).
  *   - Color follows the current orbit (orchestrated by the caller via the
  *     palette token). Default: brand.primary.

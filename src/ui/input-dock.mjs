@@ -28,10 +28,10 @@
  *   (one blank row at very bottom for cursor safety)
  *
  * Config:
- *   BAHULAM_INPUT_ROWS_MAX / KEPLER_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
- *   BAHULAM_TTY_MODE=stable / KEPLER_TTY_MODE=stable        scrollback-safe transcript, no fixed dock
- *   BAHULAM_PLAIN=1 / KEPLER_PLAIN=1                        deterministic no-ANSI output for automation
- *   BAHULAM_FIXED_INPUT=0 / KEPLER_FIXED_INPUT=0             disable dock entirely (fallback readline)
+ *   BAHULAM_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
+ *   BAHULAM_TTY_MODE=stable         scrollback-safe transcript, no fixed dock
+ *   BAHULAM_PLAIN=1                 deterministic no-ANSI output for automation
+ *   BAHULAM_FIXED_INPUT=0           disable dock entirely (fallback readline)
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
@@ -214,7 +214,7 @@ function inputTextBudget() {
 function resolveMaxInputRows(requested) {
   const raw = requested != null
     ? requested
-    : (process.env.BAHULAM_INPUT_ROWS_MAX || process.env.KEPLER_INPUT_ROWS_MAX);
+    : process.env.BAHULAM_INPUT_ROWS_MAX;
   const n = Number.parseInt(String(raw), 10);
   if (!Number.isFinite(n)) return DEFAULT_MAX_INPUT_ROWS;
   return Math.max(MIN_INPUT_ROWS, Math.min(MAX_INPUT_ROWS_CAP, n));
@@ -530,7 +530,7 @@ export function mountInputDock({
   const t = term();
   if (!t.isTTY || t.plain) return false;
   if (t.ttyMode !== 'rich' || t.fixedInput === false) return false;
-  if (process.env.BAHULAM_FIXED_INPUT === '0' || process.env.KEPLER_FIXED_INPUT === '0') return false;
+  if (process.env.BAHULAM_FIXED_INPUT === '0') return false;
   if (mounted) return true;
 
   inputRowsMax = resolveMaxInputRows(requestedMax);

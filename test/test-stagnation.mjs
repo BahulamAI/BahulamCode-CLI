@@ -55,6 +55,39 @@ assert.deepStrictEqual(
 
 assert.match(stagnationMessage('shell', 3), /duplicate call was skipped/i);
 
+const noChangeEdits = createStagnationTracker({ threshold: 2 });
+assert.deepStrictEqual(
+    noChangeEdits.recordResult(
+        'edit_file',
+        { file_path: 'src/a.py', search: 'old', replace: 'new' },
+        { success: false, _no_change: true },
+    ),
+    { detected: false, count: 1, kind: 'no_change_edit', target: 'src/a.py' },
+);
+assert.deepStrictEqual(
+    noChangeEdits.recordResult(
+        'edit_file',
+        { file_path: 'src/a.py', search: 'different old', replace: 'different new' },
+        { success: false, _no_change: true },
+    ),
+    { detected: true, count: 2, kind: 'no_change_edit', target: 'src/a.py' },
+);
+assert.match(
+    stagnationMessage('edit_file', 2, { kind: 'no_change_edit', target: 'src/a.py' }),
+    /made no file changes/i,
+);
+
+const noChangeReset = createStagnationTracker({ threshold: 2 });
+noChangeReset.recordResult('edit_file', { file_path: 'src/a.py' }, { success: false, _no_change: true });
+assert.deepStrictEqual(
+    noChangeReset.recordResult('read_file', { file_path: 'src/a.py' }, { success: true, output: 'contents' }),
+    { detected: false, count: 0 },
+);
+assert.deepStrictEqual(
+    noChangeReset.recordResult('edit_file', { file_path: 'src/a.py' }, { success: false, _no_change: true }),
+    { detected: false, count: 1, kind: 'no_change_edit', target: 'src/a.py' },
+);
+
 const responses = [
     {
         content: [{ type: 'tool_use', id: 'call-1', name: 'read_file', input: { file_path: 'a.js' } }],
@@ -91,5 +124,38 @@ for await (const event of localAgent.execute('inspect a.js')) events.push(event)
 assert.ok(events.some(event => event.type === 'stagnation'));
 assert.ok(events.some(event => event.type === 'complete' && event.data.summary === 'Done (local)'));
 assert.ok(!events.some(event => event.type === 'complete' && /stagnation/i.test(event.data.summary)));
+
+const noChangeResponses = [
+    {
+        content: [{ type: 'tool_use', id: 'edit-1', name: 'edit_file', input: { file_path: 'a.js', search: 'old', replace: 'new' } }],
+        stopReason: 'tool_use',
+    },
+    {
+        content: [{ type: 'tool_use', id: 'edit-2', name: 'edit_file', input: { file_path: 'a.js', search: 'different', replace: 'newer' } }],
+        stopReason: 'tool_use',
+    },
+    {
+        content: [{ type: 'text', text: 'Finished after re-reading.' }],
+        stopReason: 'end_turn',
+    },
+];
+const noChangeAgent = new LocalAgent({
+    apiKey: 'test',
+    maxTurns: noChangeResponses.length,
+    stagnationDetection: true,
+    stagnationThreshold: 2,
+    toolExecutor: {
+        async execute() {
+            return { success: false, output: 'edit_file made no changes', _no_change: true };
+        },
+    },
+});
+noChangeAgent.retriever.retrieve = () => [];
+noChangeAgent._callLLM = async () => noChangeResponses.shift();
+
+const noChangeEvents = [];
+for await (const event of noChangeAgent.execute('edit a.js')) noChangeEvents.push(event);
+assert.ok(noChangeEvents.some(event => event.type === 'stagnation' && event.data?.kind === 'no_change_edit'));
+assert.ok(noChangeEvents.some(event => event.type === 'tool_done' && event.data?._stagnation));
 
 console.log('test-stagnation.mjs: passed');
