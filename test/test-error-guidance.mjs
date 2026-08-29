@@ -101,7 +101,7 @@ test('credit exhaustion guidance gives billing and BYOK actions', () => {
   const guidance = formatAgentErrorGuidance({
     message: 'Credit balance exhausted — add credits, upgrade your plan, or switch to BYOK in Settings.',
     code: 'credit_balance_exhausted',
-    pricing_url: 'codekepler.ai/pricing',
+    pricing_url: 'bahulam.ai/pricing',
   });
 
   assert.ok(guidance.lines.some((line) => line.includes('Add credits or upgrade')));
@@ -115,7 +115,7 @@ test('message window guidance explains wait or upgrade decision', () => {
     message: 'Message window exhausted — try again in 1h 1m, or upgrade your plan.',
     code: 'message_limit_reached',
     retry_after: 3660,
-    pricing_url: 'codekepler.ai/pricing',
+    pricing_url: 'bahulam.ai/pricing',
   });
 
   assert.ok(guidance.lines.some((line) => line.includes('message limit')));

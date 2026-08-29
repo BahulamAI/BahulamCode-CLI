@@ -71,7 +71,7 @@ await test('analyze_image calls authenticated backend vision endpoint', async ()
   const originalFetch = globalThis.fetch;
   const originalCwd = process.cwd();
   const env = saveEnv(['BAHULAM_HOME', 'B0_TOKEN', 'TARANG_BACKEND_URL', 'BAHULAM_PRODUCT']);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-analyze-image-'));
   const file = path.join(tmp, 'one.png');
   const captured = {};
 
@@ -126,7 +126,7 @@ await test('tool executor bridges analyze_image calls', async () => {
   const originalFetch = globalThis.fetch;
   const originalCwd = process.cwd();
   const env = saveEnv(['BAHULAM_HOME', 'BAHULAM_SKIP_AUTO_REGISTER', 'B0_TOKEN', 'TARANG_BACKEND_URL']);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-bridge-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-analyze-image-bridge-'));
   const file = path.join(tmp, 'one.png');
 
   try {
@@ -165,7 +165,7 @@ await test('analyze_image recognizes extensionless JPEG bytes', async () => {
   const originalFetch = globalThis.fetch;
   const originalCwd = process.cwd();
   const env = saveEnv(['BAHULAM_HOME', 'B0_TOKEN', 'TARANG_BACKEND_URL']);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-jpeg-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-analyze-image-jpeg-'));
   const file = path.join(tmp, 'image-without-extension');
   const captured = {};
 
@@ -206,7 +206,7 @@ await test('analyze_image failure says not to retry via read_attachment', async 
   const originalFetch = globalThis.fetch;
   const originalCwd = process.cwd();
   const env = saveEnv(['BAHULAM_HOME', 'B0_TOKEN', 'TARANG_BACKEND_URL']);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-analyze-image-fail-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-analyze-image-fail-'));
   const file = path.join(tmp, 'one.png');
 
   try {
@@ -247,7 +247,7 @@ await test('analyze_image failure says not to retry via read_attachment', async 
 await test('read_attachment routes image files back to analyze_image', async () => {
   const originalCwd = process.cwd();
   const env = saveEnv(['BAHULAM_SKIP_AUTO_REGISTER']);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-read-image-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-read-image-'));
   const file = path.join(tmp, 'one.jpg');
 
   try {

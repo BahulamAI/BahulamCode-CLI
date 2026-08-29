@@ -49,7 +49,7 @@ test('parses inline image references and removes path from instruction', () => {
 });
 
 test('loads image metadata without exposing base64 in public metadata', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-vision-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-vision-'));
   const file = path.join(dir, 'one.png');
   writePng(file);
 
@@ -66,7 +66,7 @@ test('loads image metadata without exposing base64 in public metadata', () => {
 });
 
 test('imports clipboard image through explicit macOS clipboard command path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-clipboard-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-clipboard-test-'));
   const runner = (command, args) => {
     assert.strictEqual(command, 'pngpaste');
     writePng(args[0]);
@@ -84,7 +84,7 @@ test('imports clipboard image through explicit macOS clipboard command path', ()
 });
 
 test('imports clipboard image through explicit Windows clipboard command path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-clipboard-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-clipboard-test-'));
   const runner = (command, args) => {
     assert.strictEqual(command, 'powershell.exe');
     assert.deepStrictEqual(args.slice(0, 3), ['-NoProfile', '-Sta', '-Command']);
