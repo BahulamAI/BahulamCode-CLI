@@ -103,6 +103,7 @@ export function formatStatsReport(stats, tools, models, days, paths) {
   lines.push(`Messages        ${formatNumber(stats.totalUserMessages + stats.totalAssistantMessages)}  (${formatNumber(stats.totalUserMessages)} user, ${formatNumber(stats.totalAssistantMessages)} assistant)`);
   lines.push(`Tokens          ${formatNumber(stats.totalInputTokens + stats.totalOutputTokens)}  (${formatNumber(stats.totalInputTokens)} in, ${formatNumber(stats.totalOutputTokens)} out)`);
   lines.push(`Cache Read      ${formatNumber(stats.totalCacheReadTokens)}`);
+  lines.push(`Reasoning       ${formatNumber(stats.totalReasoningTokens)}`);
   lines.push(`Tool Calls      ${formatNumber(stats.totalToolCalls)}`);
   lines.push('');
 
@@ -121,7 +122,9 @@ export function formatStatsReport(stats, tools, models, days, paths) {
     lines.push('  none');
   } else {
     for (const model of models.slice(0, 8)) {
-      lines.push(`  ${truncate(model.model, 42).padEnd(42)} ${formatNumber(model.sessions)} sessions`);
+      const tokens = (model.inputTokens || 0) + (model.outputTokens || 0);
+      const tokenText = tokens ? `  ${formatNumber(tokens)} tok` : '';
+      lines.push(`  ${truncate(model.model, 42).padEnd(42)} ${formatNumber(model.sessions)} sessions${tokenText}`);
     }
   }
   lines.push('');

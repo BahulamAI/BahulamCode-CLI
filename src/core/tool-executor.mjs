@@ -139,7 +139,7 @@ export function createToolExecutor({
 
     function blockedShellOutput(reason) {
         const text = String(reason || 'Blocked by shell safety policy').trim();
-        const hint = /command substitution|backticks|\$\(\)/i.test(text)
+        const hint = /command substitution|backticks|\$\(/i.test(text)
             ? 'Retry with separate simple shell commands instead of backticks or $().'
             : 'Work only inside a registered project root.';
         return `BLOCKED: ${text}. ${hint}`;

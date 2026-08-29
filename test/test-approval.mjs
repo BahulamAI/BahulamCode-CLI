@@ -160,7 +160,7 @@ await test('hard-blocked shell command message wraps with retry hint', async () 
     process.stderr.columns = 62;
 
     try {
-        const r = await mgr.check('shell', { command: 'echo `whoami`' });
+        const r = await mgr.check('shell', { command: 'eval $(whoami)' });
         assert.strictEqual(r.approved, false);
         assert.strictEqual(r.blocked, true);
         assert.ok(r.reason.includes('Retry with separate simple shell commands'));

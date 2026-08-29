@@ -605,7 +605,7 @@ export async function compactCurrentSession(ctx, rest = '') {
 
     if (ctx.jsonlWriter) {
       progress.update('writing summary checkpoint', 88);
-      ctx.jsonlWriter.writeKeplerEvent({
+      ctx.jsonlWriter.writeBahulamEvent({
         type: 'resume_summary',
         data: {
           session_id: session.id || null,

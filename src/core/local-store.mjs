@@ -12,6 +12,100 @@ import { bahulamHome } from './paths.mjs';
 
 const KEPLER_DIR = bahulamHome();
 const PROJECTS_DIR = path.join(KEPLER_DIR, 'projects');
+const REPLAY_EVENT_RECORD_TYPES = new Set(['bahulam_event', 'kepler_event']);
+
+function finiteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const n = finiteNumber(value);
+    if (n !== null) return n;
+  }
+  return 0;
+}
+
+function replayEventFromRecord(record) {
+  if (!record || !REPLAY_EVENT_RECORD_TYPES.has(record.type) || !record.event) return null;
+  const event = record.event;
+  if (!event || typeof event !== 'object' || !event.type) return null;
+  return {
+    ...event,
+    data: event.data && typeof event.data === 'object' ? event.data : {},
+  };
+}
+
+function eventUsage(event) {
+  const data = event?.data && typeof event.data === 'object' ? event.data : {};
+  const usage = data.usage && typeof data.usage === 'object' ? data.usage : null;
+  if (!usage) return null;
+  return usage;
+}
+
+function usageTotals(usage = {}) {
+  return {
+    inputTokens: firstFiniteNumber(usage.total_input_tokens, usage.input_tokens, usage.prompt_tokens),
+    outputTokens: firstFiniteNumber(usage.total_output_tokens, usage.output_tokens, usage.completion_tokens),
+    cacheReadTokens: firstFiniteNumber(usage.cache_read_input_tokens, usage.cache_read_tokens, usage.cache_read),
+    cacheCreationTokens: firstFiniteNumber(usage.cache_creation_input_tokens, usage.cache_creation_tokens, usage.cache_creation),
+    reasoningTokens: firstFiniteNumber(usage.reasoning_tokens),
+  };
+}
+
+function addModelUsage(meta, modelSet, usage = {}) {
+  if (!Array.isArray(usage.models)) return;
+  for (const item of usage.models) {
+    const model = typeof item === 'string' ? item : item?.model;
+    if (typeof model === 'string' && model) modelSet.add(model);
+    if (!model || typeof item !== 'object') continue;
+    if (!meta.modelUsage[model]) {
+      meta.modelUsage[model] = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0,
+      };
+    }
+    const totals = usageTotals(item);
+    meta.modelUsage[model].inputTokens += totals.inputTokens;
+    meta.modelUsage[model].outputTokens += totals.outputTokens;
+    meta.modelUsage[model].cacheReadTokens += totals.cacheReadTokens;
+    meta.modelUsage[model].cacheCreationTokens += totals.cacheCreationTokens;
+    meta.modelUsage[model].reasoningTokens += totals.reasoningTokens;
+    meta.modelUsage[model].costUsd += firstFiniteNumber(item.cost_usd, item.cost);
+  }
+}
+
+function addUsageTotals(meta, modelSet, usage = {}) {
+  const totals = usageTotals(usage);
+  meta.inputTokens += totals.inputTokens;
+  meta.outputTokens += totals.outputTokens;
+  meta.cacheReadTokens += totals.cacheReadTokens;
+  meta.cacheCreationTokens += totals.cacheCreationTokens;
+  meta.reasoningTokens += totals.reasoningTokens;
+  addModelUsage(meta, modelSet, usage);
+}
+
+function assistantHasMatchingComplete(assistantRecord, completeRecords) {
+  return completeRecords.some((record) => {
+    const distance = Math.abs(Number(assistantRecord.order) - Number(record.order));
+    return distance > 0 && distance <= 3;
+  });
+}
+
+function applyUsageRecords(meta, modelSet, records) {
+  const completeRecords = records.filter(record => record.source === 'complete');
+  for (const record of completeRecords) addUsageTotals(meta, modelSet, record.usage);
+  for (const record of records) {
+    if (record.source !== 'assistant') continue;
+    if (assistantHasMatchingComplete(record, completeRecords)) continue;
+    addUsageTotals(meta, modelSet, record.usage);
+  }
+}
 
 function normalizeBlock(block) {
   if (!block || typeof block !== 'object') {
@@ -188,8 +282,10 @@ async function parseSessionMeta(filePath) {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    reasoningTokens: 0,
     toolCalls: [],   // [{name, count}]
     models: [],      // [model strings]
+    modelUsage: {},   // model -> token/cost totals from complete events
     modelLimits: {},  // role -> {model, context_length, max_output, source}
     subAgentModels: {}, // role -> model from backend session_info
     startTime: null,
@@ -207,6 +303,7 @@ async function parseSessionMeta(filePath) {
 
   const toolCounts = {};
   const modelSet = new Set();
+  const usageRecords = [];
 
   // endStatus tracking
   let lastMessageRole = null;
@@ -218,8 +315,10 @@ async function parseSessionMeta(filePath) {
 
     const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+    let lineOrder = 0;
 
     for await (const line of rl) {
+      const recordOrder = lineOrder++;
       if (!line.trim()) continue;
       let obj;
       try { obj = JSON.parse(line); }
@@ -235,13 +334,30 @@ async function parseSessionMeta(filePath) {
         if (!meta.endTime || ts > meta.endTime) meta.endTime = ts;
       }
 
-      // Backend kepler_event payloads may carry cost / error markers.
-      if (obj.type === 'kepler_event' && obj.event) {
-        const ev = obj.event;
-        if (ev.type === 'complete' && typeof ev.cost_usd === 'number') meta.costUsd += ev.cost_usd;
+      // Bahulam replay events may carry cost / error markers. Older local
+      // transcripts used the same payload under the legacy kepler_event type.
+      const ev = replayEventFromRecord(obj);
+      if (ev) {
+        const data = ev.data || {};
+        if (ev.type === 'complete') {
+          const usage = eventUsage(ev);
+          if (usage) {
+            usageRecords.push({ source: 'complete', order: recordOrder, usage });
+          }
+          const eventCost = firstFiniteNumber(
+            data.cost_usd,
+            data.total_cost_usd,
+            data.total_cost,
+            data.usage?.total_cost_usd,
+            data.usage?.total_cost,
+            data.usage?.cost,
+            ev.cost_usd,
+          );
+          if (eventCost) meta.costUsd += eventCost;
+        }
         if (ev.type === 'session_info') {
-          if (typeof ev.total_cost_usd === 'number') meta.costUsd = ev.total_cost_usd;
-          const info = ev.data || ev;
+          if (typeof data.total_cost_usd === 'number') meta.costUsd = data.total_cost_usd;
+          const info = data;
           if (info.model_limits && typeof info.model_limits === 'object') {
             meta.modelLimits = info.model_limits;
           }
@@ -255,15 +371,15 @@ async function parseSessionMeta(filePath) {
           }
         }
         if (ev.type === 'error' || ev.error === true) hadError = true;
-        if (ev.type === 'resume_summary' && typeof ev.data?.summary === 'string') {
+        if (ev.type === 'resume_summary' && typeof data.summary === 'string') {
           meta.resumeSummary = {
-            sourceMessageCount: Number(ev.data.source_message_count) || 0,
-            previousSourceMessageCount: Number(ev.data.previous_source_message_count) || 0,
-            fullMessageCount: Number(ev.data.full_message_count) || 0,
-            summaryChars: ev.data.summary.length,
-            summarySource: ev.data.summary_source || '',
-            mode: ev.data.mode || '',
-            modeLabel: ev.data.mode_label || '',
+            sourceMessageCount: Number(data.source_message_count) || 0,
+            previousSourceMessageCount: Number(data.previous_source_message_count) || 0,
+            fullMessageCount: Number(data.full_message_count) || 0,
+            summaryChars: data.summary.length,
+            summarySource: data.summary_source || '',
+            mode: data.mode || '',
+            modeLabel: data.mode_label || '',
             timestamp: obj.timestamp || null,
           };
         }
@@ -296,10 +412,7 @@ async function parseSessionMeta(filePath) {
         lastMessageRole = 'assistant';
         const usage = obj.message?.usage;
         if (usage) {
-          meta.inputTokens += usage.input_tokens || 0;
-          meta.outputTokens += usage.output_tokens || 0;
-          meta.cacheReadTokens += usage.cache_read_input_tokens || 0;
-          meta.cacheCreationTokens += usage.cache_creation_input_tokens || 0;
+          usageRecords.push({ source: 'assistant', order: recordOrder, usage });
         }
         const model = obj.message?.model;
         if (model) modelSet.add(model);
@@ -321,6 +434,8 @@ async function parseSessionMeta(filePath) {
   meta.toolCalls = Object.entries(toolCounts)
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
+  meta.models = [...modelSet];
+  applyUsageRecords(meta, modelSet, usageRecords);
   meta.models = [...modelSet];
 
   // Projected context size for resume should estimate the serialized payload,
@@ -393,11 +508,12 @@ export async function getSessionDetail(sessionId, options = {}) {
     }
     const entryOrder = order++;
 
-    if (obj.type === 'kepler_event' && obj.event?.type) {
+    const replayEvent = replayEventFromRecord(obj);
+    if (replayEvent) {
       replayEvents.push({
         order: entryOrder,
         timestamp: obj.timestamp || null,
-        event: obj.event,
+        event: replayEvent,
       });
       continue;
     }
@@ -765,6 +881,7 @@ export async function getSessionStats(days = 30) {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCacheReadTokens: 0,
+    totalReasoningTokens: 0,
     totalToolCalls: 0,
     toolBreakdown: {},
     modelBreakdown: {},
@@ -777,13 +894,44 @@ export async function getSessionStats(days = 30) {
     stats.totalInputTokens += meta.inputTokens;
     stats.totalOutputTokens += meta.outputTokens;
     stats.totalCacheReadTokens += meta.cacheReadTokens;
+    stats.totalReasoningTokens += meta.reasoningTokens;
 
     for (const tc of meta.toolCalls) {
       stats.toolBreakdown[tc.name] = (stats.toolBreakdown[tc.name] || 0) + tc.count;
       stats.totalToolCalls += tc.count;
     }
     for (const model of meta.models) {
-      stats.modelBreakdown[model] = (stats.modelBreakdown[model] || 0) + 1;
+      if (!stats.modelBreakdown[model]) {
+        stats.modelBreakdown[model] = {
+          sessions: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+          costUsd: 0,
+        };
+      }
+      stats.modelBreakdown[model].sessions += 1;
+    }
+    for (const [model, usage] of Object.entries(meta.modelUsage || {})) {
+      if (!stats.modelBreakdown[model]) {
+        stats.modelBreakdown[model] = {
+          sessions: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+          costUsd: 0,
+        };
+      }
+      stats.modelBreakdown[model].inputTokens += usage.inputTokens || 0;
+      stats.modelBreakdown[model].outputTokens += usage.outputTokens || 0;
+      stats.modelBreakdown[model].cacheReadTokens += usage.cacheReadTokens || 0;
+      stats.modelBreakdown[model].cacheCreationTokens += usage.cacheCreationTokens || 0;
+      stats.modelBreakdown[model].reasoningTokens += usage.reasoningTokens || 0;
+      stats.modelBreakdown[model].costUsd += usage.costUsd || 0;
     }
   }
 
@@ -808,8 +956,8 @@ export async function getToolBreakdown(days = 30) {
 export async function getModelBreakdown(days = 30) {
   const stats = await getSessionStats(days);
   return Object.entries(stats.modelBreakdown)
-    .map(([model, sessions]) => ({ model, sessions }))
-    .sort((a, b) => b.sessions - a.sessions);
+    .map(([model, usage]) => ({ model, ...usage }))
+    .sort((a, b) => b.sessions - a.sessions || (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens));
 }
 
 /**
