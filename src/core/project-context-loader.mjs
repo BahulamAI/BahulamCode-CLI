@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadKeplerMemory } from '../config/memory-loader.mjs';
+import { loadBahulamMemory } from '../config/memory-loader.mjs';
 import { bahulamHome, projectConfigDir } from './paths.mjs';
 
 function sha(content) {
@@ -68,7 +68,7 @@ function scanSkills(dir, scope) {
 export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}) {
   const bahulamDir = projectConfigDir(cwd);
   const files = [];
-  for (const file of loadKeplerMemory({ cwd })) {
+  for (const file of loadBahulamMemory({ cwd })) {
     const label = file.path.endsWith(path.join('.bahulam', 'KEPLER.md'))
       ? 'KEPLER.md'
       : path.basename(file.path);
