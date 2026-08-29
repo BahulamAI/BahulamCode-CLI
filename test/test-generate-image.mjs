@@ -65,7 +65,7 @@ await test('generate_image calls authenticated backend and writes file', async (
     'BAHULAM_GATEWAY_API_KEY',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-'));
   const b64 = Buffer.from('fake-png-bytes').toString('base64');
   const captured = {};
 
@@ -140,7 +140,7 @@ await test('generate_image falls back to direct image endpoint with provider key
     'OPENROUTER_BASE_URL',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-direct-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-direct-'));
   const b64 = Buffer.from('direct-png-bytes').toString('base64');
   const captured = {};
 
@@ -197,7 +197,7 @@ await test('tool executor bridges generate_image calls', async () => {
     'OPENROUTER_BASE_URL',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-bridge-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-bridge-'));
   const b64 = Buffer.from('bridge-png-bytes').toString('base64');
 
   try {

@@ -26,7 +26,7 @@ async function test(name, fn) {
 }
 
 function tempProject() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-contract-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-contract-'));
 }
 
 console.log('\n\x1b[1mtest-kepler-contract.mjs\x1b[0m\n');

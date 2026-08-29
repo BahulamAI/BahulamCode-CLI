@@ -26,7 +26,7 @@ const executor = createToolExecutor();
 await test('read_file reads package.json with content', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
-    assert.ok(result.content.includes('@tarang/cli'));
+    assert.ok(result.content.includes('@bahulam/code'));
     assert.strictEqual(result._tool, 'read_file');
 });
 

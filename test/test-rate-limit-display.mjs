@@ -129,7 +129,7 @@ test('rateLimitErrorMessage formats retry_after fallback', () => {
 
 test('rateLimitErrorMessage normalizes billing URL in string credit exhaustion detail', () => {
     assert.strictEqual(rateLimitErrorMessage({
-        detail: 'Credit balance exhausted. Purchase credits or add your own API key (BYOK) at codekepler.ai/pricing',
+        detail: 'Credit balance exhausted. Purchase credits or add your own API key (BYOK) at bahulam.ai/pricing',
     }), 'Credit balance exhausted. Purchase credits or add your own API key (BYOK) at bahulam.ai/pricing');
 });
 

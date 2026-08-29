@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-jsonl-writer-'));
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-jsonl-writer-'));
 
 const { JsonlWriter } = await import('../src/core/jsonl-writer.mjs');
 
@@ -72,7 +72,7 @@ await test('writeBahulamEvent buffers until real session id is set', async () =>
   const transcriptPath = path.join(writer.projectDir, 'event-session-1.jsonl');
   const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
   assert.strictEqual(lines.length, 2);
-  assert.strictEqual(lines[0].type, 'kepler_event');
+  assert.strictEqual(lines[0].type, 'bahulam_event');
   assert.strictEqual(lines[0].sessionId, 'event-session-1');
   assert.strictEqual(lines[0].event.type, 'status');
   assert.strictEqual(lines[1].event.type, 'tool_call');
@@ -81,7 +81,7 @@ await test('writeBahulamEvent buffers until real session id is set', async () =>
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
-await test('tool result blocks preserve Kepler file diff metadata', async () => {
+await test('tool result blocks preserve Bahulam file diff metadata', async () => {
   const cwd = path.join(tempRoot, 'diff-project');
   const outputDir = path.join(tempRoot, 'diff-output');
   fs.mkdirSync(cwd, { recursive: true });

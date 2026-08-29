@@ -203,7 +203,7 @@ async function main() {
   console.log(`Phase 0/1 probe — gateway=${GATEWAY}  model=${MODEL || '(session default)'}`);
 
   // Phase 1: fetch a session first
-  const { data: sess, roundTripMs: sessMs } = await createSession('kepler-code');
+  const { data: sess, roundTripMs: sessMs } = await createSession('bahulam-code');
   console.log(`  session_id=${sess.session_id}  workspace=${sess.workspace}  model=${sess.model}  tools=${sess.tool_schemas.length}  (session-fetch rt=${sessMs.toFixed(1)}ms)`);
 
   const allTurns = [];

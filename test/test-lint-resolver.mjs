@@ -23,7 +23,7 @@ function test(name, fn) {
 }
 
 function tempProject(name) {
-    return fs.mkdtempSync(path.join(os.tmpdir(), `kepler-${name}-`));
+    return fs.mkdtempSync(path.join(os.tmpdir(), `bahulam-${name}-`));
 }
 
 function write(filePath, content) {
