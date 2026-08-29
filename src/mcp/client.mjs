@@ -78,7 +78,7 @@ export class McpClient {
         const initResult = await this._request('initialize', {
             protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: {},
-            clientInfo: { name: 'open-claude-code', version: '2.0.0' },
+            clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
 
         this.serverInfo = initResult;
@@ -115,7 +115,7 @@ export class McpClient {
         this.serverInfo = await this.transport.request('initialize', {
             protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: {},
-            clientInfo: { name: 'open-claude-code', version: '2.0.0' },
+            clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
         return this.serverInfo;
     }
@@ -130,7 +130,7 @@ export class McpClient {
         this.serverInfo = await this.transport.request('initialize', {
             protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: {},
-            clientInfo: { name: 'open-claude-code', version: '2.0.0' },
+            clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
         return this.serverInfo;
     }
@@ -139,7 +139,7 @@ export class McpClient {
         const result = await this._transportRequest('initialize', {
             protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: {},
-            clientInfo: { name: 'open-claude-code', version: '2.0.0' },
+            clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
         this.serverInfo = result;
         return result;
