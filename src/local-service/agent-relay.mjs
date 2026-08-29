@@ -2,12 +2,12 @@
  * Browser-local agent relay.
  *
  * Bridges a local workspace browser session to the same CLI-owned remote
- * agent path used by the terminal: TarangStreamClient + local ToolExecutor.
+ * agent path used by the terminal: BahulamStreamClient + local ToolExecutor.
  */
 
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import {
@@ -15,7 +15,7 @@ import {
   getRecentSessions,
   getSessionDetail,
 } from '../core/local-store.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
 import { BrowserApprovalManager } from './approval-bridge.mjs';
@@ -208,7 +208,7 @@ export class LocalAgentRelay {
         this.agentHistory.length ? this.agentHistory : null,
       )) {
         eventCount += 1;
-        writer.writeKeplerEvent(event);
+        writer.writeBahulamEvent(event);
 
         const contentUpdate = contentDeltaForEvent(event, assistantContent);
         if (contentUpdate) {
@@ -256,7 +256,7 @@ export class LocalAgentRelay {
       this._markUndeliveredFollowupsQueued(wasCancelled ? 'Task cancelled' : '');
       if (!userTurnWritten && (this.client.sessionId || wasCancelled)) writeUserTurn();
       if (wasCancelled) {
-        writer.writeKeplerEvent({
+        writer.writeBahulamEvent({
           type: 'cancelled',
           data: {
             task_id: this.client?.currentTaskId || null,
@@ -482,7 +482,7 @@ export class LocalAgentRelay {
       error: result.error || null,
       http_status: result.httpStatus || null,
     };
-    this._ensureJsonlWriter().writeKeplerEvent({
+    this._ensureJsonlWriter().writeBahulamEvent({
       type: 'user_intervention',
       data: {
         instruction: item.instruction,
@@ -511,7 +511,7 @@ export class LocalAgentRelay {
   }
 
   async _initialize() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
       const err = new Error('Not logged in. Run `bahulam login` from the CLI, then retry.');
@@ -539,7 +539,7 @@ export class LocalAgentRelay {
     this.creds = creds;
     this.toolExecutor = toolExecutor;
     this.approvalManager = approval;
-    this.client = new TarangStreamClient({
+    this.client = new BahulamStreamClient({
       baseUrl: creds.backendUrl,
       token: creds.token,
       toolExecutor,

@@ -10,7 +10,7 @@
  *                                    `bahulam device list`).
  */
 
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 
 const GATEWAY = (process.env.BAHULAM_GATEWAY_URL || 'https://gateway.bahulam.ai').replace(/\/+$/, '').replace(/\/v1$/, '');
 const RESET = '\x1b[0m';
@@ -22,7 +22,7 @@ const YELLOW = '\x1b[33m';
 
 export async function runDeviceCommand(args = []) {
   const sub = (args[0] || '').toLowerCase();
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
   const creds = auth.loadCredentials();
   if (!creds.token) {
     process.stderr.write(`${RED}Not logged in. Run ${BOLD}bahulam login${RESET}${RED} first.${RESET}\n`);

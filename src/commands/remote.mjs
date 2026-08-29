@@ -13,7 +13,7 @@
  * connection — the daemon must be running. * daemon needs a device_id + keypair to authenticate to the relay.
  */
 
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -26,7 +26,7 @@ const DEFAULT_RELAY = (process.env.BAHULAM_RELAY_URL || 'wss://relay.bahulam.ai'
 
 export async function runRemoteCommand(args = []) {
   const sub = (args[0] || '').toLowerCase();
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
   auth.loadCredentials();
 
   if (sub === 'enable')  return _enable(auth);
@@ -93,7 +93,7 @@ function _status(auth) {
  * public_key, peer_pubkeys } — or null if we shouldn't dial.
  */
 export function loadRemoteConfig() {
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
   const config = auth.getRawConfig() || auth.loadCredentials() && auth.getRawConfig();
   if (!config?.remote?.enabled) return null;
   if (!config?.pairing?.device_id) return null;

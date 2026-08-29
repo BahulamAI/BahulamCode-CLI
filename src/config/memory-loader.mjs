@@ -17,7 +17,7 @@ function readIfExists(filePath, maxChars = 12000) {
   }
 }
 
-export function loadKeplerMemory({ cwd = process.cwd() } = {}) {
+export function loadBahulamMemory({ cwd = process.cwd() } = {}) {
   const files = [];
   const global = readIfExists(path.join(bahulamHome(), 'KEPLER.md'));
   if (global) files.push({ source: 'global', ...global });

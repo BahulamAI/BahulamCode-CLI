@@ -1,8 +1,8 @@
 /**
- * TarangStreamClient — SSE consumer for Tarang backend.
+ * BahulamStreamClient — SSE consumer for Bahulam backend.
  *
  * Replaces OCC's agent-loop.mjs. Instead of calling the LLM API directly,
- * this client POSTs to the Tarang backend, parses the SSE stream, intercepts
+ * this client POSTs to the Bahulam backend, parses the SSE stream, intercepts
  * tool_request/tool_call events (executes locally, POSTs callback), and
  * yields all other events to the caller for rendering.
  *
@@ -117,10 +117,10 @@ function isOfflineLikelyError(err) {
     );
 }
 
-export class TarangStreamClient {
+export class BahulamStreamClient {
     /**
      * @param {Object} opts
-     * @param {string} opts.baseUrl - Tarang backend URL (ignored when mode='bundled')
+     * @param {string} opts.baseUrl - Bahulam backend URL (ignored when mode='bundled')
      * @param {string} opts.token - CLI auth token
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]

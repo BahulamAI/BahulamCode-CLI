@@ -1,7 +1,7 @@
 /**
  * Mode Selector
  *
- * remote (default): All requests go to Tarang backend.
+ * remote (default): All requests go to Bahulam backend.
  *   Backend handles orchestration, model selection, tool routing.
  *   User's provider and models configured via web Settings page.
  *

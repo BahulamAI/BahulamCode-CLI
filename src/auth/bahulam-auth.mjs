@@ -38,7 +38,7 @@ function readTokenFromEnv() {
     return null;
 }
 
-export class TarangAuth {
+export class BahulamAuth {
     constructor() {
         this._config = null;
     }

@@ -1,7 +1,7 @@
 /**
  * Live-steering CLI client tests (PRD-081 §5.2).
  *
- * Covers TarangStreamClient.sendIntervention(): idempotency-key generation,
+ * Covers BahulamStreamClient.sendIntervention(): idempotency-key generation,
  * status-object normalization across the backend's response shapes
  * (accepted, queued_next_turn, duplicate), non-2xx error handling, and
  * no-task early return.
@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert';
 
-import { TarangStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
+import { BahulamStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
 
 process.env.BAHULAM_RUNTIME_MODE = 'remote';
 
@@ -54,7 +54,7 @@ function textResponse(text, status = 500) {
 }
 
 function makeClient() {
-  const c = new TarangStreamClient({ baseUrl: 'http://backend', token: 't' });
+  const c = new BahulamStreamClient({ baseUrl: 'http://backend', token: 't' });
   c.currentTaskId = 'task-xyz';
   return c;
 }
@@ -70,7 +70,7 @@ await test('EVENT_TYPES exposes the three intervention event names', () => {
 // ── sendIntervention behavior ───────────────────────────────────────────
 
 await test('sendIntervention returns {status:no_task} when no active task', async () => {
-  const c = new TarangStreamClient({ baseUrl: 'http://backend', token: 't' });
+  const c = new BahulamStreamClient({ baseUrl: 'http://backend', token: 't' });
   // currentTaskId intentionally unset
   const r = await c.sendIntervention('hi');
   assert.strictEqual(r.status, 'no_task');

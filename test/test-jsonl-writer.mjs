@@ -56,7 +56,7 @@ await test('flushAssistantTurn tolerates undefined tool output', async () => {
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
-await test('writeKeplerEvent buffers until real session id is set', async () => {
+await test('writeBahulamEvent buffers until real session id is set', async () => {
   const cwd = path.join(tempRoot, 'event-project');
   const outputDir = path.join(tempRoot, 'event-output');
   fs.mkdirSync(cwd, { recursive: true });
@@ -64,9 +64,9 @@ await test('writeKeplerEvent buffers until real session id is set', async () => 
 
   const writer = new JsonlWriter(cwd, 'test');
   writer.projectDir = outputDir;
-  writer.writeKeplerEvent({ type: 'status', data: { message: 'Starting' } });
+  writer.writeBahulamEvent({ type: 'status', data: { message: 'Starting' } });
   writer.setSessionId('event-session-1');
-  writer.writeKeplerEvent({ type: 'tool_call', data: { tool: 'read_file', args: { path: 'a'.repeat(12000) } } });
+  writer.writeBahulamEvent({ type: 'tool_call', data: { tool: 'read_file', args: { path: 'a'.repeat(12000) } } });
   await writer.close();
 
   const transcriptPath = path.join(writer.projectDir, 'event-session-1.jsonl');

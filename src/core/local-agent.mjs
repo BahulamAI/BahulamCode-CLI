@@ -1,7 +1,7 @@
 /**
  * Local Agent — T18: Direct LLM API calls, <100ms startup, offline.
  * Replaces the SSE backend for --local mode.
- * Yields events matching the same format as TarangStreamClient.
+ * Yields events matching the same format as BahulamStreamClient.
  */
 
 import { ContextRetriever } from '../context/retriever.mjs';

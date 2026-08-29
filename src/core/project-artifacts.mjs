@@ -23,9 +23,9 @@ export function persistProjectArtifacts(data, resources, log = () => {}) {
         for (const [field, filename] of artifacts) {
             try {
                 // Resolver honors legacy .kepler/ when it's the only dir that exists.
-                const keplerDir = projectConfigDir(resource.root);
-                fs.mkdirSync(keplerDir, { recursive: true });
-                const artifactPath = path.join(keplerDir, filename);
+                const bahulamDir = projectConfigDir(resource.root);
+                fs.mkdirSync(bahulamDir, { recursive: true });
+                const artifactPath = path.join(bahulamDir, filename);
                 fs.writeFileSync(artifactPath, data[field], 'utf-8');
                 resource[field] = data[field];
                 written.push(artifactPath);

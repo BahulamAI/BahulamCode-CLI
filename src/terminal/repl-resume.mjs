@@ -33,7 +33,7 @@ import {
   writeOverlayFrame,
   eraseOverlayFrame,
 } from './repl-format.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { getRecentSessions, getSessionDetail, buildResumeHistory, combineResumeSummaries } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
@@ -504,7 +504,7 @@ export async function summarizeResumeTranscript({
     };
   }
   try {
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
       baseUrl: creds.backendUrl,
       token: creds.token,
       toolExecutor,

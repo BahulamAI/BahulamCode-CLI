@@ -265,7 +265,7 @@ function powershellString(value) {
 }
 
 function ensureClipboardDir(baseDir = os.tmpdir()) {
-  const dir = path.join(baseDir, 'kepler-clipboard-images');
+  const dir = path.join(baseDir, 'bahulam-clipboard-images');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

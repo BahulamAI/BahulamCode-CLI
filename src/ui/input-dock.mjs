@@ -23,7 +23,7 @@
  *        ...                                                  ← up to MAX_INPUT_ROWS
  *                                                              ← spacer
  *   ══════════════════════════════════════════════════════   ← bottom rule (colored)
- *      deepseek-chat-v3 · Tarang-Orca ⎇ main · turn 4         ← meta row
+ *      deepseek-chat-v3 · Bahulam ⎇ main · turn 4         ← meta row
  *      [Enter] send · [/] commands …                          ← tips row
  *   (one blank row at very bottom for cursor safety)
  *

@@ -119,7 +119,7 @@ try {
     },
   };
   relayForFollowup._ensureJsonlWriter = () => ({
-    writeKeplerEvent: (event) => relayFollowupJsonl.push(event),
+    writeBahulamEvent: (event) => relayFollowupJsonl.push(event),
   });
   const relayFollowupResult = await relayForFollowup.sendFollowup({ instruction: 'switch to the safer plan' });
   assert.equal(relayFollowupResult.status, 'accepted');

@@ -1,7 +1,7 @@
 /**
- * Tool Executor Bridge — maps Tarang backend tool names to OCC tool calls.
+ * Tool Executor Bridge — maps Bahulam backend tool names to OCC tool calls.
  *
- * The Tarang backend sends tool_request events with its own tool names and arg shapes.
+ * The Bahulam backend sends tool_request events with its own tool names and arg shapes.
  * This bridge translates those into OCC tool calls and wraps the results.
  *
  * Safety guardrails integrated — prevents destructive operations on source code.
@@ -18,7 +18,7 @@ import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { detectImageFile } from './attachments.mjs';
 import { streamResponse } from './streaming.mjs';
 import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
@@ -34,7 +34,7 @@ import * as crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 
 /**
- * Create a tool executor that bridges Tarang tool names to OCC tools.
+ * Create a tool executor that bridges Bahulam tool names to OCC tools.
  * @param {Object} [options]
  * @param {ProjectRegistry} [options.projectRegistry] - session-owned project registry
  * @returns {{ execute(name, args): Promise<Object>, listTools(): string[] }}
@@ -472,7 +472,7 @@ export function createToolExecutor({
     }
 
     /**
-     * Wrap an OCC string result into Tarang's { success, output } format.
+     * Wrap an OCC string result into Bahulam's { success, output } format.
      */
     function wrapResult(result, toolName) {
         if (typeof result === 'object' && result !== null && 'success' in result) {
@@ -1505,7 +1505,7 @@ print('OK: replaced')
             };
         },
 
-        // ── Tarang-specific tools (no OCC bridge) ──────────────
+        // ── Bahulam-specific tools (no OCC bridge) ──────────────
 
         // 8. read_files → batch Read (with AST truncation for large files)
         read_files: async (args) => {
@@ -1934,7 +1934,7 @@ print('OK: replaced')
                 const target = args.name || args.slug || '';
                 throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .bahulam/agents');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             const result = await syncAgentsToBackend({
                 backendUrl: creds.backendUrl,
                 token: creds.token,
@@ -1956,7 +1956,7 @@ print('OK: replaced')
             const local = filterLocalWorkflows(args).map(compactWorkflowMetadata);
             let backend = [];
             try {
-                const creds = new TarangAuth().loadCredentials();
+                const creds = new BahulamAuth().loadCredentials();
                 if (creds.backendUrl && creds.token) {
                     const resp = await fetch(`${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`, {
                         headers: {
@@ -2022,7 +2022,7 @@ print('OK: replaced')
                 const target = args.name || args.slug || '';
                 throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .bahulam/workflows');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
                 throw new Error('Not logged in. Run bahulam login first.');
             }
@@ -2094,7 +2094,7 @@ print('OK: replaced')
             if (!target) {
                 throw new Error('workflow_id is required');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
                 throw new Error('Not logged in. Run bahulam login first.');
             }
@@ -2273,8 +2273,8 @@ print('OK: replaced')
 
     return {
         /**
-         * Execute a Tarang tool by name.
-         * @param {string} name - Tarang tool name
+         * Execute a Bahulam tool by name.
+         * @param {string} name - Bahulam tool name
          * @param {Object} args - Tool arguments
          * @returns {Promise<Object>} - { success, output, ... }
          */

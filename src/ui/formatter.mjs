@@ -1,5 +1,5 @@
 /**
- * Formatter — Clean terminal output for Tarang events.
+ * Formatter — Clean terminal output for Bahulam events.
  *
  * Style reference: Claude Code screenshot
  *   ◐ Cyan spinner + cyan text for working/thinking

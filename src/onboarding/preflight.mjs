@@ -334,7 +334,7 @@ function formatRow(check) {
  * collected check results.
  *
  * @param {object} opts
- * @param {object} opts.auth        — TarangAuth instance
+ * @param {object} opts.auth        — BahulamAuth instance
  * @param {string} opts.cwd         — working directory
  * @param {string} opts.version     — package version string
  * @param {boolean} [opts.silent]   — if true, do not write (useful for tests)

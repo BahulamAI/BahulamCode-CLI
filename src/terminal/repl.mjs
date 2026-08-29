@@ -22,7 +22,7 @@ import { execSync as _execSync } from 'node:child_process';
 import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
-import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
@@ -53,7 +53,7 @@ import {
   MODES as V_MODES,
 } from '../state/verbosity.mjs';
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
@@ -2358,7 +2358,7 @@ function renderEvent(event) {
       break;
 
     // Live steering ack events (PRD-081 §5.2). renderEvent is called from
-    // the SSE loop (see `for await ... jsonlWriter.writeKeplerEvent(event)`
+    // the SSE loop (see `for await ... jsonlWriter.writeBahulamEvent(event)`
     // in the /execute path) so every event already lands in the transcript.
     // Here we only render the user-visible surface — no direct jsonlWriter
     // calls (it's out of scope in this top-level dispatcher anyway).
@@ -3776,7 +3776,7 @@ export async function startTerminalRepl() {
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
 
   // Projects are registered and indexed on demand through get_project_overview.
   // CheckpointManager records per-file snapshots before edits so /undo works.
@@ -4123,7 +4123,7 @@ export async function startTerminalRepl() {
       && richHistory.summary
       && Number(richHistory.summaryCoveredMessageCount) > Number(richHistory.summaryCheckpointMessageCount || 0)
     ) {
-      jsonlWriter.writeKeplerEvent({
+      jsonlWriter.writeBahulamEvent({
         type: 'resume_summary',
         data: {
           session_id: sessionId,
@@ -4138,7 +4138,7 @@ export async function startTerminalRepl() {
         },
       });
     }
-    jsonlWriter.writeKeplerEvent({
+    jsonlWriter.writeBahulamEvent({
       type: 'resume_context',
       data: {
         session_id: sessionId,
@@ -4897,7 +4897,7 @@ export async function startTerminalRepl() {
     // Create or reuse stream client — sessionId persists across turns.
     // The same client also owns the authenticated vision-analysis preflight.
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
-      streamClient = new TarangStreamClient({
+      streamClient = new BahulamStreamClient({
         baseUrl: creds.backendUrl,
         token: creds.token,
         toolExecutor,
@@ -4921,7 +4921,7 @@ export async function startTerminalRepl() {
           `  ${c.brand('◇')} ${c.dim(`attached ${docPrep.documents.length} document${docPrep.documents.length === 1 ? '' : 's'}:`)} ` +
           `${docPrep.documents.map(documentSummaryLine).join(c.dim(' · '))}\n`
         );
-        jsonlWriter.writeKeplerEvent({
+        jsonlWriter.writeBahulamEvent({
           type: 'attachments',
           data: { documents: docPrep.documents.map(publicDocumentMetadata) },
         });
@@ -4937,7 +4937,7 @@ export async function startTerminalRepl() {
       });
       if (prepared.attachments.length) {
         process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
-        jsonlWriter.writeKeplerEvent({
+        jsonlWriter.writeBahulamEvent({
           type: 'attachments',
           data: { attachments: prepared.attachments.map(publicAttachmentMetadata) },
         });
@@ -4954,7 +4954,7 @@ export async function startTerminalRepl() {
           });
           process.stderr.write(`\r${' '.repeat(80)}\r`);
           process.stderr.write(`  ${c.green('✓')} ${c.dim(`Vision analysis completed for ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}`)}${analysis.model ? c.dim(` · ${analysis.model}`) : ''}\n`);
-          jsonlWriter.writeKeplerEvent({
+          jsonlWriter.writeBahulamEvent({
             type: 'vision_analysis',
             data: {
               model: analysis.model || '',
@@ -5140,7 +5140,7 @@ export async function startTerminalRepl() {
       // Persist the local record regardless of outcome so the transcript
       // reflects what the user typed. Delivered/queued follow-ups will
       // get their SSE ack events written separately by the event handler.
-      jsonlWriter.writeKeplerEvent({
+      jsonlWriter.writeBahulamEvent({
         type: 'user_intervention',
         data: {
           instruction,
@@ -5511,7 +5511,7 @@ export async function startTerminalRepl() {
         _turnIterable = client.execute(input, execContext, session.agentHistory);
       }
       for await (const event of _turnIterable) {
-        jsonlWriter.writeKeplerEvent(event);
+        jsonlWriter.writeBahulamEvent(event);
         // . daemon event log. Env-var gated (off by default) —
         // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
