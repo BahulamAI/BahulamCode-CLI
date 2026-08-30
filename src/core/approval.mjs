@@ -113,7 +113,7 @@ function shellHardBlockReason(tool, args = {}) {
 
 function withShellRetryHint(reason) {
     const text = String(reason || '').trim();
-    if (/command substitution|backticks|\$\(\)/i.test(text)) {
+    if (/command substitution|backticks|\$\(/i.test(text)) {
         return `${text}. Retry with separate simple shell commands instead of backticks or $().`;
     }
     return text;

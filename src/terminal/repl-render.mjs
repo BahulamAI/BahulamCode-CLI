@@ -840,16 +840,38 @@ export function transcriptRenderableLines(rendered) {
   return lines;
 }
 
+function positiveInteger(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+export function stagnationDisplayCount(data = {}, reason = '') {
+  const text = String(reason || data?.reason || data?.message || '');
+  const patterns = [
+    /\bcalled\s+(\d+)\s+times\b/i,
+    /[×x]\s*(\d+)\b/i,
+    /\brepeated\s+(\d+)x\b/i,
+    /\b(\d+)\s+times\s+without\s+mutation\b/i,
+    /\b(\d+)\s+tool\s+calls\s+without\s+mutating\s+state\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const count = positiveInteger(match?.[1]);
+    if (count) return count;
+  }
+  return positiveInteger(data?.count) || positiveInteger(data?.repeat_count);
+}
+
 export function renderStagnation(data = {}) {
   const rawMessage = data?.message || '';
   const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
   const tool = data?.tool || data?.tool_name || '';
-  const count = data?.repeat_count || data?.count || null;
+  const count = stagnationDisplayCount(data, reason);
   // Try to extract a target/path from the reason so we can show a
   // compact one-liner. Reason shapes we know about from the framework:
   //   "Repeated overlapping <tool> inspections of '<target>' N times without mutation"
   //   "..."  (fallback: use reason as-is, trimmed to ~80 chars)
-  const targetMatch = reason.match(/of\s+['"]([^'"]+)['"]/);
+  const targetMatch = reason.match(/(?:of|on)\s+['"]([^'"]+)['"]/);
   const target = targetMatch ? targetMatch[1] : '';
 
   // Compose a compact single-line message:

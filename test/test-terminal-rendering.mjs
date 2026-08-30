@@ -22,6 +22,7 @@ import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
+import { stagnationDisplayCount } from '../src/terminal/repl-render.mjs';
 
 let passed = 0;
 
@@ -870,6 +871,26 @@ test('renders direct and legacy file diff payloads', () => {
   }));
   assert.ok(detail.includes('--- a/src/legacy.js'));
   assert.ok(detail.includes('+newThing();'));
+});
+
+test('stagnation display uses the duplicate-call count from the reason', () => {
+  assert.strictEqual(
+    stagnationDisplayCount({
+      tool: 'read_file',
+      repeat_count: 1,
+      reason: "Tool 'read_file' called 3 times with identical arguments",
+    }),
+    3,
+  );
+  assert.strictEqual(
+    stagnationDisplayCount({
+      tool: 'analyze_image',
+      repeat_count: 1,
+      message: "Stagnation: analyze_image × 3 on 'diagram.jpg' (already read)",
+    }),
+    3,
+  );
+  assert.strictEqual(stagnationDisplayCount({ tool: 'shell', repeat_count: 2 }), 2);
 });
 
 test('redacts sensitive config diff previews and details', () => {

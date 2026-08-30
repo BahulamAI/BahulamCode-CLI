@@ -3684,7 +3684,7 @@ async function handleCommand(input, ctx) {
       }
 
       // 5. Show continuity context. Non-summary modes use the captured
-      //    kepler_event stream when available so the terminal replay matches
+      //    bahulam_event stream when available so the terminal replay matches
       //    the original styled interaction; older sessions fall back to
       //    reconstructed text.
       if (mode === 'summary' && resumed.summary) {

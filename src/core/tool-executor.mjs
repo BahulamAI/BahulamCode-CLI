@@ -139,7 +139,7 @@ export function createToolExecutor({
 
     function blockedShellOutput(reason) {
         const text = String(reason || 'Blocked by shell safety policy').trim();
-        const hint = /command substitution|backticks|\$\(\)/i.test(text)
+        const hint = /command substitution|backticks|\$\(/i.test(text)
             ? 'Retry with separate simple shell commands instead of backticks or $().'
             : 'Work only inside a registered project root.';
         return `BLOCKED: ${text}. ${hint}`;
@@ -1296,9 +1296,13 @@ export function createToolExecutor({
             const after = readTextIfExists(filePath);
             if (wrapped.success !== false && before === after) {
                 const relativePath = path.relative(projectRootFor(filePath), filePath) || path.basename(filePath);
+                // File content is unchanged — the desired state is already in place.
+                // Return success so the agent doesn't treat this as a failure and
+                // loop into repeated read_file calls trying to diagnose why it failed.
+                // _no_change flags this for stagnation detection on repeated no-op edits.
                 return {
-                    success: false,
-                    output: `edit_file made no changes to ${relativePath}. The search string may already be replaced, the replacement may be identical, or the target content may have drifted. Re-read the target range before trying a different edit.`,
+                    success: true,
+                    output: `edit_file: no changes made to ${relativePath} — content already matches or replacement is identical to the original.`,
                     _tool: 'edit_file',
                     _no_change: true,
                     no_change: true,

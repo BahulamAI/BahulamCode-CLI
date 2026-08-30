@@ -67,13 +67,40 @@ const sessionALines = [
   },
   {
     type: 'kepler_event',
+    timestamp: '2026-04-26T10:00:02.250Z',
+    cwd: demoProject,
+    sessionId: 'sess-A',
+    event: {
+      type: 'complete',
+      data: {
+        usage: {
+          total_input_tokens: 120,
+          total_output_tokens: 80,
+          cache_read_input_tokens: 12,
+          reasoning_tokens: 7,
+          models: [{
+            model: 'gpt-5.4',
+            role: 'coder',
+            input_tokens: 120,
+            output_tokens: 80,
+            cache_read_tokens: 12,
+            reasoning_tokens: 7,
+            cost: 0.012,
+          }],
+          total_cost: 0.012,
+        },
+      },
+    },
+  },
+  {
+    type: 'kepler_event',
     timestamp: '2026-04-26T10:00:02.500Z',
     cwd: demoProject,
     sessionId: 'sess-A',
     event: { type: 'tool_call', data: { tool: 'read_file', args: { path: path.join(demoProject, 'src', 'index.mjs') } } },
   },
   {
-    type: 'kepler_event',
+    type: 'bahulam_event',
     timestamp: '2026-04-26T10:00:02.750Z',
     cwd: demoProject,
     sessionId: 'sess-A',
@@ -123,7 +150,7 @@ const sessionBLines = [
     },
   },
   {
-    type: 'kepler_event',
+    type: 'bahulam_event',
     timestamp: '2026-04-27T08:30:06.000Z',
     cwd: demoProject,
     sessionId: 'sess-B',
@@ -167,6 +194,9 @@ await test('getRecentSessions returns most recent transcript first', async () =>
   assert.strictEqual(sessions[0].resumeSummary.summarySource, 'backend');
   assert.strictEqual(sessions[1].inputTokens, 120);
   assert.strictEqual(sessions[1].cacheReadTokens, 12);
+  assert.strictEqual(sessions[1].reasoningTokens, 7);
+  assert.strictEqual(sessions[1].costUsd, 0.012);
+  assert.strictEqual(sessions[1].modelUsage['gpt-5.4'].inputTokens, 120);
   assert.ok(sessions[1].contextTokens > 0);
   assert.notStrictEqual(sessions[1].contextTokens, 212);
   assert.strictEqual(sessions[1].contextTokenSource, 'jsonl_bytes');
@@ -177,12 +207,15 @@ await test('getSessionDetail normalizes tool blocks', async () => {
   assert.ok(detail);
   assert.strictEqual(detail.meta.project, demoProject);
   assert.strictEqual(detail.entries.length, 3);
-  assert.strictEqual(detail.replayEvents.length, 2);
-  assert.strictEqual(detail.replayEvents[0].event.type, 'tool_call');
-  assert.strictEqual(detail.replayEvents[1].event.type, 'user_intervention');
-  assert.deepStrictEqual(detail.entries.map(e => e.order), [0, 1, 4]);
+  assert.strictEqual(detail.replayEvents.length, 3);
+  assert.strictEqual(detail.replayEvents[0].event.type, 'complete');
+  assert.strictEqual(detail.replayEvents[0].event.data.usage.reasoning_tokens, 7);
+  assert.strictEqual(detail.replayEvents[1].event.type, 'tool_call');
+  assert.strictEqual(detail.replayEvents[2].event.type, 'user_intervention');
+  assert.deepStrictEqual(detail.entries.map(e => e.order), [0, 1, 5]);
   assert.strictEqual(detail.replayEvents[0].order, 2);
   assert.strictEqual(detail.replayEvents[1].order, 3);
+  assert.strictEqual(detail.replayEvents[2].order, 4);
   assert.ok(Array.isArray(detail.entries[1].content));
   assert.strictEqual(detail.entries[1].content[1].type, 'tool_use');
   assert.strictEqual(detail.entries[1].content[1].name, 'read_file');
@@ -356,6 +389,8 @@ await test('report formatters include expected analytics sections', async () => 
   assert.ok(sessionsReport.includes('BAHULAM SESSIONS'));
   assert.ok(sessionsReport.includes('Build the Bahulam Code dashboard'));
   assert.ok(statsReport.includes('Top Tools'));
+  assert.ok(statsReport.includes('Reasoning'));
+  assert.ok(statsReport.includes('200 tok'));
   assert.ok(statsReport.includes('read_file'));
   assert.ok(historyReport.includes('BAHULAM HISTORY'));
   assert.ok(historyReport.includes('Show usage history'));
