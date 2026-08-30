@@ -12,7 +12,7 @@ import { bahulamHome } from './paths.mjs';
 
 const BAHULAM_DIR = bahulamHome();
 const PROJECTS_DIR = path.join(BAHULAM_DIR, 'projects');
-const REPLAY_EVENT_RECORD_TYPES = new Set(['bahulam_event', 'kepler_event']);
+const REPLAY_EVENT_RECORD_TYPE = 'bahulam_event';
 
 function finiteNumber(value) {
   const n = Number(value);
@@ -28,7 +28,7 @@ function firstFiniteNumber(...values) {
 }
 
 function replayEventFromRecord(record) {
-  if (!record || !REPLAY_EVENT_RECORD_TYPES.has(record.type) || !record.event) return null;
+  if (!record || record.type !== REPLAY_EVENT_RECORD_TYPE || !record.event) return null;
   const event = record.event;
   if (!event || typeof event !== 'object' || !event.type) return null;
   return {
@@ -334,8 +334,7 @@ async function parseSessionMeta(filePath) {
         if (!meta.endTime || ts > meta.endTime) meta.endTime = ts;
       }
 
-      // Bahulam replay events may carry cost / error markers. Older local
-      // transcripts used the same payload under the legacy kepler_event type.
+      // Bahulam replay events may carry cost / error markers.
       const ev = replayEventFromRecord(obj);
       if (ev) {
         const data = ev.data || {};
@@ -518,7 +517,8 @@ export async function getSessionDetail(sessionId, options = {}) {
       continue;
     }
 
-    const message = obj.message || {};
+    if (!obj.message || typeof obj.message !== 'object') continue;
+    const message = obj.message;
     entries.push({
       order: entryOrder,
       type: obj.type || null,
