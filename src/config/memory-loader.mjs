@@ -17,10 +17,8 @@ function readIfExists(filePath, maxChars = 12000) {
   }
 }
 
-// Prefer BAHULAM.md; fall back to KEPLER.md for projects that haven't migrated.
 function readMemoryFile(dir, maxChars) {
-  return readIfExists(path.join(dir, 'BAHULAM.md'), maxChars)
-    || readIfExists(path.join(dir, 'KEPLER.md'), maxChars);
+  return readIfExists(path.join(dir, 'BAHULAM.md'), maxChars);
 }
 
 export function loadBahulamMemory({ cwd = process.cwd() } = {}) {

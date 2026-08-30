@@ -11,8 +11,8 @@ import { getLoginSuccessHTML } from '../ui/banner.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { bahulamHome } from '../core/paths.mjs';
 
-// Note: computed via a function (not a constant) so that BAHULAM_HOME /
-// KEPLER_HOME env-var swaps mid-process still work.
+// Note: computed via a function (not a constant) so that BAHULAM_HOME
+// env-var swaps mid-process still work.
 function configDir() { return bahulamHome(); }
 function configPath() { return path.join(configDir(), 'config.json'); }
 
@@ -24,17 +24,6 @@ const CONFIG_PATH = configPath();
 let _tokenEnvNoticeShown = false;
 function readTokenFromEnv() {
     if (process.env.B0_TOKEN) return process.env.B0_TOKEN;
-    if (process.env.KEPLER_TOKEN) {
-        if (!_tokenEnvNoticeShown && process.env.B0_QUIET_MIGRATION !== '1') {
-            _tokenEnvNoticeShown = true;
-            try {
-                process.stderr.write(
-                    '  \x1b[2mnote: KEPLER_TOKEN is deprecated; set B0_TOKEN instead.\x1b[0m\n'
-                );
-            } catch {}
-        }
-        return process.env.KEPLER_TOKEN;
-    }
     return null;
 }
 

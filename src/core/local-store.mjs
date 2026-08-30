@@ -10,8 +10,8 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { bahulamHome } from './paths.mjs';
 
-const KEPLER_DIR = bahulamHome();
-const PROJECTS_DIR = path.join(KEPLER_DIR, 'projects');
+const BAHULAM_DIR = bahulamHome();
+const PROJECTS_DIR = path.join(BAHULAM_DIR, 'projects');
 const REPLAY_EVENT_RECORD_TYPES = new Set(['bahulam_event', 'kepler_event']);
 
 function finiteNumber(value) {
@@ -965,7 +965,7 @@ export async function getModelBreakdown(days = 30) {
  * @param {number} n — max entries to return (most recent first)
  */
 export function getHistory(n = 50) {
-  const historyPath = path.join(KEPLER_DIR, 'history.jsonl');
+  const historyPath = path.join(BAHULAM_DIR, 'history.jsonl');
   try {
     const content = fs.readFileSync(historyPath, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
@@ -981,8 +981,8 @@ export function getHistory(n = 50) {
 
 export function getStorePaths() {
   return {
-    bahulamDir: KEPLER_DIR,
+    bahulamDir: BAHULAM_DIR,
     projectsDir: PROJECTS_DIR,
-    historyPath: path.join(KEPLER_DIR, 'history.jsonl'),
+    historyPath: path.join(BAHULAM_DIR, 'history.jsonl'),
   };
 }

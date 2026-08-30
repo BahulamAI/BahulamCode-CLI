@@ -875,8 +875,7 @@ function handleAttachmentsCommand(rest = '', ctx) {
 }
 
 async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
-  if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false'
-         || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
+  if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false') {
     return true;
   }
   if (!ctx?._rl || !process.stdin.isTTY) return false;
@@ -4225,8 +4224,8 @@ export async function startTerminalRepl() {
     printBanner(auth);
 
     // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
-    // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
-    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
+    // BAHULAM_NO_PREFLIGHT=1 (used by tests / scripted runs).
+    if (process.env.BAHULAM_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
       try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
       catch { /* preflight is best-effort */ }
     }

@@ -302,8 +302,8 @@ async function main() {
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
     BAHULAM_CONFIG_DIR        Override config directory (default: ~/.bahulam)
-    KEPLER_CONFIG_DIR         Legacy config directory override
-    KEPLER_RECONNECT_MAX_ELAPSED_MS
+    BAHULAM_CONFIG_DIR         Legacy config directory override
+    BAHULAM_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     BAHULAM_TTY_MODE=stable Scrollback-safe transcript if fixed dock redraws leak
     BAHULAM_BLOCK_SEPARATOR Tool/content separator: space, dotted, or off

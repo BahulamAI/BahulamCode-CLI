@@ -16,8 +16,6 @@ export const DEFAULT_BAHULAM_SETTINGS = Object.freeze({
   },
 });
 
-// Legacy alias
-export const DEFAULT_KEPLER_SETTINGS = DEFAULT_BAHULAM_SETTINGS;
 
 function readJson(filePath) {
   try {
@@ -47,5 +45,3 @@ export function loadBahulamSettings({ cwd = process.cwd() } = {}) {
   return { settings, layers };
 }
 
-// Legacy alias — existing callers keep working
-export const loadKeplerSettings = loadBahulamSettings;

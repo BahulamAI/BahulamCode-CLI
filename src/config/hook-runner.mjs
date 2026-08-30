@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import * as path from 'node:path';
-import { loadKeplerSettings } from './settings-loader.mjs';
+import { loadBahulamSettings } from './settings-loader.mjs';
 
 function asArray(value) {
   if (!value) return [];
@@ -46,11 +46,11 @@ export class HookRunner {
   constructor({ cwd = process.cwd(), settings = null, sessionId = null } = {}) {
     this.cwd = cwd;
     this.sessionId = sessionId;
-    this.settings = settings || loadKeplerSettings({ cwd }).settings;
+    this.settings = settings || loadBahulamSettings({ cwd }).settings;
   }
 
   reload() {
-    this.settings = loadKeplerSettings({ cwd: this.cwd }).settings;
+    this.settings = loadBahulamSettings({ cwd: this.cwd }).settings;
   }
 
   hooksFor(event) {
@@ -79,12 +79,6 @@ export class HookRunner {
         BAHULAM_PROJECT_DIR: this.cwd,
         BAHULAM_SESSION_ID: this.sessionId || '',
         BAHULAM_TURN_ID: payload.turnId || '',
-        // Legacy names kept for backward compat with existing hook scripts
-        KEPLER_TOOL_NAME: toolName,
-        KEPLER_TOOL_INPUT_FILE_PATH: input.tool_input.file_path || input.tool_input.path || '',
-        KEPLER_PROJECT_DIR: this.cwd,
-        KEPLER_SESSION_ID: this.sessionId || '',
-        KEPLER_TURN_ID: payload.turnId || '',
       };
       const result = await runCommand(hook.command, {
         cwd: path.resolve(this.cwd),

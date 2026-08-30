@@ -73,7 +73,7 @@ const PROJECT_MARKERS = [
     'pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle',  // Java/Kotlin
     'Makefile', 'CMakeLists.txt',  // C/C++
     'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-    'AGENTS.md', 'BAHULAM.md', 'CLAUDE.md', 'KEPLER.md',  // Agent config lives at root
+    'AGENTS.md', 'BAHULAM.md', 'CLAUDE.md',  // Agent config lives at root
     '.editorconfig',               // Broad but a strong "this is a repo" signal
 ];
 
@@ -350,7 +350,7 @@ function defaultScratchRoots() {
         '/private/tmp',
         os.tmpdir(),
         process.env.TMPDIR,
-        ...(process.env.KEPLER_SCRATCH_ROOTS || '')
+        ...(process.env.BAHULAM_SCRATCH_ROOTS || '')
             .split(path.delimiter)
             .map(s => s.trim())
             .filter(Boolean),
@@ -399,15 +399,12 @@ export class ProjectRegistry {
 
     // PRD-69 project context is live metadata, not index cache. Re-read it on
     // every registration attempt so repeated get_project_overview calls pick up
-    // .bahulam/KEPLER.md, goal/plan/style, skills, AGENTS.md, etc. changes.
+    // .bahulam/BAHULAM.md, goal/plan/style, skills, AGENTS.md, etc. changes.
     _attachLiveContext(resource, root) {
-        // Resolver — prefers .bahulam/, falls back to .kepler/ for legacy projects.
         const bahulamDir = projectConfigDir(root);
         resource.environment = detectEnvironment();
         resource.project_context = _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
             _readIfExists(root, 'BAHULAM.md', 10000) ||
-            _readIfExists(bahulamDir, 'KEPLER.md', 10000) ||
-            _readIfExists(root, 'KEPLER.md', 10000) ||
             _readIfExists(bahulamDir, 'project.md', 8000);
         resource.style = _readIfExists(bahulamDir, 'style.md', 4000);
         resource.goal = _readIfExists(bahulamDir, 'goal.md', 2000);
@@ -415,7 +412,7 @@ export class ProjectRegistry {
         resource.skills_index = _scanSkills(bahulamDir);
 
         if (!resource.project_context) {
-            for (const name of ['.bahulam.md', 'BAHULAM.md', 'AGENTS.md', 'CLAUDE.md', 'KEPLER.md']) {
+            for (const name of ['.bahulam.md', 'BAHULAM.md', 'AGENTS.md', 'CLAUDE.md']) {
                 const content = _readIfExists(root, name, 8000);
                 if (content) { resource.project_context = content; break; }
             }

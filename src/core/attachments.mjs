@@ -419,8 +419,8 @@ export function loadImageAttachment(filePath, { cwd = process.cwd(), maxBytes = 
 export function prepareImageAttachments(input, {
   cwd = process.cwd(),
   extraPaths = [],
-  maxImageBytes = envInt('BAHULAM_VISION_MAX_IMAGE_BYTES', envInt('KEPLER_VISION_MAX_IMAGE_BYTES', DEFAULT_MAX_IMAGE_BYTES)),
-  maxTurnBytes = envInt('BAHULAM_VISION_MAX_TURN_BYTES', envInt('KEPLER_VISION_MAX_TURN_BYTES', DEFAULT_MAX_TURN_BYTES)),
+  maxImageBytes = envInt('BAHULAM_VISION_MAX_IMAGE_BYTES', DEFAULT_MAX_IMAGE_BYTES),
+  maxTurnBytes = envInt('BAHULAM_VISION_MAX_TURN_BYTES', DEFAULT_MAX_TURN_BYTES),
 } = {}) {
   const parsed = parseImageReferences(input, { cwd });
   const paths = [

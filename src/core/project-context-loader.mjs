@@ -69,8 +69,8 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
   const bahulamDir = projectConfigDir(cwd);
   const files = [];
   for (const file of loadBahulamMemory({ cwd })) {
-    const label = file.path.endsWith(path.join('.bahulam', 'KEPLER.md'))
-      ? 'KEPLER.md'
+    const label = file.path.endsWith(path.join('.bahulam', 'BAHULAM.md'))
+      ? 'BAHULAM.md'
       : path.basename(file.path);
     files.push({
       label,

@@ -146,7 +146,7 @@ export function createToolExecutor({
     }
 
     function longRunningObservationTimeoutMs() {
-        const configured = Number(process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS);
+        const configured = Number(process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS);
         return Number.isFinite(configured) && configured > 0 ? configured : 15_000;
     }
 

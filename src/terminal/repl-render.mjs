@@ -211,12 +211,12 @@ function exploreRunTotal() {
 }
 
 function exploreSnapshotEvery() {
-  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_EVERY || '8', 10);
+  const n = Number.parseInt(process.env.BAHULAM_EXPLORE_SNAPSHOT_EVERY || '8', 10);
   return Number.isFinite(n) ? Math.max(1, n) : 8;
 }
 
 function exploreSnapshotMs() {
-  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_MS || '900', 10);
+  const n = Number.parseInt(process.env.BAHULAM_EXPLORE_SNAPSHOT_MS || '900', 10);
   return Number.isFinite(n) ? Math.max(100, n) : 900;
 }
 

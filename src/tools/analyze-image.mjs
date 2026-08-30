@@ -92,7 +92,7 @@ export const AnalyzeImageTool = {
     if (!creds.backendUrl || !creds.token) {
       return {
         success: false,
-        output: 'analyze_image requires CLI auth. Run `bahulam-code login` or set B0_TOKEN/KEPLER_TOKEN.',
+        output: 'analyze_image requires CLI auth. Run `bahulam-code login` or set B0_TOKEN.',
         _tool: 'analyze_image',
       };
     }

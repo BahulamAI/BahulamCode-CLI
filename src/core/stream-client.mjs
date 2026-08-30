@@ -148,7 +148,7 @@ export class BahulamStreamClient {
         this.retryDelayMs = null;
         this.pendingToolCallbacks = new Map();
         this.reconnectMaxElapsedMs = reconnectMaxElapsedMs
-            ?? Number(process.env.KEPLER_RECONNECT_MAX_ELAPSED_MS || 300_000);
+            ?? Number(process.env.BAHULAM_RECONNECT_MAX_ELAPSED_MS || 300_000);
         // Set by backend on first turn, reused on subsequent turns. Headless mode
         // (which starts fresh per invocation) can pre-seed via TARANG_SESSION_ID
         // so multi-turn benchmarks share one backend session across `node` runs.
