@@ -1,8 +1,8 @@
 /**
- * System Prompt Builder — loads and merges CLAUDE.md and KEPLER.md files.
+ * System Prompt Builder — loads and merges CLAUDE.md and BAHULAM.md files.
  *
  * Features:
- * - Loads CLAUDE.md from: ~/.claude/CLAUDE.md, project root, parent dirs
+ * - Loads CLAUDE.md and BAHULAM.md from: global dir, project root, parent dirs
  * - Merges in order (global -> project -> local)
  * - Splits at cache boundary (static prefix cached, dynamic suffix not)
  * - Includes tool schemas in the system prompt
@@ -13,22 +13,27 @@ import os from 'os';
 import { loadBahulamMemory } from '../config/memory-loader.mjs';
 
 /**
- * Load all CLAUDE.md files and merge them in order.
+ * Load all CLAUDE.md and BAHULAM.md files and merge them in order.
+ * BAHULAM.md is the Bahulam-native equivalent of CLAUDE.md — both are supported.
  * @param {string} [cwd] - current working directory
- * @returns {string[]} Array of CLAUDE.md contents in merge order
+ * @returns {string[]} Array of file contents in merge order
  */
 export function loadClaudeMdFiles(cwd = process.cwd()) {
     const files = [];
 
-    // 1. Global: ~/.claude/CLAUDE.md
-    const globalPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-    if (fs.existsSync(globalPath)) {
-        try {
-            files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8') });
-        } catch { /* skip */ }
+    // 1. Global: ~/.claude/CLAUDE.md and ~/.bahulam/BAHULAM.md
+    for (const globalPath of [
+        path.join(os.homedir(), '.claude', 'CLAUDE.md'),
+        path.join(os.homedir(), '.bahulam', 'BAHULAM.md'),
+    ]) {
+        if (fs.existsSync(globalPath)) {
+            try {
+                files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8') });
+            } catch { /* skip */ }
+        }
     }
 
-    // 2. Walk from cwd up to root, collecting CLAUDE.md files
+    // 2. Walk from cwd up to root, collecting CLAUDE.md and BAHULAM.md files
     const projectFiles = [];
     let dir = path.resolve(cwd);
     const root = path.parse(dir).root;
@@ -36,6 +41,8 @@ export function loadClaudeMdFiles(cwd = process.cwd()) {
         const candidates = [
             path.join(dir, 'CLAUDE.md'),
             path.join(dir, '.claude', 'CLAUDE.md'),
+            path.join(dir, 'BAHULAM.md'),
+            path.join(dir, '.bahulam', 'BAHULAM.md'),
         ];
         for (const f of candidates) {
             if (fs.existsSync(f)) {

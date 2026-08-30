@@ -73,7 +73,7 @@ const PROJECT_MARKERS = [
     'pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle',  // Java/Kotlin
     'Makefile', 'CMakeLists.txt',  // C/C++
     'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-    'AGENTS.md', 'CLAUDE.md', 'KEPLER.md',  // Agent config lives at root
+    'AGENTS.md', 'BAHULAM.md', 'CLAUDE.md', 'KEPLER.md',  // Agent config lives at root
     '.editorconfig',               // Broad but a strong "this is a repo" signal
 ];
 
@@ -404,7 +404,9 @@ export class ProjectRegistry {
         // Resolver — prefers .bahulam/, falls back to .kepler/ for legacy projects.
         const bahulamDir = projectConfigDir(root);
         resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(bahulamDir, 'KEPLER.md', 10000) ||
+        resource.project_context = _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
+            _readIfExists(root, 'BAHULAM.md', 10000) ||
+            _readIfExists(bahulamDir, 'KEPLER.md', 10000) ||
             _readIfExists(root, 'KEPLER.md', 10000) ||
             _readIfExists(bahulamDir, 'project.md', 8000);
         resource.style = _readIfExists(bahulamDir, 'style.md', 4000);
@@ -413,7 +415,7 @@ export class ProjectRegistry {
         resource.skills_index = _scanSkills(bahulamDir);
 
         if (!resource.project_context) {
-            for (const name of ['.bahulam.md', 'AGENTS.md', 'CLAUDE.md']) {
+            for (const name of ['.bahulam.md', 'BAHULAM.md', 'AGENTS.md', 'CLAUDE.md', 'KEPLER.md']) {
                 const content = _readIfExists(root, name, 8000);
                 if (content) { resource.project_context = content; break; }
             }

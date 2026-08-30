@@ -875,7 +875,8 @@ function handleAttachmentsCommand(rest = '', ctx) {
 }
 
 async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
-  if (skip || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
+  if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false'
+         || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
     return true;
   }
   if (!ctx?._rl || !process.stdin.isTTY) return false;

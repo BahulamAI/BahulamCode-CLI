@@ -5,7 +5,7 @@ import * as path from 'node:path';
 export const DEFAULT_POLICY = Object.freeze({
   version: 1,
   context: {
-    loadEveryTurn: ['KEPLER.md', 'project.md', 'style.md', 'goal.md', 'plan.md', 'tasks/*.md'],
+    loadEveryTurn: ['BAHULAM.md', 'project.md', 'style.md', 'goal.md', 'plan.md', 'tasks/*.md'],
     showReloadNotice: true,
     injectCommandOptions: true,
     injectActionableTips: true,

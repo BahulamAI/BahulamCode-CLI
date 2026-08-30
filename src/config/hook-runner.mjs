@@ -74,6 +74,12 @@ export class HookRunner {
       const env = {
         ...process.env,
         ...(this.settings?.env || {}),
+        BAHULAM_TOOL_NAME: toolName,
+        BAHULAM_TOOL_INPUT_FILE_PATH: input.tool_input.file_path || input.tool_input.path || '',
+        BAHULAM_PROJECT_DIR: this.cwd,
+        BAHULAM_SESSION_ID: this.sessionId || '',
+        BAHULAM_TURN_ID: payload.turnId || '',
+        // Legacy names kept for backward compat with existing hook scripts
         KEPLER_TOOL_NAME: toolName,
         KEPLER_TOOL_INPUT_FILE_PATH: input.tool_input.file_path || input.tool_input.path || '',
         KEPLER_PROJECT_DIR: this.cwd,
