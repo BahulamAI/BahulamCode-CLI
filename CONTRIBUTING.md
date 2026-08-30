@@ -20,7 +20,7 @@ Node 18 or later. No external services or API keys needed to run unit tests.
 
 - ES modules only (`type: "module"`)
 - No external linting dependencies — match the style of the file you're editing
-- Env vars: `BAHULAM_` prefix only. `KEPLER_` is retired.
+- Env vars: `BAHULAM_` prefix only
 
 ## What belongs in a PR
 
@@ -32,7 +32,6 @@ Node 18 or later. No external services or API keys needed to run unit tests.
 
 **Do not include:**
 - Changes that require Bahulam backend credentials to test
-- New `KEPLER_*` env vars — use `BAHULAM_*`
 - Internal PRD smoke tests — use the integration test pattern instead
 - External npm dependencies (keep it zero-dependency beyond Node builtins)
 
