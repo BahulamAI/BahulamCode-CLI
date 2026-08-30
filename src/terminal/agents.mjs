@@ -163,6 +163,22 @@ export function findBuiltinAgent(agentName) {
   return BUILTIN_AGENTS.find(agent => agent.command === target || agent.name.toLowerCase() === target) || null;
 }
 
+/**
+ * Search for an agent across built-in agents, project .bahulam/agents, and plugin agents.
+ * @param {string} agentName
+ * @param {object} [agentLoader] - Instance of AgentLoader with loadFromPlugins() called
+ * @returns {object|null}
+ */
+export function findAgent(agentName, agentLoader = null) {
+  const builtin = findBuiltinAgent(agentName);
+  if (builtin) return builtin;
+  if (agentLoader) {
+    const local = agentLoader.get(agentName);
+    if (local) return local;
+  }
+  return null;
+}
+
 export function localAgentMatches(agent, target) {
   const needle = String(target || '').trim().toLowerCase();
   if (!needle) return false;
@@ -344,7 +360,8 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
  * @param {Function} renderEvent - Event renderer function
  */
 export async function runAgent(agentName, instruction, ctx, session, renderEvent) {
-  const agent = findBuiltinAgent(agentName);
+  const agentLoader = ctx?.agentLoader || null;
+  const agent = findAgent(agentName, agentLoader);
   if (!agent) {
     process.stderr.write(`  ${c.red('Unknown agent: ' + agentName)}\n`);
     return;

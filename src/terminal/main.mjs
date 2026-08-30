@@ -23,6 +23,36 @@ import { BahulamAuth as Auth } from '../auth/bahulam-auth.mjs';
 const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
 
+function parsePluginArgs(argv) {
+  const parsed = { pluginName: null, targetPath: null, port: 0, open: true, help: false, json: false };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--help':
+      case '-h':
+        parsed.help = true;
+        break;
+      case '--port':
+        parsed.port = Number(argv[++i]) || 0;
+        break;
+      case '--no-open':
+        parsed.open = false;
+        break;
+      case '--json':
+        parsed.json = true;
+        parsed.open = false;
+        break;
+      default:
+        if (!arg.startsWith('-')) {
+          if (!parsed.pluginName) parsed.pluginName = arg;
+          else if (!parsed.targetPath) parsed.targetPath = arg;
+        }
+        break;
+    }
+  }
+  return parsed;
+}
+
 function parseKeplerSubcommandArgs(command, argv) {
   const parsed = {
     command,
@@ -221,6 +251,13 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'plugin') {
+    const { handlePluginCommand } = await import('../commands/plugin.mjs');
+    const args = parsePluginArgs(subcommandArgs);
+    await handlePluginCommand(args, { cwd: process.cwd() });
+    return;
+  }
+
   if (subcommand === 'version' || subcommand === '--version' || subcommand === '-v') {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
@@ -259,6 +296,9 @@ async function main() {
     bahulam workspace open [path]  Start localhost workspace service
     bahulam workspace list         List recent local workspace sessions
     bahulam local open [path]      Alias for workspace open
+
+  \x1b[1mPlugins:\x1b[0m
+    bahulam plugin <name> [path]   Open a workspace with a named plugin
 
   \x1b[1mAnalytics:\x1b[0m
     bahulam sessions               List recent local sessions

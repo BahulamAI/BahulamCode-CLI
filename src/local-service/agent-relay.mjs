@@ -501,6 +501,13 @@ export class LocalAgentRelay {
     return payload;
   }
 
+  async executeTool(name, args = {}) {
+    if (!this.toolExecutor) {
+      throw new Error('Tool executor is not initialized');
+    }
+    return this.toolExecutor.execute(name, args);
+  }
+
   async _ensureReady() {
     if (this.ready) return this.ready;
     this.ready = this._initialize().catch((err) => {
@@ -526,7 +533,11 @@ export class LocalAgentRelay {
       process.chdir(this.session.root_path);
     }
 
-    const toolExecutor = createToolExecutor();
+    const { PluginRegistry } = await import('../plugins/registry.mjs');
+    const pluginRegistry = new PluginRegistry({ disabled: (process.env.BAHULAM_DISABLE_PLUGINS || '').split(',').filter(Boolean) });
+    pluginRegistry.scan();
+
+    const toolExecutor = createToolExecutor({ pluginRegistry });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
 
@@ -545,6 +556,7 @@ export class LocalAgentRelay {
       toolExecutor,
       approvalManager: approval,
       mode: 'remote',
+      pluginRegistry,
     });
     if (this.resumeSessionId) this.client.sessionId = this.resumeSessionId;
     this._ensureJsonlWriter();

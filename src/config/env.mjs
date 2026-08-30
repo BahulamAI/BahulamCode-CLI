@@ -116,6 +116,8 @@ export const ENV_SCHEMA = {
     // Extended: Plugins
     CLAUDE_CODE_PLUGIN_DIR: { type: 'string', description: 'Custom plugin directory' },
     CLAUDE_CODE_DISABLE_PLUGINS: { type: 'boolean', default: false, description: 'Disable all plugins' },
+    BAHULAM_PLUGIN_DIR: { type: 'string', description: 'Bahulam plugin directory (comma-separated paths)' },
+    BAHULAM_DISABLE_PLUGINS: { type: 'string', description: 'Comma-separated plugin names to disable' },
 
     // Extended: Session
     CLAUDE_CODE_SESSION_TTL: { type: 'number', default: 86400000, description: 'Session TTL in ms (default 24h)' },

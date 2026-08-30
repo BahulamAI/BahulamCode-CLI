@@ -420,12 +420,20 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
 
   if (req.method === 'POST' && url.pathname === '/api/tools/execute') {
     const body = await readJsonBody(req);
-    emit('tool_execution_requested', { name: body.name || null });
-    sendJson(res, 501, {
-      ok: false,
-      error: 'local_tool_bridge_not_wired',
-      message: 'Tool execution will be routed through the local service permission layer in the next slice.',
-    });
+    const name = String(body.name || '').trim();
+    const args = body.args || {};
+    if (!name) {
+      sendJson(res, 400, { ok: false, error: 'tool name is required' });
+      return;
+    }
+    emit('tool_execution_requested', { name });
+    try {
+      const relay = getAgentRelay(session);
+      const result = await relay.executeTool(name, args);
+      sendJson(res, 200, { ok: true, result });
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: err.message || String(err) });
+    }
     return;
   }
 

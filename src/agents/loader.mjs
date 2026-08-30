@@ -63,6 +63,32 @@ export class AgentLoader {
     }
 
     /**
+     * Load agents from plugin manifests.
+     * Plugin agents have lower priority than project .bahulam/agents agents.
+     * @param {object[]} plugins - List of plugin manifests
+     * @returns {this}
+     */
+    loadFromPlugins(plugins) {
+        if (!Array.isArray(plugins)) return this;
+        for (const plugin of plugins) {
+            const agents = plugin.spec?.agents || [];
+            for (const agentDef of agents) {
+                const slug = agentDef.slug || agentDef.name || '';
+                if (!slug) continue;
+                // Project agents take precedence — skip if already registered
+                if (this.agents.has(slug)) continue;
+                this.agents.set(slug, {
+                    ...agentDef,
+                    slug,
+                    source: `plugin:${plugin.metadata?.name || 'unknown'}`,
+                    source_scope: 'plugin',
+                });
+            }
+        }
+        return this;
+    }
+
+    /**
      * Get an agent definition by name.
      * @param {string} name
      * @returns {object|null}

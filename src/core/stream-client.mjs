@@ -148,6 +148,7 @@ export class BahulamStreamClient {
         approvalManager = null,
         reconnectMaxElapsedMs = null,
         mode = null,
+        pluginRegistry = null,
     }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
@@ -185,7 +186,21 @@ export class BahulamStreamClient {
             || (process.env.TARANG_ENV === 'remote' ? 'remote' : null)
             || (process.env.TARANG_ENV === 'bundled' ? 'bundled' : null)
             || 'remote';
+        this.pluginRegistry = pluginRegistry || null;
         this._bundledReady = false;
+    }
+
+    /**
+     * Get plugin tool schemas for client_tools injection.
+     * @returns {Array<{name: string, description: string, input_schema: object}>}
+     */
+    _getPluginToolSchemas() {
+        if (!this.pluginRegistry) return [];
+        return this.pluginRegistry.listTools().map(t => ({
+            name: t.name,
+            description: t.description || '',
+            input_schema: t.input_schema || { type: 'object', properties: {} },
+        }));
     }
 
     /**
@@ -263,6 +278,8 @@ export class BahulamStreamClient {
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
+        const clientTools = this._getPluginToolSchemas();
+        if (clientTools.length > 0) body.client_tools = clientTools;
         const requestId = `cli-${_uuidLike()}`;
 
         // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file

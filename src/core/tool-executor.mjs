@@ -27,6 +27,8 @@ import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
 import { resolveLintCommand } from './lint-resolver.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
+import { loadPluginTool } from '../plugins/executor.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -48,6 +50,7 @@ export function createToolExecutor({
     interactionHandler = null,
     onAutoRegisterStart = null,
     onAutoRegisterDone = null,
+    pluginRegistry = null,
 } = {}) {
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
@@ -618,8 +621,57 @@ export function createToolExecutor({
         return { output: lines.join('\n'), files, directories, truncated };
     }
 
+    // ── Plugin tool map ──────────────────────────────────────────
+    // Plugin tools are registered here alongside the built-in toolMap.
+    // They are dispatched with lower priority (built-in tools win on name collision).
+    const pluginToolMap = new Map(); // name → async handler function
+
+    function registerPluginTool(name, handler) {
+        if (toolMap[name]) {
+            if (process.env.DEBUG) {
+                console.warn(`Plugin tool "${name}" shadows a built-in tool — skipping.`);
+            }
+            return false;
+        }
+        if (pluginToolMap.has(name)) {
+            if (process.env.DEBUG) {
+                console.warn(`Plugin tool "${name}" already registered from another plugin — skipping.`);
+            }
+            return false;
+        }
+        pluginToolMap.set(name, handler);
+        return true;
+    }
+
+    // Auto-load plugin tools from pluginRegistry (if provided)
+    if (pluginRegistry) {
+        const pluginTools = pluginRegistry.listTools();
+        for (const toolDef of pluginTools) {
+            const pluginDir = toolDef._plugin_dir || '';
+            const handlerPath = toolDef.handler || '';
+            if (!handlerPath) continue;
+            // Load lazily — wrap in a function that imports on first call
+            const lazyHandler = async (args, options = {}) => {
+                try {
+                    const { loadPluginTool: loadTool } = await import('../plugins/executor.mjs');
+                    const handler = await loadTool(pluginDir, handlerPath);
+                    if (!handler) {
+                        return { success: false, output: `Plugin tool "${toolDef.name}" handler not found`, _tool: toolDef.name, _plugin: toolDef._plugin_name };
+                    }
+                    const result = await handler.call(args || {}, options);
+                    return result?.success !== false
+                        ? { success: true, output: result?.output ?? String(result), _tool: toolDef.name, _plugin: toolDef._plugin_name }
+                        : { success: false, output: result?.output ?? String(result), _tool: toolDef.name, _plugin: toolDef._plugin_name };
+                } catch (err) {
+                    return { success: false, output: `Plugin tool error (${toolDef.name}): ${err.message}`, _tool: toolDef.name, _plugin: toolDef._plugin_name };
+                }
+            };
+            registerPluginTool(toolDef.name, lazyHandler);
+        }
+    }
+
     async function executeToolWithHooks(name, args, options = {}) {
-        const handler = toolMap[name];
+        const handler = toolMap[name] || pluginToolMap.get(name);
         if (!handler) {
             return { success: false, output: `Unknown tool: ${name}`, _tool: name };
         }
@@ -2306,7 +2358,7 @@ export function createToolExecutor({
 
         /** List all available tool names. */
         listTools() {
-            return Object.keys(toolMap);
+            return [...Object.keys(toolMap), ...pluginToolMap.keys()];
         },
 
         getProjectResources() {
