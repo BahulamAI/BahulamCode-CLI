@@ -161,7 +161,6 @@ Instructions for the agent go here.
 
 - [ ] `npm test` passes (33 unit tests, 0 failed)
 - [ ] New code has a test in `test/test-<module>.mjs`
-- [ ] No `KEPLER_*` env vars, no `.kepler/` directory references
 - [ ] No real API tokens in tests — use placeholder strings
 - [ ] Instruction file changes covered by `test/test-bahulam-contract.mjs`
 
