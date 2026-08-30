@@ -13,36 +13,48 @@ import os from 'os';
 import { loadBahulamMemory } from '../config/memory-loader.mjs';
 
 /**
- * Load all CLAUDE.md and BAHULAM.md files and merge them in order.
- * BAHULAM.md is the Bahulam-native equivalent of CLAUDE.md — both are supported.
+ * Load all instruction files and merge them in order (global → parent → project).
+ *
+ * Three first-class formats, per industry standard (2026):
+ *   AGENTS.md   — universal baseline: build rules, code style, monorepo layout.
+ *                 Loaded by 30+ agents (Cursor, Copilot CLI, Gemini CLI, Claude Code).
+ *   BAHULAM.md  — Bahulam-native persistent memory: tool directives, preferences,
+ *                 project-specific context that travels every session.
+ *   CLAUDE.md   — Claude Code / Claude-specific instructions and memory tiers.
+ *
+ * Search order per directory: AGENTS.md → BAHULAM.md → .bahulam/BAHULAM.md
+ *                                       → CLAUDE.md  → .claude/CLAUDE.md
+ *
  * @param {string} [cwd] - current working directory
- * @returns {string[]} Array of file contents in merge order
+ * @returns {Array<{source,content,path}>} files in merge order
  */
 export function loadClaudeMdFiles(cwd = process.cwd()) {
     const files = [];
 
-    // 1. Global: ~/.claude/CLAUDE.md and ~/.bahulam/BAHULAM.md
+    // 1. Global files
     for (const globalPath of [
-        path.join(os.homedir(), '.claude', 'CLAUDE.md'),
+        path.join(os.homedir(), '.bahulam', 'AGENTS.md'),
         path.join(os.homedir(), '.bahulam', 'BAHULAM.md'),
+        path.join(os.homedir(), '.claude', 'CLAUDE.md'),
     ]) {
         if (fs.existsSync(globalPath)) {
             try {
-                files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8') });
+                files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8'), path: globalPath });
             } catch { /* skip */ }
         }
     }
 
-    // 2. Walk from cwd up to root, collecting CLAUDE.md and BAHULAM.md files
+    // 2. Walk from cwd up to root, collecting per-directory instruction files
     const projectFiles = [];
     let dir = path.resolve(cwd);
     const root = path.parse(dir).root;
     while (dir !== root) {
         const candidates = [
-            path.join(dir, 'CLAUDE.md'),
-            path.join(dir, '.claude', 'CLAUDE.md'),
+            path.join(dir, 'AGENTS.md'),
             path.join(dir, 'BAHULAM.md'),
             path.join(dir, '.bahulam', 'BAHULAM.md'),
+            path.join(dir, 'CLAUDE.md'),
+            path.join(dir, '.claude', 'CLAUDE.md'),
         ];
         for (const f of candidates) {
             if (fs.existsSync(f)) {
@@ -54,7 +66,7 @@ export function loadClaudeMdFiles(cwd = process.cwd()) {
         dir = path.dirname(dir);
     }
 
-    // Reverse so parent dirs come first (global -> project -> local)
+    // Reverse so parent dirs come first (global → project → local)
     projectFiles.reverse();
     files.push(...projectFiles);
 

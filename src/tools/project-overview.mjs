@@ -403,7 +403,8 @@ export class ProjectRegistry {
     _attachLiveContext(resource, root) {
         const bahulamDir = projectConfigDir(root);
         resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
+        resource.project_context = _readIfExists(root, 'AGENTS.md', 10000) ||
+            _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
             _readIfExists(root, 'BAHULAM.md', 10000) ||
             _readIfExists(bahulamDir, 'project.md', 8000);
         resource.style = _readIfExists(bahulamDir, 'style.md', 4000);
