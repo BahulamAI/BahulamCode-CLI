@@ -92,10 +92,10 @@ await test('project overview is session-stable and exposes project_id', async ()
 });
 
 await test('project overview re-registration refreshes live project context', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-context-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-project-context-'));
     fs.writeFileSync(path.join(root, 'package.json'), '{"name":"ctx"}\n');
-    fs.mkdirSync(path.join(root, '.kepler'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'initial context\n');
+    fs.mkdirSync(path.join(root, '.bahulam'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.bahulam', 'project.md'), 'initial context\n');
 
     try {
         const ctxExecutor = createToolExecutor();
@@ -103,7 +103,7 @@ await test('project overview re-registration refreshes live project context', as
         assert.strictEqual(first.success, true);
         assert.match(first.project_resource.project_context, /initial context/);
 
-        fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'updated context\n');
+        fs.writeFileSync(path.join(root, '.bahulam', 'project.md'), 'updated context\n');
         const second = await ctxExecutor.execute('get_project_overview', { path: root });
         assert.strictEqual(second.success, true);
         assert.strictEqual(second.already_registered, true);
@@ -115,7 +115,7 @@ await test('project overview re-registration refreshes live project context', as
 });
 
 await test('registerProjectRoots makes prompt roots available to file tools', async () => {
-    const root = path.join(process.cwd(), '__kepler_prompt_roots_test__');
+    const root = path.join(process.cwd(), '__bahulam_prompt_roots_test__');
     const docs = path.join(root, 'docs');
     const cli = path.join(root, 'codekepler-npm');
     fs.rmSync(root, { recursive: true, force: true });
@@ -181,7 +181,7 @@ await test('read_file registers exact outside file under its own project', async
 });
 
 await test('project overview re-registration refreshes index when project drifts', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-drift-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-project-drift-'));
     fs.writeFileSync(path.join(root, 'package.json'), '{"name":"drift"}\n');
 
     try {
@@ -204,7 +204,7 @@ await test('project overview re-registration refreshes index when project drifts
 });
 
 await test('read_attachment renders Jupyter notebooks instead of rejecting octet-stream', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-notebook-read-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-notebook-read-'));
     const notebookPath = path.join(root, 'powerbi-data-extractor-testing.ipynb');
     fs.writeFileSync(notebookPath, JSON.stringify({
         metadata: { language_info: { name: 'python' } },
@@ -242,7 +242,7 @@ await test('search_code routes through the registered project index', async () =
 });
 
 await test('agent_create returns runnable spec for same-turn delegation refresh', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-agent-create-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-agent-create-'));
     const previousCwd = process.cwd();
     try {
         const agentExecutor = createToolExecutor();
@@ -282,7 +282,7 @@ await test('read_file reads package.json', async () => {
 });
 
 await test('read_file reuses unchanged repeated reads and read_batch reads line ranges', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-read-cache-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-read-cache-'));
     const file = path.join(root, 'sample.txt');
     fs.writeFileSync(file, 'one\ntwo\nthree\nfour\n');
     try {
@@ -316,7 +316,7 @@ await test('read_file on missing file returns error', async () => {
 });
 
 await test('read_file allows OS temp scratch files', async () => {
-    const scratchFile = path.join(os.tmpdir(), `kepler-scratch-${Date.now()}.txt`);
+    const scratchFile = path.join(os.tmpdir(), `bahulam-scratch-${Date.now()}.txt`);
     fs.writeFileSync(scratchFile, 'scratch output\n');
     try {
         const result = await executor.execute('read_file', { path: scratchFile });
@@ -328,7 +328,7 @@ await test('read_file allows OS temp scratch files', async () => {
 });
 
 await test('read_file allows registered custom scratch roots', async () => {
-    const root = path.join(process.cwd(), '__kepler_custom_scratch__');
+    const root = path.join(process.cwd(), '__bahulam_custom_scratch__');
     fs.mkdirSync(root, { recursive: true });
     const scratchFile = path.join(root, 'agent-output.txt');
     fs.writeFileSync(scratchFile, 'custom scratch output\n');
@@ -344,8 +344,8 @@ await test('read_file allows registered custom scratch roots', async () => {
     }
 });
 
-await test('read_file allows project .kepler/tmp scratch files', async () => {
-    const scratchDir = path.join(process.cwd(), '.kepler', 'tmp');
+await test('read_file allows project .bahulam/tmp scratch files', async () => {
+    const scratchDir = path.join(process.cwd(), '.bahulam', 'tmp');
     const scratchFile = path.join(scratchDir, `agent-output-${Date.now()}.txt`);
     fs.mkdirSync(scratchDir, { recursive: true });
     fs.writeFileSync(scratchFile, 'project scratch output\n');
@@ -398,7 +398,7 @@ await test('shell substitution with dangerous payload stays blocked', async () =
 });
 
 await test('shell rm with tilde target runs after approval path', async () => {
-    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-home-rm-'));
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-home-rm-'));
     const lockFile = path.join(fakeHome, '.agent_framework', '.license_lock');
     const previousHome = process.env.HOME;
     fs.mkdirSync(path.dirname(lockFile), { recursive: true });
@@ -420,21 +420,23 @@ await test('shell rm with tilde target runs after approval path', async () => {
 });
 
 await test('shell observes likely long-running commands and returns tail', async () => {
-    const previous = process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
-    process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = '300';
+    const previous = process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS;
+    // 1500ms: enough for the subprocess to start and emit output reliably
+    // under concurrent test load, well below the 15s default.
+    process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS = '1500';
     try {
         const result = await executor.execute('shell', {
-            command: 'node -e "console.log(\'ready_tail\'); setInterval(() => {}, 1000)"',
+            command: 'node -e "console.log(\'ready_tail\'); setInterval(() => {}, 10000)"',
         });
         assert.strictEqual(result.success, true);
         assert.strictEqual(result._observation_timeout, true);
         assert.strictEqual(result._timed_out, true);
         assert.strictEqual(result.exit_code, 124);
-        assert.ok(result.output.includes('Observation timeout after 300ms'));
+        assert.ok(result.output.includes('Observation timeout after 1500ms'));
         assert.ok(result.output.includes('ready_tail'));
     } finally {
-        if (previous == null) delete process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
-        else process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = previous;
+        if (previous == null) delete process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS;
+        else process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS = previous;
     }
 });
 
@@ -521,8 +523,8 @@ await test('write_file allows sensitive config with redacted diff', async () => 
     }
 });
 
-await test('edit_file rejects no-op edits before linting unchanged files', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-noop-'));
+await test('edit_file returns idempotent success on no-op edits without running lint', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-noop-'));
     const file = path.join(root, 'sources.py');
     fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="noop-edit"\n');
     fs.writeFileSync(file, 'VALUE = "already done"\n');
@@ -537,11 +539,13 @@ await test('edit_file rejects no-op edits before linting unchanged files', async
             search: 'VALUE = "already done"',
             replace: 'VALUE = "already done"',
         });
-        assert.strictEqual(result.success, false);
+        // success:true — desired state already in place, idempotent operation
+        assert.strictEqual(result.success, true);
         assert.strictEqual(result._no_change, true);
         assert.strictEqual(result.lines_added, 0);
         assert.strictEqual(result.lines_removed, 0);
-        assert.ok(result.output.includes('made no changes'));
+        assert.ok(result.output.includes('no changes'));
+        // lint must not run — file unchanged, no point linting
         assert.strictEqual(result.lint, undefined);
         assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'VALUE = "already done"\n');
     } finally {
@@ -550,7 +554,7 @@ await test('edit_file rejects no-op edits before linting unchanged files', async
 });
 
 await test('edit_file accepts legacy old_string/new_string aliases', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-alias-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-alias-'));
     const file = path.join(root, 'sources.py');
     fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="alias-edit"\n');
     fs.writeFileSync(file, 'name = "old"\nother = "old"\n');
@@ -574,7 +578,7 @@ await test('edit_file accepts legacy old_string/new_string aliases', async () =>
 });
 
 await test('edit_file auto-lint keeps the event loop responsive', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-edit-async-lint-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-async-lint-'));
     const bin = path.join(root, 'bin');
     const file = path.join(root, 'app.js');
     const marker = path.join(root, 'lint-started');
@@ -667,7 +671,7 @@ await test('analyze_code rejects directories with actionable guidance', async ()
 });
 
 await test('multiple projects require explicit routing, while exact outside reads register their file project', async () => {
-    const root = path.join(process.cwd(), '__kepler_project_registry_test__');
+    const root = path.join(process.cwd(), '__bahulam_project_registry_test__');
     const first = path.join(root, 'first');
     const second = path.join(root, 'second');
     const undeclared = path.join(root, 'undeclared');

@@ -57,7 +57,6 @@ await test('generate_image calls authenticated backend and writes file', async (
   const oldEnv = saveEnv([
     'BAHULAM_HOME',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'BAHULAM_PRODUCT',
     'OPENROUTER_API_KEY',
@@ -73,7 +72,6 @@ await test('generate_image calls authenticated backend and writes file', async (
     process.chdir(tmp);
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     process.env.B0_TOKEN = 'cli_test_token';
-    delete process.env.KEPLER_TOKEN;
     process.env.TARANG_BACKEND_URL = 'https://backend.example';
     process.env.BAHULAM_PRODUCT = 'bahulam';
     delete process.env.OPENROUTER_API_KEY;
@@ -134,7 +132,6 @@ await test('generate_image falls back to direct image endpoint with provider key
   const oldEnv = saveEnv([
     'BAHULAM_HOME',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'OPENROUTER_API_KEY',
     'OPENROUTER_BASE_URL',
@@ -148,7 +145,6 @@ await test('generate_image falls back to direct image endpoint with provider key
     process.chdir(tmp);
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     delete process.env.B0_TOKEN;
-    delete process.env.KEPLER_TOKEN;
     process.env.OPENROUTER_API_KEY = 'or_test';
     process.env.OPENROUTER_BASE_URL = 'https://openrouter.example/api/v1';
     process.env.BAHULAM_IMAGE_GENERATION_MODEL = 'test/image-model';
@@ -191,7 +187,6 @@ await test('tool executor bridges generate_image calls', async () => {
     'BAHULAM_HOME',
     'BAHULAM_SKIP_AUTO_REGISTER',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'OPENROUTER_API_KEY',
     'OPENROUTER_BASE_URL',
@@ -205,7 +200,6 @@ await test('tool executor bridges generate_image calls', async () => {
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
     delete process.env.B0_TOKEN;
-    delete process.env.KEPLER_TOKEN;
     process.env.OPENROUTER_API_KEY = 'or_test';
     process.env.OPENROUTER_BASE_URL = 'https://openrouter.example/api/v1';
     process.env.BAHULAM_IMAGE_GENERATION_MODEL = 'test/image-model';

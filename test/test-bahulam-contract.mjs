@@ -29,15 +29,15 @@ function tempProject() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-contract-'));
 }
 
-console.log('\n\x1b[1mtest-kepler-contract.mjs\x1b[0m\n');
+console.log('\n\x1b[1mtest-bahulam-contract.mjs\x1b[0m\n');
 
-await test('kepler init scaffolds project contract', async () => {
+await test('bahulam init scaffolds project contract', async () => {
   const cwd = tempProject();
   const result = scaffoldKeplerProject({ cwd });
   assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'README.md')));
   assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'config.json')));
   assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'settings.json')));
-  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'KEPLER.md')));
+  assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'BAHULAM.md')));
   assert.ok(fs.existsSync(path.join(cwd, '.bahulam', 'tasks', 'backlog.md')));
   assert.ok(result.written.length > 8);
 });
@@ -81,7 +81,7 @@ await test('context envelope packages policy, files, skills, and timeouts', asyn
   });
   assert.strictEqual(envelope.command_context.active_command, 'heal');
   assert.strictEqual(envelope.command_context.runtime_limits.command_timeout_seconds, 600);
-  assert.ok(envelope.project_context.loaded_files.some(f => f.label === 'KEPLER.md'));
+  assert.ok(envelope.project_context.loaded_files.some(f => f.label === 'BAHULAM.md'));
   assert.ok(envelope.available_skills.some(s => s.name === 'starter'));
 });
 

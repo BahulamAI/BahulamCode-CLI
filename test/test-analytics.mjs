@@ -66,7 +66,7 @@ const sessionALines = [
     },
   },
   {
-    type: 'kepler_event',
+    type: 'bahulam_event',
     timestamp: '2026-04-26T10:00:02.250Z',
     cwd: demoProject,
     sessionId: 'sess-A',
@@ -93,7 +93,7 @@ const sessionALines = [
     },
   },
   {
-    type: 'kepler_event',
+    type: 'bahulam_event',
     timestamp: '2026-04-26T10:00:02.500Z',
     cwd: demoProject,
     sessionId: 'sess-A',

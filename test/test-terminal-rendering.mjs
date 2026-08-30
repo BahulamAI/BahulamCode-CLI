@@ -446,7 +446,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(replSource.includes("renderBlockBoundary('content', { compactSame: true })")
          || renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
   assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
-  assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(exploreSource.includes("process.env.BAHULAM_EXPLORE_COLLAPSE !== '0'"));
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
   assert.ok(renderSource.includes('function exploreSummary()'));
   assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
@@ -1149,15 +1149,15 @@ test('Phase 4a: burst-collapse classifier covers common read-adjacent tools', ()
   assert.ok(!_isExploreTool('shell'), 'shell must NOT collapse');
 });
 
-test('Phase 4a: KEPLER_EXPLORE_COLLAPSE=0 disables the classifier', () => {
-  const prev = process.env.KEPLER_EXPLORE_COLLAPSE;
-  process.env.KEPLER_EXPLORE_COLLAPSE = '0';
+test('Phase 4a: BAHULAM_EXPLORE_COLLAPSE=0 disables the classifier', () => {
+  const prev = process.env.BAHULAM_EXPLORE_COLLAPSE;
+  process.env.BAHULAM_EXPLORE_COLLAPSE = '0';
   try {
     assert.strictEqual(_isExploreTool('read_file'), false,
       'disable flag should suppress classification');
   } finally {
-    if (prev === undefined) delete process.env.KEPLER_EXPLORE_COLLAPSE;
-    else process.env.KEPLER_EXPLORE_COLLAPSE = prev;
+    if (prev === undefined) delete process.env.BAHULAM_EXPLORE_COLLAPSE;
+    else process.env.BAHULAM_EXPLORE_COLLAPSE = prev;
   }
 });
 

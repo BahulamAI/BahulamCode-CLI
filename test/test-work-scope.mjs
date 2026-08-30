@@ -7,7 +7,7 @@ import { buildWorkScope, promptProjectRoots, summarizeWorkScope } from '../src/c
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-work-scope-'));
 const rawCli = path.join(root, 'codekepler-npm');
 const rawBackend = path.join(root, 'codekepler-backend');
-fs.mkdirSync(path.join(rawCli, '.kepler'), { recursive: true });
+fs.mkdirSync(path.join(rawCli, '.bahulam'), { recursive: true });
 fs.mkdirSync(path.join(rawBackend, '.git'), { recursive: true });
 const cli = fs.realpathSync(rawCli);
 const backend = fs.realpathSync(rawBackend);
