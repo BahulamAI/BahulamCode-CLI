@@ -4,7 +4,10 @@
 
 import { BahulamStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
 import * as telemetry from '../src/telemetry/index.mjs';
+import * as fs from 'node:fs';
 import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import assert from 'node:assert';
 
 process.env.BAHULAM_RUNTIME_MODE = 'remote';
@@ -86,6 +89,68 @@ await test('parses status event', async () => {
     assert.strictEqual(events[0].type, 'status');
     assert.strictEqual(events[0].data.message, 'Starting...');
     assert.strictEqual(events[1].type, 'complete');
+});
+
+await test('upserts lifecycle memory facts returned on complete', async () => {
+    telemetry.clear();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-sse-memory-'));
+    const oldHome = process.env.HOME;
+    const oldCwd = process.cwd();
+    process.env.HOME = path.join(root, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    process.chdir(root);
+
+    const { server, port } = await createMockServer([
+        {
+            event: 'complete',
+            data: {
+                summary: 'Done',
+                memory_facts_to_persist: [
+                    {
+                        user_id: 'cli-local',
+                        fact_id: 'run-1',
+                        content: 'Use lifecycle memory capture for CLI disk mode.',
+                        fact_type: 'learned_fact',
+                        confidence: 1,
+                        source: 'workflow_run:run-1',
+                        tags: ['run_summary', 'workflow:project-existing'],
+                        metadata: { processor: 'summary' },
+                        access_count: 0,
+                        created_at: '2026-08-30T12:00:00',
+                        updated_at: '2026-08-30T12:00:00',
+                        memory_scope: 'project',
+                        project_id: null,
+                    },
+                ],
+            },
+        },
+    ]);
+
+    try {
+        const client = new BahulamStreamClient({
+            baseUrl: `http://127.0.0.1:${port}`,
+            token: 'test',
+            toolExecutor: mockToolExecutor,
+        });
+        const events = [];
+        for await (const evt of client.execute('test')) {
+            events.push(evt);
+        }
+
+        const text = fs.readFileSync(path.join(root, '.bahulam', 'memory.md'), 'utf-8');
+        assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
+        assert.match(text, /fact:run-1/);
+        assert.match(text, /scope:project/);
+        assert.match(text, /type:learned_fact/);
+        assert.match(text, /Use lifecycle memory capture for CLI disk mode\./);
+        assert.strictEqual(telemetry.getStats().eventCounts['memory.disk.upserted'], 1);
+    } finally {
+        server.close();
+        process.chdir(oldCwd);
+        if (oldHome === undefined) delete process.env.HOME;
+        else process.env.HOME = oldHome;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 await test('parses SSE id and retry fields', async () => {

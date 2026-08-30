@@ -11,6 +11,7 @@
 
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
+import { upsertFacts } from './memory-disk.mjs';
 import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
@@ -91,6 +92,17 @@ function transportDebug(message, data = {}) {
     try {
         process.stderr.write(`[transport] ${message} ${JSON.stringify(data)}\n`);
     } catch {}
+}
+
+function memoryFactsFromComplete(data) {
+    const facts = data?.memory_facts_to_persist;
+    if (!Array.isArray(facts) || facts.length === 0) return [];
+    return facts.filter(fact => (
+        fact
+        && typeof fact === 'object'
+        && fact.fact_id
+        && String(fact.content || '').trim()
+    ));
 }
 
 // Full jitter around the scheduled delay: pick a value in [delay*0.5, delay*1.5].
@@ -461,6 +473,10 @@ export class BahulamStreamClient {
             return;
         }
 
+        if (event === EVENT_TYPES.COMPLETE) {
+            this._persistMemoryFactsFromComplete(data);
+        }
+
         // Tool requests — show to user, then execute locally and POST callback.
         if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
             yield rendered;
@@ -482,6 +498,23 @@ export class BahulamStreamClient {
         if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
             for (const diffEvent of fileDiffEventsForToolResult(rendered)) {
                 yield diffEvent;
+            }
+        }
+    }
+
+    _persistMemoryFactsFromComplete(data) {
+        const facts = memoryFactsFromComplete(data);
+        if (facts.length === 0) return;
+        try {
+            upsertFacts(facts, process.cwd());
+            telemetry.track('memory.disk.upserted', { facts: facts.length });
+        } catch (err) {
+            telemetry.track('memory.disk.upsert_failed', {
+                facts: facts.length,
+                message: err?.message || String(err),
+            });
+            if (data && typeof data === 'object') {
+                data.memory_persist_error = err?.message || String(err);
             }
         }
     }

@@ -1,6 +1,6 @@
 {
   "name": "@bahulam/code",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Bahulam Code — abundance, in your terminal. CLI-first, reliability-first, sub-agents, 65.6% SWE-bench Verified.",
   "type": "module",
   "bin": {
