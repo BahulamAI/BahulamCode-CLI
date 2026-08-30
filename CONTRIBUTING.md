@@ -13,7 +13,8 @@ Node 18 or later. No external services or API keys needed to run unit tests.
 
 ## Branch naming
 
-`{issue_number}_{short-description}` — e.g. `223_open_source_prep`, `45_fix_memory_leak`
+- Bug fixes: `fix/{short-description}` — e.g. `fix/noop-edit-success`, `fix/resume-hydration-formatting`
+- Features: `{number}_{short-description}` — e.g. `217_cli_disk_memory`, `222_ui_fixes`
 
 ## Code style
 
