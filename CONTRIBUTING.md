@@ -1,64 +1,173 @@
 # Contributing to Bahulam Code
 
-Thanks for your interest in contributing to Bahulam Code. This document covers the basics.
-
-## Getting Started
-
-1. Fork the repository
-2. Clone your fork
-3. Create a branch for your changes
-4. Make your changes
-5. Run the test suite
-6. Submit a pull request
-
-## Development Setup
+## Getting started
 
 ```bash
-git clone https://github.com/BahulamAI/BahulamCode-CLI.git
+git clone https://github.com/BahulamAI/BahulamCode-CLI
 cd BahulamCode-CLI
 npm install
-npm test
+npm test          # 33 unit tests, no auth required, ~30s
 ```
 
-## Branch Naming
+Node 18 or later. No external services or API keys needed to run unit tests.
 
-Use the pattern: `{issue_number}_{short-description}`
+## Branch naming
 
-Examples:
-- `223_open_source_prep`
-- `45_fix_memory_leak`
+`{issue_number}_{short-description}` — e.g. `223_open_source_prep`, `45_fix_memory_leak`
 
-## Code Style
+## Code style
 
 - ES modules only (`type: "module"`)
-- No external linting dependencies — keep it simple
-- Match the style of the file you're editing
+- No external linting dependencies — match the style of the file you're editing
+- Env vars: `BAHULAM_` prefix only. `KEPLER_` is retired.
 
-## Testing
+## What belongs in a PR
 
-Run the full test suite before submitting:
+**Do include:**
+- Bug fixes with a regression test
+- New tools or tool improvements with unit tests (happy path + at least one error case)
+- UI/rendering changes with assertions in `test/test-terminal-rendering.mjs`
+- New instruction file formats — add to `src/core/system-prompt.mjs` and cover in `test/test-bahulam-contract.mjs`
 
-```bash
-npm test
+**Do not include:**
+- Changes that require Bahulam backend credentials to test
+- New `KEPLER_*` env vars — use `BAHULAM_*`
+- Internal PRD smoke tests — use the integration test pattern instead
+- External npm dependencies (keep it zero-dependency beyond Node builtins)
+
+## Test standards
+
+### Unit tests (`test/test-*.mjs`)
+
+`npm test` runs 33 unit tests. Every unit test must:
+
+1. **Run standalone** — `node test/test-foo.mjs` with no special flags
+2. **Use the built-in pattern** — no third-party test frameworks:
+
+```js
+import assert from 'node:assert';
+let passed = 0, failed = 0;
+
+function test(name, fn) {
+    return fn()
+        .then(() => { console.log(`  \x1b[32m✓\x1b[0m ${name}`); passed++; })
+        .catch(err => { console.log(`  \x1b[31m✗\x1b[0m ${name}: ${err.message}`); failed++; });
+}
+
+console.log('\ntest-foo.mjs\n');
+await test('does the thing', async () => {
+    assert.strictEqual(foo('input'), 'expected');
+});
+
+console.log(`\n  ${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
 ```
 
-All tests must pass. If you're adding a new feature, add a test for it.
+3. **Isolate disk writes** — set `BAHULAM_HOME` to a temp dir, never touch `~/.bahulam/`:
 
-## Pull Requests
+```js
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-test-'));
+process.env.BAHULAM_HOME = path.join(tmp, 'home');
+// ... test ...
+fs.rmSync(tmp, { recursive: true, force: true });
+```
 
-- Keep PRs focused on one change
-- Write a clear title and description
-- Reference any related issues
-- Make sure CI passes
+4. **Mock network** — mock `globalThis.fetch` for any code that calls the API; no real tokens
+5. **Name the file** `test/test-<module>.mjs` matching `src/<path>/<module>.mjs`
 
-## Reporting Issues
+### Integration tests (opt-in)
 
-Open an issue on [GitHub](https://github.com/BahulamAI/BahulamCode-CLI/issues). Include:
-- What you expected to happen
-- What actually happened
-- Steps to reproduce
-- Your OS, Node version, and npm version
+Integration tests spawn real processes or bind sockets. They are excluded from `npm test`:
+
+```bash
+npm run test:integration
+```
+
+Name them `test/test-session-*.mjs` or `test/test-socket-*.mjs`. They may fail without daemon modules or writable `/tmp/`.
+
+### Test file naming convention
+
+| Pattern | Type | Runs in `npm test` |
+|---|---|---|
+| `test/test-<module>.mjs` | Unit — tests `src/<module>.mjs` | Yes |
+| `test/test-session-*.mjs` | Integration — multi-process sessions | No |
+| `test/test-socket-*.mjs` | Integration — Unix socket server | No |
+| `test/e2e-*.mjs` | E2E — requires running backend | No |
+
+## Instruction file support
+
+The CLI loads project instructions in this order (parent dir → child dir):
+
+| File | Role | Compatible agents |
+|---|---|---|
+| `AGENTS.md` | Universal project baseline — build rules, style, monorepo layout | Bahulam, Cursor, Copilot CLI, Gemini CLI, Claude Code |
+| `BAHULAM.md` | Bahulam-native memory — persistent context, preferences | Bahulam |
+| `.bahulam/BAHULAM.md` | Same, inside project config dir | Bahulam |
+| `CLAUDE.md` | Claude-specific instructions | Claude Code, Bahulam |
+
+Adding a new format: update `src/core/system-prompt.mjs::loadClaudeMdFiles()` and add a test in `test/test-bahulam-contract.mjs`.
+
+## Memory system
+
+**Cross-session facts** (written by the `remember` tool):
+```
+~/.bahulam/memory.md          — global, loaded every session
+<project>/.bahulam/memory.md  — project-scoped
+```
+
+**Instruction files** (you write by hand):
+```
+AGENTS.md              — universal project baseline
+BAHULAM.md             — Bahulam-specific project context
+~/.bahulam/BAHULAM.md  — global Bahulam instructions
+```
+
+## Skill format (`SKILL.md`)
+
+Skills are loaded on-demand. Each skill is a directory:
+
+```
+.bahulam/skills/<skill-name>/
+    SKILL.md      # required: frontmatter + instructions
+```
+
+```yaml
+---
+name: my-skill
+description: One line shown in the skill picker
+triggers:
+  - keyword
+---
+
+Instructions for the agent go here.
+```
+
+## Env var reference
+
+| Name | Purpose |
+|---|---|
+| `BAHULAM_HOME` | Override `~/.bahulam/` location |
+| `BAHULAM_TOOL_NAME` | Hook env: current tool name |
+| `BAHULAM_PROJECT_DIR` | Hook env: project root |
+| `BAHULAM_SESSION_ID` | Hook env: session id |
+| `BAHULAM_TURN_ID` | Hook env: turn id |
+| `BAHULAM_VISION_MAX_IMAGE_BYTES` | Max bytes per attached image |
+| `BAHULAM_LONG_RUNNING_TIMEOUT_MS` | Observation timeout for shell commands |
+| `BAHULAM_STAGNATION_DETECTION` | Enable loop detection (`1`/`0`, default off) |
+| `BAHULAM_STAGNATION_THRESHOLD` | Consecutive calls before warning (default `3`) |
+
+## PR checklist
+
+- [ ] `npm test` passes (33 unit tests, 0 failed)
+- [ ] New code has a test in `test/test-<module>.mjs`
+- [ ] No `KEPLER_*` env vars, no `.kepler/` directory references
+- [ ] No real API tokens in tests — use placeholder strings
+- [ ] Instruction file changes covered by `test/test-bahulam-contract.mjs`
+
+## Reporting issues
+
+Open an issue at https://github.com/BahulamAI/BahulamCode-CLI/issues. Include your OS, Node version, and steps to reproduce.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the Apache 2.0 License.
+Contributions are licensed under the Apache 2.0 License.
