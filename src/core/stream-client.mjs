@@ -204,6 +204,21 @@ export class BahulamStreamClient {
     }
 
     /**
+     * Get plugin agent schemas for client_agents injection.
+     * @returns {Array<{slug: string, name: string, role: string, description: string, tools: string[]}>}
+     */
+    _getPluginAgentSchemas() {
+        if (!this.pluginRegistry) return [];
+        return this.pluginRegistry.listAgents().map(a => ({
+            slug: a.slug || a.name || '',
+            name: a.name || a.slug || '',
+            role: a.role || 'specialist',
+            description: a.description || '',
+            tools: Array.isArray(a.tools) ? a.tools : [],
+        }));
+    }
+
+    /**
      * Ensure the bundled runtime is spawned and this.baseUrl points at it.
      * No-op in remote mode. Callers that hit the backend should invoke this
      * at the top of their method (idempotent, cheap after the first call).
@@ -280,6 +295,8 @@ export class BahulamStreamClient {
         if (this.sessionId) body.session_id = this.sessionId;
         const clientTools = this._getPluginToolSchemas();
         if (clientTools.length > 0) body.client_tools = clientTools;
+        const clientAgents = this._getPluginAgentSchemas();
+        if (clientAgents.length > 0) body.client_agents = clientAgents;
         const requestId = `cli-${_uuidLike()}`;
 
         // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
