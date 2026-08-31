@@ -108,17 +108,16 @@ export class LocalAgentRelay {
       err.code = 'CONFLICT';
       throw err;
     }
-    if (this.turnCount > 0) {
-      const err = new Error('Start a new local workspace session to switch history after a turn has run');
-      err.code = 'CONFLICT';
-      throw err;
-    }
     this.resumeLoaded = true;
     this.resumeSessionId = null;
+    this.turnCount = 0;
     this.displayHistory = [];
     this.agentHistory = [];
     this.jsonlWriter = null;
-    if (this.client) this.client.sessionId = null;
+    if (this.client) {
+      this.client.sessionId = null;
+      this.client.currentTaskId = null;
+    }
     this.emit('agent_history_new', {
       root_path: this.session.root_path,
     });
@@ -140,11 +139,6 @@ export class LocalAgentRelay {
     }
     if (this.running) {
       const err = new Error('A local agent turn is already running for this workspace');
-      err.code = 'CONFLICT';
-      throw err;
-    }
-    if (this.turnCount > 0 && this.resumeSessionId !== requestedSessionId) {
-      const err = new Error('Start a new local workspace session to switch history after a turn has run');
       err.code = 'CONFLICT';
       throw err;
     }
@@ -170,6 +164,7 @@ export class LocalAgentRelay {
       this.displayHistory = history.displayHistory || [];
       this.agentHistory = history.agentHistory || [];
       this.resumeLoaded = true;
+      this.turnCount = 0;
       if (this.client) this.client.sessionId = this.resumeSessionId;
       if (this.jsonlWriter?.sessionId && this.jsonlWriter.sessionId !== this.resumeSessionId) {
         this.jsonlWriter = null;
