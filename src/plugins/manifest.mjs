@@ -17,6 +17,71 @@ function parseYaml(text) {
   return yamlLoad(text) || {};
 }
 
+function normalizeToolNames(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => {
+    if (typeof item === 'string') return item.trim();
+    if (item && typeof item === 'object') return String(item.name || item.tool || item.id || '').trim();
+    return '';
+  }).filter(Boolean);
+}
+
+function loadAgentHandler(agentDef, pluginDir) {
+  const handler = String(agentDef.handler || agentDef.file || '').trim();
+  if (!handler || !pluginDir) return {};
+  try {
+    const handlerPath = path.resolve(pluginDir, handler);
+    const raw = fs.readFileSync(handlerPath, 'utf-8');
+    return path.extname(handlerPath).toLowerCase() === '.json'
+      ? JSON.parse(raw)
+      : parseYaml(raw);
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error(`Failed to load plugin agent handler ${handler}: ${err.message}`);
+    }
+    return {};
+  }
+}
+
+function normalizeAgentDef(agentDef, pluginName, pluginDir) {
+  const handlerConfig = loadAgentHandler(agentDef, pluginDir);
+  const metadata = handlerConfig.metadata || handlerConfig.meta || {};
+  const agent = handlerConfig.agent || handlerConfig.spec?.agent || {};
+  const handlerTools = (
+    handlerConfig.tools
+    || handlerConfig.spec?.tools
+    || agent.tools
+    || []
+  );
+  const inlineTools = normalizeToolNames(agentDef.tools);
+
+  return {
+    slug: agentDef.slug || metadata.slug || handlerConfig.slug || metadata.name || handlerConfig.name || agentDef.name || '',
+    name: agentDef.name || metadata.name || handlerConfig.name || agentDef.slug || '',
+    description: agentDef.description || metadata.description || handlerConfig.description || '',
+    role: agentDef.role || metadata.role || handlerConfig.role || 'specialist',
+    system_prompt: (
+      agentDef.system_prompt
+      || agentDef.systemPrompt
+      || agentDef.prompt
+      || agent.system_prompt
+      || agent.systemPrompt
+      || agent.prompt
+      || handlerConfig.system_prompt
+      || handlerConfig.prompt
+      || ''
+    ),
+    tools: inlineTools.length ? inlineTools : normalizeToolNames(handlerTools),
+    model: agentDef.model || agent.model || handlerConfig.model || null,
+    models: agentDef.models || agent.models || handlerConfig.models || undefined,
+    max_tokens: agentDef.max_tokens || agent.max_tokens || handlerConfig.max_tokens || undefined,
+    max_iterations: agentDef.max_iterations || agent.max_iterations || handlerConfig.max_iterations || undefined,
+    handler: agentDef.handler || agentDef.file || '',
+    source: `plugin:${pluginName}`,
+    source_scope: 'plugin',
+  };
+}
+
 /**
  * Parse a plugin manifest from YAML text.
  * @param {string} yamlText - Raw YAML content
@@ -86,18 +151,9 @@ export function normalizeManifest(raw, source = '') {
 
   // Normalize agents
   const agents = [];
+  const pluginDir = source ? path.dirname(source) : '';
   for (const agentDef of (spec.agents || [])) {
-    const agent = {
-      slug: agentDef.slug || agentDef.name || '',
-      name: agentDef.name || agentDef.slug || '',
-      description: agentDef.description || '',
-      role: agentDef.role || 'specialist',
-      system_prompt: agentDef.system_prompt || agentDef.systemPrompt || agentDef.prompt || '',
-      tools: Array.isArray(agentDef.tools) ? agentDef.tools : [],
-      model: agentDef.model || null,
-      source: `plugin:${name}`,
-      source_scope: 'plugin',
-    };
+    const agent = normalizeAgentDef(agentDef, name, pluginDir);
     if (agent.slug) agents.push(agent);
   }
 

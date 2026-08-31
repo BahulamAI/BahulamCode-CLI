@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
@@ -22,6 +23,44 @@ import { BrowserApprovalManager } from './approval-bridge.mjs';
 
 const __require = createRequire(import.meta.url);
 const VERSION = __require('../../package.json').version;
+
+function envList(name) {
+  return String(process.env[name] || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function activePluginNamesFromSession(session = {}) {
+  const names = [];
+  if (session.plugin?.name) names.push(session.plugin.name);
+  if (session.plugin?.metadata_name) names.push(session.plugin.metadata_name);
+  const plugins = Array.isArray(session.plugins)
+    ? session.plugins
+    : (Array.isArray(session.active_plugins) ? session.active_plugins : []);
+  for (const plugin of plugins) {
+    if (typeof plugin === 'string') names.push(plugin);
+    else if (plugin?.name) names.push(plugin.name);
+    else if (plugin?.metadata_name) names.push(plugin.metadata_name);
+  }
+  return [...new Set(names.map(name => String(name).trim()).filter(Boolean))];
+}
+
+function pluginScanDirsFromSession(session = {}) {
+  const dirs = [];
+  const addPluginParent = (plugin) => {
+    const pluginDir = String(plugin?.plugin_dir || plugin?.dir || '').trim();
+    if (pluginDir) dirs.push(path.dirname(pluginDir));
+  };
+  if (session.plugin) addPluginParent(session.plugin);
+  const plugins = Array.isArray(session.plugins)
+    ? session.plugins
+    : (Array.isArray(session.active_plugins) ? session.active_plugins : []);
+  for (const plugin of plugins) {
+    if (plugin && typeof plugin === 'object') addPluginParent(plugin);
+  }
+  return [...new Set(dirs.filter(Boolean))];
+}
 
 export class LocalAgentRelay {
   constructor({ session, emit } = {}) {
@@ -502,6 +541,7 @@ export class LocalAgentRelay {
   }
 
   async executeTool(name, args = {}) {
+    await this._ensureReady();
     if (!this.toolExecutor) {
       throw new Error('Tool executor is not initialized');
     }
@@ -534,7 +574,13 @@ export class LocalAgentRelay {
     }
 
     const { PluginRegistry } = await import('../plugins/registry.mjs');
-    const pluginRegistry = new PluginRegistry({ disabled: (process.env.BAHULAM_DISABLE_PLUGINS || '').split(',').filter(Boolean) });
+    const activePlugins = activePluginNamesFromSession(this.session);
+    const pluginDirs = pluginScanDirsFromSession(this.session);
+    const pluginRegistry = new PluginRegistry({
+      disabled: envList('BAHULAM_DISABLE_PLUGINS'),
+      enabled: activePlugins,
+      ...(pluginDirs.length ? { pluginDirs } : {}),
+    });
     pluginRegistry.scan();
 
     const toolExecutor = createToolExecutor({ pluginRegistry });
@@ -565,6 +611,7 @@ export class LocalAgentRelay {
       backend_url: creds.backendUrl,
       root_path: this.session.root_path,
       tools: toolExecutor.listTools?.().length || 0,
+      plugins: pluginRegistry.list?.().map(plugin => plugin.metadata?.name).filter(Boolean) || [],
       backend_session_id: this.client.sessionId || null,
       approval_mode: this.approvalAutoMode ? 'auto' : 'ask',
     });

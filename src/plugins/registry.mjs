@@ -20,12 +20,20 @@ export class PluginRegistry {
    * @param {Object} [options]
    * @param {string[]} [options.pluginDirs] - Directories to scan (default: project .bahulam/plugins + ~/.bahulam/plugins)
    * @param {string[]} [options.disabled] - Plugin names to skip
+   * @param {string[]} [options.enabled] - If provided, only these plugin names are loaded
+   * @param {string[]} [options.active] - Alias for enabled
    * @param {string} [options.pluginDir] - Legacy single plugin dir (mapped to pluginDirs[0])
    */
-  constructor({ pluginDirs, disabled = [], pluginDir } = {}) {
+  constructor({ pluginDirs, disabled = [], enabled = null, active = null, pluginDir } = {}) {
     this.pluginDirs = pluginDirs || (pluginDir ? [pluginDir] : DEFAULT_PLUGIN_DIRS());
     this.disabled = new Set(
       (Array.isArray(disabled) ? disabled : [])
+        .map(s => String(s).trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const enabledList = Array.isArray(enabled) ? enabled : (Array.isArray(active) ? active : []);
+    this.enabled = new Set(
+      enabledList
         .map(s => String(s).trim().toLowerCase())
         .filter(Boolean),
     );
@@ -87,9 +95,17 @@ export class PluginRegistry {
     if (!name) return false;
 
     const lowerName = name.toLowerCase();
+    const aliases = [
+      lowerName,
+      manifest._dir ? path.basename(manifest._dir).toLowerCase() : '',
+    ].filter(Boolean);
+
+    if (this.enabled.size > 0 && !aliases.some(alias => this.enabled.has(alias))) {
+      return false;
+    }
 
     // Check disabled list
-    if (this.disabled.has(lowerName)) {
+    if (aliases.some(alias => this.disabled.has(alias))) {
       if (process.env.DEBUG) {
         console.warn(`Plugin "${name}" is disabled, skipping`);
       }

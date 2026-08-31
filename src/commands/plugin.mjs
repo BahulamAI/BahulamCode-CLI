@@ -165,6 +165,7 @@ export async function handlePluginCommand(args, { cwd = process.cwd() } = {}) {
       manifest_path: found.manifestPath,
     };
     writeLocalWorkspaceSession(stored);
+    session.plugin = stored.plugin;
   }
 
   // 4. Start the workspace service

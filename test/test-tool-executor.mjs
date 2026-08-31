@@ -4,6 +4,7 @@
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
 import { ProjectRegistry } from '../src/tools/project-overview.mjs';
+import { PluginRegistry } from '../src/plugins/registry.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -27,11 +28,11 @@ console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 const executor = createToolExecutor();
 await executor.waitForAutoRegister();
 
-function createExecutorWithoutAutoRegister() {
+function createExecutorWithoutAutoRegister(options = {}) {
     const previous = process.env.BAHULAM_SKIP_AUTO_REGISTER;
     process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
     try {
-        return createToolExecutor();
+        return createToolExecutor(options);
     } finally {
         if (previous == null) delete process.env.BAHULAM_SKIP_AUTO_REGISTER;
         else process.env.BAHULAM_SKIP_AUTO_REGISTER = previous;
@@ -259,6 +260,119 @@ await test('agent_create returns runnable spec for same-turn delegation refresh'
         assert.ok(result.agent.spec);
         assert.strictEqual(result.agent.spec.slug, 'probe-specialist');
         assert.ok(result.agent.spec.config);
+    } finally {
+        process.chdir(previousCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('plugin agents are merged into available_agents with full specs', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-plugin-agent-'));
+    const previousCwd = process.cwd();
+    const pluginDir = path.join(root, '.bahulam', 'plugins', 'seo-toolkit');
+    const otherPluginDir = path.join(root, '.bahulam', 'plugins', 'content-tools');
+    fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
+    fs.mkdirSync(path.join(pluginDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(otherPluginDir, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: seo-toolkit',
+        '  version: 1.0.0',
+        'spec:',
+        '  agents:',
+        '    - slug: seo-manager',
+        '      name: SEO Manager',
+        '      description: SEO specialist',
+        '      role: specialist',
+        '      handler: agents/seo-manager.yaml',
+        '  tools:',
+        '    - name: hello_world',
+        '      description: Greet someone',
+        '      handler: tools/hello.mjs',
+        '      parameters:',
+        '        type: object',
+        '        properties:',
+        '          name:',
+        '            type: string',
+        '  workspace:',
+        '    views: []',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(pluginDir, 'agents', 'seo-manager.yaml'), [
+        'apiVersion: agent.framework/v1',
+        'kind: SubAgent',
+        'metadata:',
+        '  name: seo-manager',
+        '  role: specialist',
+        '  description: SEO specialist from handler',
+        'agent:',
+        '  max_tokens: 512',
+        '  max_iterations: 5',
+        '  system_prompt: Use hello_world when greeting.',
+        'tools:',
+        '  - hello_world',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(pluginDir, 'tools', 'hello.mjs'),
+        'export async function call(input) { return { success: true, output: `hello ${input?.name || "world"}` }; }\n',
+    );
+    fs.writeFileSync(path.join(otherPluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: content-tools',
+        '  version: 1.0.0',
+        'spec:',
+        '  tools:',
+        '    - name: content_score',
+        '      description: Score content',
+        '      handler: tools/score.mjs',
+        '  workspace:',
+        '    views: []',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(otherPluginDir, 'tools', 'score.mjs'),
+        'export async function call() { return { success: true, output: "score" }; }\n',
+    );
+
+    try {
+        process.chdir(root);
+        const pluginRegistry = new PluginRegistry({
+            pluginDirs: [path.join(root, '.bahulam', 'plugins')],
+            enabled: ['seo-toolkit'],
+        }).scan();
+        assert.strictEqual(pluginRegistry.count(), 1);
+        assert.deepStrictEqual(pluginRegistry.listTools().map(tool => tool.name), ['hello_world']);
+
+        const pluginExecutor = createExecutorWithoutAutoRegister({ pluginRegistry });
+        const ctx = pluginExecutor.getAgentContext();
+        const agent = ctx.available_agents.find(item => item.slug === 'seo-manager');
+
+        assert.ok(agent, 'plugin agent should be present in hot-path available_agents');
+        assert.strictEqual(agent.source_scope, 'plugin');
+        assert.strictEqual(agent.source, 'plugin:seo-toolkit');
+        assert.deepStrictEqual(agent.tools, ['hello_world']);
+        assert.ok(agent.spec, 'plugin agent should include a full spec for backend delegation');
+        assert.strictEqual(agent.spec.slug, 'seo-manager');
+        assert.match(agent.spec.system_prompt, /Use hello_world/);
+        assert.strictEqual(agent.spec.source_scope, 'plugin');
+        assert.strictEqual(agent.spec.source, 'plugin:seo-toolkit');
+        assert.strictEqual(agent.spec.config.metadata.source_scope, 'plugin');
+        assert.strictEqual(agent.spec.config.metadata.source, 'plugin:seo-toolkit');
+        assert.deepStrictEqual(agent.spec.tools, ['hello_world']);
+        assert.strictEqual(ctx.available_agents.some(item => item.slug === 'content-tools'), false);
+
+        const toolResult = await pluginExecutor.execute('hello_world', { name: 'Sree' });
+        assert.strictEqual(toolResult.success, true);
+        assert.match(toolResult.output, /hello Sree/);
+
+        const listed = await pluginExecutor.execute('agents_list', { scope: 'plugin' });
+        assert.strictEqual(listed.success, true);
+        assert.ok(listed.agents.some(item => item.slug === 'seo-manager'));
     } finally {
         process.chdir(previousCwd);
         fs.rmSync(root, { recursive: true, force: true });

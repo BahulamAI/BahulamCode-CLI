@@ -16,7 +16,7 @@ import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
-import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { agentToSpec, createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { detectImageFile } from './attachments.mjs';
@@ -249,29 +249,75 @@ export function createToolExecutor({
         };
     }
 
+    function pluginAgentToLocalShape(agentDef) {
+        const pluginName = agentDef._plugin_name
+            || String(agentDef.source || '').replace(/^plugin:/, '')
+            || 'unknown';
+        const source = `plugin:${pluginName}`;
+        const base = {
+            ...agentDef,
+            slug: agentDef.slug || agentDef.name || '',
+            name: agentDef.name || agentDef.slug || '',
+            description: agentDef.description || '',
+            role: agentDef.role || 'specialist',
+            model: agentDef.model || null,
+            models: agentDef.models || undefined,
+            tools: Array.isArray(agentDef.tools)
+                ? agentDef.tools
+                : (Array.isArray(agentDef.agent_tools) ? agentDef.agent_tools : []),
+            capabilities: Array.isArray(agentDef.capabilities) ? agentDef.capabilities : [],
+            domains: Array.isArray(agentDef.domains) ? agentDef.domains : [],
+            system_prompt: agentDef.system_prompt || agentDef.prompt || agentDef.instructions || '',
+            prompt: agentDef.prompt || agentDef.system_prompt || agentDef.instructions || '',
+            source_scope: 'plugin',
+            source,
+        };
+        const spec = {
+            ...agentToSpec(base),
+            source,
+            source_scope: 'plugin',
+            plugin_name: pluginName,
+        };
+        if (spec.config?.metadata && typeof spec.config.metadata === 'object') {
+            spec.config.metadata.source = source;
+            spec.config.metadata.source_scope = 'plugin';
+        }
+        const content = JSON.stringify(spec);
+        return {
+            ...base,
+            slug: spec.slug,
+            spec,
+            source,
+            source_scope: 'plugin',
+            content_hash: crypto.createHash('sha256').update(content).digest('hex'),
+        };
+    }
+
+    function listPluginAgents() {
+        if (!pluginRegistry) return [];
+        return pluginRegistry.listAgents()
+            .map(pluginAgentToLocalShape)
+            .filter(agent => agent.slug);
+    }
+
+    function listAvailableAgents() {
+        const bySlug = new Map();
+        for (const agent of listLocalAgents(process.cwd())) {
+            if (agent.slug && !bySlug.has(agent.slug)) bySlug.set(agent.slug, agent);
+        }
+        for (const agent of listPluginAgents()) {
+            if (agent.slug && !bySlug.has(agent.slug)) bySlug.set(agent.slug, agent);
+        }
+        return [...bySlug.values()];
+    }
+
     function filterLocalAgents(args = {}) {
         const scope = String(args.scope || '').trim();
-        if (scope && scope !== 'project' && scope !== 'global') {
-            throw new Error('scope must be "project" or "global"');
+        if (scope && !['project', 'global', 'plugin'].includes(scope)) {
+            throw new Error('scope must be "project", "global", or "plugin"');
         }
-        const local = listLocalAgents(process.cwd())
+        const combined = listAvailableAgents()
             .filter(agent => !scope || agent.source_scope === scope);
-        // Merge in plugin agents (from plugin.yaml spec.agents)
-        const plugin = pluginRegistry
-            ? pluginRegistry.listAgents().map(agentDef => ({
-                slug: agentDef.slug || agentDef.name || '',
-                name: agentDef.name || agentDef.slug || '',
-                description: agentDef.description || '',
-                role: agentDef.role || 'specialist',
-                tools: agentDef.tools || agentDef.agent_tools || [],
-                capabilities: agentDef.capabilities || [],
-                domains: agentDef.domains || [],
-                source_scope: 'plugin',
-                source: `plugin:${agentDef._plugin_name || agentDef.source || 'unknown'}`,
-                handlers_yaml: agentDef.handler || null,
-            }))
-            : [];
-        const combined = [...local, ...plugin];
         return combined.filter(agent => agentMatches(agent, args.query || args.name || ''));
     }
 
@@ -640,9 +686,6 @@ export function createToolExecutor({
     // ── Plugin tool map ──────────────────────────────────────────
     // Plugin tools are registered here alongside the built-in toolMap.
     // They are dispatched with lower priority (built-in tools win on name collision).
-    // ── Plugin tool map ──────────────────────────────────────────
-    // Plugin tools are registered here alongside the built-in toolMap.
-    // They are dispatched with lower priority (built-in tools win on name collision).
     const pluginToolMap = new Map(); // name → async handler function
 
     function registerPluginTool(name, handler) {
@@ -654,6 +697,48 @@ export function createToolExecutor({
         }
         pluginToolMap.set(name, handler);
         return true;
+    }
+
+    function registerPluginToolsFromRegistry() {
+        if (!pluginRegistry) return;
+        for (const toolDef of pluginRegistry.listTools?.() || []) {
+            const name = String(toolDef.name || '').trim();
+            if (!name || toolMap[name]) continue;
+            registerPluginTool(name, async (args, options = {}) => {
+                const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
+                if (!handler) {
+                    return {
+                        success: false,
+                        output: `Plugin tool handler could not be loaded: ${name}`,
+                        _tool: name,
+                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                    };
+                }
+                try {
+                    const result = await handler.call(args || {}, options);
+                    if (result && typeof result === 'object' && 'success' in result) {
+                        return {
+                            ...result,
+                            _tool: name,
+                            _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                        };
+                    }
+                    return {
+                        success: true,
+                        output: typeof result === 'string' ? result : JSON.stringify(result),
+                        _tool: name,
+                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                    };
+                } catch (err) {
+                    return {
+                        success: false,
+                        output: `Plugin tool error (${name}): ${err.message}`,
+                        _tool: name,
+                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                    };
+                }
+            });
+        }
     }
 
     async function executeToolWithHooks(name, args, options = {}) {
@@ -2331,6 +2416,8 @@ export function createToolExecutor({
         },
     };
 
+    registerPluginToolsFromRegistry();
+
     return {
         /**
          * Execute a Bahulam tool by name.
@@ -2393,7 +2480,7 @@ export function createToolExecutor({
                 // hasn't changed between turns.
                 memory_facts: mem.facts,
                 memory_digest: mem.digest,
-                available_agents: listLocalAgents(process.cwd()).map(agent => ({
+                available_agents: listAvailableAgents().map(agent => ({
                     slug: agent.slug,
                     name: agent.name,
                     description: agent.description,
@@ -2404,6 +2491,7 @@ export function createToolExecutor({
                     capabilities: agent.capabilities,
                     domains: agent.domains,
                     source_scope: agent.source_scope,
+                    source: agent.source,
                     spec: agent.spec,
                 })),
                 available_workflows: listLocalWorkflows(process.cwd()).map(workflow => ({
