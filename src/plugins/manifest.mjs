@@ -6,134 +6,15 @@
 
 import fs from 'fs';
 import path from 'path';
+import { load as yamlLoad } from 'js-yaml';
 
 /**
- * Minimal YAML parser for plugin manifests.
- * Handles indented keys, arrays, and scalars.
+ * Parse a YAML text string into an object using js-yaml.
+ * @param {string} text - Raw YAML content
+ * @returns {object}
  */
 function parseYaml(text) {
-  const lines = String(text || '').split('\n');
-  const result = {};
-  const stack = [{ obj: result, indent: -1 }];
-  let currentKey = null;
-  let inBlockString = false;
-  let blockStringIndent = 0;
-  let blockStringLines = [];
-
-  for (let raw of lines) {
-    const line = raw.trimEnd();
-
-    // Handle block scalar (|) continuation
-    if (inBlockString) {
-      const leading = raw.match(/^\s*/)[0].length;
-      if (leading > blockStringIndent || line === '') {
-        blockStringLines.push(line);
-        continue;
-      }
-      // End of block string — assign it
-      _setPath(stack, currentKey, blockStringLines.join('\n'));
-      inBlockString = false;
-      blockStringLines = [];
-      currentKey = null;
-    }
-
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    if (trimmed.startsWith('- ')) {
-      // Array item
-      const value = trimmed.slice(2).trim();
-      _pushToArray(stack, value);
-      continue;
-    }
-
-    const colonIdx = trimmed.indexOf(':');
-    if (colonIdx === -1) continue;
-
-    const key = trimmed.slice(0, colonIdx).trim();
-    const rest = trimmed.slice(colonIdx + 1).trim();
-    const indent = raw.search(/\S/);
-
-    // Adjust stack to current indent level
-    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-      stack.pop();
-    }
-
-    const current = stack[stack.length - 1].obj;
-
-    if (rest === '') {
-      // New object
-      const child = {};
-      if (Array.isArray(current)) {
-        current.push(child);
-        stack.push({ obj: child, indent });
-      } else {
-        current[key] = child;
-        stack.push({ obj: child, indent });
-      }
-      currentKey = null;
-    } else if (rest === '|') {
-      // Block scalar — collect next lines
-      inBlockString = true;
-      blockStringIndent = indent;
-      blockStringLines = [];
-      currentKey = key;
-    } else {
-      // Scalar value
-      const value = _parseYamlValue(rest);
-      if (Array.isArray(current)) {
-        current.push(value);
-      } else {
-        current[key] = value;
-      }
-      currentKey = null;
-    }
-  }
-
-  // Flush any trailing block string
-  if (inBlockString && currentKey) {
-    _setPath(stack, currentKey, blockStringLines.join('\n'));
-  }
-
-  return result;
-}
-
-function _setPath(stack, key, value) {
-  const current = stack[stack.length - 1].obj;
-  current[key] = value;
-}
-
-function _pushToArray(stack, value) {
-  const current = stack[stack.length - 1].obj;
-  // Check if parent has an array we should push to
-  let arr = current._array;
-  if (!arr) {
-    // We need to find the actual array parent
-    const parent = stack.length > 1 ? stack[stack.length - 2].obj : null;
-    if (parent && Array.isArray(parent)) {
-      parent.push(parseYamlValue(value));
-    } else if (current && typeof current === 'object') {
-      // Find the first property that is an array
-      for (const k of Object.keys(current)) {
-        if (Array.isArray(current[k])) {
-          current[k].push(parseYamlValue(value));
-          return;
-        }
-      }
-    }
-    return;
-  }
-  arr.push(parseYamlValue(value));
-}
-
-function parseYamlValue(raw) {
-  const value = String(raw || '').trim();
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === '~') return null;
-  const num = Number(value);
-  if (!isNaN(num) && value !== '' && /^-?\d+\.?\d*$/.test(value)) return num;
-  return value;
+  return yamlLoad(text) || {};
 }
 
 /**

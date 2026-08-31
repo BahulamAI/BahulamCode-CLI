@@ -155,7 +155,10 @@ export class PluginRegistry {
     const agents = [];
     for (const plugin of this.plugins.values()) {
       for (const agent of (plugin.spec?.agents || [])) {
-        agents.push(agent);
+        agents.push({
+          ...agent,
+          _plugin_name: plugin.metadata?.name,
+        });
       }
     }
     return agents;

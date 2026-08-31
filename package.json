@@ -49,6 +49,7 @@
     "url": "git+https://github.com/BahulamAI/BahulamCode-CLI.git"
   },
   "dependencies": {
+    "js-yaml": "^5.4.1",
     "mermaid": "^11.17.2",
     "monaco-editor": "^0.56.0",
     "pdf-parse": "^1.1.1",

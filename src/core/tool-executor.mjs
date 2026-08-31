@@ -254,9 +254,25 @@ export function createToolExecutor({
         if (scope && scope !== 'project' && scope !== 'global') {
             throw new Error('scope must be "project" or "global"');
         }
-        return listLocalAgents(process.cwd())
-            .filter(agent => !scope || agent.source_scope === scope)
-            .filter(agent => agentMatches(agent, args.query || args.name || ''));
+        const local = listLocalAgents(process.cwd())
+            .filter(agent => !scope || agent.source_scope === scope);
+        // Merge in plugin agents (from plugin.yaml spec.agents)
+        const plugin = pluginRegistry
+            ? pluginRegistry.listAgents().map(agentDef => ({
+                slug: agentDef.slug || agentDef.name || '',
+                name: agentDef.name || agentDef.slug || '',
+                description: agentDef.description || '',
+                role: agentDef.role || 'specialist',
+                tools: agentDef.tools || agentDef.agent_tools || [],
+                capabilities: agentDef.capabilities || [],
+                domains: agentDef.domains || [],
+                source_scope: 'plugin',
+                source: `plugin:${agentDef._plugin_name || agentDef.source || 'unknown'}`,
+                handlers_yaml: agentDef.handler || null,
+            }))
+            : [];
+        const combined = [...local, ...plugin];
+        return combined.filter(agent => agentMatches(agent, args.query || args.name || ''));
     }
 
     function selectAgentsForSync(args = {}) {
@@ -624,15 +640,12 @@ export function createToolExecutor({
     // ── Plugin tool map ──────────────────────────────────────────
     // Plugin tools are registered here alongside the built-in toolMap.
     // They are dispatched with lower priority (built-in tools win on name collision).
+    // ── Plugin tool map ──────────────────────────────────────────
+    // Plugin tools are registered here alongside the built-in toolMap.
+    // They are dispatched with lower priority (built-in tools win on name collision).
     const pluginToolMap = new Map(); // name → async handler function
 
     function registerPluginTool(name, handler) {
-        if (toolMap[name]) {
-            if (process.env.DEBUG) {
-                console.warn(`Plugin tool "${name}" shadows a built-in tool — skipping.`);
-            }
-            return false;
-        }
         if (pluginToolMap.has(name)) {
             if (process.env.DEBUG) {
                 console.warn(`Plugin tool "${name}" already registered from another plugin — skipping.`);
@@ -641,33 +654,6 @@ export function createToolExecutor({
         }
         pluginToolMap.set(name, handler);
         return true;
-    }
-
-    // Auto-load plugin tools from pluginRegistry (if provided)
-    if (pluginRegistry) {
-        const pluginTools = pluginRegistry.listTools();
-        for (const toolDef of pluginTools) {
-            const pluginDir = toolDef._plugin_dir || '';
-            const handlerPath = toolDef.handler || '';
-            if (!handlerPath) continue;
-            // Load lazily — wrap in a function that imports on first call
-            const lazyHandler = async (args, options = {}) => {
-                try {
-                    const { loadPluginTool: loadTool } = await import('../plugins/executor.mjs');
-                    const handler = await loadTool(pluginDir, handlerPath);
-                    if (!handler) {
-                        return { success: false, output: `Plugin tool "${toolDef.name}" handler not found`, _tool: toolDef.name, _plugin: toolDef._plugin_name };
-                    }
-                    const result = await handler.call(args || {}, options);
-                    return result?.success !== false
-                        ? { success: true, output: result?.output ?? String(result), _tool: toolDef.name, _plugin: toolDef._plugin_name }
-                        : { success: false, output: result?.output ?? String(result), _tool: toolDef.name, _plugin: toolDef._plugin_name };
-                } catch (err) {
-                    return { success: false, output: `Plugin tool error (${toolDef.name}): ${err.message}`, _tool: toolDef.name, _plugin: toolDef._plugin_name };
-                }
-            };
-            registerPluginTool(toolDef.name, lazyHandler);
-        }
     }
 
     async function executeToolWithHooks(name, args, options = {}) {
