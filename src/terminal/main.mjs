@@ -23,32 +23,60 @@ import { BahulamAuth as Auth } from '../auth/bahulam-auth.mjs';
 const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
 
+const PLUGIN_MANAGEMENT_COMMANDS = new Set([
+  'install', 'validate', 'check', 'lint',
+  'list', 'ls', 'remove', 'rm', 'uninstall',
+  'enable', 'disable', 'info', 'update', 'upgrade',
+]);
+
 function parsePluginArgs(argv) {
-  const parsed = { pluginName: null, targetPath: null, port: 0, open: true, help: false, json: false };
+  const parsed = {
+    action: null,       // 'open' (default) or a management verb
+    pluginName: null,
+    targetPath: null,
+    source: null,       // install source: git url, tarball, local dir
+    port: 0,
+    open: true,
+    help: false,
+    json: false,
+    global: true,       // install target: ~/.bahulam vs project .bahulam
+    force: false,
+    ref: null,          // git branch/tag/commit
+  };
+  const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
       case '--help':
-      case '-h':
-        parsed.help = true;
-        break;
-      case '--port':
-        parsed.port = Number(argv[++i]) || 0;
-        break;
-      case '--no-open':
-        parsed.open = false;
-        break;
-      case '--json':
-        parsed.json = true;
-        parsed.open = false;
-        break;
+      case '-h': parsed.help = true; break;
+      case '--port': parsed.port = Number(argv[++i]) || 0; break;
+      case '--no-open': parsed.open = false; break;
+      case '--json': parsed.json = true; parsed.open = false; break;
+      case '--project': parsed.global = false; break;
+      case '--global': parsed.global = true; break;
+      case '--force': case '-f': parsed.force = true; break;
+      case '--ref': case '--tag': case '--branch': parsed.ref = argv[++i]; break;
       default:
-        if (!arg.startsWith('-')) {
-          if (!parsed.pluginName) parsed.pluginName = arg;
-          else if (!parsed.targetPath) parsed.targetPath = arg;
-        }
+        if (!arg.startsWith('-')) positional.push(arg);
         break;
     }
+  }
+  if (positional.length && PLUGIN_MANAGEMENT_COMMANDS.has(positional[0].toLowerCase())) {
+    parsed.action = positional.shift().toLowerCase();
+    if (parsed.action === 'install') parsed.source = positional.shift() || null;
+    else if (['validate', 'check', 'lint'].includes(parsed.action)) {
+      // Accepts either a directory path or an installed plugin name.
+      const arg = positional.shift() || null;
+      if (arg && (arg.includes('/') || fs.existsSync?.(arg))) parsed.source = arg;
+      else parsed.pluginName = arg;
+    }
+    else if (['info', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'update', 'upgrade'].includes(parsed.action)) {
+      parsed.pluginName = positional.shift() || null;
+    }
+  } else {
+    parsed.action = 'open';
+    parsed.pluginName = positional.shift() || null;
+    parsed.targetPath = positional.shift() || null;
   }
   return parsed;
 }
@@ -251,9 +279,14 @@ async function main() {
     return;
   }
 
-  if (subcommand === 'plugin') {
-    const { handlePluginCommand } = await import('../commands/plugin.mjs');
+  if (subcommand === 'plugin' || subcommand === 'plugins') {
     const args = parsePluginArgs(subcommandArgs);
+    if (args.action && args.action !== 'open') {
+      const { handlePluginManagementCommand } = await import('../commands/plugin-manage.mjs');
+      await handlePluginManagementCommand(args, { cwd: process.cwd() });
+      return;
+    }
+    const { handlePluginCommand } = await import('../commands/plugin.mjs');
     await handlePluginCommand(args, { cwd: process.cwd() });
     return;
   }

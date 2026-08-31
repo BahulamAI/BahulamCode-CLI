@@ -213,21 +213,35 @@ export async function handlePluginCommand(args, { cwd = process.cwd() } = {}) {
 function printPluginUsage() {
   process.stderr.write(
     `${BOLD}PLUGIN COMMANDS${RESET}\n` +
-    `  ${CYAN}bahulam-code plugin <name> [path]${RESET}   ` +
-    `Open a workspace with a named plugin loaded\n` +
+    `  ${CYAN}bahulam plugin <name> [path]${RESET}                Open a workspace with a plugin loaded\n` +
+    `  ${CYAN}bahulam plugin install <src>${RESET}                Install from git URL, tarball, local dir, or registry name\n` +
+    `  ${CYAN}bahulam plugin validate <path|name>${RESET}         Preflight without installing (schema + handlers + collisions)\n` +
+    `  ${CYAN}bahulam plugin list${RESET}                         List installed plugins\n` +
+    `  ${CYAN}bahulam plugin info <name>${RESET}                  Show manifest details\n` +
+    `  ${CYAN}bahulam plugin remove <name>${RESET}                Uninstall a plugin\n` +
+    `  ${CYAN}bahulam plugin enable|disable <name>${RESET}        Toggle without deleting\n` +
+    `  ${CYAN}bahulam plugin update <name>${RESET}                git pull the latest for git-installed plugins\n` +
     `\n` +
-    `  ${DIM}<name>${RESET}  Plugin name (directory name or metadata.name in plugin.yaml)\n` +
-    `  ${DIM}[path]${RESET}  Target workspace directory (default: current directory)\n` +
+    `  ${DIM}Install source shapes:${RESET}\n` +
+    `    git URL          https://github.com/foo/bar.git\n` +
+    `    tarball URL      https://.../bar-1.0.0.tgz\n` +
+    `    local directory  ./my-plugin  or  /abs/path\n` +
+    `    registry name    seo-toolkit  (looked up in awesome-bahulam-plugins)\n` +
     `\n` +
     `  ${DIM}Options:${RESET}\n` +
-    `    --port <n>      Bind a specific localhost port\n` +
-    `    --no-open       Start service without opening the browser\n` +
-    `    --json          Print session JSON and do not open the browser\n` +
+    `    --port <n>        (open) bind a specific localhost port\n` +
+    `    --no-open         (open) start service without opening the browser\n` +
+    `    --json            print machine-readable JSON\n` +
+    `    --project         install into <cwd>/.bahulam/plugins instead of ~/.bahulam/plugins\n` +
+    `    --global          install into ~/.bahulam/plugins (default)\n` +
+    `    --ref <tag|branch>  (install/update) pin a git ref\n` +
+    `    --force           overwrite existing install\n` +
     `\n` +
-    `  ${DIM}Search paths:${RESET}\n` +
+    `  ${DIM}Search paths (later overrides earlier):${RESET}\n` +
     PLUGIN_SEARCH_DIRS.map(d => `    ${d}`).join('\n') + '\n' +
     `\n` +
     `  ${DIM}Example:${RESET}\n` +
-    `    bahulam-code plugin seo-manager ~/projects/client-site\n`
+    `    bahulam plugin install https://github.com/community/seo-toolkit\n` +
+    `    bahulam plugin seo-toolkit ~/projects/client-site\n`
   );
 }

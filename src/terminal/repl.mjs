@@ -1045,6 +1045,43 @@ function printSkillsUsage() {
   process.stderr.write(`  ${c.dim('  /skills update <name> [--project]')}\n`);
 }
 
+async function handlePluginsCommand(rest = '', ctx) {
+  const argv = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  const action = (argv[0] || 'list').toLowerCase();
+  const known = new Set(['install', 'validate', 'check', 'lint', 'list', 'ls', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'info', 'update', 'upgrade']);
+
+  // Bare `/plugins <name>` (no action verb) is treated as info, mirroring how
+  // `/skills <name>` behaves. `/plugins` alone lists.
+  if (!known.has(action)) {
+    if (argv.length === 0) return handlePluginsCommand('list', ctx);
+    return handlePluginsCommand(`info ${argv.join(' ')}`, ctx);
+  }
+
+  const args = {
+    action, pluginName: null, source: null,
+    global: true, force: false, ref: null, json: false,
+  };
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--project') args.global = false;
+    else if (a === '--global') args.global = true;
+    else if (a === '--force' || a === '-f') args.force = true;
+    else if (a === '--json') args.json = true;
+    else if (a === '--ref' || a === '--tag' || a === '--branch') args.ref = argv[++i];
+    else if (!a.startsWith('-')) {
+      if (action === 'install' && !args.source) args.source = a;
+      else if (['validate', 'check', 'lint'].includes(action) && !args.source && !args.pluginName) {
+        if (a.includes('/')) args.source = a; else args.pluginName = a;
+      }
+      else if (!args.pluginName) args.pluginName = a;
+    }
+  }
+  try {
+    const { handlePluginManagementCommand } = await import('../commands/plugin-manage.mjs');
+    await handlePluginManagementCommand(args, { cwd: process.cwd(), throwOnError: true });
+  } catch { /* already printed by the handler */ }
+}
+
 async function handleSkillsCommand(rest = '', ctx) {
   const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
   const hasFlag = (flag) => parts.includes(flag);
@@ -3719,6 +3756,11 @@ async function handleCommand(input, ctx) {
 
     case '/skills':
       await handleSkillsCommand(rest, ctx);
+      return;
+
+    case '/plugin':
+    case '/plugins':
+      await handlePluginsCommand(rest, ctx);
       return;
 
     case '/explore':
