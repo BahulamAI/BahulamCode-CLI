@@ -17,6 +17,7 @@ import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
 // daemon wiring — headless (and `bahulam daemonize`) also starts the socket
 // server + relay bridge when eventlog is enabled. Without this the daemon
 // is invisible to attach clients and to paired mobile devices.
@@ -65,8 +66,11 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.exit(1);
     }
 
+    // Scan plugins so client_tools and client_agents are sent to the backend.
+    const pluginRegistry = new PluginRegistry().scan();
+
     // Projects are registered and indexed only when the agent requests an overview.
-    const toolExecutor = createToolExecutor();
+    const toolExecutor = createToolExecutor({ pluginRegistry });
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });
@@ -104,6 +108,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             token: creds.token,
             toolExecutor,
             approvalManager: approval,
+            pluginRegistry,
         });
     }
 

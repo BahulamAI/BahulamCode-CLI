@@ -64,6 +64,7 @@ import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
@@ -3813,6 +3814,7 @@ export async function startTerminalRepl() {
     return createToolExecutor({
       checkpoints,
       hookRunner,
+      pluginRegistry,
       interactionHandler: askUserInteraction,
       onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
         const name = path.basename(root || safeCwd()) || root || 'project';
@@ -3828,6 +3830,7 @@ export async function startTerminalRepl() {
     });
   }
 
+  const pluginRegistry = new PluginRegistry().scan();
   let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
@@ -4902,6 +4905,7 @@ export async function startTerminalRepl() {
         token: creds.token,
         toolExecutor,
         approvalManager: approval,
+        pluginRegistry,
       });
     }
     const client = streamClient;
