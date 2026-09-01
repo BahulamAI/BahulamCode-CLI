@@ -360,7 +360,7 @@ async function main() {
     /architect <query>      Spawn architecture planning agent
     /agents create <name>   Create project-local user-defined agent YAML
     /agents edit <name>     Open a local agent YAML in your editor
-    /agents sync [name]     Sync all or one local agent to Supabase
+    /agents sync [name]     Optionally publish local agents to backend/account
     /attach <image-path>    Attach an image to next prompt
     /attach clipboard       Attach image copied to macOS/Windows clipboard
     /exit                   Exit the REPL

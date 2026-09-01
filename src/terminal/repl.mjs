@@ -967,6 +967,7 @@ async function handleAgentsCommand(rest = '', ctx) {
         force: Boolean(flags.force),
       });
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Created local agent:')} ${created.filePath}\n`);
+      process.stderr.write(`  ${c.dim('Available now in this workspace:')} /run ${created.slug} "<task>"\n`);
       const shouldOpen = !flags['no-open'] && (Boolean(flags.open) || isVsCodeTerminal());
       if (shouldOpen) {
         const opened = openAgentFile(created.filePath, {
@@ -978,7 +979,7 @@ async function handleAgentsCommand(rest = '', ctx) {
           process.stderr.write(`  ${c.dim(opened.reason)}\n`);
         }
       }
-      process.stderr.write(`  ${c.dim('Sync explicitly with:')} /agents sync ${created.slug}\n`);
+      process.stderr.write(`  ${c.dim('Optional cloud/account sync:')} /agents sync ${created.slug}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
     }
@@ -1004,7 +1005,7 @@ async function handleAgentsCommand(rest = '', ctx) {
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(opened.reason)}\n`);
       process.stderr.write(`  ${c.dim('Agent file:')} ${agent.source}\n`);
     }
-    process.stderr.write(`  ${c.dim('Sync after editing:')} /agents sync ${agent.slug}\n`);
+    process.stderr.write(`  ${c.dim('Local changes are available immediately in this workspace. Optional cloud/account sync:')} /agents sync ${agent.slug}\n`);
     return;
   }
 
@@ -1026,7 +1027,7 @@ async function handleAgentsCommand(rest = '', ctx) {
         agents: selected,
       });
       const synced = result.synced ?? selected.length;
-      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Synced ${synced} agent${synced === 1 ? '' : 's'} to Supabase.`)}\n`);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Synced ${synced} agent${synced === 1 ? '' : 's'} to the backend for account/cloud reuse.`)}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
     }

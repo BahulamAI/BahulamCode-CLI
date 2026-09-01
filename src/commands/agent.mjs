@@ -1,5 +1,5 @@
 /**
- * Agent CLI Commands — list, get, sync user-defined agents.
+ * Agent CLI Commands — list, get, sync backend-published user-defined agents.
  *
  * Commands:
  *   bahulam-code agent list
@@ -47,9 +47,9 @@ export async function handleAgentCommand(args) {
 
 function printAgentUsage() {
     process.stderr.write(`${BOLD}AGENT COMMANDS${RESET}\n`);
-    process.stderr.write(`  ${CYAN}bahulam-code agent list${RESET}                           List user-defined agents\n`);
-    process.stderr.write(`  ${CYAN}bahulam-code agent get <slug>${RESET}                     Show agent details\n`);
-    process.stderr.write(`  ${CYAN}bahulam-code agent sync [--dir <path>]${RESET}            Sync agent YAML files\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent list${RESET}                           List backend-published agents\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent get <slug>${RESET}                     Show backend-published agent details\n`);
+    process.stderr.write(`  ${CYAN}bahulam-code agent sync [--dir <path>]${RESET}            Publish local agent YAML files for account/cloud reuse\n`);
     process.stderr.write('\n');
 }
 
@@ -110,11 +110,11 @@ async function handleList(args) {
 
     const agents = result.agents || [];
     if (agents.length === 0) {
-        process.stderr.write(`${DIM}No user-defined agents found.${RESET}\n`);
+        process.stderr.write(`${DIM}No backend-published agents found. Local .bahulam/agents files can still be delegated in their workspace.${RESET}\n`);
         process.exit(0);
     }
 
-    process.stderr.write(`${BOLD}User-defined Agents:${RESET}\n`);
+    process.stderr.write(`${BOLD}Backend-published Agents:${RESET}\n`);
     for (const a of agents) {
         const source = a.source === 'platform' ? `${DIM}(platform)${RESET}` : `${DIM}(user)${RESET}`;
         process.stderr.write(`  ${CYAN}${a.slug}${RESET}  ${a.name || a.slug} ${source}\n`);
@@ -184,7 +184,7 @@ async function handleSync(args) {
             agents: selected,
         });
         const synced = result.synced ?? selected.length;
-        process.stderr.write(`${GREEN}✓ Synced ${synced} agent${synced === 1 ? '' : 's'} to Supabase.${RESET}\n`);
+        process.stderr.write(`${GREEN}✓ Synced ${synced} agent${synced === 1 ? '' : 's'} to the backend for account/cloud reuse.${RESET}\n`);
         process.stdout.write(JSON.stringify({ synced, agents: result.agents || [] }, null, 2) + '\n');
     } catch (err) {
         process.stderr.write(`${RED}✗ Agent sync failed: ${err.message}${RESET}\n`);

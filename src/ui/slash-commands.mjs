@@ -143,7 +143,7 @@ export const HELP_GROUPS = [
       ['/agents', 'List built-in and local agents'],
       ['/agents create <name>', 'Create .bahulam/agents/<name>.yaml'],
       ['/agents edit <name>', 'Open local agent YAML'],
-      ['/agents sync [name]', 'Sync all or one local agent to cloud'],
+      ['/agents sync [name]', 'Publish local agents to backend/account reuse'],
       ['/run <agent> [instruction]', 'Run a local or built-in agent'],
       ['/explore <instruction>', 'Explore code'],
       ['/review <instruction>', 'Review code'],

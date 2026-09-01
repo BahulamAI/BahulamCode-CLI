@@ -2260,7 +2260,8 @@ export function createToolExecutor({
                     : null,
                 next_actions: [
                     `Edit ${result.filePath}`,
-                    `Run /agents sync ${result.slug} when ready`,
+                    `Run /run ${result.slug} "<task>" or delegate to it from chat immediately`,
+                    `Optional: /agents sync ${result.slug} to publish it to the backend for account/cloud reuse`,
                 ],
             };
             return {
