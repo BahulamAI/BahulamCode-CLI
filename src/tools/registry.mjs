@@ -86,6 +86,7 @@ const BUILTIN_TOOLS = [
 export function createToolRegistry({
     pluginRegistry = null,
     stateEmit = null,
+    exposePluginTools = false,
 } = {}) {
     const tools = new Map();
     for (const Tool of BUILTIN_TOOLS) {
@@ -169,7 +170,7 @@ export function createToolRegistry({
         }
     }
 
-    registerPluginToolsFromRegistry();
+    if (exposePluginTools) registerPluginToolsFromRegistry();
 
     const registry = {
         list() {

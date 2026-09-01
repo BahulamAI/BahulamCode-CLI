@@ -63,6 +63,7 @@ export const AgentTool = {
         const tools = createToolRegistry({
             pluginRegistry: options.pluginRegistry || null,
             stateEmit: options.stateEmit || null,
+            exposePluginTools: true,
         });
         const permissions = createPermissionChecker({ defaultMode: 'bypassPermissions' });
 

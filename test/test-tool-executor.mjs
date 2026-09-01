@@ -424,7 +424,11 @@ await test('classic tool registry exposes plugin tools for in-process subagents'
         const pluginRegistry = new PluginRegistry({
             pluginDirs: [path.join(root, '.bahulam', 'plugins')],
         }).scan();
-        const registry = createToolRegistry({ pluginRegistry });
+        const primaryRegistry = createToolRegistry({ pluginRegistry });
+        assert.strictEqual(primaryRegistry.has('docker_analyze'), false);
+        assert.strictEqual(primaryRegistry.list().some(tool => tool.name === 'docker_analyze'), false);
+
+        const registry = createToolRegistry({ pluginRegistry, exposePluginTools: true });
         assert.ok(registry.has('docker_analyze'), 'plugin tool should be present in classic registry');
         assert.ok(registry.list().some(tool => tool.name === 'docker_analyze'));
 
