@@ -109,6 +109,14 @@ export function parseArgs(args) {
                 result.skipPermissions = true; // headless implies skip permissions
                 break;
 
+            case '--agent':
+                result.agent = args[++i];
+                break;
+
+            case '--workflow':
+                result.workflow = args[++i];
+                break;
+
             case '--cache-report':
                 // PRD-071 §1.5 — write a machine-readable cache summary to
                 // <path> at end of run. Consumed by benchmark/cache-check.sh.

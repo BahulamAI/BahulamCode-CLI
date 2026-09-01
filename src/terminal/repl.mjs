@@ -65,6 +65,7 @@ import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
+import { dispatch } from '../orchestration/dispatch.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -2913,50 +2914,125 @@ async function handleRunCommand(rest = '', ctx) {
   const pluginAgent = pluginRegistry?.listAgents?.()
     ?.find(agent => localAgentMatches(agent, target));
   const runnableAgent = localAgent || builtinAgent || registeredAgent || pluginAgent;
-  if (runnableAgent) {
-    try {
-      const execContext = await prepareDirectAgentRunContext(ctx, instruction || target);
-      return await runAgentDefinition(runnableAgent, instruction, ctx, session, renderEvent, {
-        cwd: execContext.cwd,
-        execContext,
-        pluginRegistry,
-      });
-    } catch (err) {
-      process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
-      return;
-    }
-  }
+
+  const creds = ctx.auth?.loadCredentials?.() || {};
+  const dispatchCtx = {
+    toolExecutor: ctx.toolExecutor,
+    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
+    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
+    renderEvent,
+    sessionSubstrate: makeSessionSubstrate(ctx),
+    auth: { token: creds.token || null },
+    credentials: {
+      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+    },
+    cwd: safeCwd(),
+  };
 
   try {
-    process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
-    const result = await ctx.toolExecutor.execute('workflow_run_multi', {
-      name: target,
-      instruction,
-    });
+    if (!runnableAgent) process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
+    const outcome = await dispatch({
+      type: 'manual',
+      source: 'repl:/run',
+      target: runnableAgent ? { kind: 'agent', slug: target, agent: runnableAgent } : target,
+      params: { instruction },
+      channel: null,
+    }, dispatchCtx);
 
-    if (result?.success === false) {
-      process.stderr.write(`  ${c.red('✗')} ${result.output || `Workflow '${target}' failed.`}\n`);
+    if (!outcome.dispatched) {
+      process.stderr.write(`  ${c.red('✗')} ${outcome.reason}\n`);
+      process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
       return;
     }
 
-    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Workflow '${target}' complete`)}\n`);
-    const details = [];
-    if (result?.run_id) details.push(`run ${result.run_id}`);
-    if (result?.duration_s) details.push(`${result.duration_s}s`);
-    if (result?.total_tokens) details.push(`${formatTokens(result.total_tokens)} tok`);
-    if (result?.total_cost) details.push(formatCostValue(result.total_cost));
-    if (details.length) process.stderr.write(`  ${c.dim(details.join(' · '))}\n`);
+    const result = outcome.result || {};
+    if (outcome.channel === 'server') {
+      if (result?.success === false) {
+        process.stderr.write(`  ${c.red('✗')} ${result.output || `Workflow '${target}' failed.`}\n`);
+        return;
+      }
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Workflow '${target}' complete`)}\n`);
+      const details = [];
+      if (result?.run_id) details.push(`run ${result.run_id}`);
+      if (result?.duration_s) details.push(`${result.duration_s}s`);
+      if (result?.total_tokens) details.push(`${formatTokens(result.total_tokens)} tok`);
+      if (result?.total_cost) details.push(formatCostValue(result.total_cost));
+      if (details.length) process.stderr.write(`  ${c.dim(details.join(' · '))}\n`);
 
-    const output = result?.result || result?.output || '';
-    if (output) {
-      process.stderr.write('\n');
-      process.stderr.write(renderMarkdown(String(output), { width: process.stderr.columns || 96 }));
-      process.stderr.write('\n');
+      // Push server workflow output to conversation history so the main
+      // agent sees the outcome next turn (mirrors local graph run below).
+      const serverOutput = result?.result || result?.output || '';
+      if (serverOutput && result?.success !== false) {
+        session.history.push(
+          { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+          { role: 'assistant', content: String(serverOutput) },
+        );
+      } else if (result?.success === false && result?.output) {
+        session.history.push(
+          { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+          { role: 'assistant', content: `Workflow failed: ${String(result.output)}` },
+        );
+      }
+
+      const output = serverOutput;
+      if (output) {
+        process.stderr.write('\n');
+        process.stderr.write(renderMarkdown(String(output), { width: process.stderr.columns || 96 }));
+        process.stderr.write('\n');
+      }
+      return;
+    }
+
+    // Local graph run. Session-substrate agent runs already push their own
+    // conversation history; feed workflow results (and logged-out direct
+    // runs) back so the main agent sees the outcome next turn.
+    if (result.status === 'failed') {
+      process.stderr.write(`  ${c.red('✗')} ${result.output || `'${target}' failed.`}\n`);
+    }
+    const historyCovered = Boolean(runnableAgent) && Boolean(creds.token);
+    if (result.output && result.status !== 'failed' && !historyCovered) {
+      session.history.push(
+        { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+        { role: 'assistant', content: String(result.output) },
+      );
     }
   } catch (err) {
     process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
     process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
   }
+}
+
+// Bridges the graph engine's session substrate onto runAgentDefinition:
+// the node's events stream through the same renderer, and the run keeps
+// its existing conversation-history feedback.
+function makeSessionSubstrate(ctx) {
+  return (agent, node, instruction) => (async function* () {
+    const queue = [];
+    let notify = null;
+    let finished = false;
+    const push = (event) => {
+      queue.push(event);
+      const wake = notify; notify = null;
+      wake?.();
+    };
+    const execContext = await prepareDirectAgentRunContext(ctx, instruction);
+    const done = runAgentDefinition(agent, instruction, ctx, session, push, {
+      cwd: execContext.cwd,
+      execContext,
+      pluginRegistry,
+    }).catch(err => push({ type: 'error', data: { message: err?.message || String(err) } }))
+      .finally(() => {
+        finished = true;
+        const wake = notify; notify = null;
+        wake?.();
+      });
+    while (!finished || queue.length) {
+      if (!queue.length) await new Promise(resolve => { notify = resolve; });
+      while (queue.length) yield queue.shift();
+    }
+    await done;
+  })();
 }
 
 async function handleCommand(input, ctx) {

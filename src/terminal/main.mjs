@@ -480,7 +480,9 @@ async function main() {
   const daemonSpawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
   const daemonPrompt = daemonSpawned ? (process.env.BAHULAM_DAEMON_INITIAL_PROMPT || '').trim() : '';
   const effectivePrompt = args.prompt || (daemonSpawned && daemonPrompt) || '';
-  if (effectivePrompt && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY)) {
+  const hasGraphTarget = Boolean(args.agent || args.workflow);
+  if ((effectivePrompt || hasGraphTarget)
+      && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY || hasGraphTarget)) {
     const { runHeadless } = await import('../core/headless.mjs');
     await runHeadless({
       instruction: effectivePrompt,
@@ -490,6 +492,8 @@ async function main() {
       cacheReport: args.cacheReport,
       local: args.local,
       vision: args.vision,
+      agent: args.agent,
+      workflow: args.workflow,
     });
     return;
   }

@@ -113,7 +113,7 @@ const TOOL_ALIASES = new Map([
   ['grep', 'search_code'],
 ]);
 
-function canonicalToolName(value) {
+export function canonicalToolName(value) {
   const key = String(value || '').trim().toLowerCase();
   return TOOL_ALIASES.get(key) || key;
 }
@@ -133,7 +133,7 @@ function normalizeScopedArgs(toolName, args = {}, { projectRoot = null } = {}) {
   return next;
 }
 
-function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = {}) {
+export function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = {}) {
   const tools = Array.isArray(agent.tools) ? agent.tools : [];
   const allowed = new Set(tools.map(canonicalToolName).filter(Boolean));
   if (!allowed.size) return baseExecutor;
