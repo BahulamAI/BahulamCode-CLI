@@ -39,6 +39,7 @@ import { ExploreTool, PlanTool, VerifyTool, DebugTool, RefactorTool } from './me
 import { RememberTool } from './remember.mjs';
 import { GenerateImageTool } from './generate-image.mjs';
 import { AnalyzeImageTool } from './analyze-image.mjs';
+import { loadPluginTool } from '../plugins/executor.mjs';
 
 const BUILTIN_TOOLS = [
     BashTool,
@@ -82,11 +83,93 @@ const BUILTIN_TOOLS = [
     RefactorTool,
 ];
 
-export function createToolRegistry() {
+export function createToolRegistry({
+    pluginRegistry = null,
+    stateEmit = null,
+} = {}) {
     const tools = new Map();
     for (const Tool of BUILTIN_TOOLS) {
-        tools.set(Tool.name, Tool);
+        if (Tool === AgentTool) {
+            tools.set(Tool.name, {
+                ...Tool,
+                async call(input, options = {}) {
+                    return Tool.call(input, {
+                        ...options,
+                        pluginRegistry: options.pluginRegistry || pluginRegistry,
+                        stateEmit: options.stateEmit || stateEmit,
+                    });
+                },
+            });
+        } else {
+            tools.set(Tool.name, Tool);
+        }
     }
+
+    const pluginStateHandles = new Map();
+    async function pluginStateFor(pluginName) {
+        if (!pluginName) return null;
+        if (pluginStateHandles.has(pluginName)) return pluginStateHandles.get(pluginName);
+        const { makePluginState } = await import('../plugins/state.mjs');
+        const state = makePluginState(pluginName, { emit: stateEmit });
+        pluginStateHandles.set(pluginName, state);
+        return state;
+    }
+
+    function registerPluginToolsFromRegistry() {
+        if (!pluginRegistry) return;
+        for (const toolDef of pluginRegistry.listTools?.() || []) {
+            const name = String(toolDef.name || '').trim();
+            if (!name || tools.has(name)) continue;
+            const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            tools.set(name, {
+                name,
+                description: toolDef.description || '',
+                inputSchema: toolDef.input_schema || toolDef.parameters || { type: 'object', properties: {} },
+                validateInput() { return []; },
+                async call(input, options = {}) {
+                    const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
+                    if (!handler) {
+                        return {
+                            success: false,
+                            output: `Plugin tool handler could not be loaded: ${name}`,
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
+                    }
+                    const handlerOpts = {
+                        ...options,
+                        pluginName,
+                        get state() {
+                            if (this._stateP) return this._stateP;
+                            this._stateP = pluginStateFor(pluginName);
+                            return this._stateP;
+                        },
+                    };
+                    try {
+                        const result = await handler.call(input || {}, handlerOpts);
+                        if (result && typeof result === 'object' && 'success' in result) {
+                            return { ...result, _tool: name, _plugin: pluginName };
+                        }
+                        return {
+                            success: true,
+                            output: typeof result === 'string' ? result : JSON.stringify(result),
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
+                    } catch (err) {
+                        return {
+                            success: false,
+                            output: `Plugin tool error (${name}): ${err.message}`,
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
+                    }
+                },
+            });
+        }
+    }
+
+    registerPluginToolsFromRegistry();
 
     const registry = {
         list() {
@@ -97,12 +180,12 @@ export function createToolRegistry() {
             }));
         },
 
-        async call(name, input) {
+        async call(name, input, options = {}) {
             const tool = tools.get(name);
             if (!tool) throw new Error(`Unknown tool: ${name}`);
             const errors = tool.validateInput?.(input) || [];
             if (errors.length > 0) return `Validation error: ${errors.join(', ')}`;
-            const result = await tool.call(input);
+            const result = await tool.call(input, options);
 
             return result;
         },

@@ -840,5 +840,138 @@ await test('summarizeSession posts transcript with auth and product headers', as
     assert.deepStrictEqual(received.body.messages, [{ role: 'user', content: 'hello' }]);
 });
 
+await test('execute injects plugin tools only as agent-scoped schemas', async () => {
+    let received = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                received = JSON.parse(body);
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'X-Task-ID': 'task-plugin-context',
+                });
+                res.write('event: complete\ndata: {"summary":"ok"}\n\n');
+                res.end();
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const pluginRegistry = {
+        listTools: () => [{
+            name: 'docker_analyze',
+            description: 'Analyze Docker containers',
+            input_schema: { type: 'object', properties: { verbose: { type: 'boolean' } } },
+            _plugin_name: 'docker-tools',
+        }],
+        listAgents: () => [{
+            slug: 'docker-analyzer',
+            name: 'Docker Analyzer',
+            role: 'diagnostics',
+            description: 'Container diagnostics specialist',
+            tools: ['docker_analyze'],
+            system_prompt: 'Use docker_analyze before answering Docker questions.',
+            model: 'test-model',
+            _plugin_name: 'docker-tools',
+        }],
+    };
+
+    const client = new BahulamStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        toolExecutor: mockToolExecutor,
+        pluginRegistry,
+    });
+    const events = [];
+    for await (const evt of client.execute('inspect docker')) events.push(evt);
+    server.close();
+
+    assert.ok(events.some(e => e.type === 'complete'));
+    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_agent_tools, [{
+        name: 'docker_analyze',
+        description: 'Analyze Docker containers',
+        input_schema: { type: 'object', properties: { verbose: { type: 'boolean' } } },
+        source_scope: 'plugin',
+        plugin_name: 'docker-tools',
+        allowed_agents: ['docker-analyzer'],
+    }]);
+    assert.strictEqual(received.client_agents[0].slug, 'docker-analyzer');
+    assert.deepStrictEqual(received.client_agents[0].tools, ['docker_analyze']);
+    assert.match(received.client_agents[0].system_prompt, /docker_analyze/);
+    assert.strictEqual(received.client_agents[0].plugin_name, 'docker-tools');
+    assert.strictEqual(received.client_agents[0].source_scope, 'plugin');
+});
+
+await test('execute scopes plugin tool schemas to custom agents that reference them', async () => {
+    let received = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                received = JSON.parse(body);
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'X-Task-ID': 'task-custom-plugin-tool',
+                });
+                res.write('event: complete\ndata: {"summary":"ok"}\n\n');
+                res.end();
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const pluginRegistry = {
+        listTools: () => [{
+            name: 'opt_chain',
+            description: 'Fetch option chain',
+            input_schema: { type: 'object', properties: { symbol: { type: 'string' } } },
+            _plugin_name: 'options-terminal',
+        }],
+        listAgents: () => [],
+    };
+
+    const client = new BahulamStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        toolExecutor: mockToolExecutor,
+        pluginRegistry,
+    });
+    const context = {
+        agent_ctx: {
+            available_agents: [{
+                slug: 'custom-options-agent',
+                name: 'Custom Options Agent',
+                tools: ['read_file', 'opt_chain'],
+            }],
+        },
+    };
+    const events = [];
+    for await (const evt of client.execute('inspect options', context)) events.push(evt);
+    server.close();
+
+    assert.ok(events.some(e => e.type === 'complete'));
+    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_agent_tools, [{
+        name: 'opt_chain',
+        description: 'Fetch option chain',
+        input_schema: { type: 'object', properties: { symbol: { type: 'string' } } },
+        source_scope: 'plugin',
+        plugin_name: 'options-terminal',
+        allowed_agents: ['custom-options-agent'],
+    }]);
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

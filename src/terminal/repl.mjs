@@ -64,6 +64,7 @@ import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
@@ -2839,25 +2840,85 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
   return execContext;
 }
 
+function stripWrappingQuotes(value = '') {
+  const text = String(value || '').trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if ((first === '"' || first === "'") && first === last) {
+      return text.slice(1, -1).trim();
+    }
+  }
+  return text;
+}
+
+function addRunTarget(map, agent, kind = 'agent') {
+  const slug = String(agent?.slug || agent?.command || agent?.name || '').trim();
+  if (!slug || map.has(`${kind}:${slug}`)) return;
+  map.set(`${kind}:${slug}`, {
+    slug,
+    name: agent?.name || slug,
+    description: agent?.description || '',
+    scope: agent?.source_scope || agent?.source || kind,
+    kind,
+  });
+}
+
+function printRunUsage(ctx) {
+  process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+  process.stderr.write(`  ${c.gray('Example: /run docker-analyzer Analyze all running Docker containers')}\n`);
+
+  const targets = new Map();
+  for (const agent of listLocalAgents(safeCwd())) addRunTarget(targets, agent);
+  for (const agent of BUILTIN_AGENTS) addRunTarget(targets, agent);
+  for (const agent of ctx.toolExecutor?.listRunnables?.() || []) addRunTarget(targets, agent);
+  for (const agent of pluginRegistry?.listAgents?.() || []) addRunTarget(targets, agent);
+
+  const agents = [...targets.values()].filter(item => item.kind === 'agent').slice(0, 12);
+  if (agents.length) {
+    process.stderr.write(`\n  ${c.dim('Agents')}\n`);
+    for (const agent of agents) {
+      const desc = agent.description ? ` ${c.dim('- ' + agent.description)}` : '';
+      const scope = agent.scope ? ` ${c.dim('[' + agent.scope + ']')}` : '';
+      process.stderr.write(`  ${c.brand(agent.slug)}${scope}${desc}\n`);
+    }
+  }
+
+  const workflows = listLocalWorkflows(safeCwd()).slice(0, 8);
+  if (workflows.length) {
+    process.stderr.write(`\n  ${c.dim('Workflows')}\n`);
+    for (const workflow of workflows) {
+      const slug = workflow.slug || workflow.name;
+      const desc = workflow.description ? ` ${c.dim('- ' + workflow.description)}` : '';
+      process.stderr.write(`  ${c.brand(slug)}${desc}\n`);
+    }
+  }
+}
+
 async function handleRunCommand(rest = '', ctx) {
   const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
   const target = parts.shift();
-  const instruction = parts.join(' ');
+  const instruction = stripWrappingQuotes(parts.join(' '));
 
   if (!target) {
-    process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+    printRunUsage(ctx);
     return;
   }
 
   const localAgent = listLocalAgents(safeCwd()).find(agent => localAgentMatches(agent, target));
   const builtinAgent = findBuiltinAgent(target);
-  const runnableAgent = localAgent || builtinAgent;
+  const registeredAgent = ctx.toolExecutor?.listRunnables?.()
+    ?.find(agent => localAgentMatches(agent, target));
+  const pluginAgent = pluginRegistry?.listAgents?.()
+    ?.find(agent => localAgentMatches(agent, target));
+  const runnableAgent = localAgent || builtinAgent || registeredAgent || pluginAgent;
   if (runnableAgent) {
     try {
       const execContext = await prepareDirectAgentRunContext(ctx, instruction || target);
       return await runAgentDefinition(runnableAgent, instruction, ctx, session, renderEvent, {
         cwd: execContext.cwd,
         execContext,
+        pluginRegistry,
       });
     } catch (err) {
       process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);

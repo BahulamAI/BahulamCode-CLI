@@ -3,6 +3,7 @@
  */
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
+import { createToolRegistry } from '../src/tools/registry.mjs';
 import { ProjectRegistry } from '../src/tools/project-overview.mjs';
 import { PluginRegistry } from '../src/plugins/registry.mjs';
 import * as fs from 'node:fs';
@@ -348,7 +349,7 @@ await test('plugin agents are merged into available_agents with full specs', asy
         assert.strictEqual(pluginRegistry.count(), 1);
         assert.deepStrictEqual(pluginRegistry.listTools().map(tool => tool.name), ['hello_world']);
 
-        const pluginExecutor = createExecutorWithoutAutoRegister({ pluginRegistry });
+        const pluginExecutor = createExecutorWithoutAutoRegister({ pluginRegistry, channel: 'workspace' });
         const ctx = pluginExecutor.getAgentContext();
         const agent = ctx.available_agents.find(item => item.slug === 'seo-manager');
 
@@ -370,11 +371,68 @@ await test('plugin agents are merged into available_agents with full specs', asy
         assert.strictEqual(toolResult.success, true);
         assert.match(toolResult.output, /hello Sree/);
 
+        const primaryModelToolResult = await pluginExecutor.execute(
+            'hello_world',
+            { name: 'Sree' },
+            { toolCallSource: 'model' },
+        );
+        assert.strictEqual(primaryModelToolResult.success, false);
+        assert.strictEqual(primaryModelToolResult._requires_agent_delegation, true);
+        assert.strictEqual(primaryModelToolResult._agent, 'seo-manager');
+        assert.match(primaryModelToolResult.output, /should not be called directly by the primary agent/);
+
+        const subAgentToolResult = await pluginExecutor.execute(
+            'hello_world',
+            { name: 'Sree' },
+            { toolCallSource: 'model', internal: true, subAgent: 'seo-manager' },
+        );
+        assert.strictEqual(subAgentToolResult.success, true);
+        assert.match(subAgentToolResult.output, /hello Sree/);
+
         const listed = await pluginExecutor.execute('agents_list', { scope: 'plugin' });
         assert.strictEqual(listed.success, true);
         assert.ok(listed.agents.some(item => item.slug === 'seo-manager'));
     } finally {
         process.chdir(previousCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('classic tool registry exposes plugin tools for in-process subagents', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-plugin-tool-registry-'));
+    const pluginDir = path.join(root, '.bahulam', 'plugins', 'docker-tools');
+    fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: docker-tools',
+        '  version: 1.0.0',
+        'spec:',
+        '  tools:',
+        '    - name: docker_analyze',
+        '      description: Analyze Docker state',
+        '      handler: tools/docker-analyze.mjs',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(pluginDir, 'tools', 'docker-analyze.mjs'),
+        'export async function call(input) { return { success: true, output: `containers=${input?.count || 0}` }; }\n',
+    );
+
+    try {
+        const pluginRegistry = new PluginRegistry({
+            pluginDirs: [path.join(root, '.bahulam', 'plugins')],
+        }).scan();
+        const registry = createToolRegistry({ pluginRegistry });
+        assert.ok(registry.has('docker_analyze'), 'plugin tool should be present in classic registry');
+        assert.ok(registry.list().some(tool => tool.name === 'docker_analyze'));
+
+        const result = await registry.call('docker_analyze', { count: 25 });
+        assert.strictEqual(result.success, true);
+        assert.match(result.output, /containers=25/);
+        assert.strictEqual(result._plugin, 'docker-tools');
+    } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
 });

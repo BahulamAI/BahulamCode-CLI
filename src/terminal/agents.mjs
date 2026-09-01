@@ -152,7 +152,11 @@ function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = 
         baseExecutor,
         toolName,
         normalizeScopedArgs(toolName, args, { projectRoot }),
-        options,
+        {
+          ...options,
+          internal: true,
+          subAgent: agent.slug || agent.command || agent.name || true,
+        },
       );
     },
   };
@@ -317,6 +321,7 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
     token: creds.token,
     toolExecutor,
     approvalManager: agentApproval,
+    pluginRegistry: options.pluginRegistry || ctx.pluginRegistry || null,
   });
 
   session.turns++;

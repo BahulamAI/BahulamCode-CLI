@@ -617,7 +617,7 @@ export class LocalAgentRelay {
       try { this.emit('plugin_state_changed', evt); }
       catch { /* never let SSE failure break a tool call */ }
     };
-    const toolExecutor = createToolExecutor({ pluginRegistry, stateEmit });
+    const toolExecutor = createToolExecutor({ pluginRegistry, stateEmit, channel: 'workspace' });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
 

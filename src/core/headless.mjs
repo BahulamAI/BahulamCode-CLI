@@ -66,7 +66,8 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         process.exit(1);
     }
 
-    // Scan plugins so client_tools and client_agents are sent to the backend.
+    // Scan plugins so client_agents and agent-scoped plugin tool schemas
+    // are sent to the backend.
     const pluginRegistry = new PluginRegistry().scan();
 
     // Projects are registered and indexed only when the agent requests an overview.

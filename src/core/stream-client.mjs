@@ -190,17 +190,69 @@ export class BahulamStreamClient {
         this._bundledReady = false;
     }
 
+    _getPluginToolMap() {
+        const tools = new Map();
+        if (!this.pluginRegistry) return tools;
+        for (const tool of this.pluginRegistry.listTools?.() || []) {
+            const name = String(tool.name || '').trim();
+            if (!name || tools.has(name)) continue;
+            tools.set(name, tool);
+        }
+        return tools;
+    }
+
     /**
-     * Get plugin tool schemas for client_tools injection.
-     * @returns {Array<{name: string, description: string, input_schema: object}>}
+     * Plugin tools are intentionally not advertised as primary client_tools.
+     * They are executable by the local callback handler, but the primary model
+     * should reach them by delegating to an agent that declares them.
      */
     _getPluginToolSchemas() {
-        if (!this.pluginRegistry) return [];
-        return this.pluginRegistry.listTools().map(t => ({
-            name: t.name,
-            description: t.description || '',
-            input_schema: t.input_schema || { type: 'object', properties: {} },
-        }));
+        return [];
+    }
+
+    _collectAgentScopedToolRefs(context = {}, clientAgents = []) {
+        const refs = new Map();
+        const pluginTools = this._getPluginToolMap();
+        const addAgent = (agent = {}) => {
+            const slug = String(agent.slug || agent.command || agent.name || '').trim();
+            const tools = Array.isArray(agent.tools) ? agent.tools : [];
+            for (const toolName of tools) {
+                const name = String(toolName || '').trim();
+                if (!name || !pluginTools.has(name)) continue;
+                if (!refs.has(name)) refs.set(name, new Set());
+                if (slug) refs.get(name).add(slug);
+            }
+        };
+
+        for (const agent of clientAgents || []) addAgent(agent);
+        for (const agent of context?.agent_ctx?.available_agents || []) addAgent(agent);
+        for (const agent of context?.available_agents || []) addAgent(agent);
+        if (context?.sub_agent) addAgent(context.sub_agent);
+        return refs;
+    }
+
+    /**
+     * Plugin tool schemas scoped to sub-agents that declare those tools.
+     * This keeps plugin tools out of the primary model's direct tool surface
+     * while still giving delegated/custom/plugin agents the schemas they need.
+     *
+     * @returns {Array<{name: string, description: string, input_schema: object, source_scope: string, plugin_name: string|null, allowed_agents: string[]}>}
+     */
+    _getClientAgentToolSchemas(context = {}, clientAgents = []) {
+        const pluginTools = this._getPluginToolMap();
+        if (!pluginTools.size) return [];
+        const refs = this._collectAgentScopedToolRefs(context, clientAgents);
+        return [...refs.entries()].map(([name, allowedAgents]) => {
+            const tool = pluginTools.get(name) || {};
+            return {
+                name,
+                description: tool.description || '',
+                input_schema: tool.input_schema || { type: 'object', properties: {} },
+                source_scope: 'plugin',
+                plugin_name: tool._plugin_name || tool.plugin_name || null,
+                allowed_agents: [...allowedAgents],
+            };
+        });
     }
 
     /**
@@ -209,13 +261,30 @@ export class BahulamStreamClient {
      */
     _getPluginAgentSchemas() {
         if (!this.pluginRegistry) return [];
-        return this.pluginRegistry.listAgents().map(a => ({
-            slug: a.slug || a.name || '',
-            name: a.name || a.slug || '',
-            role: a.role || 'specialist',
-            description: a.description || '',
-            tools: Array.isArray(a.tools) ? a.tools : [],
-        }));
+        // Only plugin agents admitted to the main-loop registry (settings
+        // plugins.agent_allowlist, or the session plugin in workspace-channel
+        // executors) are advertised. Workspace-scoped plugin agents stay out
+        // of the main-turn payload; without an executor registry, fall back
+        // to advertising everything (legacy behavior).
+        const runnables = this.toolExecutor?.listRunnables?.();
+        const admitted = Array.isArray(runnables)
+            ? new Set(runnables.filter(a => a.source_scope === 'plugin').map(a => a.slug))
+            : null;
+        return this.pluginRegistry.listAgents()
+            .filter(a => !admitted || admitted.has(a.slug || a.name || ''))
+            .map(a => ({
+                slug: a.slug || a.name || '',
+                name: a.name || a.slug || '',
+                role: a.role || 'specialist',
+                description: a.description || '',
+                tools: Array.isArray(a.tools) ? a.tools : [],
+                system_prompt: a.system_prompt || a.systemPrompt || a.prompt || '',
+                model: a.model || null,
+                models: a.models || null,
+                source: a.source || (a._plugin_name ? `plugin:${a._plugin_name}` : 'plugin'),
+                source_scope: 'plugin',
+                plugin_name: a._plugin_name || null,
+            }));
     }
 
     /**
@@ -297,6 +366,8 @@ export class BahulamStreamClient {
         if (clientTools.length > 0) body.client_tools = clientTools;
         const clientAgents = this._getPluginAgentSchemas();
         if (clientAgents.length > 0) body.client_agents = clientAgents;
+        const clientAgentTools = this._getClientAgentToolSchemas(context, clientAgents);
+        if (clientAgentTools.length > 0) body.client_agent_tools = clientAgentTools;
         const requestId = `cli-${_uuidLike()}`;
 
         // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
@@ -823,6 +894,9 @@ export class BahulamStreamClient {
         try {
             result = await this.toolExecutor.execute(toolName, args || {}, {
                 signal: this._toolAbort?.signal,
+                toolCallSource: 'model',
+                internal: isInternal,
+                subAgent: data?.sub_agent || null,
             });
         } catch (err) {
             if (err?.name === 'AbortError' || this._cancelled) {

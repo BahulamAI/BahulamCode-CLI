@@ -58,9 +58,12 @@ export const AgentTool = {
     _backgroundAgents: new Map(),
     _nextBgId: 0,
 
-    async call(input) {
+    async call(input, options = {}) {
         const model = input.model || process.env.SUBAGENT_MODEL || 'claude-sonnet-4-6';
-        const tools = createToolRegistry();
+        const tools = createToolRegistry({
+            pluginRegistry: options.pluginRegistry || null,
+            stateEmit: options.stateEmit || null,
+        });
         const permissions = createPermissionChecker({ defaultMode: 'bypassPermissions' });
 
         // Build type-specific system prompt prefix

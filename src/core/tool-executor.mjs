@@ -23,6 +23,8 @@ import { detectImageFile } from './attachments.mjs';
 import { streamResponse } from './streaming.mjs';
 import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
+import { loadBahulamSettings } from '../config/settings-loader.mjs';
+import { BUILTIN_AGENTS } from '../terminal/agents.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
@@ -57,6 +59,12 @@ export function createToolExecutor({
     // REPL/headless callers leave this null — state still works, just
     // no reactive pulse.
     stateEmit = null,
+    // Execution channel. 'main' (REPL/headless/CLI): plugin agents are
+    // workspace-scoped and excluded from listings and the agent-context
+    // envelope unless allowlisted in settings plugins.agent_allowlist.
+    // 'workspace' (plugin workspace sessions via agent-relay): the
+    // session plugin's agents are fully available.
+    channel = 'main',
 } = {}) {
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
@@ -87,7 +95,7 @@ export function createToolExecutor({
         _memoryCache = { key, facts, digest };
         return _memoryCache;
     }
-    const occRegistry = createToolRegistry();
+    const occRegistry = createToolRegistry({ pluginRegistry, stateEmit });
     const skillTool = occRegistry.get('Skill');
     if (skillTool) skillTool._skillsLoader = skillsLoader;
     const installer = skillInstaller || new SkillInstaller({
@@ -252,6 +260,7 @@ export function createToolExecutor({
             source_scope: agent.source_scope || 'unknown',
             source: agent.source || '',
             content_hash: agent.content_hash || '',
+            runnable: agent.runnable !== false,
         };
     }
 
@@ -306,24 +315,84 @@ export function createToolExecutor({
             .filter(agent => agent.slug);
     }
 
-    function listAvailableAgents() {
+    // Plugin agents are workspace-scoped entities. They enter the
+    // main-loop registry only via an explicit settings allowlist.
+    function pluginAgentAllowlist() {
+        try {
+            const { settings } = loadBahulamSettings({ cwd: process.cwd() });
+            const list = settings?.plugins?.agent_allowlist;
+            return Array.isArray(list) ? list.map(item => String(item)) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    const BUILTIN_RUNNABLES = BUILTIN_AGENTS.map(def => ({
+        slug: def.command,
+        name: def.name,
+        description: def.description || '',
+        role: 'builtin',
+        model: null,
+        models: undefined,
+        tools: [],
+        capabilities: [],
+        domains: [],
+        source_scope: 'builtin',
+        source: 'builtin',
+        content_hash: '',
+        read_only: Boolean(def.readOnly),
+        runnable: true,
+    }));
+
+    // The deterministic sub-agent registry. Resolution precedence:
+    // project agent → global agent → builtin → allowlisted plugin agent.
+    // In workspace-channel executors the session plugin's agents are
+    // runnable without an allowlist entry.
+    function listRunnables() {
         const bySlug = new Map();
         for (const agent of listLocalAgents(process.cwd())) {
-            if (agent.slug && !bySlug.has(agent.slug)) bySlug.set(agent.slug, agent);
+            if (agent.slug && !bySlug.has(agent.slug)) {
+                bySlug.set(agent.slug, { ...agent, runnable: true });
+            }
         }
+        for (const builtin of BUILTIN_RUNNABLES) {
+            if (!bySlug.has(builtin.slug)) bySlug.set(builtin.slug, builtin);
+        }
+        const allowlist = new Set(pluginAgentAllowlist());
         for (const agent of listPluginAgents()) {
-            if (agent.slug && !bySlug.has(agent.slug)) bySlug.set(agent.slug, agent);
+            if (!agent.slug || bySlug.has(agent.slug)) continue;
+            if (channel === 'workspace' || allowlist.has(agent.slug)) {
+                bySlug.set(agent.slug, { ...agent, runnable: true });
+            }
         }
         return [...bySlug.values()];
     }
 
+    // Installed plugin agents NOT admitted to the main-loop registry —
+    // still discoverable (scope:'plugin') but flagged not runnable.
+    function listWorkspaceScopedPluginAgents() {
+        const runnableSlugs = new Set(listRunnables().map(agent => agent.slug));
+        return listPluginAgents()
+            .filter(agent => agent.slug && !runnableSlugs.has(agent.slug))
+            .map(agent => ({ ...agent, runnable: false }));
+    }
+
+    // Agent-context envelope population: the runnable registry minus
+    // builtins (the backend has its own delegation vocabulary for those;
+    // adding them to available_agents would change wire behavior).
+    function listAvailableAgents() {
+        return listRunnables().filter(agent => agent.source_scope !== 'builtin');
+    }
+
     function filterLocalAgents(args = {}) {
         const scope = String(args.scope || '').trim();
-        if (scope && !['project', 'global', 'plugin'].includes(scope)) {
-            throw new Error('scope must be "project", "global", or "plugin"');
+        if (scope && !['project', 'global', 'plugin', 'builtin'].includes(scope)) {
+            throw new Error('scope must be "project", "global", "plugin", or "builtin"');
         }
-        const combined = listAvailableAgents()
-            .filter(agent => !scope || agent.source_scope === scope);
+        const pool = scope === 'plugin'
+            ? [...listRunnables(), ...listWorkspaceScopedPluginAgents()]
+            : listRunnables();
+        const combined = pool.filter(agent => !scope || agent.source_scope === scope);
         return combined.filter(agent => agentMatches(agent, args.query || args.name || ''));
     }
 
@@ -694,13 +763,14 @@ export function createToolExecutor({
     // They are dispatched with lower priority (built-in tools win on name collision).
     const pluginToolMap = new Map(); // name → async handler function
 
-    function registerPluginTool(name, handler) {
+    function registerPluginTool(name, handler, metadata = {}) {
         if (pluginToolMap.has(name)) {
             if (process.env.DEBUG) {
                 console.warn(`Plugin tool "${name}" already registered from another plugin — skipping.`);
             }
             return false;
         }
+        handler._pluginTool = metadata;
         pluginToolMap.set(name, handler);
         return true;
     }
@@ -735,7 +805,7 @@ export function createToolExecutor({
             }
             return false;
         }
-        pluginToolMap.set(qualified, async (args, options = {}) => {
+        const mcpHandler = async (args, options = {}) => {
             // The lazy-state getter matches JS plugin tools so an MCP
             // "wrapper" tool can trivially write its result to the same
             // Shared Blackboard (rare, but useful for cache-and-return).
@@ -765,7 +835,9 @@ export function createToolExecutor({
                     _mcp_server: serverName,
                 };
             }
-        });
+        };
+        mcpHandler._pluginTool = { pluginName, source: 'mcp', serverName, toolName };
+        pluginToolMap.set(qualified, mcpHandler);
         // Track schema for tool-listing surfaces (also help /tools discovery).
         pluginToolMap.get(qualified)._mcp = { pluginName, serverName, toolName, schema: toolSchema };
         return true;
@@ -826,8 +898,40 @@ export function createToolExecutor({
                         _plugin: pluginName,
                     };
                 }
-            });
+            }, { pluginName, source: 'plugin' });
         }
+    }
+
+    function pluginAgentForTool(toolName, pluginName) {
+        if (!pluginRegistry) return null;
+        return (pluginRegistry.listAgents?.() || []).find(agent => {
+            const agentPlugin = agent._plugin_name
+                || String(agent.source || '').replace(/^plugin:/, '')
+                || null;
+            if (pluginName && agentPlugin && agentPlugin !== pluginName) return false;
+            return Array.isArray(agent.tools) && agent.tools.includes(toolName);
+        }) || null;
+    }
+
+    function primaryModelPluginToolBlock(name, handler, options = {}) {
+        if (!handler?._pluginTool) return null;
+        if (options.toolCallSource !== 'model') return null;
+        if (options.internal || options.subAgent || options.allowPrimaryPluginToolCall) return null;
+
+        const pluginName = handler._pluginTool.pluginName || 'plugin';
+        const agent = pluginAgentForTool(name, pluginName);
+        const delegateHint = agent?.slug
+            ? `Delegate to the '${agent.slug}' sub-agent instead, or run it explicitly with /run ${agent.slug} "...".`
+            : `Delegate to the plugin's sub-agent instead, or run the plugin agent explicitly.`;
+        return {
+            success: false,
+            output: `Plugin tool '${name}' is scoped to plugin '${pluginName}' and should not be called directly by the primary agent. ${delegateHint}`,
+            _tool: name,
+            _plugin: pluginName,
+            _blocked: true,
+            _requires_agent_delegation: true,
+            _agent: agent?.slug || null,
+        };
     }
 
     async function executeToolWithHooks(name, args, options = {}) {
@@ -835,6 +939,8 @@ export function createToolExecutor({
         if (!handler) {
             return { success: false, output: `Unknown tool: ${name}`, _tool: name };
         }
+        const pluginToolBlock = primaryModelPluginToolBlock(name, handler, options);
+        if (pluginToolBlock) return pluginToolBlock;
         const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
         try {
             throwIfAborted(options.signal);
@@ -2121,6 +2227,9 @@ export function createToolExecutor({
         agents_list: async (args = {}) => {
             const agents = filterLocalAgents(args).map(compactAgentMetadata);
             const payload = { agents, count: agents.length };
+            if (agents.some(agent => agent.runnable === false)) {
+                payload.note = 'Agents with runnable:false are workspace-scoped plugin agents; add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
+            }
             return {
                 success: true,
                 output: JSON.stringify(payload, null, 2),
@@ -2579,6 +2688,8 @@ export function createToolExecutor({
             }
             return results;
         },
+
+        listRunnables,
 
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();
