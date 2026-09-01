@@ -164,6 +164,31 @@ export class PluginRegistry {
   }
 
   /**
+   * List every plugin-declared MCP server across the registry.
+   *
+   * Each entry is [{plugin, name, config}] where `config` is a
+   * Claude-Desktop-compatible object (command/args/env or url/headers).
+   * Consumers spawn one McpClient per entry at session start; the
+   * server's tools are then namespaced as `<name>.<tool>` in the
+   * tool executor so two plugins can ship servers with the same tool
+   * name without collision.
+   * @returns {{plugin: string, name: string, config: object}[]}
+   */
+  listMcpServers() {
+    const out = [];
+    for (const plugin of this.plugins.values()) {
+      const servers = plugin.spec?.mcpServers || {};
+      const pluginName = plugin.metadata?.name || '';
+      for (const [name, config] of Object.entries(servers)) {
+        if (config && typeof config === 'object') {
+          out.push({ plugin: pluginName, name, config });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * List all agents from all plugins.
    * @returns {object[]}
    */

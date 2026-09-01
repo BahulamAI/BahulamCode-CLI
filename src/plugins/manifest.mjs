@@ -176,6 +176,16 @@ export function normalizeManifest(raw, source = '') {
     workspace.views = [];
   }
 
+  // Normalize MCP servers — the Plugin=MCP+UX story. Two sources are
+  // merged so authors can either:
+  //   (a) declare mcpServers: {} inline in plugin.yaml (Bahulam-native)
+  //   (b) drop a sibling mcp.json in Claude-Desktop format (portable —
+  //       any config that works in Claude Desktop / Cursor / Cline
+  //       transfers with zero edits)
+  // Inline wins on name collision so authors can override a portable
+  // config for the local plugin without editing mcp.json.
+  const mcpServers = _readMcpServers(spec.mcpServers, source);
+
   return {
     apiVersion,
     kind: raw.kind || 'Plugin',
@@ -190,9 +200,57 @@ export function normalizeManifest(raw, source = '') {
       tools,
       agents,
       workspace,
+      mcpServers,
     },
     source,
     _dir: source ? path.dirname(source) : '',
+  };
+}
+
+/**
+ * Merge inline `mcpServers:` from plugin.yaml with a sibling mcp.json.
+ * Both should be dicts of `{<name>: {command|url, args?, env?, headers?}}`
+ * following the Claude Desktop convention. Returns `{}` when neither is
+ * present so callers can iterate without a nullability check.
+ * @param {object|null|undefined} inline
+ * @param {string} manifestPath  used to locate mcp.json next to it
+ * @returns {Object<string, object>}
+ */
+function _readMcpServers(inline, manifestPath) {
+  const merged = {};
+  // Sibling mcp.json first — inline overrides on name collision.
+  if (manifestPath) {
+    const jsonPath = path.join(path.dirname(manifestPath), 'mcp.json');
+    if (fs.existsSync(jsonPath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+        const servers = raw?.mcpServers || raw?.mcp_servers || raw || {};
+        if (servers && typeof servers === 'object') {
+          for (const [name, cfg] of Object.entries(servers)) {
+            if (cfg && typeof cfg === 'object') merged[name] = _normalizeMcpServer(cfg);
+          }
+        }
+      } catch (err) {
+        if (process.env.DEBUG) console.error(`Failed to read ${jsonPath}: ${err.message}`);
+      }
+    }
+  }
+  if (inline && typeof inline === 'object') {
+    for (const [name, cfg] of Object.entries(inline)) {
+      if (cfg && typeof cfg === 'object') merged[name] = _normalizeMcpServer(cfg);
+    }
+  }
+  return merged;
+}
+
+function _normalizeMcpServer(cfg) {
+  return {
+    command: cfg.command || undefined,
+    args: Array.isArray(cfg.args) ? cfg.args : undefined,
+    env: cfg.env && typeof cfg.env === 'object' ? cfg.env : undefined,
+    url: cfg.url || undefined,
+    headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : undefined,
+    transport: cfg.transport || undefined,
   };
 }
 

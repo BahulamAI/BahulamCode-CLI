@@ -454,6 +454,51 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  // Shared-blackboard direct-access API for plugin views. The tool
+  // executor already injects `options.state` for agent-driven writes;
+  // this endpoint gives browser-side views the same surface so a human
+  // clicking a button hits the exact same store the agent uses.
+  //
+  // POST /api/plugin-state/<plugin>  body: {op, ...args}
+  //   ops: get|set|patch|append|list|keys|delete|query
+  //
+  // Writes emit a `plugin_state_changed` SSE event on the shared bus,
+  // so any view watching /api/events re-renders live.
+  const pluginStateMatch = req.method === 'POST'
+    ? url.pathname.match(/^\/api\/plugin-state\/([^/]+)$/)
+    : null;
+  if (pluginStateMatch) {
+    const pluginName = decodeURIComponent(pluginStateMatch[1]);
+    // Scope guard: `bahulam plugin <name>` sessions are pinned to one
+    // plugin. Refuse cross-plugin state access so a hostile view can't
+    // read another plugin's DB via a hand-crafted URL.
+    const scoped = session?.plugin?.name;
+    if (scoped && String(scoped).toLowerCase() !== pluginName.toLowerCase()) {
+      sendJson(res, 403, { ok: false, error: 'plugin_scope_mismatch' });
+      return;
+    }
+    if (!getPluginDirs(session).has(pluginName)) {
+      sendJson(res, 404, { ok: false, error: 'plugin_not_found' });
+      return;
+    }
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (err) { sendJson(res, 400, { ok: false, error: 'bad_body', message: err.message }); return; }
+    const op = String(body.op || '').trim();
+    if (!op) { sendJson(res, 400, { ok: false, error: 'op_required' }); return; }
+    try {
+      const { makePluginState } = await import('../plugins/state.mjs');
+      const state = makePluginState(pluginName, {
+        emit: (evt) => { try { emit('plugin_state_changed', evt); } catch { /* ignore */ } },
+      });
+      const result = runStateOp(state, op, body);
+      sendJson(res, 200, { ok: true, result });
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: 'state_op_failed', message: err.message });
+    }
+    return;
+  }
+
   const pluginViewMatch = req.method === 'GET'
     ? url.pathname.match(/^\/plugin-view\/([^/]+)\/(.+)$/)
     : null;
@@ -526,6 +571,25 @@ function scanPlugins(session) {
 }
 function getPluginViews(session) { return scanPlugins(session).views; }
 function getPluginDirs(session) { return scanPlugins(session).dirs; }
+
+/**
+ * Dispatch a POST /api/plugin-state op onto the plugin's state proxy.
+ * Kept as a plain switch so failures are per-op and the router surfaces
+ * a clean 500 with the offending op name rather than a stack trace.
+ */
+function runStateOp(state, op, body) {
+  switch (op) {
+    case 'get':    return state.get(body.key, body.fallback ?? null);
+    case 'set':    return state.set(body.key, body.value);
+    case 'patch':  return state.patch(body.key, body.partial ?? body.value);
+    case 'delete': return state.delete(body.key);
+    case 'keys':   return state.keys();
+    case 'append': return state.append(body.stream, body.payload);
+    case 'list':   return state.list(body.stream, { limit: body.limit, order: body.order });
+    case 'query':  return state.query(body.sql, body.params || []);
+    default:       throw new Error(`unknown state op: ${op}`);
+  }
+}
 
 // Real mime types for plugin views — unlike contentTypeForPath (file
 // viewer), views MUST execute, so html/css/js keep their native types.

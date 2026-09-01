@@ -51,6 +51,12 @@ export function createToolExecutor({
     onAutoRegisterStart = null,
     onAutoRegisterDone = null,
     pluginRegistry = null,
+    // Optional emit hook: called (debounced per key) after any plugin
+    // state write commits. Wired by the workspace server so writes turn
+    // into SSE `plugin_state_changed` events for live view updates.
+    // REPL/headless callers leave this null — state still works, just
+    // no reactive pulse.
+    stateEmit = null,
 } = {}) {
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
@@ -699,11 +705,78 @@ export function createToolExecutor({
         return true;
     }
 
+    // Per-plugin state handles are opened lazily on first tool call and
+    // cached process-wide. `makePluginState` itself dedupes on plugin
+    // name, so this Map only exists to avoid re-attaching stateEmit on
+    // every registered tool.
+    const _pluginStateHandles = new Map(); // pluginName -> state proxy
+    async function _pluginStateFor(pluginName) {
+        if (!pluginName) return null;
+        if (_pluginStateHandles.has(pluginName)) return _pluginStateHandles.get(pluginName);
+        const { makePluginState } = await import('../plugins/state.mjs');
+        const state = makePluginState(pluginName, { emit: stateEmit });
+        _pluginStateHandles.set(pluginName, state);
+        return state;
+    }
+
+    /**
+     * Register one MCP tool under `<serverName>.<toolName>` (namespaced
+     * to prevent collisions between plugins that ship servers with the
+     * same tool name). The MCP client is owned by the caller (agent-
+     * relay) which spawns/tears it down with the workspace lifetime.
+     * Handler receives the same options shape as JS plugin tools so
+     * `state`, `signal`, `pluginName` all work uniformly.
+     */
+    function registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema = {}) {
+        const qualified = `${serverName}.${toolName}`;
+        if (toolMap[qualified] || pluginToolMap.has(qualified)) {
+            if (process.env.DEBUG) {
+                console.warn(`MCP tool "${qualified}" from plugin "${pluginName}" collides with an existing tool — skipping.`);
+            }
+            return false;
+        }
+        pluginToolMap.set(qualified, async (args, options = {}) => {
+            // The lazy-state getter matches JS plugin tools so an MCP
+            // "wrapper" tool can trivially write its result to the same
+            // Shared Blackboard (rare, but useful for cache-and-return).
+            const handlerOpts = {
+                ...options,
+                pluginName,
+                mcpServer: serverName,
+                get state() {
+                    if (this._stateP) return this._stateP;
+                    this._stateP = _pluginStateFor(pluginName);
+                    return this._stateP;
+                },
+            };
+            try {
+                const result = await mcpClient.callTool(toolName, args || {});
+                // callTool returns joined text for text/* content; pass through as output.
+                const output = typeof result === 'string' ? result : (result?.output ?? result);
+                // Allow the caller (state-writer wrapper) to introspect via handlerOpts.
+                void handlerOpts;
+                return { success: true, output, _tool: qualified, _plugin: pluginName, _mcp_server: serverName };
+            } catch (err) {
+                return {
+                    success: false,
+                    output: `MCP tool error (${qualified}): ${err.message}`,
+                    _tool: qualified,
+                    _plugin: pluginName,
+                    _mcp_server: serverName,
+                };
+            }
+        });
+        // Track schema for tool-listing surfaces (also help /tools discovery).
+        pluginToolMap.get(qualified)._mcp = { pluginName, serverName, toolName, schema: toolSchema };
+        return true;
+    }
+
     function registerPluginToolsFromRegistry() {
         if (!pluginRegistry) return;
         for (const toolDef of pluginRegistry.listTools?.() || []) {
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
+            const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
             registerPluginTool(name, async (args, options = {}) => {
                 const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
                 if (!handler) {
@@ -711,30 +784,46 @@ export function createToolExecutor({
                         success: false,
                         output: `Plugin tool handler could not be loaded: ${name}`,
                         _tool: name,
-                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                        _plugin: pluginName,
                     };
                 }
+                // Shared-blackboard injection: handlers opt in by naming
+                // `state` in their signature (`async call(args, { state })`).
+                // The property is a getter so the SQLite file is only
+                // opened when a handler actually asks for it — plugins
+                // that never touch state pay zero disk / init cost.
+                const handlerOpts = {
+                    ...options,
+                    pluginName,
+                    get state() { /* eslint-disable no-unused-vars */
+                        // Sync getter fronting an async loader — first
+                        // access returns a Promise, which is unusual
+                        // for handler code but common enough as
+                        // `const s = await opts.state`. The awaited
+                        // value is cached on this options object so
+                        // repeat accesses in the same call don't re-await.
+                        if (this._stateP) return this._stateP;
+                        this._stateP = _pluginStateFor(pluginName);
+                        return this._stateP;
+                    },
+                };
                 try {
-                    const result = await handler.call(args || {}, options);
+                    const result = await handler.call(args || {}, handlerOpts);
                     if (result && typeof result === 'object' && 'success' in result) {
-                        return {
-                            ...result,
-                            _tool: name,
-                            _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
-                        };
+                        return { ...result, _tool: name, _plugin: pluginName };
                     }
                     return {
                         success: true,
                         output: typeof result === 'string' ? result : JSON.stringify(result),
                         _tool: name,
-                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                        _plugin: pluginName,
                     };
                 } catch (err) {
                     return {
                         success: false,
                         output: `Plugin tool error (${name}): ${err.message}`,
                         _tool: name,
-                        _plugin: toolDef._plugin_name || toolDef.plugin_name || null,
+                        _plugin: pluginName,
                     };
                 }
             });
@@ -2432,6 +2521,32 @@ export function createToolExecutor({
         /** List all available tool names. */
         listTools() {
             return [...Object.keys(toolMap), ...pluginToolMap.keys()];
+        },
+
+        /**
+         * Register one MCP-backed tool as `<serverName>.<toolName>`.
+         * Called by the workspace lifecycle after spawning per-plugin
+         * MCP clients. Returns true on success, false on name collision.
+         */
+        registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema) {
+            return registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema);
+        },
+
+        /**
+         * Unregister every MCP tool sourced from one server, called on
+         * plugin teardown / workspace close so subsequent sessions don't
+         * see stale `serverName.tool` entries.
+         */
+        unregisterMcpServer(pluginName, serverName) {
+            let removed = 0;
+            for (const [key, fn] of pluginToolMap) {
+                const meta = fn?._mcp;
+                if (meta && meta.pluginName === pluginName && meta.serverName === serverName) {
+                    pluginToolMap.delete(key);
+                    removed++;
+                }
+            }
+            return removed;
         },
 
         getProjectResources() {

@@ -62,6 +62,28 @@ function pluginScanDirsFromSession(session = {}) {
   return [...new Set(dirs.filter(Boolean))];
 }
 
+/**
+ * ${VAR} expansion for MCP server configs — args, env values, headers.
+ * Matches how the existing ~/.bahulam/config.json mcpServers block is
+ * handled so a plugin author with a working Claude Desktop MCP config
+ * gets the same env-var behavior after drop-in.
+ */
+function _expandEnvInMcpConfig(config) {
+  const sub = (v) => typeof v === 'string'
+    ? v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => process.env[name] ?? '')
+    : v;
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
+      return out;
+    }
+    return sub(v);
+  };
+  return walk(config);
+}
+
 export class LocalAgentRelay {
   constructor({ session, emit } = {}) {
     if (!session?.id) throw new Error('LocalAgentRelay requires a session');
@@ -378,6 +400,14 @@ export class LocalAgentRelay {
 
   async close() {
     this.approvalManager?.rejectAll?.();
+    // Tear down plugin-owned MCP clients — the executor's registered
+    // <server>.<tool> entries are removed here so a rerun in the same
+    // process picks up any manifest edits cleanly.
+    for (const { plugin, name, client } of (this._mcpClients || [])) {
+      try { this.toolExecutor?.unregisterMcpServer?.(plugin, name); } catch { /* ignore */ }
+      try { await client.disconnect(); } catch { /* ignore */ }
+    }
+    this._mcpClients = [];
     try {
       await this.jsonlWriter?.close?.();
     } catch {}
@@ -578,9 +608,52 @@ export class LocalAgentRelay {
     });
     pluginRegistry.scan();
 
-    const toolExecutor = createToolExecutor({ pluginRegistry });
+    // Reactive pulse: every plugin state write bubbles up here and lands
+    // on the shared SSE bus as `plugin_state_changed`. Views subscribed
+    // to /api/events re-render as the agent works — the Shared
+    // Blackboard's live-update moment. `this.emit` is the same event
+    // sink server.mjs uses for tool_call / tool_done / agent events.
+    const stateEmit = (evt) => {
+      try { this.emit('plugin_state_changed', evt); }
+      catch { /* never let SSE failure break a tool call */ }
+    };
+    const toolExecutor = createToolExecutor({ pluginRegistry, stateEmit });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
+
+    // Plugin=MCP+UX: every plugin can declare mcpServers in its
+    // plugin.yaml (or a sibling mcp.json). Spawn each, discover its
+    // tools, and register them as `<server>.<tool>` in the shared
+    // executor. Failure of one server never blocks the workspace —
+    // its tools drop out, everything else keeps running.
+    this._mcpClients = [];   // {plugin, name, client} — for teardown on close()
+    for (const entry of pluginRegistry.listMcpServers?.() || []) {
+      try {
+        const { McpClient } = await import('../mcp/client.mjs');
+        const client = new McpClient(_expandEnvInMcpConfig(entry.config));
+        await client.connect();
+        const tools = await client.listTools();
+        let registered = 0;
+        for (const t of tools) {
+          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema)) {
+            registered++;
+          }
+        }
+        this._mcpClients.push({ plugin: entry.plugin, name: entry.name, client });
+        this.emit('plugin_mcp_ready', {
+          plugin: entry.plugin,
+          server: entry.name,
+          tools: registered,
+        });
+      } catch (err) {
+        // Never fatal: the plugin's JS tools + views still work.
+        this.emit('plugin_mcp_failed', {
+          plugin: entry.plugin,
+          server: entry.name,
+          error: String(err.message || err),
+        });
+      }
+    }
 
     const approval = new BrowserApprovalManager({
       emit: this.emit,

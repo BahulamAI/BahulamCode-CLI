@@ -84,6 +84,22 @@ export async function preflightPlugin(pluginDir, opts = {}) {
   const tools = manifest.spec?.tools || [];
   const agents = manifest.spec?.agents || [];
   const views = manifest.spec?.workspace?.views || [];
+  const mcpServers = manifest.spec?.mcpServers || {};
+  const mcpServerNames = new Set(Object.keys(mcpServers));
+
+  // MCP server sanity — every server should have EITHER command (stdio)
+  // OR url (remote). Anything else is meaningless config.
+  for (const [name, cfg] of Object.entries(mcpServers)) {
+    if (!cfg.command && !cfg.url) {
+      errors.push(`MCP server "${name}": needs either "command" (stdio) or "url" (remote)`);
+    }
+    if (cfg.command && cfg.url) {
+      warnings.push(`MCP server "${name}": has both command and url — command wins, url is ignored`);
+    }
+    if (cfg.args && !Array.isArray(cfg.args)) {
+      errors.push(`MCP server "${name}": args must be an array`);
+    }
+  }
 
   // 2 + 3 + 4. Tool checks
   const toolNames = new Set();
@@ -144,6 +160,17 @@ export async function preflightPlugin(pluginDir, opts = {}) {
 
     for (const toolRef of (agent.tools || [])) {
       if (typeof toolRef !== 'string' || !toolRef.trim()) continue;
+      // MCP tools appear as `<server>.<tool>`. We can't spawn the
+      // server at preflight time (would need network/subprocess), so
+      // we only check that the <server> half is declared under this
+      // plugin's mcpServers. The <tool> half is discovered live.
+      if (toolRef.includes('.')) {
+        const serverName = toolRef.split('.', 1)[0];
+        if (!mcpServerNames.has(serverName)) {
+          errors.push(`Agent "${slug}": tool "${toolRef}" references MCP server "${serverName}" which is not declared in mcpServers`);
+        }
+        continue;
+      }
       if (!toolNames.has(toolRef) && !RESERVED_TOOL_NAMES.has(toolRef)) {
         errors.push(`Agent "${slug}": tool "${toolRef}" is not defined by this plugin and is not a built-in`);
       }

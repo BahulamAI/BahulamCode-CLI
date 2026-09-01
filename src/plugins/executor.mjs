@@ -7,6 +7,7 @@
 
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'path';
+import { makePluginState } from './state.mjs';
 
 /**
  * Load a plugin tool handler by resolving its path relative to the plugin directory.
@@ -53,10 +54,23 @@ export async function loadPluginTool(pluginDir, handlerPath) {
  * @param {object} manifest - Normalized plugin manifest
  * @returns {Promise<{ execute(name, args): Promise<object>, list(): string[] }>}
  */
-export async function createPluginToolExecutor(manifest) {
+/**
+ * Create a plugin tool executor for a given plugin directory.
+ * Loads all tool handlers and returns an execute function.
+ *
+ * @param {object} manifest - Normalized plugin manifest
+ * @param {object} [opts]
+ * @param {(evt: {plugin: string, op: string, kind: string, target: string, at: string}) => void} [opts.stateEmit]
+ *   Called (debounced) after every state write commits. The workspace
+ *   server threads this in so state changes turn into SSE events for
+ *   live view updates — the Shared Blackboard's reactive pulse.
+ * @returns {Promise<{ execute(name, args): Promise<object>, list(): string[], state: object|null }>}
+ */
+export async function createPluginToolExecutor(manifest, opts = {}) {
   const pluginDir = manifest._dir || '';
   const tools = manifest.spec?.tools || [];
   const handlers = new Map(); // name → { handler, toolDef }
+  const pluginName = manifest.metadata?.name || '';
 
   for (const toolDef of tools) {
     if (!toolDef.handler) continue;
@@ -66,21 +80,42 @@ export async function createPluginToolExecutor(manifest) {
     }
   }
 
+  // One state instance per plugin, opened lazily so plugins that never
+  // touch state don't create empty ~/.bahulam/data/<name> directories.
+  let _state = null;
+  function getState() {
+    if (!pluginName) return null; // no name → no isolation → refuse state
+    if (_state) return _state;
+    _state = makePluginState(pluginName, { emit: opts.stateEmit || null });
+    return _state;
+  }
+
   return {
     execute: async (name, args, options = {}) => {
       const entry = handlers.get(name);
       if (!entry) {
         return { success: false, output: `Plugin tool not found: ${name}` };
       }
+      // Inject the shared-blackboard handle. Handlers opt in by naming
+      // it in their signature: `async call(args, { state })`. The
+      // getter defers opening the SQLite file until the first access,
+      // so handlers that don't use state pay no cost.
+      const handlerOpts = {
+        ...options,
+        get state() { return getState(); },
+        pluginName,
+      };
       try {
-        const result = await entry.handler.call(args || {}, options);
+        const result = await entry.handler.call(args || {}, handlerOpts);
         return result?.success !== false
-          ? { success: true, output: result?.output ?? result, _tool: name, _plugin: manifest.metadata?.name }
-          : { success: false, output: result?.output ?? String(result), _tool: name, _plugin: manifest.metadata?.name };
+          ? { success: true, output: result?.output ?? result, _tool: name, _plugin: pluginName }
+          : { success: false, output: result?.output ?? String(result), _tool: name, _plugin: pluginName };
       } catch (err) {
-        return { success: false, output: `Plugin tool error (${name}): ${err.message}`, _tool: name, _plugin: manifest.metadata?.name };
+        return { success: false, output: `Plugin tool error (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
       }
     },
     list: () => [...handlers.keys()],
+    /** Get (or open) the plugin's state handle — used by the view API. */
+    get state() { return getState(); },
   };
 }
