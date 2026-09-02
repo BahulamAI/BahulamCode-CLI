@@ -206,6 +206,7 @@ export async function installFromGit({ url, targetDir, name, ref, subdir, force 
     await run('git', ['clone', '--depth', '1', ...(ref ? ['--branch', ref] : []), url, dest]);
   }
   writeStamp(dest, { origin: { kind: 'git', url, ref: ref || null, subdir: subdir || null } });
+  await installPackNpmDeps(dest, name);
   return dest;
 }
 
@@ -226,10 +227,53 @@ export async function installFromTarball({ url, targetDir, name, force }) {
   else await run('tar', ['-xzf', tmp, '-C', dest, '--strip-components=1']);
   fs.unlinkSync(tmp);
   writeStamp(dest, { origin: { kind: 'tarball', url } });
+  await installPackNpmDeps(dest, guessed);
   return dest;
 }
 
-export async function installFromPi({ packageName, versionRange, force }) {
+// Materialize a hand-authored pack's node_modules/ after clone/copy/extract.
+// Shared by installFromGit / installFromTarball / installFromLocal so a pack
+// with `package.json::dependencies` doesn't need `cd ~/.bahulam/plugins/x && npm install`.
+async function installPackNpmDeps(packDir, displayName = null) {
+  const pkgPath = path.join(packDir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    const { installPackageDependencies } = await import('../plugins/npm-install.mjs');
+    await installPackageDependencies({
+      dir: packDir,
+      packageName: displayName || path.basename(packDir),
+      kind: 'pack',
+      forceScripts: false,  // hand-authored packs default to --ignore-scripts
+    });
+  }
+  // Requirements preflight for the pack itself. Walks the pack's own
+  // source (tools/*.mjs etc.) to surface system binaries the pack shells
+  // out to and env vars it reads. Same analyzer that pi ingredients use.
+  await surfacePackRequirements(packDir, displayName);
+}
+
+async function surfacePackRequirements(packDir, displayName = null) {
+  try {
+    const { analyzeRequirements, formatRequirementsReport } =
+      await import('../plugins/pi-compat/requirements.mjs');
+    const reqs = analyzeRequirements(packDir);
+    if (!reqs || (!reqs.system_binaries.length && !reqs.env_vars.length && !reqs.readme_sections.length && !reqs.skills_available.length)) {
+      return; // Nothing worth telling the user about.
+    }
+    const lines = formatRequirementsReport(reqs, { verbose: false });
+    for (const l of lines) {
+      const icon = l.level === 'warn' ? `${YELLOW}!${RESET}` : l.level === 'ok' ? `${GREEN}✓${RESET}` : `${DIM}·${RESET}`;
+      process.stderr.write(`  ${icon} ${l.text}\n`);
+    }
+    if (reqs.system_binaries?.length) {
+      const name = displayName || path.basename(packDir);
+      process.stderr.write(`  ${DIM}run${RESET}  ${CYAN}bahulam plugin doctor ${name}${RESET} ${DIM}to check your environment${RESET}\n`);
+    }
+  } catch (err) {
+    if (process.env.DEBUG) process.stderr.write(`  ${DIM}requirements analyzer skipped: ${err.message}${RESET}\n`);
+  }
+}
+
+export async function installFromPi({ packageName, versionRange, force, forceScripts = false }) {
   // Pi packages live in ~/.bahulam/plugins-pi/ (or $BAHULAM_HOME/plugins-pi/)
   // so `bahulam plugin list` doesn't confuse them with our own packs. The
   // tool executor reads from the same canonical path via bahulamHome().
@@ -255,31 +299,17 @@ export async function installFromPi({ packageName, versionRange, force }) {
     if (!tarballs.length) throw new Error(`npm pack produced no tarball for ${spec}`);
     await run('tar', ['-xzf', path.join(tmp, tarballs[0]), '-C', dest, '--strip-components=1']);
 
-    // Pi packages typically declare their runtime deps under
-    // `peerDependencies` (assuming pi will provide them). We're the host
-    // now, so materialize those. Two steps because npm arborist crashes
-    // when peerDependencies use `*` versions during install:
-    //   1. Rewrite package.json to move peers into dependencies (resolved
-    //      version), and drop the peers block so the resolver stops
-    //      reconciling.
-    //   2. `npm install` — the dependencies section is normal for npm.
-    const pkgPath = path.join(dest, 'package.json');
-    let pkgJson = {};
-    try { pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')); } catch { /* ignore */ }
-    const merged = { ...(pkgJson.dependencies || {}) };
-    for (const [name, range] of Object.entries(pkgJson.peerDependencies || {})) {
-      if (!merged[name]) merged[name] = range === '*' ? 'latest' : range;
-    }
-    if (Object.keys(merged).length) {
-      const rewritten = { ...pkgJson, dependencies: merged };
-      delete rewritten.peerDependencies;
-      fs.writeFileSync(pkgPath, JSON.stringify(rewritten, null, 2));
-      process.stderr.write(`  ${DIM}installing ${Object.keys(merged).length} pi runtime deps…${RESET}\n`);
-      await run('npm', ['install', '--no-audit', '--no-fund', '--legacy-peer-deps', '--silent'], {
-        cwd: dest,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    }
+    // Materialize node_modules for the ingredient. Handles pi's peer-dep
+    // quirk and gates postinstall scripts on the verified-package list
+    // (§13.6.1c of PRD-102) so unreviewed pi packages can't run arbitrary
+    // code at pull time.
+    const { installPackageDependencies } = await import('../plugins/npm-install.mjs');
+    await installPackageDependencies({
+      dir: dest,
+      packageName,
+      kind: 'pi',
+      forceScripts,
+    });
 
     // Read the resolved version so the stamp captures what we actually got.
     let resolvedVersion = null;
@@ -303,14 +333,35 @@ export async function installFromPi({ packageName, versionRange, force }) {
     // `cat` and lets executor invocations skip the first-run probe cost.
     // Best-effort: failure here is non-fatal (returns tools:[] until next
     // invocation retries) so a broken extension can still be diagnosed.
+    let discoveredShape = null;
     try {
       const { discoverPiTools } = await import('../plugins/pi-compat/probe.mjs');
-      const shape = await discoverPiTools(dest, { pluginName: packageName, force: true });
-      process.stderr.write(`  ${DIM}discovered${RESET}  ${(shape.tools || []).length} tool(s), ${(shape.commands || []).length} command(s)\n`);
+      discoveredShape = await discoverPiTools(dest, { pluginName: packageName, force: true });
+      process.stderr.write(`  ${DIM}discovered${RESET}  ${(discoveredShape.tools || []).length} tool(s), ${(discoveredShape.commands || []).length} command(s)\n`);
     } catch (probeErr) {
       process.stderr.write(`  ${YELLOW}!${RESET} Tool discovery failed: ${probeErr.message}\n`);
       process.stderr.write(`  ${DIM}The package installed but no tools were probed. Re-probe with:${RESET}\n`);
       process.stderr.write(`  ${DIM}  node -e "import('${path.resolve('src/plugins/pi-compat/probe.mjs')}').then(m => m.discoverPiTools('${dest}', { pluginName: '${packageName}', force: true }))"${RESET}\n`);
+    }
+
+    // Requirements preflight (§13.6.1i). Never blocks — this is a heads-up
+    // before the user commits to composing the ingredient. Findings land
+    // in <dest>/.bahulam-requirements.json for the scaffolder + doctor.
+    try {
+      const { analyzeRequirements, formatRequirementsReport } = await import('../plugins/pi-compat/requirements.mjs');
+      const reqs = analyzeRequirements(dest, { discoveredTools: discoveredShape });
+      const lines = formatRequirementsReport(reqs, { verbose: false });
+      for (const l of lines) {
+        const icon = l.level === 'warn' ? `${YELLOW}!${RESET}` : l.level === 'ok' ? `${GREEN}✓${RESET}` : `${DIM}·${RESET}`;
+        process.stderr.write(`  ${icon} ${l.text}\n`);
+      }
+      const missingBin = (reqs.system_binaries || []).length;
+      if (missingBin > 0) {
+        process.stderr.write(`  ${DIM}run${RESET}  ${CYAN}bahulam plugin doctor ${packageName}${RESET} ${DIM}to check your environment${RESET}\n`);
+      }
+    } catch (reqErr) {
+      // Non-fatal — analyzer is a nice-to-have.
+      if (process.env.DEBUG) process.stderr.write(`  ${DIM}requirements analyzer skipped: ${reqErr.message}${RESET}\n`);
     }
   } catch (err) {
     rmrf(dest);
@@ -330,8 +381,11 @@ export async function installFromLocal({ src, targetDir, force }) {
     rmrf(dest);
   }
   fs.mkdirSync(targetDir, { recursive: true });
-  fs.cpSync(src, dest, { recursive: true });
+  // Copy the pack but skip node_modules — we'll materialize fresh below
+  // (source's node_modules can be stale, platform-specific, or bloat).
+  fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== 'node_modules' });
   writeStamp(dest, { origin: { kind: 'local', path: src } });
+  await installPackNpmDeps(dest, name);
   return dest;
 }
 
@@ -621,6 +675,137 @@ async function cmdValidate(args, cwd) {
   if (!result.ok) process.exit(1);
 }
 
+// ── doctor ─────────────────────────────────────────────────────────
+//
+// Check that an installed pack's composed ingredients (pi:) have their
+// required system binaries and env vars present on the host. Exits non-
+// zero on missing required items (script-friendly for CI setup checks).
+
+async function cmdDoctor(args, cwd) {
+  const target = args.pluginName;
+  const { bahulamHome } = await import('../core/paths.mjs');
+  const { analyzeRequirements, formatRequirementsReport, checkRequirementsAgainstHost, REQUIREMENTS_FILE } =
+    await import('../plugins/pi-compat/requirements.mjs');
+  const piBaseDir = path.join(bahulamHome(), 'plugins-pi');
+
+  // Which ingredient dirs to check?
+  //   - `bahulam plugin doctor <pack-slug>` → all pi: composes referenced by that pack
+  //   - `bahulam plugin doctor pi:<name>` → that specific pi ingredient
+  //   - `bahulam plugin doctor` (no arg) → every pi ingredient installed
+  let ingredientDirs = [];
+  if (!target) {
+    if (fs.existsSync(piBaseDir)) {
+      for (const entry of fs.readdirSync(piBaseDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) {
+          ingredientDirs.push({ label: entry.name, dir: path.join(piBaseDir, entry.name) });
+        }
+      }
+    }
+  } else if (target.startsWith('pi:')) {
+    const packageName = target.slice(3);
+    const safe = packageName.replace(/[/@]/g, '_');
+    const dir = path.join(piBaseDir, safe);
+    if (!fs.existsSync(dir)) throw new Error(`pi ingredient not installed: ${packageName}`);
+    ingredientDirs.push({ label: packageName, dir });
+  } else {
+    const found = findByName(target, cwd);
+    if (!found) throw new Error(`plugin not found: ${target}`);
+    const scan = readManifest(found.directory);
+    const composes = scan?.manifest?.spec?.composes || [];
+    for (const c of composes) {
+      if (!c.package_name) continue;
+      const safe = c.package_name.replace(/[/@]/g, '_');
+      const dir = path.join(piBaseDir, safe);
+      if (!fs.existsSync(dir)) {
+        process.stderr.write(`  ${YELLOW}!${RESET} pi ingredient ${c.package_name} referenced by ${found.name} but not installed\n`);
+        continue;
+      }
+      ingredientDirs.push({ label: `${found.name} ← pi:${c.package_name}`, dir });
+    }
+    // Also check the pack's OWN source — hand-authored packs may shell
+    // out to system binaries (manim, docker, ffmpeg) or read env vars
+    // regardless of whether they compose any pi ingredients.
+    ingredientDirs.push({ label: found.name, dir: found.directory, isPack: true });
+  }
+
+  const report = [];
+  let missingRequired = 0;
+
+  for (const { label, dir } of ingredientDirs) {
+    // Load or (re)compute the requirements sidecar.
+    let reqs = null;
+    const sidecar = path.join(dir, REQUIREMENTS_FILE);
+    if (fs.existsSync(sidecar)) {
+      try { reqs = JSON.parse(fs.readFileSync(sidecar, 'utf-8')); } catch { /* re-analyze */ }
+    }
+    if (!reqs) {
+      try {
+        let tools = null;
+        const toolsPath = path.join(dir, '.bahulam-tools.json');
+        if (fs.existsSync(toolsPath)) tools = JSON.parse(fs.readFileSync(toolsPath, 'utf-8'));
+        reqs = analyzeRequirements(dir, { discoveredTools: tools });
+      } catch (err) {
+        report.push({ label, dir, error: err.message });
+        continue;
+      }
+    }
+    const host = checkRequirementsAgainstHost(reqs);
+    const missing = host.binaries.filter(b => !b.found).length;
+    missingRequired += missing;
+    report.push({ label, dir, reqs, host, missing });
+  }
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify({
+      ok: missingRequired === 0,
+      missing_binaries: missingRequired,
+      checked: report,
+    }, null, 2) + '\n');
+    if (missingRequired > 0) process.exit(1);
+    return;
+  }
+
+  if (report.length === 0) {
+    process.stderr.write(`${DIM}No pi ingredients found to check.${RESET}\n`);
+    return;
+  }
+
+  for (const r of report) {
+    process.stderr.write(`\n${BOLD}${CYAN}${r.label}${RESET}  ${DIM}${r.dir}${RESET}\n`);
+    if (r.error) { process.stderr.write(`  ${RED}✗${RESET} ${r.error}\n`); continue; }
+    const lines = formatRequirementsReport(r.reqs, { verbose: false });
+    for (const l of lines) {
+      const icon = l.level === 'warn' ? `${YELLOW}!${RESET}` : l.level === 'ok' ? `${GREEN}✓${RESET}` : `${DIM}·${RESET}`;
+      process.stderr.write(`  ${icon} ${l.text}\n`);
+    }
+    if (r.host.binaries.length) {
+      process.stderr.write(`  ${DIM}binaries:${RESET}\n`);
+      for (const b of r.host.binaries) {
+        if (b.found) {
+          process.stderr.write(`    ${GREEN}✓${RESET} ${b.name}${b.version ? `  ${DIM}${b.version}${RESET}` : ''}${b.path ? `  ${DIM}${b.path}${RESET}` : ''}\n`);
+        } else {
+          const hint = b.install_hints?.[process.platform === 'darwin' ? 'darwin' : 'linux'];
+          process.stderr.write(`    ${RED}✗${RESET} ${b.name}${hint ? `  ${DIM}install:${RESET} ${CYAN}${hint}${RESET}` : ''}\n`);
+        }
+      }
+    }
+    if (r.host.env_vars.length) {
+      process.stderr.write(`  ${DIM}env vars:${RESET}\n`);
+      for (const v of r.host.env_vars) {
+        const status = v.set ? `${GREEN}✓${RESET}` : (v.credential ? `${RED}✗${RESET}` : `${YELLOW}⚠${RESET}`);
+        process.stderr.write(`    ${status} ${v.name}${v.credential ? ` ${DIM}(credential)${RESET}` : ''}\n`);
+      }
+    }
+  }
+  process.stderr.write('\n');
+  if (missingRequired > 0) {
+    process.stderr.write(`${RED}✗${RESET} ${missingRequired} required binar${missingRequired === 1 ? 'y' : 'ies'} missing.\n\n`);
+    process.exit(1);
+  } else {
+    process.stderr.write(`${GREEN}✓${RESET} all detected requirements satisfied.\n\n`);
+  }
+}
+
 export async function handlePluginManagementCommand(args, { cwd = process.cwd(), throwOnError = false } = {}) {
   try {
     switch (args.action) {
@@ -630,6 +815,7 @@ export async function handlePluginManagementCommand(args, { cwd = process.cwd(),
       case 'enable': toggle(args, cwd, true); return;
       case 'disable': toggle(args, cwd, false); return;
       case 'info': cmdInfo(args, cwd); return;
+      case 'doctor': await cmdDoctor(args, cwd); return;
       case 'update': case 'upgrade': await cmdUpdate(args, cwd); return;
       default: throw new Error(`unknown plugin action: ${args.action}`);
     }

@@ -130,5 +130,33 @@ export function createPiShim({ pluginName = 'pi', captured }) {
     },
   };
 
-  return pi;
+  // Pi's ExtensionAPI is a moving target — packages call methods we haven't
+  // stubbed yet (registerMessageRenderer, registerRoute, registerHandler,
+  // …). Any unstubbed method call throws, aborting activation before
+  // registerTool ever runs, and the probe reports 0 tools.
+  //
+  // Fall back to a no-op returner for every unknown property so activation
+  // reaches its full extent. A tool's runtime call may still fail if it
+  // needed that surface — that's an accurate signal at execution time,
+  // not a silent black hole at load time.
+  return new Proxy(pi, {
+    get(target, prop, receiver) {
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      if (typeof prop === 'symbol') return undefined;
+      if (process.env.DEBUG) {
+        process.stderr.write(`[pi:${pluginName}] shim: pi.${String(prop)} stubbed (no-op)\n`);
+      }
+      // Return a callable that also has method access (e.g. pi.foo.bar).
+      // Property access on the stub returns another stub, so chains never
+      // throw. Result is undefined so anything that reads a return value
+      // treats it as "not present" (typeof result === 'undefined').
+      const stub = function stub() { return undefined; };
+      return new Proxy(stub, {
+        get(t, p) {
+          if (typeof p === 'symbol') return t[p];
+          return stub;
+        },
+      });
+    },
+  });
 }

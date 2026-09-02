@@ -231,6 +231,12 @@ async function installPiWithScaffolding({ classified, targetDir, cwd, args }) {
   // Step 2: ensure the tools cache is present.
   const discovered = await discoverPiTools(piDir, { pluginName: classified.package_name });
 
+  // Step 2b: host check for required binaries. Install (unlike pull)
+  // implies "use this now", so a missing ffmpeg-class dep will fail at
+  // first tool call — better to fail loudly here. `--force` bypasses
+  // for offline provisioning / CI where deps land later.
+  await enforceHostRequirements({ piDir, packageName: classified.package_name, args });
+
   // Step 3: generate the pack directory (composes + state + agent + panel).
   process.stderr.write(`${DIM}scaffolding pack…${RESET}\n`);
   const { dest, slug, namespace, exposeTools, agentSlug } = scaffoldPiPack({
@@ -267,6 +273,28 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
   // Do it in one command; the scaffolder path already has the pi ingredient.
   await resolveComposeDependencies(m, { targetDir: path.dirname(dest) });
 
+  // Host check for each composed pi ingredient (same policy as the
+  // scaffolder path). Blocks install if a required binary is missing.
+  const composes = m.spec?.composes || [];
+  if (composes.length && !meta) {
+    // meta present == scaffolder path already did this pre-scaffold
+    const { bahulamHome } = await import('../core/paths.mjs');
+    const piBaseDir = path.join(bahulamHome(), 'plugins-pi');
+    for (const compose of composes) {
+      if (!compose.package_name) continue;
+      const safeName = compose.package_name.replace(/[/@]/g, '_');
+      const piDir = path.join(piBaseDir, safeName);
+      if (!fs.existsSync(piDir)) continue;
+      try {
+        await enforceHostRequirements({ piDir, packageName: compose.package_name, args });
+      } catch (err) {
+        // Roll back the pack install — the composed dep won't work.
+        fs.rmSync(dest, { recursive: true, force: true });
+        throw err;
+      }
+    }
+  }
+
   if (args.json) {
     process.stdout.write(JSON.stringify({
       ok: true,
@@ -292,4 +320,63 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
     process.stderr.write(`  ${DIM}Edit the pack under ${dest} to customize.${RESET}\n`);
   }
   process.stderr.write(`\n  ${DIM}Open with:${RESET} ${CYAN}bahulam plugin ${m.metadata.name}${RESET}\n\n`);
+}
+
+/**
+ * Install-time host check: read the ingredient's requirements sidecar,
+ * verify each detected binary is on PATH. Throws with an actionable
+ * message (per-OS install hints) if anything required is missing.
+ * `--force` bypasses (for CI, offline provisioning, dev workflows where
+ * deps land later).
+ *
+ * Env vars / credentials are warn-only — many pi tools have optional
+ * features and blocking on a missing PEXELS_API_KEY when the user only
+ * wants media_probe is too aggressive.
+ */
+async function enforceHostRequirements({ piDir, packageName, args }) {
+  const { checkRequirementsAgainstHost, REQUIREMENTS_FILE, analyzeRequirements } =
+    await import('../plugins/pi-compat/requirements.mjs');
+
+  const sidecar = path.join(piDir, REQUIREMENTS_FILE);
+  let reqs = null;
+  if (fs.existsSync(sidecar)) {
+    try { reqs = JSON.parse(fs.readFileSync(sidecar, 'utf-8')); } catch { /* re-analyze */ }
+  }
+  if (!reqs) {
+    // Sidecar was missing (older ingredient install or analyzer crash) —
+    // synthesize on the fly so the check is never silently skipped.
+    let discoveredTools = null;
+    const toolsCache = path.join(piDir, '.bahulam-tools.json');
+    if (fs.existsSync(toolsCache)) {
+      try { discoveredTools = JSON.parse(fs.readFileSync(toolsCache, 'utf-8')); } catch { /* ignore */ }
+    }
+    reqs = analyzeRequirements(piDir, { discoveredTools });
+  }
+  if (!reqs?.system_binaries?.length) {
+    // Nothing to check.
+    return;
+  }
+
+  const host = checkRequirementsAgainstHost(reqs);
+  const missing = host.binaries.filter(b => !b.found);
+  if (missing.length === 0) return;
+
+  const platformKey = process.platform === 'darwin' ? 'darwin' : 'linux';
+  const lines = [];
+  lines.push(`${packageName} needs ${missing.length} system binar${missing.length === 1 ? 'y' : 'ies'} not found on your PATH:`);
+  for (const b of missing) {
+    const hint = b.install_hints?.[platformKey];
+    lines.push(`  · ${b.name}${hint ? ` — install: ${CYAN}${hint}${RESET}` : ''}`);
+  }
+  if (args.force) {
+    process.stderr.write(`${YELLOW}!${RESET} ${lines.join('\n')}\n`);
+    process.stderr.write(`${YELLOW}!${RESET} ${DIM}--force set — continuing anyway. Composed tools using these binaries will fail at first call.${RESET}\n`);
+    return;
+  }
+  const err = new Error(
+    `${lines.join('\n')}\n\n` +
+    `Install the missing binaries, then rerun. Or use ${CYAN}--force${RESET} to install without them (composed tools using these will fail at first call).\n` +
+    `Verify anytime with: ${CYAN}bahulam plugin doctor pi:${packageName}${RESET}`,
+  );
+  throw err;
 }

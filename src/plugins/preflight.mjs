@@ -39,6 +39,8 @@ export const RESERVED_TOOL_NAMES = new Set([
   // write
   'write_file', 'write_project', 'edit_file', 'delete_file', 'shell',
   'analyze_image', 'generate_image',
+  // background jobs (PRD-102 §6.2.3) — long-running renders, builds, etc.
+  'job_output', 'job_kill', 'job_status', 'job_list',
   // agent/skill/workflow admin
   'ask_user', 'agent_create', 'agent_sync', 'agents_list',
   'skill_install', 'skill_update', 'skill_remove', 'skill_view', 'skills_list',

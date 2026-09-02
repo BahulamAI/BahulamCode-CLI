@@ -24,20 +24,24 @@ import * as path from 'node:path';
 import { COMPOSED_TOOL_SEPARATOR } from '../pi-compose.mjs';
 
 /**
- * Derive a pack slug from a pi package name.
- *   pi-web-access → web-access-studio
- *   pi-redmine    → redmine-studio
- *   @ffmpeg/transitions → transitions-studio
- *   plain-name    → plain-name-studio
+ * Derive a pack slug from a source package name. No forced suffix — a
+ * pack can be anything (studio, analyzer, connector, worker, …), and
+ * pinning a semantic to the slug guesses wrong most of the time. The
+ * default is the source name, sanitized. Author overrides with --slug.
+ *
+ *   pi-web-access        → pi-web-access
+ *   pi-redmine           → pi-redmine
+ *   @ffmpeg/transitions  → transitions        (scope stripped)
+ *   filesystem-mcp       → filesystem-mcp
+ *   plain-name           → plain-name
  */
 export function deriveSlug(packageName) {
   let base = String(packageName || '').trim();
   const scoped = base.match(/^@[^/]+\/(.+)$/);
   if (scoped) base = scoped[1];
-  base = base.replace(/^pi-/, '');
   base = base.replace(/[^a-z0-9-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
-  if (!base) base = 'pi-pack';
-  return `${base}-studio`;
+  if (!base) base = 'pack';
+  return base;
 }
 
 /**
@@ -78,12 +82,74 @@ function truncate(s, n) {
 }
 
 /**
+ * Compose the "Requirements & constraints" block from the analyzer's
+ * findings. Injected into the generated agent's system prompt so the
+ * sub-agent knows what its composed tools need — no user teaching
+ * required. Falls back to an empty list if requirements is absent (fresh
+ * install where the analyzer didn't run, etc.).
+ */
+function requirementsPromptLines(requirements, namespace) {
+  if (!requirements) return [];
+  const lines = ['', 'Requirements & constraints (from ingredient analysis):'];
+  const bins = requirements.system_binaries || [];
+  if (bins.length) {
+    const names = bins.map(b => b.name).join(', ');
+    lines.push(
+      `- System binaries required: ${names}. If a tool errors with "ENOENT" or "spawn ${bins[0].name}", tell the user to install them (macOS: \`${bins[0].install_hints?.darwin || 'via brew'}\`; Linux: \`${bins[0].install_hints?.linux || 'via package manager'}\`).`,
+    );
+  }
+  const creds = (requirements.env_vars || []).filter(v => v.credential);
+  if (creds.length) {
+    lines.push(
+      `- API keys / credentials expected: ${creds.map(v => v.name).join(', ')}. If a tool fails with an auth error, ask the user to set the missing env var.`,
+    );
+  }
+  if (requirements.workspace_scoped_paths) {
+    lines.push(
+      '- Paths passed to composed tools MUST be workspace-relative (relative to the current working directory). Absolute paths outside cwd are rejected with "Path is outside the workspace". If the user references an absolute path, ask them to `cd` closer to it or copy the file into the workspace.',
+    );
+  }
+  // Per-tool schema constraints the agent must respect. Emit BOTH required
+  // fields AND regex/range constraints — the underlying pi tools throw
+  // opaque path/type errors when a required param is missing, and the
+  // agent's default reasoning tends to skip params whose descriptions
+  // sound "optional" even when the schema marks them required.
+  const tc = requirements.tool_constraints || {};
+  const toolsWithConstraints = Object.keys(tc).filter(t => Object.keys(tc[t]).length);
+  if (toolsWithConstraints.length) {
+    lines.push('- Strict input schemas — supply EVERY required field and respect all constraints. Missing a required field usually throws an opaque error like `paths[1] argument must be of type string`:');
+    for (const t of toolsWithConstraints) {
+      const params = tc[t];
+      const required = Object.keys(params).filter(p => params[p].required);
+      const regexed = Object.entries(params).filter(([, c]) => c.regex);
+      const ranged = Object.entries(params).filter(([, c]) => c.min != null || c.max != null || c.enum);
+      if (required.length) {
+        lines.push(`    - \`${namespace}${COMPOSED_TOOL_SEPARATOR}${t}\` requires: ${required.map(p => `\`${p}\``).join(', ')}`);
+      }
+      for (const [param, c] of regexed) {
+        lines.push(`        · \`${param}\` must match \`${c.regex}\``);
+      }
+      for (const [param, c] of ranged) {
+        const parts = [];
+        if (c.min != null) parts.push(`min ${c.min}`);
+        if (c.max != null) parts.push(`max ${c.max}`);
+        if (c.enum) parts.push(`one of ${JSON.stringify(c.enum)}`);
+        lines.push(`        · \`${param}\` ${parts.join(', ')}`);
+      }
+    }
+  }
+  // If we detected no external requirements at all, keep the block out so
+  // the prompt stays clean.
+  return lines.length > 1 ? lines : [];
+}
+
+/**
  * Compose an agent system prompt from the pi package + its tools.
  * Focused on WHAT the agent should do, not step-by-step recipes — the
  * generic template can't know the pack's domain. Users are expected to
  * edit the prompt after generation.
  */
-function generatePrompt(packageName, namespace, toolNames, hasState) {
+function generatePrompt(packageName, namespace, toolNames, hasState, requirements = null) {
   const composed = toolNames.map(t => `${namespace}${COMPOSED_TOOL_SEPARATOR}${t}`);
   const stateLines = hasState
     ? [
@@ -103,6 +169,7 @@ function generatePrompt(packageName, namespace, toolNames, hasState) {
     'Available composed tools:',
     ...composed.map(t => `- \`${t}\``),
     ...stateLines,
+    ...requirementsPromptLines(requirements, namespace),
     '',
     'Rules:',
     '- Use the composed tools directly — do not describe what you would do, DO it.',
@@ -453,7 +520,16 @@ export function scaffoldPiPack({
     `Specialist agent for ${packageName}. Composes ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'} exposed as ${namespace}${COMPOSED_TOOL_SEPARATOR}*.`,
     240,
   );
-  const systemPrompt = generatePrompt(packageName, namespace, toolNames, state);
+
+  // Pull the requirements sidecar the analyzer wrote at install time
+  // (may be absent if user is scaffolding manually with an older ingredient).
+  let requirements = null;
+  const reqSidecar = path.join(piDir, '.bahulam-requirements.json');
+  if (fs.existsSync(reqSidecar)) {
+    try { requirements = JSON.parse(fs.readFileSync(reqSidecar, 'utf-8')); } catch { /* skip */ }
+  }
+
+  const systemPrompt = generatePrompt(packageName, namespace, toolNames, state, requirements);
 
   const manifest = renderManifest({
     slug,

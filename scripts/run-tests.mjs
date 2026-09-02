@@ -44,6 +44,8 @@ const UNIT_TESTS = [
     'test/test-preflight.mjs',
     'test/test-plugin-composes.mjs',
     'test/pi-compat-smoke.mjs',
+    'test/pi-scaffold-smoke.mjs',
+    'test/pi-requirements-smoke.mjs',
     'test/test-formatter.mjs',
     'test/test-terminal-rendering.mjs',
     'test/test-render-queue.mjs',

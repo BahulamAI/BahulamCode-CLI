@@ -59,8 +59,9 @@ ok('probe found 2 tools', discovered.tools.length === 2);
 const { scaffoldPiPack, deriveSlug, deriveNamespace } =
   await import(path.join(repoRoot, 'src/plugins/pi-compat/scaffold.mjs'));
 
-eq('deriveSlug strips pi- prefix', deriveSlug('pi-web-access'), 'web-access-studio');
-eq('deriveSlug handles scoped',    deriveSlug('@ffmpeg/transitions'), 'transitions-studio');
+eq('deriveSlug returns package name as-is', deriveSlug('pi-web-access'), 'pi-web-access');
+eq('deriveSlug strips npm scope',           deriveSlug('@ffmpeg/transitions'), 'transitions');
+eq('deriveSlug does NOT append suffix',     /studio|pack$|-plugin$/.test(deriveSlug('pi-web-access')), false);
 eq('deriveNamespace strips pi-',   deriveNamespace('pi-web-access'), 'web');
 ok('deriveNamespace scoped shape', /^transit/.test(deriveNamespace('@ffmpeg/transitions')));
 
@@ -81,7 +82,7 @@ ok('save-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/s
 ok('list-items.mjs written',       fs.existsSync(path.join(result.dest, 'tools/list-items.mjs')));
 ok('drop-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/drop-item.mjs')));
 ok('workspace panel.html written', fs.existsSync(path.join(result.dest, 'workspace/panel.html')));
-eq('slug derived',                 result.slug, 'web-access-studio');
+eq('slug derived',                 result.slug, 'pi-web-access');
 eq('namespace derived',            result.namespace, 'web');
 eq('expose list matches tools',    result.exposeTools.sort(), ['fetch_content', 'web_search']);
 
