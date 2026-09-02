@@ -1,80 +1,58 @@
 # Release Checklist
 
-This repo publishes the npm package `@bahulamai/code`.
+This repo publishes the npm package `@bahulam/code`.
 
 ## Branch Flow
 
-1. Finish changes on the feature branch.
-2. Run tests on the feature branch:
+1. Finish changes on a feature branch.
+2. Run tests:
 
    ```bash
    npm test
    ```
 
-3. Bump the npm version. For the next minor:
+3. Bump version:
 
    ```bash
-   npm version minor --no-git-tag-version
+   npm version patch --no-git-tag-version
    git add package.json package-lock.json
-   git commit -m "chore: bump bahulam-code to <version>"
+   git commit -m "chore: bump @bahulam/code to <version>"
    ```
 
-4. Push the feature branch:
+4. Push and open a PR to `main`.
+
+5. After merge, pull main and tag:
 
    ```bash
-   git push origin <feature-branch>
+   git checkout main
+   git pull origin main
+   git tag v<version>
+   git push origin v<version>
    ```
 
-5. Merge into `development`:
+## Npm Publish
 
-   ```bash
-   git checkout development
-   git fetch origin
-   git merge --ff-only origin/development
-   git merge --no-ff <feature-branch> -m "merge: <release summary>"
-   npm test
-   git push origin development
-   ```
-
-6. Open a PR from `development` to `main`.
-
-## Npm Package Validation
-
-Use a temporary npm cache if the local `~/.npm` cache has permission issues:
+Ensure you're logged in:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm pack --dry-run
+npm whoami
 ```
 
-Check registry state:
+Publish:
 
 ```bash
-env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm view @bahulamai/code version versions --json
-env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm whoami
-```
-
-`npm whoami` must succeed before publishing.
-
-## Publish Latest
-
-Only publish after the release PR is reviewed and the intended commit is the
-release candidate.
-
-```bash
-env NPM_CONFIG_CACHE=/private/tmp/bahulam-code-npm-cache npm publish --tag latest --access public
+npm publish --tag latest --access public
 ```
 
 Verify:
 
 ```bash
-npm view @bahulamai/code version
-npx @bahulamai/code@latest --version
+npm view @bahulam/code version
+npx @bahulam/code@latest --version
 ```
 
 ## Notes
 
 - `package.json` ships `README.md` as the canonical npm-facing docs.
-- `B0-README.md` is a legacy long-form reference; keep it in sync with
-  `README.md` for GitHub browsers who land on the old file.
 - Do not commit local `.bahulam/` runtime state.
 - Do not publish with missing npm auth or a failed test run.

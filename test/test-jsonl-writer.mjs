@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-jsonl-writer-'));
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-jsonl-writer-'));
 
 const { JsonlWriter } = await import('../src/core/jsonl-writer.mjs');
 
@@ -56,7 +56,7 @@ await test('flushAssistantTurn tolerates undefined tool output', async () => {
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
-await test('writeKeplerEvent buffers until real session id is set', async () => {
+await test('writeBahulamEvent buffers until real session id is set', async () => {
   const cwd = path.join(tempRoot, 'event-project');
   const outputDir = path.join(tempRoot, 'event-output');
   fs.mkdirSync(cwd, { recursive: true });
@@ -64,15 +64,15 @@ await test('writeKeplerEvent buffers until real session id is set', async () => 
 
   const writer = new JsonlWriter(cwd, 'test');
   writer.projectDir = outputDir;
-  writer.writeKeplerEvent({ type: 'status', data: { message: 'Starting' } });
+  writer.writeBahulamEvent({ type: 'status', data: { message: 'Starting' } });
   writer.setSessionId('event-session-1');
-  writer.writeKeplerEvent({ type: 'tool_call', data: { tool: 'read_file', args: { path: 'a'.repeat(12000) } } });
+  writer.writeBahulamEvent({ type: 'tool_call', data: { tool: 'read_file', args: { path: 'a'.repeat(12000) } } });
   await writer.close();
 
   const transcriptPath = path.join(writer.projectDir, 'event-session-1.jsonl');
   const lines = fs.readFileSync(transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
   assert.strictEqual(lines.length, 2);
-  assert.strictEqual(lines[0].type, 'kepler_event');
+  assert.strictEqual(lines[0].type, 'bahulam_event');
   assert.strictEqual(lines[0].sessionId, 'event-session-1');
   assert.strictEqual(lines[0].event.type, 'status');
   assert.strictEqual(lines[1].event.type, 'tool_call');
@@ -81,7 +81,7 @@ await test('writeKeplerEvent buffers until real session id is set', async () => 
   fs.rmSync(writer.projectDir, { recursive: true, force: true });
 });
 
-await test('tool result blocks preserve Kepler file diff metadata', async () => {
+await test('tool result blocks preserve Bahulam file diff metadata', async () => {
   const cwd = path.join(tempRoot, 'diff-project');
   const outputDir = path.join(tempRoot, 'diff-output');
   fs.mkdirSync(cwd, { recursive: true });

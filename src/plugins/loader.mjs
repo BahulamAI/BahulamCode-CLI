@@ -1,138 +1,138 @@
 /**
- * Plugin Loader — load plugins from directory, git, or npm.
+ * Plugin Loader — high-level facade for installing, listing, and removing plugins.
  *
- * Plugins can provide: tools, agents, skills, hooks.
- * Plugin format: a directory with a plugin.json manifest.
+ * Uses PluginRegistry for scanning/loading, and provides git-based install.
+ * Plugin format: a directory with plugin.yaml (bahulam.plugin/1).
  */
 
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
+import { PluginRegistry } from './registry.mjs';
 
 export class PluginLoader {
-    /**
-     * @param {string} [pluginDir] - directory to scan for plugins
-     */
-    constructor(pluginDir) {
-        this.pluginDir = pluginDir ||
-            path.join(os.homedir(), '.claude', 'plugins');
-        this.plugins = new Map();
-    }
+  /**
+   * @param {Object} [options]
+   * @param {string} [options.pluginDir] - Primary plugin directory
+   * @param {string[]} [options.pluginDirs] - Additional plugin directories
+   * @param {string[]} [options.disabled] - Plugin names to disable
+   */
+  constructor(options = {}) {
+    const { pluginDir, pluginDirs, disabled } = options;
+    this.registry = new PluginRegistry({
+      pluginDir: pluginDir || path.join(os.homedir(), '.bahulam', 'plugins'),
+      pluginDirs,
+      disabled,
+    });
+    this.pluginDir = pluginDir || path.join(os.homedir(), '.bahulam', 'plugins');
+  }
 
-    /**
-     * Load plugins from the plugin directory.
-     * @returns {Array<object>} loaded plugin manifests
-     */
-    async loadFromDirectory(dir) {
-        const targetDir = dir || this.pluginDir;
-        const loaded = [];
+  /**
+   * Load all plugins from registered directories.
+   * @returns {PluginRegistry}
+   */
+  load() {
+    this.registry.scan();
+    return this.registry;
+  }
 
-        try {
-            if (!fs.existsSync(targetDir)) return loaded;
+  /**
+   * Load plugins from a specific directory (scans subdirectories).
+   * @param {string} dir
+   * @returns {PluginRegistry}
+   */
+  loadFromDirectory(dir) {
+    this.registry._scanDir(dir);
+    return this.registry;
+  }
 
-            const entries = fs.readdirSync(targetDir, { withFileTypes: true });
-            for (const entry of entries) {
-                if (!entry.isDirectory()) continue;
+  /**
+   * Clone a plugin from a git repo and load it.
+   * @param {string} repoUrl - git repository URL
+   * @param {string} [name] - plugin name (default: repo name)
+   * @returns {object|null} loaded manifest
+   */
+  loadFromGit(repoUrl, name) {
+    const pluginName = name || repoUrl.split('/').pop()?.replace('.git', '') || 'plugin';
+    const targetDir = path.join(this.pluginDir, pluginName);
 
-                const manifestPath = path.join(targetDir, entry.name, 'plugin.json');
-                if (!fs.existsSync(manifestPath)) continue;
+    try {
+      fs.mkdirSync(this.pluginDir, { recursive: true });
 
-                try {
-                    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-                    manifest._dir = path.join(targetDir, entry.name);
-                    manifest._name = entry.name;
-                    this.plugins.set(manifest.name || entry.name, manifest);
-                    loaded.push(manifest);
-                } catch {
-                    // Skip malformed plugins
-                }
-            }
-        } catch {
-            // Directory not readable
+      if (fs.existsSync(targetDir)) {
+        // Update existing
+        execSync('git pull', { cwd: targetDir, stdio: 'pipe' });
+      } else {
+        // Clone new
+        execSync(`git clone --depth 1 ${repoUrl} ${targetDir}`, { stdio: 'pipe' });
+      }
+
+      const manifestPath = path.join(targetDir, 'plugin.yaml');
+      const altPath = path.join(targetDir, 'plugin.json');
+      const exists = fs.existsSync(manifestPath) ? manifestPath : (fs.existsSync(altPath) ? altPath : null);
+
+      if (exists) {
+        const { parsePluginManifestFile } = await import('./manifest.mjs');
+        const manifest = parsePluginManifestFile(exists);
+        if (manifest) {
+          this.registry.register(manifest);
+          return manifest;
         }
-
-        return loaded;
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`Failed to clone plugin ${repoUrl}: ${err.message}`);
+      }
     }
 
-    /**
-     * Clone a plugin from a git repo and load it.
-     * @param {string} repoUrl - git repository URL
-     * @param {string} [name] - plugin name (default: repo name)
-     * @returns {object|null} loaded manifest
-     */
-    async loadFromGit(repoUrl, name) {
-        const pluginName = name || repoUrl.split('/').pop()?.replace('.git', '') || 'plugin';
-        const targetDir = path.join(this.pluginDir, pluginName);
+    return null;
+  }
 
-        try {
-            fs.mkdirSync(this.pluginDir, { recursive: true });
+  /**
+   * Get all installed plugins.
+   * @returns {object[]}
+   */
+  getInstalledPlugins() {
+    return this.registry.list();
+  }
 
-            if (fs.existsSync(targetDir)) {
-                // Update existing
-                execSync('git pull', { cwd: targetDir, stdio: 'pipe' });
-            } else {
-                // Clone new
-                execSync(`git clone --depth 1 ${repoUrl} ${targetDir}`, { stdio: 'pipe' });
-            }
+  /**
+   * Get a plugin by name.
+   * @param {string} name
+   * @returns {object|undefined}
+   */
+  getPlugin(name) {
+    return this.registry.get(name);
+  }
 
-            const manifestPath = path.join(targetDir, 'plugin.json');
-            if (fs.existsSync(manifestPath)) {
-                const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-                manifest._dir = targetDir;
-                manifest._name = pluginName;
-                this.plugins.set(manifest.name || pluginName, manifest);
-                return manifest;
-            }
-        } catch {
-            // Git operation failed
-        }
+  /**
+   * Remove a plugin by name.
+   * @param {string} name
+   * @returns {boolean}
+   */
+  removePlugin(name) {
+    const plugin = this.registry.get(name);
+    if (!plugin) return false;
 
-        return null;
+    try {
+      if (plugin._dir && fs.existsSync(plugin._dir)) {
+        fs.rmSync(plugin._dir, { recursive: true, force: true });
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`Failed to remove plugin directory ${plugin._dir}: ${err.message}`);
+      }
     }
 
-    /**
-     * Get all installed plugins.
-     * @returns {Array<object>}
-     */
-    getInstalledPlugins() {
-        return [...this.plugins.values()];
-    }
+    return this.registry.remove(name);
+  }
 
-    /**
-     * Get a plugin by name.
-     * @param {string} name
-     * @returns {object|undefined}
-     */
-    getPlugin(name) {
-        return this.plugins.get(name);
-    }
-
-    /**
-     * Remove a plugin by name.
-     * @param {string} name
-     * @returns {boolean}
-     */
-    removePlugin(name) {
-        const plugin = this.plugins.get(name);
-        if (!plugin) return false;
-
-        try {
-            if (plugin._dir && fs.existsSync(plugin._dir)) {
-                fs.rmSync(plugin._dir, { recursive: true, force: true });
-            }
-        } catch {
-            // Best effort
-        }
-
-        return this.plugins.delete(name);
-    }
-
-    /**
-     * Get plugin count.
-     * @returns {number}
-     */
-    count() {
-        return this.plugins.size;
-    }
+  /**
+   * Get plugin count.
+   * @returns {number}
+   */
+  count() {
+    return this.registry.count();
+  }
 }

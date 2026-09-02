@@ -22,7 +22,7 @@ import { execSync as _execSync } from 'node:child_process';
 import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
-import { TarangStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
@@ -53,7 +53,7 @@ import {
   MODES as V_MODES,
 } from '../state/verbosity.mjs';
 import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
@@ -64,6 +64,10 @@ import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
 import { createAgentFile, isVsCodeTerminal, listLocalAgents, openAgentFile, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
+import { dispatch } from '../orchestration/dispatch.mjs';
+import { registerJobCompletionDispatch } from '../orchestration/completion-triggers.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
@@ -114,7 +118,7 @@ import {
   flushPendingHead,
   isInlineOutcomeTool,
   pushSubAgentWindowLine,
-  rebuildSubAgentWindow,
+  rebuildSubAgentWindowGroups,
   renderBlockBoundary,
   renderExploreRun,
   renderFileDiffEvent,
@@ -875,7 +879,7 @@ function handleAttachmentsCommand(rest = '', ctx) {
 }
 
 async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
-  if (skip || process.env.KEPLER_VISION_CONFIRM === '0' || process.env.KEPLER_VISION_CONFIRM === 'false') {
+  if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false') {
     return true;
   }
   if (!ctx?._rl || !process.stdin.isTTY) return false;
@@ -965,6 +969,7 @@ async function handleAgentsCommand(rest = '', ctx) {
         force: Boolean(flags.force),
       });
       process.stderr.write(`  ${c.green('✓')} ${c.dim('Created local agent:')} ${created.filePath}\n`);
+      process.stderr.write(`  ${c.dim('Available now in this workspace:')} /run ${created.slug} "<task>"\n`);
       const shouldOpen = !flags['no-open'] && (Boolean(flags.open) || isVsCodeTerminal());
       if (shouldOpen) {
         const opened = openAgentFile(created.filePath, {
@@ -976,7 +981,7 @@ async function handleAgentsCommand(rest = '', ctx) {
           process.stderr.write(`  ${c.dim(opened.reason)}\n`);
         }
       }
-      process.stderr.write(`  ${c.dim('Sync explicitly with:')} /agents sync ${created.slug}\n`);
+      process.stderr.write(`  ${c.dim('Optional cloud/account sync:')} /agents sync ${created.slug}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
     }
@@ -1002,7 +1007,7 @@ async function handleAgentsCommand(rest = '', ctx) {
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(opened.reason)}\n`);
       process.stderr.write(`  ${c.dim('Agent file:')} ${agent.source}\n`);
     }
-    process.stderr.write(`  ${c.dim('Sync after editing:')} /agents sync ${agent.slug}\n`);
+    process.stderr.write(`  ${c.dim('Local changes are available immediately in this workspace. Optional cloud/account sync:')} /agents sync ${agent.slug}\n`);
     return;
   }
 
@@ -1024,7 +1029,7 @@ async function handleAgentsCommand(rest = '', ctx) {
         agents: selected,
       });
       const synced = result.synced ?? selected.length;
-      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Synced ${synced} agent${synced === 1 ? '' : 's'} to Supabase.`)}\n`);
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Synced ${synced} agent${synced === 1 ? '' : 's'} to the backend for account/cloud reuse.`)}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red(err.message || String(err))}\n`);
     }
@@ -1042,6 +1047,43 @@ function printSkillsUsage() {
   process.stderr.write(`  ${c.dim('  /skills view <name> [resource]')}\n`);
   process.stderr.write(`  ${c.dim('  /skills remove <name> [--project]')}\n`);
   process.stderr.write(`  ${c.dim('  /skills update <name> [--project]')}\n`);
+}
+
+async function handlePluginsCommand(rest = '', ctx) {
+  const argv = String(rest || '').trim().split(/\s+/).filter(Boolean);
+  const action = (argv[0] || 'list').toLowerCase();
+  const known = new Set(['install', 'validate', 'check', 'lint', 'list', 'ls', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'info', 'update', 'upgrade']);
+
+  // Bare `/plugins <name>` (no action verb) is treated as info, mirroring how
+  // `/skills <name>` behaves. `/plugins` alone lists.
+  if (!known.has(action)) {
+    if (argv.length === 0) return handlePluginsCommand('list', ctx);
+    return handlePluginsCommand(`info ${argv.join(' ')}`, ctx);
+  }
+
+  const args = {
+    action, pluginName: null, source: null,
+    global: true, force: false, ref: null, json: false,
+  };
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--project') args.global = false;
+    else if (a === '--global') args.global = true;
+    else if (a === '--force' || a === '-f') args.force = true;
+    else if (a === '--json') args.json = true;
+    else if (a === '--ref' || a === '--tag' || a === '--branch') args.ref = argv[++i];
+    else if (!a.startsWith('-')) {
+      if (action === 'install' && !args.source) args.source = a;
+      else if (['validate', 'check', 'lint'].includes(action) && !args.source && !args.pluginName) {
+        if (a.includes('/')) args.source = a; else args.pluginName = a;
+      }
+      else if (!args.pluginName) args.pluginName = a;
+    }
+  }
+  try {
+    const { handlePluginManagementCommand } = await import('../commands/plugin-manage.mjs');
+    await handlePluginManagementCommand(args, { cwd: process.cwd(), throwOnError: true });
+  } catch { /* already printed by the handler */ }
 }
 
 async function handleSkillsCommand(rest = '', ctx) {
@@ -1482,8 +1524,12 @@ function isDeniedStatusMessage(message = '') {
 }
 
 function toolCallId(data = {}, tool = 'tool') {
-  return data.call_id || data._callId || data.request_id || data.id ||
+  return data.call_id || data._callId || data.tool_call_id || data.request_id || data.id ||
     `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function explicitToolCallId(data = {}) {
+  return data.call_id || data._callId || data.tool_call_id || data.request_id || data.id || null;
 }
 
 function isSubAgentToolEvent(data = {}) {
@@ -1495,7 +1541,7 @@ function shouldFoldSubAgentTool(data = {}) {
 }
 
 function foldedSubAgentName(data = {}) {
-  return data?.sub_agent || data?.agent || data?.type || 'sub-agent';
+  return data?.sub_agent_label || data?.sub_agent || data?.agent || data?.type || 'sub-agent';
 }
 
 function subAgentStartingLine(agentType = 'sub-agent') {
@@ -1508,19 +1554,131 @@ function subAgentStartingLine(agentType = 'sub-agent') {
   return `→ starting ${normalized}`;
 }
 
-function ensureFoldedSubAgentTools(agentType) {
-  const current = runtime.foldedSubAgentTools;
-  if (current && current.agentType === agentType) return current;
-  if (current?.entries?.length) flushFoldedSubAgentTools();
-  runtime.foldedSubAgentTools = {
-    agentType,
-    entries: [],
-    startedAt: Date.now(),
-  };
-  return runtime.foldedSubAgentTools;
+function subAgentRunId(data = {}) {
+  return data?.run_id || data?.sub_agent_run_id || null;
 }
 
-function findFoldedToolEntry(fold, callId, tool) {
+function normalizeSubAgentRunData(data = {}) {
+  if (!data || typeof data !== 'object') return data;
+  const runId = subAgentRunId(data);
+  if (!runId) return data;
+  const laneRun = session.activeSubAgentRuns?.get(runId);
+  const patch = {};
+  if (!data.run_id) patch.run_id = runId;
+  if (laneRun?.type && !data.sub_agent) patch.sub_agent = laneRun.type;
+  if (laneRun && !data.sub_agent_label) patch.sub_agent_label = subAgentLaneLabel(laneRun);
+  return Object.keys(patch).length ? { ...data, ...patch } : data;
+}
+
+function foldedSubAgentKey(data = {}) {
+  return subAgentRunId(data) || foldedSubAgentName(data);
+}
+
+function hasParallelSubAgentRuns() {
+  return activeSubAgentLanes().length > 1;
+}
+
+function hasReliableSubAgentAttribution(data = {}) {
+  return !(hasParallelSubAgentRuns() && isSubAgentToolEvent(data) && !subAgentRunId(data));
+}
+
+function ensureFoldedSubAgentTools(agentType, key = agentType, data = {}) {
+  runtime.foldedSubAgentToolMap = runtime.foldedSubAgentToolMap || new Map();
+  const current = runtime.foldedSubAgentTools;
+  if (current && current.key === key) return current;
+
+  let fold = runtime.foldedSubAgentToolMap.get(key);
+  if (!fold) {
+    const runId = subAgentRunId(data);
+    const laneRun = runId ? session.activeSubAgentRuns?.get(runId) : null;
+    fold = {
+      key,
+      runId,
+      agentType,
+      label: laneRun?.label || agentType,
+      query: laneRun?.query || data?.query || '',
+      entries: [],
+      startedAt: Date.now(),
+    };
+    runtime.foldedSubAgentToolMap.set(key, fold);
+  } else {
+    const runId = subAgentRunId(data);
+    const laneRun = runId ? session.activeSubAgentRuns?.get(runId) : null;
+    if (runId && !fold.runId) fold.runId = runId;
+    if (laneRun) fold.label = subAgentLaneLabel(laneRun);
+    if (laneRun?.query && !fold.query) fold.query = laneRun.query;
+  }
+  runtime.foldedSubAgentTools = fold;
+  return fold;
+}
+
+function createSubAgentLane(agentType, query, runId, data = {}) {
+  session.activeSubAgentRuns = session.activeSubAgentRuns || new Map();
+  const sameTypeOrdinals = [...session.activeSubAgentRuns.values()]
+    .filter(run => run.type === agentType)
+    .map(run => Number(run.ordinal || 1));
+  const ordinal = sameTypeOrdinals.length ? Math.max(...sameTypeOrdinals) + 1 : 1;
+  const lane = {
+    type: agentType,
+    ordinal,
+    label: agentType,
+    runId,
+    query,
+    tools: 0,
+    // Backend signals the run starts as one of N siblings — label with
+    // the ordinal from the first event (explore#1) so the open block and
+    // the close line agree even for the first run of a batch.
+    forceOrdinal: Number(data?.parallel_batch) > 1,
+  };
+  session.activeSubAgentRuns.set(runId, lane);
+  ensureFoldedSubAgentTools(agentType, runId, { type: agentType, query, run_id: runId });
+  _syncSubAgentWindow();
+  return lane;
+}
+
+function activeSubAgentLanes() {
+  return session.activeSubAgentRuns instanceof Map
+    ? [...session.activeSubAgentRuns.values()]
+    : [];
+}
+
+function subAgentLaneLabel(lane, lanes = activeSubAgentLanes()) {
+  const sameType = lanes.filter(item => item.type === lane.type).length;
+  if (lane.forceOrdinal || sameType > 1 || Number(lane.ordinal || 1) > 1) {
+    return `${lane.type}#${lane.ordinal || 1}`;
+  }
+  return lane.label || lane.type || 'sub-agent';
+}
+
+function removeFoldedSubAgentTools(key) {
+  const map = runtime.foldedSubAgentToolMap;
+  if (key && map?.has(key)) {
+    const fold = map.get(key);
+    map.delete(key);
+    if (runtime.foldedSubAgentTools?.key === key) {
+      runtime.foldedSubAgentTools = map.values().next().value || null;
+    }
+    return fold;
+  }
+  if (!key && map?.size) {
+    const folds = [...map.values()];
+    map.clear();
+    runtime.foldedSubAgentTools = null;
+    return folds;
+  }
+  const fold = runtime.foldedSubAgentTools;
+  runtime.foldedSubAgentTools = null;
+  if (map?.clear) map.clear();
+  return fold;
+}
+
+function resetFoldedSubAgentTools() {
+  runtime.foldedSubAgentTools = null;
+  if (runtime.foldedSubAgentToolMap?.clear) runtime.foldedSubAgentToolMap.clear();
+  else runtime.foldedSubAgentToolMap = new Map();
+}
+
+function findFoldedToolEntry(fold, callId, tool, summary = null) {
   if (!fold) return null;
   if (callId) {
     const exact = fold.entries.find(entry => entry.callId === callId);
@@ -1530,21 +1688,37 @@ function findFoldedToolEntry(fold, callId, tool) {
     const entry = fold.entries[i];
     if (entry.tool === tool && !entry.result) return entry;
   }
+  // The same underlying call arrives on two event streams with different
+  // id namespaces (bridge tool_call call_id vs framework sub_agent_tool
+  // tool_id). When an entry for this exact tool+summary exists — even one
+  // already resolved — treat the second stream's event as the same call
+  // instead of double-counting it (54 "tool uses" for 27 real calls).
+  if (summary) {
+    for (let i = fold.entries.length - 1; i >= 0; i--) {
+      const entry = fold.entries[i];
+      if (entry.tool === tool && entry.summary === summary) return entry;
+    }
+  }
   return null;
 }
 
 function foldSubAgentToolCall(data = {}) {
+  // Under parallel runs, an event without a run_id cannot be attributed
+  // to a lane — drop it from the fold rather than guess (it would render
+  // under whichever agent's group happens to match by name).
+  if (!hasReliableSubAgentAttribution(data)) return;
   const tool = data?.tool || 'unknown';
   const args = data?.args || {};
-  const callId = toolCallId(data, tool);
+  const callId = explicitToolCallId(data);
   const agentType = foldedSubAgentName(data);
-  const fold = ensureFoldedSubAgentTools(agentType);
-  const existing = findFoldedToolEntry(fold, callId, tool);
+  const fold = ensureFoldedSubAgentTools(agentType, foldedSubAgentKey(data), data);
+  const displaySummary = toolDisplaySummary(tool, args, { cwd: safeCwd() });
+  const existing = findFoldedToolEntry(fold, callId, tool, displaySummary);
   const entry = existing || {
     callId,
     tool,
     args,
-    summary: toolDisplaySummary(tool, args, { cwd: safeCwd() }),
+    summary: displaySummary,
     startedAt: Date.now(),
     result: null,
     durationMs: null,
@@ -1554,7 +1728,9 @@ function foldSubAgentToolCall(data = {}) {
   if (!existing) fold.entries.push(entry);
   recordCard({ id: callId, tool, args, startedAt: entry.startedAt });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
-  updateSpinner(`${agentType} → ${tool}`);
+  // Parallel runs own the aggregate spinner text ("2 agents · explore#1 8
+  // · explore#2 10") — don't clobber it with a single run's tool.
+  if (!hasParallelSubAgentRuns()) updateSpinner(`${agentType} → ${tool}`);
   // Live sub-agent window: rebuild from the accumulating fold entries so
   // the same rich '• tool head — outcome' bullets that appear in the
   // final summary render live during the run. Users previously saw only
@@ -1564,13 +1740,37 @@ function foldSubAgentToolCall(data = {}) {
   _syncSubAgentWindow(fold);
 }
 
+function foldSubAgentToolProgress(data = {}) {
+  const tool = data?.tool || 'unknown';
+  const args = data?.args || {};
+  const callId = explicitToolCallId(data);
+  const agentType = foldedSubAgentName(data);
+  const fold = ensureFoldedSubAgentTools(agentType, foldedSubAgentKey(data), data);
+  const displaySummary = toolDisplaySummary(tool, args, { cwd: safeCwd() });
+  const existing = findFoldedToolEntry(fold, callId, tool, displaySummary);
+  if (!existing) {
+    fold.entries.push({
+      callId,
+      tool,
+      args,
+      summary: displaySummary,
+      startedAt: Date.now(),
+      result: null,
+      durationMs: null,
+      outcome: '',
+      tone: 'dim',
+    });
+  }
+  _syncSubAgentWindow(fold);
+}
+
 function foldSubAgentToolResult(data = {}) {
   const tool = data?.tool || data?._tool || 'unknown';
   const args = data?.args || {};
-  const callId = toolCallId(data, tool);
+  const callId = explicitToolCallId(data);
   const agentType = foldedSubAgentName(data);
-  const fold = ensureFoldedSubAgentTools(agentType);
-  let entry = findFoldedToolEntry(fold, callId, tool);
+  const fold = ensureFoldedSubAgentTools(agentType, foldedSubAgentKey(data), data);
+  let entry = findFoldedToolEntry(fold, callId, tool, toolDisplaySummary(tool, args, { cwd: safeCwd() }));
   if (!entry) {
     entry = {
       callId,
@@ -1586,15 +1786,15 @@ function foldSubAgentToolResult(data = {}) {
     fold.entries.push(entry);
   }
   const durationMs = data?.duration_ms ?? (data?.duration_s != null ? data.duration_s * 1000 : null);
-  const summary = summarizeResult(tool, data);
   entry.args = entry.args && Object.keys(entry.args).length ? entry.args : args;
+  const summary = summarizeResult(tool, data, entry.args);
   entry.result = data;
   entry.durationMs = durationMs;
   entry.outcome = summary.text || '';
   entry.tone = summary.tone || 'dim';
   if (data._blocked) session.blockedOps++;
   recordCard({ id: callId, tool, args: entry.args, result: data, durationMs, startedAt: entry.startedAt });
-  updateSpinner(`${agentType} → ${tool}`);
+  if (!hasParallelSubAgentRuns()) updateSpinner(`${agentType} → ${tool}`);
   // Same live-window sync on result — updates the '• tool' line into
   // '• tool — outcome' as each result lands, without waiting for the
   // whole sub-agent to complete.
@@ -1607,15 +1807,63 @@ function foldSubAgentToolResult(data = {}) {
  * Uses the same foldedToolLine formatter as the completion summary for
  * consistency.
  */
-function _syncSubAgentWindow(fold) {
-  if (!fold || !Array.isArray(fold.entries)) return;
+function _syncSubAgentWindow() {
   const cols = process.stderr.columns || 120;
   // Reserve column budget for the '    ' indent the window applies in
   // presentStatus so we don't wrap.
-  const lines = fold.entries.slice(-7).map(entry =>
-    foldedToolLine(entry, '', Math.max(40, cols - 4)).trimStart()
+  const maxToolRows = 6;
+  const lanes = activeSubAgentLanes();
+  const visibleLanes = lanes.length ? lanes : (
+    runtime.foldedSubAgentToolMap?.size
+      ? [...runtime.foldedSubAgentToolMap.values()].map(fold => ({
+          type: fold.agentType,
+          label: fold.label,
+          runId: fold.runId || fold.key,
+          ordinal: 1,
+        }))
+      : []
   );
-  rebuildSubAgentWindow(lines);
+  if (!visibleLanes.length) return;
+  const multi = visibleLanes.length > 1;
+  const groups = [];
+  for (const lane of visibleLanes) {
+    // With multiple lanes, a lane shows ONLY its own run's fold — never
+    // the label/name-keyed or "current" fallbacks, which would leak
+    // unattributed or sibling entries into the wrong agent's group.
+    const fold = runtime.foldedSubAgentToolMap?.get(lane.runId)
+      || (multi ? null : (runtime.foldedSubAgentToolMap?.get(lane.label) || runtime.foldedSubAgentTools));
+    const entries = Array.isArray(fold?.entries) ? fold.entries : [];
+    const label = subAgentLaneLabel(lane, visibleLanes);
+    if (multi) {
+      // One rotating row per agent under the aggregate spinner: the
+      // latest tool, refreshed as calls arrive. Counts live in the
+      // spinner summary ("2 agents · explore#1 31 · explore#2 14").
+      const last = entries[entries.length - 1];
+      const body = last
+        ? foldedToolLine(last, '', Math.max(40, cols - 16)).trimStart()
+        : subAgentStartingLine(lane.type);
+      groups.push({
+        key: lane.runId || label,
+        runId: lane.runId,
+        label,
+        header: '',
+        lines: [fitAnsiLine(`${paint.brand.data(label)} ${body}`, cols)],
+      });
+      continue;
+    }
+    const lines = entries.slice(-maxToolRows).map(entry =>
+      foldedToolLine(entry, '', Math.max(40, cols - 4)).trimStart()
+    );
+    if (!lines.length) lines.push(subAgentStartingLine(lane.type));
+    groups.push({
+      key: lane.runId || lane.label || lane.type,
+      runId: lane.runId,
+      label,
+      header: '',
+      lines,
+    });
+  }
+  rebuildSubAgentWindowGroups(groups);
 }
 
 function foldedOutcome(entry) {
@@ -1637,11 +1885,8 @@ function foldedToolLine(entry, indent, columns) {
   return fitAnsiLine(line, Math.max(32, columns));
 }
 
-function flushFoldedSubAgentTools() {
-  const fold = runtime.foldedSubAgentTools;
-  if (!fold) return;
+function flushOneFoldedSubAgentTools(fold) {
   const entries = Array.isArray(fold.entries) ? fold.entries : [];
-  runtime.foldedSubAgentTools = null;
   if (!entries.length) return;
 
   renderBlockBoundary('tool', { compactSame: true });
@@ -1672,6 +1917,16 @@ function flushFoldedSubAgentTools() {
     startedAt: fold.startedAt || Date.now(),
   });
   runtime.lastRenderedBlock = 'tool';
+}
+
+function flushFoldedSubAgentTools(key = null) {
+  const fold = removeFoldedSubAgentTools(key);
+  if (!fold) return;
+  if (Array.isArray(fold)) {
+    for (const item of fold) flushOneFoldedSubAgentTools(item);
+    return;
+  }
+  flushOneFoldedSubAgentTools(fold);
 }
 
 function renderEvent(event) {
@@ -1869,10 +2124,11 @@ function renderEvent(event) {
 
     case 'tool_call':
     case 'tool_request': {
+      const eventData = normalizeSubAgentRunData(data);
       if (watchState.active) {
-        watchState.addEntry('tool', { label: data?.tool, detail: data?.args?.file_path || data?.args?.path || data?.args?.pattern || data?.args?.query || '' });
+        watchState.addEntry('tool', { label: eventData?.tool, detail: eventData?.args?.file_path || eventData?.args?.path || eventData?.args?.pattern || eventData?.args?.query || '' });
       }
-      const isInternal = Boolean(data?.internal || data?.sub_agent);
+      const isInternal = Boolean(eventData?.internal || eventData?.sub_agent);
       if (isInternal) {
         session.subAgentToolCalls++;
         session.totalSubAgentToolCalls++;
@@ -1881,13 +2137,16 @@ function renderEvent(event) {
         session.totalPrimaryToolCalls++;
       }
       session.totalToolCalls++;
-      if (shouldFoldSubAgentTool(data)) {
-        foldSubAgentToolCall(data);
+      if (!hasReliableSubAgentAttribution(eventData)) {
+        break;
+      }
+      if (shouldFoldSubAgentTool(eventData)) {
+        foldSubAgentToolCall(eventData);
         break;
       }
       stopSpinner();
       flushContent();
-      renderToolCall(data);
+      renderToolCall(eventData);
       break;
     }
 
@@ -1929,16 +2188,20 @@ function renderEvent(event) {
 
     case 'tool_result':
     case 'tool_done': {
+      const eventData = normalizeSubAgentRunData(data);
       if (watchState.active) {
-        const success = data?.success !== false;
-        watchState.addEntry('done', { label: data?.tool, detail: success ? '✓' : '✗' });
+        const success = eventData?.success !== false;
+        watchState.addEntry('done', { label: eventData?.tool, detail: success ? '✓' : '✗' });
       }
-      if (shouldFoldSubAgentTool(data)) {
-        foldSubAgentToolResult(data);
+      if (!hasReliableSubAgentAttribution(eventData)) {
+        break;
+      }
+      if (shouldFoldSubAgentTool(eventData)) {
+        foldSubAgentToolResult(eventData);
         break;
       }
       stopSpinner();
-      renderToolResult(data, type);
+      renderToolResult(eventData, type);
       break;
     }
 
@@ -2052,32 +2315,69 @@ function renderEvent(event) {
       if (watchState.active) {
         watchState.addEntry('spawn', { type: data?.type, label: (data?.query || '').slice(0, 60) });
       }
-      stopSpinner();
-      clearPendingHead();
-      flushFoldedSubAgentTools();
       const agentType = data?.type || 'sub-agent';
       const query = data?.query || '';
+      // Parallel sub-agents: track each run in its own display lane. Two
+      // concurrent runs of the same type are only distinguishable by the
+      // backend-issued run_id; label lanes explore#1 / explore#2 when
+      // more than one run is active. Solo runs render exactly as before.
+      session.activeSubAgentRuns = session.activeSubAgentRuns || new Map();
+      const hadActiveRuns = session.activeSubAgentRuns.size > 0;
+      if (!hadActiveRuns) {
+        stopSpinner();
+        clearPendingHead();
+        flushFoldedSubAgentTools();
+      }
+      const runId = data?.run_id || `${agentType}:${Date.now().toString(36)}`;
+      const lane = createSubAgentLane(agentType, query, runId, data);
+      const parallel = session.activeSubAgentRuns.size > 1 || lane.forceOrdinal;
+      const label = subAgentLaneLabel(lane);
       renderBlockBoundary('subagent');
-      process.stderr.write(renderSubAgentOpen({ type: agentType, query }).replace(/^\n/, '') + '\n');
+      process.stderr.write(renderSubAgentOpen({ id: runId, type: label, query, parentDepth: parallel ? 0 : undefined }).replace(/^\n/, '') + '\n');
       runtime.lastRenderedBlock = 'subagent';
       session.inSubAgent = inSubAgentBlock(); // kept for legacy readers
       session.subAgentCounts[agentType] = (session.subAgentCounts[agentType] || 0) + 1;
       // Fixed-height live tool window under the spinner (queue mode):
       // inner tool calls stream here instead of flooding the transcript.
       setSubAgentWindowActive(true);
-      // Phase per sub-agent run: the status line counts elapsed time and
-      // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
-      startSpinner(`${agentType} agent`, { phase: `sub:${agentType}:${Date.now()}` });
-      pushSubAgentWindowLine(subAgentStartingLine(agentType));
+      if (hadActiveRuns) {
+        updateSpinner(`${session.activeSubAgentRuns.size} agents running`);
+      } else {
+        // Phase per sub-agent run: the status line counts elapsed time and
+        // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
+        // First run of a signaled batch starts the spinner with its
+        // ordinal label so the display matches the open block.
+        startSpinner(`${label} agent`, { phase: `sub:${agentType}:${Date.now()}` });
+      }
+      _syncSubAgentWindow();
       break;
     }
 
     case 'sub_agent_tool': {
       // The regular tool_call event renders the card, indented by the
       // sub-agent stack depth. Just update the spinner text here.
+      const eventData = normalizeSubAgentRunData(data);
       const agentType = data?.type || 'sub-agent';
-      const tool = data?.tool || '';
+      const tool = eventData?.tool || '';
       if (!tool) break;
+      // Lane attribution for parallel runs: prefix window/spinner lines
+      // with the run's label so interleaved streams stay readable.
+      const eventRunId = subAgentRunId(eventData);
+      if (!eventRunId && hasParallelSubAgentRuns()) {
+        break;
+      }
+      const laneRun = session.activeSubAgentRuns?.get(eventRunId);
+      if (laneRun) laneRun.tools++;
+      foldSubAgentToolProgress(eventData);
+      const laneParallel = (session.activeSubAgentRuns?.size || 0) > 1;
+      if (laneParallel) {
+        bumpSpinnerProgress();
+        const activeLanes = activeSubAgentLanes();
+        const lanes = activeLanes
+          .map(r => `${subAgentLaneLabel(r, activeLanes)} ${r.tools}`).join(' · ');
+        updateSpinner(`${session.activeSubAgentRuns.size} agents · ${lanes}`);
+        break;
+      }
       // Feed the live window from THIS event — it always fires (55/55 in
       // observed runs), unlike the inner tool_call render path which
       // diverts for explore-category tools and folded verbosity modes.
@@ -2092,7 +2392,7 @@ function renderEvent(event) {
       // + window; the fallback line is only for the "otherwise blind"
       // case that surfaced in earlier local terminal reports.
       if (!rqueue.isActive()) {
-        const label = data?.label || '';
+        const label = eventData?.label || '';
         const hint = label ? ` · ${label}` : '';
         const key = `${agentType}:${tool}:${label}`;
         if (session._lastSubAgentInlineKey !== key) {
@@ -2111,6 +2411,15 @@ function renderEvent(event) {
       break;
     }
 
+    case 'sub_agent_tool_result': {
+      const eventData = normalizeSubAgentRunData(data);
+      if (!hasReliableSubAgentAttribution(eventData)) {
+        break;
+      }
+      foldSubAgentToolResult(eventData);
+      break;
+    }
+
     case 'sub_agent_complete': {
       if (watchState.active) {
         const agentType = data?.type || 'sub-agent';
@@ -2118,11 +2427,42 @@ function renderEvent(event) {
         const durationS = data?.duration_s || 0;
         watchState.addEntry('done', { type: agentType, detail: `${toolCalls} tools · ${durationS.toFixed(1)}s`, status: 'done' });
       }
-      setSubAgentWindowActive(false);
-      stopSpinner();
-      clearPendingHead();
-      flushFoldedSubAgentTools();
+      const eventData = normalizeSubAgentRunData(data);
       const agentType = data?.type || 'sub-agent';
+      // Retire this run's display lane; while sibling runs are still
+      // active keep the shared window/spinner alive for them.
+      const eventRunId = subAgentRunId(eventData);
+      const doneRun = session.activeSubAgentRuns?.get(eventRunId);
+      const doneLabel = doneRun ? subAgentLaneLabel(doneRun) : agentType;
+      const doneFold = eventRunId ? removeFoldedSubAgentTools(eventRunId) : null;
+      if (doneFold) {
+        doneFold.agentType = doneLabel;
+        doneFold.label = doneLabel;
+      }
+      if (eventRunId) session.activeSubAgentRuns?.delete(eventRunId);
+      else session.activeSubAgentRuns?.clear();
+      const siblingsActive = (session.activeSubAgentRuns?.size || 0) > 0;
+      // In verbose mode each sub-agent tool already rendered a full
+      // transcript card live — flushing the fold would list every tool a
+      // second time. The fold batch is the durable record ONLY when tools
+      // were folded (default verbosity).
+      const toolsRenderedLive = showSubAgentTools(getVerbosity());
+      if (siblingsActive) {
+        if (doneFold && !toolsRenderedLive) flushOneFoldedSubAgentTools(doneFold);
+        _syncSubAgentWindow();
+      } else {
+        setSubAgentWindowActive(false);
+        stopSpinner();
+        clearPendingHead();
+        session._lanesPreservedAtTurnEnd = false;
+        if (toolsRenderedLive) {
+          if (!doneFold) removeFoldedSubAgentTools(null);
+        } else if (doneFold) {
+          flushOneFoldedSubAgentTools(doneFold);
+        } else {
+          flushFoldedSubAgentTools();
+        }
+      }
       const usage = data?.usage || {};
       // Output tokens = generation size. Summing input+output across a
       // multi-iteration sub-agent double-counts the context re-shipped each
@@ -2135,7 +2475,8 @@ function renderEvent(event) {
       const summary = data?.result_summary
         || (data?.result_length > 0 ? `${agentType} returned ${data.result_length} chars` : '');
       process.stderr.write(renderSubAgentClose({
-        type: agentType,
+        id: eventRunId,
+        type: doneLabel,
         success: data?.success !== false,
         summary,
         costUsd,
@@ -2358,7 +2699,7 @@ function renderEvent(event) {
       break;
 
     // Live steering ack events (PRD-081 §5.2). renderEvent is called from
-    // the SSE loop (see `for await ... jsonlWriter.writeKeplerEvent(event)`
+    // the SSE loop (see `for await ... jsonlWriter.writeBahulamEvent(event)`
     // in the /execute path) so every event already lands in the transcript.
     // Here we only render the user-visible surface — no direct jsonlWriter
     // calls (it's out of scope in this top-level dispatcher anyway).
@@ -2386,8 +2727,24 @@ function renderEvent(event) {
       if (session.turns === 1 && session.user) telemetry.track('first_answer', {});
       stopSpinner();
       flushContent();
-      flushFoldedSubAgentTools();
-      resetSubAgents();
+      // Background/parallel runs can outlive the turn. When lanes are
+      // still active at turn end, preserve them (folds, stack, window) so
+      // late events land correctly instead of corrupting fresh state —
+      // but only for ONE turn boundary: if they're still around at the
+      // next complete with no closure, force-clean to avoid stale lanes.
+      const lanesLive = (session.activeSubAgentRuns?.size || 0) > 0;
+      if (lanesLive && !session._lanesPreservedAtTurnEnd) {
+        session._lanesPreservedAtTurnEnd = true;
+        const n = session.activeSubAgentRuns.size;
+        process.stderr.write(`  ${c.dim(`${n} agent run${n === 1 ? '' : 's'} still active in background — progress continues below`)}\n`);
+      } else {
+        session._lanesPreservedAtTurnEnd = false;
+        if (showSubAgentTools(getVerbosity())) resetFoldedSubAgentTools();
+        else flushFoldedSubAgentTools();
+        resetSubAgents();
+        session.activeSubAgentRuns?.clear();
+        setSubAgentWindowActive(false);
+      }
       session.inSubAgent = false;
 
       const summary = data?.summary || '';
@@ -2801,62 +3158,197 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
   return execContext;
 }
 
+function stripWrappingQuotes(value = '') {
+  const text = String(value || '').trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if ((first === '"' || first === "'") && first === last) {
+      return text.slice(1, -1).trim();
+    }
+  }
+  return text;
+}
+
+function addRunTarget(map, agent, kind = 'agent') {
+  const slug = String(agent?.slug || agent?.command || agent?.name || '').trim();
+  if (!slug || map.has(`${kind}:${slug}`)) return;
+  map.set(`${kind}:${slug}`, {
+    slug,
+    name: agent?.name || slug,
+    description: agent?.description || '',
+    scope: agent?.source_scope || agent?.source || kind,
+    kind,
+  });
+}
+
+function printRunUsage(ctx) {
+  process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+  process.stderr.write(`  ${c.gray('Example: /run docker-analyzer Analyze all running Docker containers')}\n`);
+
+  const targets = new Map();
+  for (const agent of listLocalAgents(safeCwd())) addRunTarget(targets, agent);
+  for (const agent of BUILTIN_AGENTS) addRunTarget(targets, agent);
+  for (const agent of ctx.toolExecutor?.listRunnables?.() || []) addRunTarget(targets, agent);
+  for (const agent of pluginRegistry?.listAgents?.() || []) addRunTarget(targets, agent);
+
+  const agents = [...targets.values()].filter(item => item.kind === 'agent').slice(0, 12);
+  if (agents.length) {
+    process.stderr.write(`\n  ${c.dim('Agents')}\n`);
+    for (const agent of agents) {
+      const desc = agent.description ? ` ${c.dim('- ' + agent.description)}` : '';
+      const scope = agent.scope ? ` ${c.dim('[' + agent.scope + ']')}` : '';
+      process.stderr.write(`  ${c.brand(agent.slug)}${scope}${desc}\n`);
+    }
+  }
+
+  const workflows = listLocalWorkflows(safeCwd()).slice(0, 8);
+  if (workflows.length) {
+    process.stderr.write(`\n  ${c.dim('Workflows')}\n`);
+    for (const workflow of workflows) {
+      const slug = workflow.slug || workflow.name;
+      const desc = workflow.description ? ` ${c.dim('- ' + workflow.description)}` : '';
+      process.stderr.write(`  ${c.brand(slug)}${desc}\n`);
+    }
+  }
+}
+
 async function handleRunCommand(rest = '', ctx) {
   const parts = String(rest || '').trim().split(/\s+/).filter(Boolean);
   const target = parts.shift();
-  const instruction = parts.join(' ');
+  const instruction = stripWrappingQuotes(parts.join(' '));
 
   if (!target) {
-    process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
+    printRunUsage(ctx);
     return;
   }
 
   const localAgent = listLocalAgents(safeCwd()).find(agent => localAgentMatches(agent, target));
   const builtinAgent = findBuiltinAgent(target);
-  const runnableAgent = localAgent || builtinAgent;
-  if (runnableAgent) {
-    try {
-      const execContext = await prepareDirectAgentRunContext(ctx, instruction || target);
-      return await runAgentDefinition(runnableAgent, instruction, ctx, session, renderEvent, {
-        cwd: execContext.cwd,
-        execContext,
-      });
-    } catch (err) {
-      process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
-      return;
-    }
-  }
+  const registeredAgent = ctx.toolExecutor?.listRunnables?.()
+    ?.find(agent => localAgentMatches(agent, target));
+  const pluginAgent = pluginRegistry?.listAgents?.()
+    ?.find(agent => localAgentMatches(agent, target));
+  const runnableAgent = localAgent || builtinAgent || registeredAgent || pluginAgent;
+
+  const creds = ctx.auth?.loadCredentials?.() || {};
+  const dispatchCtx = {
+    toolExecutor: ctx.toolExecutor,
+    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
+    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
+    renderEvent,
+    sessionSubstrate: makeSessionSubstrate(ctx),
+    auth: { token: creds.token || null },
+    credentials: {
+      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+    },
+    cwd: safeCwd(),
+  };
 
   try {
-    process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
-    const result = await ctx.toolExecutor.execute('workflow_run_multi', {
-      name: target,
-      instruction,
-    });
+    if (!runnableAgent) process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
+    const outcome = await dispatch({
+      type: 'manual',
+      source: 'repl:/run',
+      target: runnableAgent ? { kind: 'agent', slug: target, agent: runnableAgent } : target,
+      params: { instruction },
+      channel: null,
+    }, dispatchCtx);
 
-    if (result?.success === false) {
-      process.stderr.write(`  ${c.red('✗')} ${result.output || `Workflow '${target}' failed.`}\n`);
+    if (!outcome.dispatched) {
+      process.stderr.write(`  ${c.red('✗')} ${outcome.reason}\n`);
+      process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
       return;
     }
 
-    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Workflow '${target}' complete`)}\n`);
-    const details = [];
-    if (result?.run_id) details.push(`run ${result.run_id}`);
-    if (result?.duration_s) details.push(`${result.duration_s}s`);
-    if (result?.total_tokens) details.push(`${formatTokens(result.total_tokens)} tok`);
-    if (result?.total_cost) details.push(formatCostValue(result.total_cost));
-    if (details.length) process.stderr.write(`  ${c.dim(details.join(' · '))}\n`);
+    const result = outcome.result || {};
+    if (outcome.channel === 'server') {
+      if (result?.success === false) {
+        process.stderr.write(`  ${c.red('✗')} ${result.output || `Workflow '${target}' failed.`}\n`);
+        return;
+      }
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Workflow '${target}' complete`)}\n`);
+      const details = [];
+      if (result?.run_id) details.push(`run ${result.run_id}`);
+      if (result?.duration_s) details.push(`${result.duration_s}s`);
+      if (result?.total_tokens) details.push(`${formatTokens(result.total_tokens)} tok`);
+      if (result?.total_cost) details.push(formatCostValue(result.total_cost));
+      if (details.length) process.stderr.write(`  ${c.dim(details.join(' · '))}\n`);
 
-    const output = result?.result || result?.output || '';
-    if (output) {
-      process.stderr.write('\n');
-      process.stderr.write(renderMarkdown(String(output), { width: process.stderr.columns || 96 }));
-      process.stderr.write('\n');
+      // Push server workflow output to conversation history so the main
+      // agent sees the outcome next turn (mirrors local graph run below).
+      const serverOutput = result?.result || result?.output || '';
+      if (serverOutput && result?.success !== false) {
+        session.history.push(
+          { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+          { role: 'assistant', content: String(serverOutput) },
+        );
+      } else if (result?.success === false && result?.output) {
+        session.history.push(
+          { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+          { role: 'assistant', content: `Workflow failed: ${String(result.output)}` },
+        );
+      }
+
+      const output = serverOutput;
+      if (output) {
+        process.stderr.write('\n');
+        process.stderr.write(renderMarkdown(String(output), { width: process.stderr.columns || 96 }));
+        process.stderr.write('\n');
+      }
+      return;
+    }
+
+    // Local graph run. Session-substrate agent runs already push their own
+    // conversation history; feed workflow results (and logged-out direct
+    // runs) back so the main agent sees the outcome next turn.
+    if (result.status === 'failed') {
+      process.stderr.write(`  ${c.red('✗')} ${result.output || `'${target}' failed.`}\n`);
+    }
+    const historyCovered = Boolean(runnableAgent) && Boolean(creds.token);
+    if (result.output && result.status !== 'failed' && !historyCovered) {
+      session.history.push(
+        { role: 'user', content: `[${target}] ${instruction || 'run'}` },
+        { role: 'assistant', content: String(result.output) },
+      );
     }
   } catch (err) {
     process.stderr.write(`  ${c.red('✗')} ${err.message || String(err)}\n`);
     process.stderr.write(`  ${c.gray('Usage: /run <agent-or-workflow> [instruction]')}\n`);
   }
+}
+
+// Bridges the graph engine's session substrate onto runAgentDefinition:
+// the node's events stream through the same renderer, and the run keeps
+// its existing conversation-history feedback.
+function makeSessionSubstrate(ctx) {
+  return (agent, node, instruction) => (async function* () {
+    const queue = [];
+    let notify = null;
+    let finished = false;
+    const push = (event) => {
+      queue.push(event);
+      const wake = notify; notify = null;
+      wake?.();
+    };
+    const execContext = await prepareDirectAgentRunContext(ctx, instruction);
+    const done = runAgentDefinition(agent, instruction, ctx, session, push, {
+      cwd: execContext.cwd,
+      execContext,
+      pluginRegistry,
+    }).catch(err => push({ type: 'error', data: { message: err?.message || String(err) } }))
+      .finally(() => {
+        finished = true;
+        const wake = notify; notify = null;
+        wake?.();
+      });
+    while (!finished || queue.length) {
+      if (!queue.length) await new Promise(resolve => { notify = resolve; });
+      while (queue.length) yield queue.shift();
+    }
+    await done;
+  })();
 }
 
 async function handleCommand(input, ctx) {
@@ -3411,7 +3903,8 @@ async function handleCommand(input, ctx) {
       session.agentHistory.length = 0;
       session.toolCalls = 0;
       session.subAgentToolCalls = 0;
-      runtime.foldedSubAgentTools = null;
+      session.activeSubAgentRuns = new Map();
+      resetFoldedSubAgentTools();
       clearCards();
       process.stderr.write(`  ${c.gray('Conversation cleared.')}\n`);
       return;
@@ -3684,7 +4177,7 @@ async function handleCommand(input, ctx) {
       }
 
       // 5. Show continuity context. Non-summary modes use the captured
-      //    kepler_event stream when available so the terminal replay matches
+      //    bahulam_event stream when available so the terminal replay matches
       //    the original styled interaction; older sessions fall back to
       //    reconstructed text.
       if (mode === 'summary' && resumed.summary) {
@@ -3718,6 +4211,11 @@ async function handleCommand(input, ctx) {
 
     case '/skills':
       await handleSkillsCommand(rest, ctx);
+      return;
+
+    case '/plugin':
+    case '/plugins':
+      await handlePluginsCommand(rest, ctx);
       return;
 
     case '/explore':
@@ -3776,7 +4274,7 @@ export async function startTerminalRepl() {
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
-  const auth = new TarangAuth();
+  const auth = new BahulamAuth();
 
   // Projects are registered and indexed on demand through get_project_overview.
   // CheckpointManager records per-file snapshots before edits so /undo works.
@@ -3813,6 +4311,7 @@ export async function startTerminalRepl() {
     return createToolExecutor({
       checkpoints,
       hookRunner,
+      pluginRegistry,
       interactionHandler: askUserInteraction,
       onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
         const name = path.basename(root || safeCwd()) || root || 'project';
@@ -3828,6 +4327,7 @@ export async function startTerminalRepl() {
     });
   }
 
+  const pluginRegistry = new PluginRegistry().scan();
   let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
@@ -3843,6 +4343,26 @@ export async function startTerminalRepl() {
   let streamClient = null;
 
   const ctx = { auth, toolExecutor: null, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
+
+  // Wake-on-finish: background jobs with on_complete dispatch their target
+  // agent through the trigger funnel when they exit. The ctx builder runs
+  // lazily at fire time so it sees the live tool executor.
+  registerJobCompletionDispatch(() => {
+    const creds = ctx.auth?.loadCredentials?.() || {};
+    return {
+      toolExecutor: ctx.toolExecutor,
+      listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
+      listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
+      renderEvent,
+      sessionSubstrate: makeSessionSubstrate(ctx),
+      auth: { token: creds.token || null },
+      credentials: {
+        apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+        openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+      },
+      cwd: safeCwd(),
+    };
+  });
 
   let startupOutputRow = 1;
   let startupOutputCol = 1;
@@ -3897,7 +4417,7 @@ export async function startTerminalRepl() {
     flushContent();
     flushPendingHead();
     flushExploreRun();
-    runtime.foldedSubAgentTools = null;
+    resetFoldedSubAgentTools();
     clearCards();
 
     const preserved = {
@@ -3964,6 +4484,7 @@ export async function startTerminalRepl() {
       lastTurnDuration: 0,
       toolCounts: {},
       subAgentCounts: {},
+      activeSubAgentRuns: new Map(),
       savedUsd: 0,
       lastTask: '',
       lastReasoning: '',
@@ -4123,7 +4644,7 @@ export async function startTerminalRepl() {
       && richHistory.summary
       && Number(richHistory.summaryCoveredMessageCount) > Number(richHistory.summaryCheckpointMessageCount || 0)
     ) {
-      jsonlWriter.writeKeplerEvent({
+      jsonlWriter.writeBahulamEvent({
         type: 'resume_summary',
         data: {
           session_id: sessionId,
@@ -4138,7 +4659,7 @@ export async function startTerminalRepl() {
         },
       });
     }
-    jsonlWriter.writeKeplerEvent({
+    jsonlWriter.writeBahulamEvent({
       type: 'resume_context',
       data: {
         session_id: sessionId,
@@ -4224,8 +4745,8 @@ export async function startTerminalRepl() {
     printBanner(auth);
 
     // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
-    // KEPLER_NO_PREFLIGHT=1 (used by tests / scripted runs).
-    if (process.env.KEPLER_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
+    // BAHULAM_NO_PREFLIGHT=1 (used by tests / scripted runs).
+    if (process.env.BAHULAM_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
       try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
       catch { /* preflight is best-effort */ }
     }
@@ -4424,7 +4945,7 @@ export async function startTerminalRepl() {
   // Proxy stream: swallows writes when the dock owns the input row so
   // readline's echoes and _refreshLine cursor moves can't fight the dock's
   // absolute cursor placement (PRD-081 §5.1 — cursor race). When the dock
-  // is not mounted (plain-mode fallback, KEPLER_FIXED_INPUT=0, non-TTY),
+  // is not mounted (plain-mode fallback, BAHULAM_FIXED_INPUT=0, non-TTY),
   // writes pass through so history navigation / backspace still redraw.
   const readlineOutputProxy = new _WritableStream({
     write(chunk, _enc, cb) {
@@ -4471,7 +4992,7 @@ export async function startTerminalRepl() {
     // 3 rows fits comfortably in the dock's reservation without leaking
     // past the safety row.
     if (isInputDockMounted()) return 3;
-    const raw = process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5';
+    const raw = process.env.BAHULAM_PROMPT_BOTTOM_PADDING ?? '5';
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return Math.min(8, n);
@@ -4744,14 +5265,14 @@ export async function startTerminalRepl() {
   //   1. If the terminal supports bracketed paste, we hold flushing until we
   //      see the ESC[201~ end marker — reliable regardless of paste latency.
   //   2. Otherwise we fall back to a short timer that merges bursts arriving
-  //      within KEPLER_PASTE_FLUSH_MS.
+  //      within BAHULAM_PASTE_FLUSH_MS.
   let _lineInFlight = false;
   const _queuedLines = [];
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
   function pasteFlushDelayMs() {
-    const raw = Number.parseInt(process.env.KEPLER_PASTE_FLUSH_MS || '35', 10);
+    const raw = Number.parseInt(process.env.BAHULAM_PASTE_FLUSH_MS || '35', 10);
     return Number.isFinite(raw) && raw >= 0 ? Math.min(250, raw) : 35;
   }
 
@@ -4897,11 +5418,12 @@ export async function startTerminalRepl() {
     // Create or reuse stream client — sessionId persists across turns.
     // The same client also owns the authenticated vision-analysis preflight.
     if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
-      streamClient = new TarangStreamClient({
+      streamClient = new BahulamStreamClient({
         baseUrl: creds.backendUrl,
         token: creds.token,
         toolExecutor,
         approvalManager: approval,
+        pluginRegistry,
       });
     }
     const client = streamClient;
@@ -4921,7 +5443,7 @@ export async function startTerminalRepl() {
           `  ${c.brand('◇')} ${c.dim(`attached ${docPrep.documents.length} document${docPrep.documents.length === 1 ? '' : 's'}:`)} ` +
           `${docPrep.documents.map(documentSummaryLine).join(c.dim(' · '))}\n`
         );
-        jsonlWriter.writeKeplerEvent({
+        jsonlWriter.writeBahulamEvent({
           type: 'attachments',
           data: { documents: docPrep.documents.map(publicDocumentMetadata) },
         });
@@ -4937,7 +5459,7 @@ export async function startTerminalRepl() {
       });
       if (prepared.attachments.length) {
         process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
-        jsonlWriter.writeKeplerEvent({
+        jsonlWriter.writeBahulamEvent({
           type: 'attachments',
           data: { attachments: prepared.attachments.map(publicAttachmentMetadata) },
         });
@@ -4954,7 +5476,7 @@ export async function startTerminalRepl() {
           });
           process.stderr.write(`\r${' '.repeat(80)}\r`);
           process.stderr.write(`  ${c.green('✓')} ${c.dim(`Vision analysis completed for ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}`)}${analysis.model ? c.dim(` · ${analysis.model}`) : ''}\n`);
-          jsonlWriter.writeKeplerEvent({
+          jsonlWriter.writeBahulamEvent({
             type: 'vision_analysis',
             data: {
               model: analysis.model || '',
@@ -5140,7 +5662,7 @@ export async function startTerminalRepl() {
       // Persist the local record regardless of outcome so the transcript
       // reflects what the user typed. Delivered/queued follow-ups will
       // get their SSE ack events written separately by the event handler.
-      jsonlWriter.writeKeplerEvent({
+      jsonlWriter.writeBahulamEvent({
         type: 'user_intervention',
         data: {
           instruction,
@@ -5511,7 +6033,7 @@ export async function startTerminalRepl() {
         _turnIterable = client.execute(input, execContext, session.agentHistory);
       }
       for await (const event of _turnIterable) {
-        jsonlWriter.writeKeplerEvent(event);
+        jsonlWriter.writeBahulamEvent(event);
         // . daemon event log. Env-var gated (off by default) —
         // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.

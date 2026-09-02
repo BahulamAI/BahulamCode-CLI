@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadKeplerMemory } from '../config/memory-loader.mjs';
+import { loadBahulamMemory } from '../config/memory-loader.mjs';
 import { bahulamHome, projectConfigDir } from './paths.mjs';
 
 function sha(content) {
@@ -27,8 +27,8 @@ function readFile(filePath, label, maxChars = 12000) {
   }
 }
 
-function readTasks(keplerDir) {
-  const tasksDir = path.join(keplerDir, 'tasks');
+function readTasks(bahulamDir) {
+  const tasksDir = path.join(bahulamDir, 'tasks');
   const files = [];
   try {
     if (!fs.existsSync(tasksDir)) return files;
@@ -66,11 +66,11 @@ function scanSkills(dir, scope) {
 }
 
 export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}) {
-  const keplerDir = projectConfigDir(cwd);
+  const bahulamDir = projectConfigDir(cwd);
   const files = [];
-  for (const file of loadKeplerMemory({ cwd })) {
-    const label = file.path.endsWith(path.join('.bahulam', 'KEPLER.md'))
-      ? 'KEPLER.md'
+  for (const file of loadBahulamMemory({ cwd })) {
+    const label = file.path.endsWith(path.join('.bahulam', 'BAHULAM.md'))
+      ? 'BAHULAM.md'
       : path.basename(file.path);
     files.push({
       label,
@@ -83,10 +83,10 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
   }
 
   for (const name of ['config.json', 'project.md', 'style.md', 'goal.md', 'plan.md', 'hitl.md']) {
-    const file = readFile(path.join(keplerDir, name), name, name.endsWith('.json') ? 4000 : 12000);
+    const file = readFile(path.join(bahulamDir, name), name, name.endsWith('.json') ? 4000 : 12000);
     if (file) files.push(file);
   }
-  files.push(...readTasks(keplerDir));
+  files.push(...readTasks(bahulamDir));
 
   const previousHashes = new Map((previous?.files || []).map(f => [f.path, f.hash]));
   const changed = files.filter(f => f.hash && previousHashes.get(f.path) && previousHashes.get(f.path) !== f.hash);
@@ -102,14 +102,14 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
 
   const skills = [
     ...scanSkills(bahulamHome(), 'global'),
-    ...scanSkills(keplerDir, 'project'),
+    ...scanSkills(bahulamDir, 'project'),
   ];
   const byName = new Map();
   for (const skill of skills) byName.set(skill.name, skill);
 
   return {
     root: cwd,
-    kepler_dir: keplerDir,
+    kepler_dir: bahulamDir,
     files,
     loaded,
     changed,

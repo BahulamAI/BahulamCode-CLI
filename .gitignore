@@ -18,7 +18,11 @@ __pycache__/
 benchmark/.venv/
 benchmark/model-comparison/results/
 .vercel
-.env*
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
 
 # Ephemeral benchmark run artifacts (large, machine-generated)
 benchmark/results/runs/

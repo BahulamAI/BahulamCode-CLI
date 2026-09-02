@@ -11,7 +11,7 @@
  */
 
 import { c } from './ansi.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 
 // ── Agent Definitions ────────────────────────────────────────
 
@@ -113,7 +113,7 @@ const TOOL_ALIASES = new Map([
   ['grep', 'search_code'],
 ]);
 
-function canonicalToolName(value) {
+export function canonicalToolName(value) {
   const key = String(value || '').trim().toLowerCase();
   return TOOL_ALIASES.get(key) || key;
 }
@@ -133,7 +133,7 @@ function normalizeScopedArgs(toolName, args = {}, { projectRoot = null } = {}) {
   return next;
 }
 
-function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = {}) {
+export function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = {}) {
   const tools = Array.isArray(agent.tools) ? agent.tools : [];
   const allowed = new Set(tools.map(canonicalToolName).filter(Boolean));
   if (!allowed.size) return baseExecutor;
@@ -152,7 +152,11 @@ function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = 
         baseExecutor,
         toolName,
         normalizeScopedArgs(toolName, args, { projectRoot }),
-        options,
+        {
+          ...options,
+          internal: true,
+          subAgent: agent.slug || agent.command || agent.name || true,
+        },
       );
     },
   };
@@ -161,6 +165,22 @@ function createScopedToolExecutor(baseExecutor, agent, { projectRoot = null } = 
 export function findBuiltinAgent(agentName) {
   const target = String(agentName || '').trim().toLowerCase();
   return BUILTIN_AGENTS.find(agent => agent.command === target || agent.name.toLowerCase() === target) || null;
+}
+
+/**
+ * Search for an agent across built-in agents, project .bahulam/agents, and plugin agents.
+ * @param {string} agentName
+ * @param {object} [agentLoader] - Instance of AgentLoader with loadFromPlugins() called
+ * @returns {object|null}
+ */
+export function findAgent(agentName, agentLoader = null) {
+  const builtin = findBuiltinAgent(agentName);
+  if (builtin) return builtin;
+  if (agentLoader) {
+    const local = agentLoader.get(agentName);
+    if (local) return local;
+  }
+  return null;
 }
 
 export function localAgentMatches(agent, target) {
@@ -296,11 +316,12 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
     projectRoot: execContext.project_root || null,
   });
 
-  const client = new TarangStreamClient({
+  const client = new BahulamStreamClient({
     baseUrl: creds.backendUrl,
     token: creds.token,
     toolExecutor,
     approvalManager: agentApproval,
+    pluginRegistry: options.pluginRegistry || ctx.pluginRegistry || null,
   });
 
   session.turns++;
@@ -344,7 +365,8 @@ export async function runAgentDefinition(agentDefinition, instruction, ctx, sess
  * @param {Function} renderEvent - Event renderer function
  */
 export async function runAgent(agentName, instruction, ctx, session, renderEvent) {
-  const agent = findBuiltinAgent(agentName);
+  const agentLoader = ctx?.agentLoader || null;
+  const agent = findAgent(agentName, agentLoader);
   if (!agent) {
     process.stderr.write(`  ${c.red('Unknown agent: ' + agentName)}\n`);
     return;

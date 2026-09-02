@@ -81,7 +81,7 @@ test('blocks rm -rf home/current/wildcard targets', () => {
 });
 
 test('allows absolute rm targets as high risk for approval', () => {
-  const result = validateShellCommand('rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/kepler-docs/node_modules');
+  const result = validateShellCommand('rm -rf /Users/sree/Sites/Project/apps/my-docs/node_modules');
   assert.strictEqual(result.safe, true);
   assert.strictEqual(result.highRisk, true);
 });

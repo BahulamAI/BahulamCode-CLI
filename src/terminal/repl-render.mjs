@@ -34,8 +34,8 @@ import * as queue from '../ui/render-queue.mjs';
 // queue active) → coalesced last-wins status that can never interleave
 // with content. Legacy dock path and bare-TTY inPlace stay as fallbacks
 // until their write-sites migrate onto the queue too.
-// Max inner-tool lines shown under the spinner during a sub-agent run.
-const SUB_AGENT_WINDOW_ROWS = 7;
+// Max live-window lines under the spinner during a sub-agent run.
+const SUB_AGENT_WINDOW_ROWS = 8;
 
 function statusWidth() {
   return Math.max(8, (process.stderr.columns || process.stdout.columns || 120) - 1);
@@ -47,6 +47,18 @@ function fitStatusLine(line) {
 
 function fitStatusLines(lines) {
   return (Array.isArray(lines) ? lines : [lines]).map(fitStatusLine);
+}
+
+function subAgentWindowLines(win) {
+  if (win?.groups instanceof Map && win.groups.size) {
+    const lines = [];
+    for (const group of win.groups.values()) {
+      if (group?.header) lines.push(group.header);
+      for (const line of group?.lines || []) lines.push(line);
+    }
+    return lines;
+  }
+  return (win?.lines || []).slice(-SUB_AGENT_WINDOW_ROWS);
 }
 
 function presentStatus(rendered) {
@@ -69,10 +81,11 @@ function presentStatus(rendered) {
   const fitted = fitStatusLine(rendered);
   if (queue.isActive()) {
     const win = runtime.subAgentWindow;
-    if (win?.active && win.lines.length) {
+    const subAgentLines = subAgentWindowLines(win);
+    if (win?.active && subAgentLines.length) {
       queue.statusBlock([
         fitted,
-        ...fitStatusLines(win.lines.slice(-SUB_AGENT_WINDOW_ROWS).map(l => `    ${c.dim(l)}`)),
+        ...fitStatusLines(subAgentLines.map(l => `    ${c.dim(l)}`)),
       ]);
       return;
     }
@@ -95,7 +108,7 @@ export function pushSubAgentWindowLine(line) {
 }
 
 export function setSubAgentWindowActive(active) {
-  runtime.subAgentWindow = { active: Boolean(active), lines: [] };
+  runtime.subAgentWindow = { active: Boolean(active), lines: [], groups: new Map() };
 }
 
 /**
@@ -109,6 +122,25 @@ export function rebuildSubAgentWindow(lines) {
   const win = runtime.subAgentWindow;
   if (!win?.active) return;
   win.lines = Array.isArray(lines) ? lines.slice() : [];
+  win.groups = new Map();
+  repaintSpinnerStatus();
+}
+
+export function rebuildSubAgentWindowGroups(groups) {
+  const win = runtime.subAgentWindow;
+  if (!win?.active) return;
+  win.groups = new Map();
+  win.lines = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const key = group?.runId || group?.key || group?.label;
+    if (!key) continue;
+    win.groups.set(key, {
+      runId: group.runId || null,
+      label: group.label || 'sub-agent',
+      header: group.header || group.label || 'sub-agent',
+      lines: Array.isArray(group.lines) ? group.lines.slice() : [],
+    });
+  }
   repaintSpinnerStatus();
 }
 
@@ -133,7 +165,7 @@ import { safeCwd } from './repl-utils.mjs';
 import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
 
 export function blockSeparatorMode() {
-  return String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
+  return String(process.env.BAHULAM_BLOCK_SEPARATOR || 'space').toLowerCase();
 }
 
 export function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
@@ -211,12 +243,12 @@ function exploreRunTotal() {
 }
 
 function exploreSnapshotEvery() {
-  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_EVERY || '8', 10);
+  const n = Number.parseInt(process.env.BAHULAM_EXPLORE_SNAPSHOT_EVERY || '8', 10);
   return Number.isFinite(n) ? Math.max(1, n) : 8;
 }
 
 function exploreSnapshotMs() {
-  const n = Number.parseInt(process.env.KEPLER_EXPLORE_SNAPSHOT_MS || '900', 10);
+  const n = Number.parseInt(process.env.BAHULAM_EXPLORE_SNAPSHOT_MS || '900', 10);
   return Number.isFinite(n) ? Math.max(100, n) : 900;
 }
 
@@ -308,10 +340,26 @@ export function renderToolCall(data) {
   const args = data?.args || {};
   const indent = subAgentIndent();
   const callId = data?.call_id || data?._callId || `${tool}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fromSubAgent = Boolean(data?.internal || data?.sub_agent || data?.sub_agent_label || data?.sub_agent_run_id);
 
   // If a previous head is still pending (no result yet), flush it as a
   // regular two-line shape before starting the next one.
   flushPendingHead();
+
+  // Sub-agent live window (queue mode): inner tool calls stream into the
+  // fixed-height status block instead of appending transcript lines. Keep
+  // this ahead of explore-collapse so parallel explores do not merge into
+  // one global read/search spinner.
+  if (fromSubAgent && queue.isActive() && runtime.subAgentWindow?.active) {
+    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
+    const label = readToolLabel(tool, { args });
+    const runId = data?.run_id || data?.sub_agent_run_id || '';
+    const runSuffix = runId ? ` run ${String(runId).slice(0, 8)}` : '';
+    const lane = data?.sub_agent_label ? `[${data.sub_agent_label}${runSuffix}] ` : '';
+    pushSubAgentWindowLine(label ? `${lane}→ ${tool} · ${label}` : `${lane}→ ${tool}`);
+    return; // the spinner tick paints the window block
+  }
 
   // ── Explore-run collapse ────────────────────────────────────────────────
   // For list/read/search/index tools, skip the per-call head entirely and
@@ -328,9 +376,8 @@ export function renderToolCall(data) {
     return;
   }
 
-  // Sub-agent live window (queue mode): inner tool calls stream into the
-  // fixed-height status block instead of appending transcript lines. The
-  // card is still recorded so /expand, /last, and `d` show full detail.
+  // Legacy sub-agent live window fallback for events without explicit
+  // sub-agent metadata.
   if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
     recordCard({ id: callId, tool, args, startedAt: Date.now() });
     session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
@@ -391,7 +438,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
 
   if (data._blocked) session.blockedOps++;
 
-  const { text, tone: t } = summarizeResult(tool, data);
+  const { text, tone: t } = summarizeResult(tool, data, data.args || {});
   // Em dash reads more like prose than a system arrow.
   const arrow = shellResultTool(tool)
     ? `${paint.text.dim('result')} ${paint.text.dim('—')}`
@@ -410,6 +457,14 @@ export function renderToolResult(data, eventType = 'tool_result') {
     indent: gutter,
     columns: process.stderr.columns || 120,
   });
+  const fromSubAgent = Boolean(data?.internal || data?.sub_agent || data?.sub_agent_label || data?.sub_agent_run_id);
+
+  // Sub-agent live window: the call line is already streaming in the
+  // status block; the result stays card-only (close card summarizes). This
+  // must run before explore-collapse for read/search tools used by explores.
+  if (fromSubAgent && queue.isActive() && runtime.subAgentWindow?.active) {
+    return;
+  }
 
   // Explore tools: the call already updated the summary spinner. Refresh
   // the "latest" hint with the result's file if we have one, and skip the
@@ -421,8 +476,8 @@ export function renderToolResult(data, eventType = 'tool_result') {
     return;
   }
 
-  // Sub-agent live window: the call line is already streaming in the
-  // status block; the result stays card-only (close card summarizes).
+  // Legacy sub-agent live window fallback for events without explicit
+  // sub-agent metadata.
   if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
     return;
   }
@@ -840,16 +895,38 @@ export function transcriptRenderableLines(rendered) {
   return lines;
 }
 
+function positiveInteger(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+export function stagnationDisplayCount(data = {}, reason = '') {
+  const text = String(reason || data?.reason || data?.message || '');
+  const patterns = [
+    /\bcalled\s+(\d+)\s+times\b/i,
+    /[×x]\s*(\d+)\b/i,
+    /\brepeated\s+(\d+)x\b/i,
+    /\b(\d+)\s+times\s+without\s+mutation\b/i,
+    /\b(\d+)\s+tool\s+calls\s+without\s+mutating\s+state\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const count = positiveInteger(match?.[1]);
+    if (count) return count;
+  }
+  return positiveInteger(data?.count) || positiveInteger(data?.repeat_count);
+}
+
 export function renderStagnation(data = {}) {
   const rawMessage = data?.message || '';
   const reason = data?.reason || rawMessage.replace(/^Stagnation:\s*/i, '').trim();
   const tool = data?.tool || data?.tool_name || '';
-  const count = data?.repeat_count || data?.count || null;
+  const count = stagnationDisplayCount(data, reason);
   // Try to extract a target/path from the reason so we can show a
   // compact one-liner. Reason shapes we know about from the framework:
   //   "Repeated overlapping <tool> inspections of '<target>' N times without mutation"
   //   "..."  (fallback: use reason as-is, trimmed to ~80 chars)
-  const targetMatch = reason.match(/of\s+['"]([^'"]+)['"]/);
+  const targetMatch = reason.match(/(?:of|on)\s+['"]([^'"]+)['"]/);
   const target = targetMatch ? targetMatch[1] : '';
 
   // Compose a compact single-line message:

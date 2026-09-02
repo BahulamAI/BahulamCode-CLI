@@ -58,9 +58,13 @@ export const AgentTool = {
     _backgroundAgents: new Map(),
     _nextBgId: 0,
 
-    async call(input) {
+    async call(input, options = {}) {
         const model = input.model || process.env.SUBAGENT_MODEL || 'claude-sonnet-4-6';
-        const tools = createToolRegistry();
+        const tools = createToolRegistry({
+            pluginRegistry: options.pluginRegistry || null,
+            stateEmit: options.stateEmit || null,
+            exposePluginTools: true,
+        });
         const permissions = createPermissionChecker({ defaultMode: 'bypassPermissions' });
 
         // Build type-specific system prompt prefix
@@ -87,10 +91,10 @@ export const AgentTool = {
             settings: {
                 stream: false,
                 stagnationDetection: !['0', 'false', 'no', 'off'].includes(
-                    (process.env.KEPLER_STAGNATION_DETECTION ?? '0').toLowerCase(),
+                    (process.env.BAHULAM_STAGNATION_DETECTION ?? '0').toLowerCase(),
                 ),
                 stagnationThreshold: Number.parseInt(
-                    process.env.KEPLER_STAGNATION_THRESHOLD
+                    process.env.BAHULAM_STAGNATION_THRESHOLD
                     ?? '3',
                     10,
                 ),

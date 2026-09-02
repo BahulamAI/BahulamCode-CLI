@@ -70,11 +70,12 @@ export function displayQuery(query, max = 140) {
 
 export function renderSubAgentOpen({ id, type, query, parentDepth } = {}) {
   const t = type || 'sub-agent';
-  const depthBefore = _stack.length;
-  _stack.push({ id: id || `${t}-${depthBefore}-${tag()}`, type: t, startedAt: Date.now() });
+  const depthBefore = Number.isFinite(parentDepth) ? Math.max(0, parentDepth) : _stack.length;
+  _stack.push({ id: id || `${t}-${depthBefore}-${tag()}`, type: t, depth: depthBefore, startedAt: Date.now() });
 
   const indent = ' '.repeat(2 + depthBefore * 3);
-  const iconChar = SUB_ICONS[t] || icons.subAgent;
+  // Ordinal labels (explore#2) still get their base type's icon.
+  const iconChar = SUB_ICONS[t] || SUB_ICONS[String(t).replace(/#\d+$/, '')] || icons.subAgent;
   const shown = displayQuery(query);
   const head = `${indent}${iconChar} ${paint.brand.data(t)} ${paint.text.dim(`"${shown}"`)}`;
   const tag1 = paint.text.dim('▸ running');
@@ -95,6 +96,7 @@ export function renderSubAgentOpen({ id, type, query, parentDepth } = {}) {
  * and any of `{ costUsd, tokens, durationS, toolCalls, iterations }`.
  */
 export function renderSubAgentClose({
+  id,
   type,
   success = true,
   summary = '',
@@ -105,12 +107,16 @@ export function renderSubAgentClose({
   iterations,
   error,
 } = {}) {
-  // Match-pop: if the type doesn't match the top of stack we still pop the
-  // top entry — backends never emit interleaved open/close, so this is the
-  // safe behavior.
-  const opened = _stack.pop();
+  // Parallel sub-agents can complete out of stack order. Prefer exact id,
+  // then type, and fall back to the latest open entry for legacy streams.
+  let idx = -1;
+  if (id) idx = _stack.findLastIndex(entry => entry.id === id);
+  if (idx < 0 && type) idx = _stack.findLastIndex(entry => entry.type === type);
+  if (idx < 0) idx = _stack.length - 1;
+  const opened = idx >= 0 ? _stack.splice(idx, 1)[0] : null;
   const t = type || opened?.type || 'sub-agent';
-  const indent = ' '.repeat(2 + _stack.length * 3);
+  const closeDepth = Number.isFinite(opened?.depth) ? opened.depth : _stack.length;
+  const indent = ' '.repeat(2 + closeDepth * 3);
 
   if (!success) {
     const line = `${indent}${paint.text.dim('└')} ${paint.state.danger('✗')} ${paint.text.dim(`${t} agent failed`)}`;

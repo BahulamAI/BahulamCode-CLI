@@ -28,7 +28,7 @@ Format v1. Markdown files are intentionally hand-editable.
   'config.json': JSON.stringify({
     version: 1,
     context: {
-      loadEveryTurn: ['KEPLER.md', 'project.md', 'style.md', 'goal.md', 'plan.md', 'tasks/*.md'],
+      loadEveryTurn: ['BAHULAM.md', 'project.md', 'style.md', 'goal.md', 'plan.md', 'tasks/*.md'],
       showReloadNotice: true,
     },
     planning: { owner: 'auto', onUserEditedPlan: 'prefer_user_plan' },
@@ -57,7 +57,7 @@ Format v1. Markdown files are intentionally hand-editable.
       Stop: [],
     },
   }, null, 2) + '\n',
-  'KEPLER.md': `# Project
+  'BAHULAM.md': `# Project
 
 ## Quick Facts
 - Stack:

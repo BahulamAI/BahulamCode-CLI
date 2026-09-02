@@ -11,6 +11,8 @@
  * --max-turns          Maximum conversation turns
  * --allowedTools       Comma-separated allowed tools
  * --disallowedTools    Comma-separated denied tools
+ * --agent <slug>       Run a named agent (local deterministic graph)
+ * --workflow <name>    Run a named workflow (local deterministic graph)
  * --verbose, -v        Verbose output
  * --debug, -d          Debug mode
  * --version            Show version
@@ -34,6 +36,8 @@ export function parseArgs(args) {
         resumeSessionId: null,
         headless: false,
         skipPermissions: false,
+        agent: null,
+        workflow: null,
         vision: [],
         verbose: false,
         debug: false,
@@ -107,6 +111,14 @@ export function parseArgs(args) {
             case '--headless':
                 result.headless = true;
                 result.skipPermissions = true; // headless implies skip permissions
+                break;
+
+            case '--agent':
+                result.agent = args[++i];
+                break;
+
+            case '--workflow':
+                result.workflow = args[++i];
                 break;
 
             case '--cache-report':
@@ -184,6 +196,8 @@ Options:
   --disallowedTools <tools>  Comma-separated list of denied tools
   --resume, -r [sessionId]   Resume last session (or specific session)
   --continue                 Alias for --resume
+  --agent <slug>             Run a named agent as a deterministic local graph
+  --workflow <name>          Run a named workflow as a deterministic local graph
   --headless                 Non-interactive mode: auto-approve, JSONL output
   --cache-report <file>      Write prompt-cache summary JSON to <file> (headless only)
   --vision <image-path>      Attach image path in headless mode
@@ -197,6 +211,8 @@ Examples:
   occ                        Start interactive REPL
   occ -p "What is 2+2?"     Run prompt and exit
   occ -m claude-haiku-4-5    Use Haiku model
+  occ --agent explore -p "Map auth flow"  Run the explore agent headlessly
+  occ --workflow deploy -p "Deploy"       Run a workflow headlessly
   occ --debug -p "Fix bug"  Debug mode with prompt
 `.trim();
 }

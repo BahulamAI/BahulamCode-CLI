@@ -163,7 +163,7 @@ test('long path in a 40-col terminal: chunks safely within budget', () => {
 test('input-dock exports the dynamic-growth API surface', () => {
   // Consumers of the dock (repl.mjs execution input) call renderDockInput
   // with a prefix + value; the dock internally grows/shrinks the input
-  // area to fit the wrapped content up to KEPLER_INPUT_ROWS_MAX.
+  // area to fit the wrapped content up to BAHULAM_INPUT_ROWS_MAX.
   for (const fn of ['renderDockInput', 'focusDockInput', 'prepareInputPrompt',
                     'clearInputPrompt', 'mountInputDock', 'unmountInputDock',
                     'clearDockArea', 'moveToContent', 'isInputDockMounted',

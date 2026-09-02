@@ -27,7 +27,7 @@ function test(name, fn) {
 
 /** Create a temp project dir with files and a built index. */
 function createIndexedProject() {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-idx-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-idx-'));
 
     // Create source files
     fs.writeFileSync(path.join(tmpDir, 'auth.js'), `

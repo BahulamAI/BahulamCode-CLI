@@ -27,7 +27,7 @@ function test(name, fn) {
 console.log('\n\x1b[1mtest-approval-log.mjs\x1b[0m\n');
 
 function tempProject() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-approval-log-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-approval-log-'));
 }
 
 function readLog(cwd) {

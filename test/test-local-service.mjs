@@ -119,7 +119,7 @@ try {
     },
   };
   relayForFollowup._ensureJsonlWriter = () => ({
-    writeKeplerEvent: (event) => relayFollowupJsonl.push(event),
+    writeBahulamEvent: (event) => relayFollowupJsonl.push(event),
   });
   const relayFollowupResult = await relayForFollowup.sendFollowup({ instruction: 'switch to the safer plan' });
   assert.equal(relayFollowupResult.status, 'accepted');
@@ -164,6 +164,36 @@ try {
   seededWriter.recordToolResult('call_history', 'README.md', false, { tool: 'shell' });
   seededWriter.flushAssistantTurn();
   await seededWriter.close();
+
+  const relayHistoryEvents = [];
+  const relayForHistory = new LocalAgentRelay({
+    session,
+    emit: (type, data) => relayHistoryEvents.push({ type, data }),
+  });
+  relayForHistory.turnCount = 2;
+  relayForHistory.resumeLoaded = true;
+  relayForHistory.resumeSessionId = 'prior-local-service';
+  relayForHistory.displayHistory = [{ role: 'user', content: 'old turn' }];
+  relayForHistory.agentHistory = [{ role: 'user', content: 'old turn' }];
+  relayForHistory.client = { sessionId: 'prior-local-service', currentTaskId: 'task-prior' };
+  const freshHistory = await relayForHistory.startNewHistory();
+  assert.equal(freshHistory.ok, true);
+  assert.equal(freshHistory.backend_session_id, null);
+  assert.deepEqual(freshHistory.messages, []);
+  assert.equal(relayForHistory.turnCount, 0);
+  assert.equal(relayForHistory.client.sessionId, null);
+  assert.equal(relayForHistory.client.currentTaskId, null);
+  assert.equal(relayHistoryEvents.some((event) => event.type === 'agent_history_new'), true);
+
+  relayForHistory.turnCount = 3;
+  relayForHistory.resumeSessionId = 'another-local-service';
+  relayForHistory.client = { sessionId: 'another-local-service' };
+  const resumedHistory = await relayForHistory.resumeHistory('resume-local-service');
+  assert.equal(resumedHistory.ok, true);
+  assert.equal(resumedHistory.backend_session_id, 'resume-local-service');
+  assert.equal(resumedHistory.messages.some((msg) => msg.role === 'user' && msg.content === 'previous local question'), true);
+  assert.equal(relayForHistory.turnCount, 0);
+  assert.equal(relayForHistory.client.sessionId, 'resume-local-service');
 
   const service = await startLocalWorkspaceService({ session, token, port: 0 });
   try {

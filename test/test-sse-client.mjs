@@ -1,10 +1,13 @@
 /**
- * Unit tests for TarangStreamClient SSE parsing.
+ * Unit tests for BahulamStreamClient SSE parsing.
  */
 
-import { TarangStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
+import { BahulamStreamClient, EVENT_TYPES } from '../src/core/stream-client.mjs';
 import * as telemetry from '../src/telemetry/index.mjs';
+import * as fs from 'node:fs';
 import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import assert from 'node:assert';
 
 process.env.BAHULAM_RUNTIME_MODE = 'remote';
@@ -71,7 +74,7 @@ await test('parses status event', async () => {
         { event: 'status', data: { message: 'Starting...' } },
         { event: 'complete', data: { summary: 'Done', changes: 1 } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -88,6 +91,68 @@ await test('parses status event', async () => {
     assert.strictEqual(events[1].type, 'complete');
 });
 
+await test('upserts lifecycle memory facts returned on complete', async () => {
+    telemetry.clear();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-sse-memory-'));
+    const oldHome = process.env.HOME;
+    const oldCwd = process.cwd();
+    process.env.HOME = path.join(root, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    process.chdir(root);
+
+    const { server, port } = await createMockServer([
+        {
+            event: 'complete',
+            data: {
+                summary: 'Done',
+                memory_facts_to_persist: [
+                    {
+                        user_id: 'cli-local',
+                        fact_id: 'run-1',
+                        content: 'Use lifecycle memory capture for CLI disk mode.',
+                        fact_type: 'learned_fact',
+                        confidence: 1,
+                        source: 'workflow_run:run-1',
+                        tags: ['run_summary', 'workflow:project-existing'],
+                        metadata: { processor: 'summary' },
+                        access_count: 0,
+                        created_at: '2026-08-30T12:00:00',
+                        updated_at: '2026-08-30T12:00:00',
+                        memory_scope: 'project',
+                        project_id: null,
+                    },
+                ],
+            },
+        },
+    ]);
+
+    try {
+        const client = new BahulamStreamClient({
+            baseUrl: `http://127.0.0.1:${port}`,
+            token: 'test',
+            toolExecutor: mockToolExecutor,
+        });
+        const events = [];
+        for await (const evt of client.execute('test')) {
+            events.push(evt);
+        }
+
+        const text = fs.readFileSync(path.join(root, '.bahulam', 'memory.md'), 'utf-8');
+        assert.strictEqual(events.at(-1).type, EVENT_TYPES.COMPLETE);
+        assert.match(text, /fact:run-1/);
+        assert.match(text, /scope:project/);
+        assert.match(text, /type:learned_fact/);
+        assert.match(text, /Use lifecycle memory capture for CLI disk mode\./);
+        assert.strictEqual(telemetry.getStats().eventCounts['memory.disk.upserted'], 1);
+    } finally {
+        server.close();
+        process.chdir(oldCwd);
+        if (oldHome === undefined) delete process.env.HOME;
+        else process.env.HOME = oldHome;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 await test('parses SSE id and retry fields', async () => {
     const server = http.createServer((req, res) => {
         if (req.url === '/api/execute') {
@@ -102,7 +167,7 @@ await test('parses SSE id and retry fields', async () => {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -140,7 +205,7 @@ await test('reconnects to task events after mid-stream drop', async () => {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -194,7 +259,7 @@ await test('reconnect after tool_call does not duplicate local tool execution', 
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -240,7 +305,7 @@ await test('reconnect replays complete when task finished while disconnected', a
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -283,7 +348,7 @@ await test('stale approval callback surfaces a continuation error', async () => 
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -329,7 +394,7 @@ await test('tool_call triggers execution, callback, and tool_result', async () =
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -365,7 +430,7 @@ await test('forwarded sub-agent tool_call preserves metadata on local tool_resul
         },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -402,7 +467,7 @@ await test('tool_result with file_diff yields structured file_diff event', async
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -477,7 +542,7 @@ await test('pause gates local tool execution until resume', async () => {
 
     let executedAt = 0;
     let resumedAt = 0;
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -523,7 +588,7 @@ await test('client cancel ends stream without redundant cancelled status', async
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -560,7 +625,7 @@ await test('server-side tool_done with file_diff also yields file_diff event', a
         },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -581,7 +646,7 @@ await test('error event yielded', async () => {
     const { server, port } = await createMockServer([
         { event: 'error', data: { message: 'Something went wrong', fatal: true } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -605,7 +670,7 @@ await test('401 yields auth error', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'bad',
         openRouterKey: 'test',
@@ -640,7 +705,7 @@ await test('429 yields friendly rate limit error', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -669,7 +734,7 @@ await test('429 credit exhaustion preserves billing guidance', async () => {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: mockToolExecutor,
@@ -690,7 +755,7 @@ await test('plan event with milestones', async () => {
         { event: 'plan', data: { milestones: [{ name: 'Setup', status: 'pending' }, { name: 'Build', status: 'pending' }] } },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         openRouterKey: 'test',
@@ -713,7 +778,7 @@ await test('server-side tool_call is not executed locally', async () => {
         { event: 'tool_done', data: { call_id: 'mcp1', tool: 'mcp_demo', success: true, server_side: true } },
         { event: 'complete', data: { summary: 'Done' } },
     ]);
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test',
         toolExecutor: {
@@ -754,7 +819,7 @@ await test('summarizeSession posts transcript with auth and product headers', as
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
 
-    const client = new TarangStreamClient({
+    const client = new BahulamStreamClient({
         baseUrl: `http://127.0.0.1:${port}`,
         token: 'test-token',
         toolExecutor: mockToolExecutor,
@@ -773,6 +838,139 @@ await test('summarizeSession posts transcript with auth and product headers', as
     assert.strictEqual(received.body.project_path, '/tmp/project');
     assert.strictEqual(received.body.max_tokens, 500);
     assert.deepStrictEqual(received.body.messages, [{ role: 'user', content: 'hello' }]);
+});
+
+await test('execute injects plugin tools only as agent-scoped schemas', async () => {
+    let received = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                received = JSON.parse(body);
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'X-Task-ID': 'task-plugin-context',
+                });
+                res.write('event: complete\ndata: {"summary":"ok"}\n\n');
+                res.end();
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const pluginRegistry = {
+        listTools: () => [{
+            name: 'docker_analyze',
+            description: 'Analyze Docker containers',
+            input_schema: { type: 'object', properties: { verbose: { type: 'boolean' } } },
+            _plugin_name: 'docker-tools',
+        }],
+        listAgents: () => [{
+            slug: 'docker-analyzer',
+            name: 'Docker Analyzer',
+            role: 'diagnostics',
+            description: 'Container diagnostics specialist',
+            tools: ['docker_analyze'],
+            system_prompt: 'Use docker_analyze before answering Docker questions.',
+            model: 'test-model',
+            _plugin_name: 'docker-tools',
+        }],
+    };
+
+    const client = new BahulamStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        toolExecutor: mockToolExecutor,
+        pluginRegistry,
+    });
+    const events = [];
+    for await (const evt of client.execute('inspect docker')) events.push(evt);
+    server.close();
+
+    assert.ok(events.some(e => e.type === 'complete'));
+    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_agent_tools, [{
+        name: 'docker_analyze',
+        description: 'Analyze Docker containers',
+        input_schema: { type: 'object', properties: { verbose: { type: 'boolean' } } },
+        source_scope: 'plugin',
+        plugin_name: 'docker-tools',
+        allowed_agents: ['docker-analyzer'],
+    }]);
+    assert.strictEqual(received.client_agents[0].slug, 'docker-analyzer');
+    assert.deepStrictEqual(received.client_agents[0].tools, ['docker_analyze']);
+    assert.match(received.client_agents[0].system_prompt, /docker_analyze/);
+    assert.strictEqual(received.client_agents[0].plugin_name, 'docker-tools');
+    assert.strictEqual(received.client_agents[0].source_scope, 'plugin');
+});
+
+await test('execute scopes plugin tool schemas to custom agents that reference them', async () => {
+    let received = null;
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                received = JSON.parse(body);
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'X-Task-ID': 'task-custom-plugin-tool',
+                });
+                res.write('event: complete\ndata: {"summary":"ok"}\n\n');
+                res.end();
+            });
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    const pluginRegistry = {
+        listTools: () => [{
+            name: 'opt_chain',
+            description: 'Fetch option chain',
+            input_schema: { type: 'object', properties: { symbol: { type: 'string' } } },
+            _plugin_name: 'options-terminal',
+        }],
+        listAgents: () => [],
+    };
+
+    const client = new BahulamStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test-token',
+        toolExecutor: mockToolExecutor,
+        pluginRegistry,
+    });
+    const context = {
+        agent_ctx: {
+            available_agents: [{
+                slug: 'custom-options-agent',
+                name: 'Custom Options Agent',
+                tools: ['read_file', 'opt_chain'],
+            }],
+        },
+    };
+    const events = [];
+    for await (const evt of client.execute('inspect options', context)) events.push(evt);
+    server.close();
+
+    assert.ok(events.some(e => e.type === 'complete'));
+    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_agent_tools, [{
+        name: 'opt_chain',
+        description: 'Fetch option chain',
+        input_schema: { type: 'object', properties: { symbol: { type: 'string' } } },
+        source_scope: 'plugin',
+        plugin_name: 'options-terminal',
+        allowed_agents: ['custom-options-agent'],
+    }]);
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

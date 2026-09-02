@@ -16,12 +16,70 @@ import {
 import { parseArgs } from '../config/cli-args.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { bahulamHome } from '../core/paths.mjs';
-import { TarangAuth as Auth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth as Auth } from '../auth/bahulam-auth.mjs';
 
 // ── Subcommands ──
 
 const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
+
+const PLUGIN_MANAGEMENT_COMMANDS = new Set([
+  'install', 'validate', 'check', 'lint',
+  'list', 'ls', 'remove', 'rm', 'uninstall',
+  'enable', 'disable', 'info', 'update', 'upgrade',
+]);
+
+function parsePluginArgs(argv) {
+  const parsed = {
+    action: null,       // 'open' (default) or a management verb
+    pluginName: null,
+    targetPath: null,
+    source: null,       // install source: git url, tarball, local dir
+    port: 0,
+    open: true,
+    help: false,
+    json: false,
+    global: true,       // install target: ~/.bahulam vs project .bahulam
+    force: false,
+    ref: null,          // git branch/tag/commit
+  };
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--help':
+      case '-h': parsed.help = true; break;
+      case '--port': parsed.port = Number(argv[++i]) || 0; break;
+      case '--no-open': parsed.open = false; break;
+      case '--json': parsed.json = true; parsed.open = false; break;
+      case '--project': parsed.global = false; break;
+      case '--global': parsed.global = true; break;
+      case '--force': case '-f': parsed.force = true; break;
+      case '--ref': case '--tag': case '--branch': parsed.ref = argv[++i]; break;
+      default:
+        if (!arg.startsWith('-')) positional.push(arg);
+        break;
+    }
+  }
+  if (positional.length && PLUGIN_MANAGEMENT_COMMANDS.has(positional[0].toLowerCase())) {
+    parsed.action = positional.shift().toLowerCase();
+    if (parsed.action === 'install') parsed.source = positional.shift() || null;
+    else if (['validate', 'check', 'lint'].includes(parsed.action)) {
+      // Accepts either a directory path or an installed plugin name.
+      const arg = positional.shift() || null;
+      if (arg && (arg.includes('/') || fs.existsSync?.(arg))) parsed.source = arg;
+      else parsed.pluginName = arg;
+    }
+    else if (['info', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'update', 'upgrade'].includes(parsed.action)) {
+      parsed.pluginName = positional.shift() || null;
+    }
+  } else {
+    parsed.action = 'open';
+    parsed.pluginName = positional.shift() || null;
+    parsed.targetPath = positional.shift() || null;
+  }
+  return parsed;
+}
 
 function parseKeplerSubcommandArgs(command, argv) {
   const parsed = {
@@ -183,8 +241,8 @@ async function main() {
   }
 
   if (subcommand === 'login') {
-    const { TarangAuth } = await import('../auth/tarang-auth.mjs');
-    const auth = new TarangAuth();
+    const { BahulamAuth } = await import('../auth/bahulam-auth.mjs');
+    const auth = new BahulamAuth();
     try {
       telemetry.track('login_shown', { method: 'cli_subcommand' });
       await auth.login();
@@ -198,8 +256,8 @@ async function main() {
   }
 
   if (subcommand === 'logout') {
-    const { TarangAuth } = await import('../auth/tarang-auth.mjs');
-    const auth = new TarangAuth();
+    const { BahulamAuth } = await import('../auth/bahulam-auth.mjs');
+    const auth = new BahulamAuth();
     const success = auth.logout();
     if (success) {
       process.stderr.write('\x1b[32m✓ Signed out. Credentials cleared.\x1b[0m\n');
@@ -221,6 +279,18 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'plugin' || subcommand === 'plugins') {
+    const args = parsePluginArgs(subcommandArgs);
+    if (args.action && args.action !== 'open') {
+      const { handlePluginManagementCommand } = await import('../commands/plugin-manage.mjs');
+      await handlePluginManagementCommand(args, { cwd: process.cwd() });
+      return;
+    }
+    const { handlePluginCommand } = await import('../commands/plugin.mjs');
+    await handlePluginCommand(args, { cwd: process.cwd() });
+    return;
+  }
+
   if (subcommand === 'version' || subcommand === '--version' || subcommand === '-v') {
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
@@ -236,6 +306,8 @@ async function main() {
   \x1b[1mUsage:\x1b[0m
     bahulam                        Start interactive REPL
     bahulam "instruction"          Run a single instruction
+    bahulam --agent <slug> -p "x"  Run a named agent (local deterministic graph)
+    bahulam --workflow <name> -p   Run a named workflow (local deterministic graph)
     bahulam --headless -p "x"      Non-interactive: auto-approve, JSONL output
     bahulam --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
@@ -259,6 +331,9 @@ async function main() {
     bahulam workspace open [path]  Start localhost workspace service
     bahulam workspace list         List recent local workspace sessions
     bahulam local open [path]      Alias for workspace open
+
+  \x1b[1mPlugins:\x1b[0m
+    bahulam plugin <name> [path]   Open a workspace with a named plugin
 
   \x1b[1mAnalytics:\x1b[0m
     bahulam sessions               List recent local sessions
@@ -287,7 +362,7 @@ async function main() {
     /architect <query>      Spawn architecture planning agent
     /agents create <name>   Create project-local user-defined agent YAML
     /agents edit <name>     Open a local agent YAML in your editor
-    /agents sync [name]     Sync all or one local agent to Supabase
+    /agents sync [name]     Optionally publish local agents to backend/account
     /attach <image-path>    Attach an image to next prompt
     /attach clipboard       Attach image copied to macOS/Windows clipboard
     /exit                   Exit the REPL
@@ -302,11 +377,11 @@ async function main() {
     ANTHROPIC_API_KEY       Direct Anthropic API key
     OPENROUTER_API_KEY      OpenRouter API key
     BAHULAM_CONFIG_DIR        Override config directory (default: ~/.bahulam)
-    KEPLER_CONFIG_DIR         Legacy config directory override
-    KEPLER_RECONNECT_MAX_ELAPSED_MS
+    BAHULAM_CONFIG_DIR         Legacy config directory override
+    BAHULAM_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     BAHULAM_TTY_MODE=stable Scrollback-safe transcript if fixed dock redraws leak
-    KEPLER_BLOCK_SEPARATOR  Tool/content separator: space, dotted, or off
+    BAHULAM_BLOCK_SEPARATOR Tool/content separator: space, dotted, or off
 
   \x1b[2mDocs: https://bahulam.ai\x1b[0m
 `);
@@ -407,7 +482,9 @@ async function main() {
   const daemonSpawned = process.env.BAHULAM_DAEMON_SPAWNED === '1';
   const daemonPrompt = daemonSpawned ? (process.env.BAHULAM_DAEMON_INITIAL_PROMPT || '').trim() : '';
   const effectivePrompt = args.prompt || (daemonSpawned && daemonPrompt) || '';
-  if (effectivePrompt && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY)) {
+  const hasGraphTarget = Boolean(args.agent || args.workflow);
+  if ((effectivePrompt || hasGraphTarget)
+      && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY || hasGraphTarget)) {
     const { runHeadless } = await import('../core/headless.mjs');
     await runHeadless({
       instruction: effectivePrompt,
@@ -417,6 +494,8 @@ async function main() {
       cacheReport: args.cacheReport,
       local: args.local,
       vision: args.vision,
+      agent: args.agent,
+      workflow: args.workflow,
     });
     return;
   }

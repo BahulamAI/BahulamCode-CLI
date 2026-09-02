@@ -11,12 +11,13 @@
  *   bahulam-code --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
  */
 
-import { TarangStreamClient } from './stream-client.mjs';
+import { BahulamStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
 import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
 import { persistProjectArtifacts } from './project-artifacts.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
 // daemon wiring — headless (and `bahulam daemonize`) also starts the socket
 // server + relay bridge when eventlog is enabled. Without this the daemon
 // is invisible to attach clients and to paired mobile devices.
@@ -46,7 +47,7 @@ import {
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, vision = [] }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, vision = [], agent = null, workflow = null }) {
     const startTime = Date.now();
 
     const log = (msg) => {
@@ -58,15 +59,69 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     };
 
     // ── Auth ──
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
-    if (!creds.token) {
+    const graphTarget = agent || workflow;
+    const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
+    const orKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+    // Graph runs execute locally and only need a model key; everything
+    // else still requires login (the backend runs the agent loop).
+    if (!creds.token && !(graphTarget && (anthKey || orKey))) {
         emit({ type: 'error', error: 'Not logged in. Run: bahulam login' });
         process.exit(1);
     }
 
+    // ── Deterministic graph target: --agent <slug> / --workflow <name> ──
+    if (graphTarget) {
+        const { dispatch } = await import('../orchestration/dispatch.mjs');
+        const { listLocalWorkflows } = await import('../agents/workflow_scaffold.mjs');
+        const pluginRegistry = new PluginRegistry().scan();
+        const toolExecutor = createToolExecutor({ pluginRegistry });
+        const timer = setTimeout(() => {
+            emit({ type: 'timeout', duration_s: timeout });
+            process.exit(2);
+        }, timeout * 1000);
+
+        const outcome = await dispatch({
+            type: 'invoke',
+            source: 'cli:headless',
+            target: agent ? { kind: 'agent', slug: agent } : { kind: 'workflow', slug: workflow },
+            params: { instruction: instruction || '' },
+            channel: null,
+            substrate: 'direct',
+        }, {
+            toolExecutor,
+            listRunnables: () => toolExecutor.listRunnables(),
+            listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
+            renderEvent: (event) => emit({ type: event.type, ...event.data }),
+            credentials: { apiKey: anthKey, openRouterKey: orKey },
+            defaultModel: model || null,
+            cwd: process.cwd(),
+        });
+
+        clearTimeout(timer);
+        if (!outcome.dispatched) {
+            emit({ type: 'error', error: outcome.reason });
+            process.exit(1);
+        }
+        const result = outcome.result || {};
+        emit({
+            type: 'result',
+            status: result.status || (result.success === false ? 'failed' : 'completed'),
+            channel: outcome.channel,
+            output: result.output || '',
+            node_results: result.node_results || undefined,
+            duration_s: Math.round((Date.now() - startTime) / 1000),
+        });
+        process.exit(result.status === 'failed' || result.success === false ? 1 : 0);
+    }
+
+    // Scan plugins so client_agents and agent-scoped plugin tool schemas
+    // are sent to the backend.
+    const pluginRegistry = new PluginRegistry().scan();
+
     // Projects are registered and indexed only when the agent requests an overview.
-    const toolExecutor = createToolExecutor();
+    const toolExecutor = createToolExecutor({ pluginRegistry });
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });
@@ -99,11 +154,12 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         };
         log(`Local mode: ${localModel}`);
     } else {
-        client = new TarangStreamClient({
+        client = new BahulamStreamClient({
             baseUrl: creds.backendUrl,
             token: creds.token,
             toolExecutor,
             approvalManager: approval,
+            pluginRegistry,
         });
     }
 

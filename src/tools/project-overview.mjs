@@ -73,7 +73,7 @@ const PROJECT_MARKERS = [
     'pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle',  // Java/Kotlin
     'Makefile', 'CMakeLists.txt',  // C/C++
     'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-    'AGENTS.md', 'CLAUDE.md', 'KEPLER.md',  // Agent config lives at root
+    'AGENTS.md', 'BAHULAM.md', 'CLAUDE.md',  // Agent config lives at root
     '.editorconfig',               // Broad but a strong "this is a repo" signal
 ];
 
@@ -322,8 +322,8 @@ function _readIfExists(dir, filename, maxChars = 8000) {
     } catch { return ''; }
 }
 
-function _scanSkills(keplerDir) {
-    const skillsDir = path.join(keplerDir, 'skills');
+function _scanSkills(bahulamDir) {
+    const skillsDir = path.join(bahulamDir, 'skills');
     if (!fs.existsSync(skillsDir)) return [];
     try {
         return fs.readdirSync(skillsDir, { withFileTypes: true })
@@ -350,7 +350,7 @@ function defaultScratchRoots() {
         '/private/tmp',
         os.tmpdir(),
         process.env.TMPDIR,
-        ...(process.env.KEPLER_SCRATCH_ROOTS || '')
+        ...(process.env.BAHULAM_SCRATCH_ROOTS || '')
             .split(path.delimiter)
             .map(s => s.trim())
             .filter(Boolean),
@@ -399,21 +399,21 @@ export class ProjectRegistry {
 
     // PRD-69 project context is live metadata, not index cache. Re-read it on
     // every registration attempt so repeated get_project_overview calls pick up
-    // .bahulam/KEPLER.md, goal/plan/style, skills, AGENTS.md, etc. changes.
+    // .bahulam/BAHULAM.md, goal/plan/style, skills, AGENTS.md, etc. changes.
     _attachLiveContext(resource, root) {
-        // Resolver — prefers .bahulam/, falls back to .kepler/ for legacy projects.
-        const keplerDir = projectConfigDir(root);
+        const bahulamDir = projectConfigDir(root);
         resource.environment = detectEnvironment();
-        resource.project_context = _readIfExists(keplerDir, 'KEPLER.md', 10000) ||
-            _readIfExists(root, 'KEPLER.md', 10000) ||
-            _readIfExists(keplerDir, 'project.md', 8000);
-        resource.style = _readIfExists(keplerDir, 'style.md', 4000);
-        resource.goal = _readIfExists(keplerDir, 'goal.md', 2000);
-        resource.plan = _readIfExists(keplerDir, 'plan.md', 6000);
-        resource.skills_index = _scanSkills(keplerDir);
+        resource.project_context = _readIfExists(root, 'AGENTS.md', 10000) ||
+            _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
+            _readIfExists(root, 'BAHULAM.md', 10000) ||
+            _readIfExists(bahulamDir, 'project.md', 8000);
+        resource.style = _readIfExists(bahulamDir, 'style.md', 4000);
+        resource.goal = _readIfExists(bahulamDir, 'goal.md', 2000);
+        resource.plan = _readIfExists(bahulamDir, 'plan.md', 6000);
+        resource.skills_index = _scanSkills(bahulamDir);
 
         if (!resource.project_context) {
-            for (const name of ['.bahulam.md', 'AGENTS.md', 'CLAUDE.md']) {
+            for (const name of ['.bahulam.md', 'BAHULAM.md', 'AGENTS.md', 'CLAUDE.md']) {
                 const content = _readIfExists(root, name, 8000);
                 if (content) { resource.project_context = content; break; }
             }
@@ -426,7 +426,7 @@ export class ProjectRegistry {
             throw new Error('get_project_overview requires a project path');
         }
 
-        // LLM sometimes passes shell-escaped paths ("Tarang\ Orca") or paths
+        // LLM sometimes passes shell-escaped paths ("Bahulam") or paths
         // beginning with "~". Normalize defensively so the tool does not bounce
         // back a "not found" error on a path that's correct apart from quoting.
         rawPath = normalizePathInput(rawPath);
@@ -600,7 +600,7 @@ export class ProjectRegistry {
         }
 
         // LLM frequently passes shell-quoted paths copied from a terminal,
-        // e.g. "Tarang\ Orca/src/app/\(kepler\)/page.tsx". Normalize here so
+        // e.g. "Bahulam/src/app/\(kepler\)/page.tsx". Normalize here so
         // every tool benefits, not just get_project_overview.
         rawPath = normalizePathInput(rawPath);
 
@@ -633,7 +633,7 @@ export class ProjectRegistry {
         let containingScratchRoot = containingProject ? null : findScratchRoot(candidate);
 
         // Two reasons to try the unescaped variant:
-        //   (1) candidate is outside every project root (literal "Tarang\ Orca"
+        //   (1) candidate is outside every project root (literal "Bahulam"
         //       does not contain a real project), or
         //   (2) candidate is inside a root but does not exist on disk because
         //       a path segment like "\(kepler\)" only resolves once unescaped.

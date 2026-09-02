@@ -22,6 +22,7 @@ import { transcriptHeader, transcriptLine } from '../src/ui/transcript-block.mjs
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { EventFormatter } from '../src/ui/formatter.mjs';
 import { TIERS } from '../src/core/risk-tier.mjs';
+import { stagnationDisplayCount } from '../src/terminal/repl-render.mjs';
 
 let passed = 0;
 
@@ -149,6 +150,38 @@ test('uses concise structured tool summaries', () => {
     }, { cwd: '/repo' }),
     'a.js, b.js, c.js · +4 more',
   );
+});
+
+test('read_file cards do not render false 0-line outcomes for backend payload variants', () => {
+  const contentCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py' },
+    result: { success: true, content: 'class Account:\n    pass\n' },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(contentCard.includes('2 lines'), contentCard);
+  assert.ok(!contentCard.includes('0 lines'), contentCard);
+
+  const nestedResultCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py' },
+    result: { success: true, result: { line_count: 105 } },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(nestedResultCard.includes('105 lines'), nestedResultCard);
+
+  const rangeFallbackCard = stripAnsi(formatCard({
+    tool: 'read_file',
+    args: { file_path: '/repo/src/opentab/models.py', start_line: 1, end_line: 105 },
+    result: { success: true },
+    columns: 120,
+    cwd: '/repo',
+  }));
+  assert.ok(rangeFallbackCard.includes('lines 1-105'), rangeFallbackCard);
+  assert.ok(rangeFallbackCard.includes('105 lines'), rangeFallbackCard);
+  assert.ok(!rangeFallbackCard.includes('0 lines'), rangeFallbackCard);
 });
 
 test('sub-agent running line shows user-readable query and hides model', () => {
@@ -400,7 +433,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
   assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
   assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(renderSource.includes("process.env.KEPLER_BLOCK_SEPARATOR || 'space'"));
+  assert.ok(renderSource.includes("process.env.BAHULAM_BLOCK_SEPARATOR || 'space'"));
   assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
   assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
   // renderBlockBoundary('thinking'|'content') calls fire from the event
@@ -413,7 +446,7 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(replSource.includes("renderBlockBoundary('content', { compactSame: true })")
          || renderSource.includes("renderBlockBoundary('content', { compactSame: true })"));
   assert.ok(exploreSource.includes('const EXPLORE_TOOL_CATEGORY = new Map'));
-  assert.ok(exploreSource.includes("process.env.KEPLER_EXPLORE_COLLAPSE !== '0'"));
+  assert.ok(exploreSource.includes("process.env.BAHULAM_EXPLORE_COLLAPSE !== '0'"));
   assert.ok(replSource.includes("from './repl-explore.mjs'"));
   assert.ok(renderSource.includes('function exploreSummary()'));
   assert.ok(renderSource.includes('exploring · ${stats}${latest}'));
@@ -425,7 +458,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('drawPinnedStatus(fitted)'));
   assert.ok(renderSource.includes('clearPinnedStatus()'));
   assert.ok(replSource.includes('showSubAgentTools'));
-  assert.ok(replSource.includes('foldSubAgentToolCall(data)'));
+  assert.ok(replSource.includes('foldSubAgentToolCall(eventData)'));
+  assert.ok(replSource.includes('createSubAgentLane(agentType, query, runId, data)'));
+  assert.ok(replSource.includes('data.tool_call_id'));
+  assert.ok(replSource.includes('const callId = explicitToolCallId(data);'));
   assert.ok(replSource.includes('flushFoldedSubAgentTools();'));
   assert.ok(agentsSource.includes('displayEventForDirectAgent(event, agent)'));
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
@@ -491,7 +527,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('writeHintFrame(frame);'));
   assert.ok(replSource.includes("item.command.padEnd(13)"));
   assert.ok(replSource.includes('function reservePromptBottomPadding()'));
-  assert.ok(replSource.includes("process.env.KEPLER_PROMPT_BOTTOM_PADDING ?? '5'"));
+  assert.ok(replSource.includes("process.env.BAHULAM_PROMPT_BOTTOM_PADDING ?? '5'"));
   assert.ok(replSource.includes('Math.min(8, n)'));
   assert.ok(replSource.includes('reservePromptBottomPadding();'));
   // Empty-Enter branch now clears the phantom prompt line(s) before
@@ -499,7 +535,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   // phantom prompt lines".
   assert.ok(replSource.includes("process.stderr.write('\\x1b[A\\x1b[2K\\r');"));
   assert.ok(replSource.includes('function pasteFlushDelayMs()'));
-  assert.ok(replSource.includes("process.env.KEPLER_PASTE_FLUSH_MS || '35'"));
+  assert.ok(replSource.includes("process.env.BAHULAM_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes('function insertPromptText'));
   assert.ok(replSource.includes('_suppressBracketedPasteLines'));
   assert.ok(replSource.includes('_promptHasInsertedPaste'));
@@ -840,6 +876,26 @@ test('renders direct and legacy file diff payloads', () => {
   assert.ok(detail.includes('+newThing();'));
 });
 
+test('stagnation display uses the duplicate-call count from the reason', () => {
+  assert.strictEqual(
+    stagnationDisplayCount({
+      tool: 'read_file',
+      repeat_count: 1,
+      reason: "Tool 'read_file' called 3 times with identical arguments",
+    }),
+    3,
+  );
+  assert.strictEqual(
+    stagnationDisplayCount({
+      tool: 'analyze_image',
+      repeat_count: 1,
+      message: "Stagnation: analyze_image × 3 on 'diagram.jpg' (already read)",
+    }),
+    3,
+  );
+  assert.strictEqual(stagnationDisplayCount({ tool: 'shell', repeat_count: 2 }), 2);
+});
+
 test('redacts sensitive config diff previews and details', () => {
   const redactedDiff = {
     type: 'file_diff',
@@ -888,6 +944,23 @@ test('redacts sensitive config diff previews and details', () => {
   assert.ok(prompt.includes('match: [redacted]'));
   assert.ok(!prompt.includes('old-secret'));
   assert.ok(!prompt.includes('new-secret'));
+});
+
+test('edit_file no-op results render as warning instead of successful zero diff', () => {
+  const rendered = stripAnsi(formatCard({
+    tool: 'edit_file',
+    args: { file_path: 'src/opentab/sources.py' },
+    result: {
+      success: false,
+      output: 'edit_file made no changes to src/opentab/sources.py',
+      _no_change: true,
+      lines_added: 0,
+      lines_removed: 0,
+    },
+    columns: 120,
+  }));
+  assert.ok(rendered.includes('no changes'));
+  assert.ok(!rendered.includes('+0 −0'));
 });
 
 test('mission report omits old title and keeps tools/time on one line', () => {
@@ -1079,15 +1152,15 @@ test('Phase 4a: burst-collapse classifier covers common read-adjacent tools', ()
   assert.ok(!_isExploreTool('shell'), 'shell must NOT collapse');
 });
 
-test('Phase 4a: KEPLER_EXPLORE_COLLAPSE=0 disables the classifier', () => {
-  const prev = process.env.KEPLER_EXPLORE_COLLAPSE;
-  process.env.KEPLER_EXPLORE_COLLAPSE = '0';
+test('Phase 4a: BAHULAM_EXPLORE_COLLAPSE=0 disables the classifier', () => {
+  const prev = process.env.BAHULAM_EXPLORE_COLLAPSE;
+  process.env.BAHULAM_EXPLORE_COLLAPSE = '0';
   try {
     assert.strictEqual(_isExploreTool('read_file'), false,
       'disable flag should suppress classification');
   } finally {
-    if (prev === undefined) delete process.env.KEPLER_EXPLORE_COLLAPSE;
-    else process.env.KEPLER_EXPLORE_COLLAPSE = prev;
+    if (prev === undefined) delete process.env.BAHULAM_EXPLORE_COLLAPSE;
+    else process.env.BAHULAM_EXPLORE_COLLAPSE = prev;
   }
 });
 
@@ -1134,7 +1207,7 @@ test('Phase 4b: formatCard fits terminal width at 40/60/80 cols', () => {
 });
 
 test('Phase 4c: plain mode strips ANSI from tool cards', () => {
-  // Non-TTY / KEPLER_PLAIN=1 / --plain — output must be deterministic and
+  // Non-TTY / BAHULAM_PLAIN=1 / --plain — output must be deterministic and
   // parseable by scripts. Any ANSI escape leaking through breaks that.
   _setTermForTesting({ isTTY: false, color: false, colorLevel: 'none', plain: true });
   try {

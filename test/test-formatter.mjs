@@ -89,9 +89,9 @@ test('renders content to stdout', () => {
 });
 
 test('supports opt-in dotted block separator', () => {
-    const previous = process.env.KEPLER_BLOCK_SEPARATOR;
+    const previous = process.env.BAHULAM_BLOCK_SEPARATOR;
     try {
-        process.env.KEPLER_BLOCK_SEPARATOR = 'dotted';
+        process.env.BAHULAM_BLOCK_SEPARATOR = 'dotted';
         const f = new EventFormatter();
         capture();
         f.render({ type: 'content', data: { text: 'First block' } });
@@ -102,8 +102,8 @@ test('supports opt-in dotted block separator', () => {
         assert.ok(captured.includes('Reading'));
     } finally {
         restore();
-        if (previous == null) delete process.env.KEPLER_BLOCK_SEPARATOR;
-        else process.env.KEPLER_BLOCK_SEPARATOR = previous;
+        if (previous == null) delete process.env.BAHULAM_BLOCK_SEPARATOR;
+        else process.env.BAHULAM_BLOCK_SEPARATOR = previous;
     }
 });
 

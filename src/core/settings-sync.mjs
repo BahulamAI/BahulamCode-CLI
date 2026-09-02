@@ -1,5 +1,5 @@
 /**
- * Settings Sync — fetch user settings from Tarang web and cache locally.
+ * Settings Sync — fetch user settings from Bahulam web and cache locally.
  *
  * Syncs: gateway_type, model preferences, configured providers.
  * Cached in ~/.bahulam/config.json alongside auth token.

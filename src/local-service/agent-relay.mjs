@@ -2,12 +2,13 @@
  * Browser-local agent relay.
  *
  * Bridges a local workspace browser session to the same CLI-owned remote
- * agent path used by the terminal: TarangStreamClient + local ToolExecutor.
+ * agent path used by the terminal: BahulamStreamClient + local ToolExecutor.
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createRequire } from 'node:module';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import {
@@ -15,13 +16,73 @@ import {
   getRecentSessions,
   getSessionDetail,
 } from '../core/local-store.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
 import { BrowserApprovalManager } from './approval-bridge.mjs';
 
 const __require = createRequire(import.meta.url);
 const VERSION = __require('../../package.json').version;
+
+function envList(name) {
+  return String(process.env[name] || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function activePluginNamesFromSession(session = {}) {
+  const names = [];
+  if (session.plugin?.name) names.push(session.plugin.name);
+  if (session.plugin?.metadata_name) names.push(session.plugin.metadata_name);
+  const plugins = Array.isArray(session.plugins)
+    ? session.plugins
+    : (Array.isArray(session.active_plugins) ? session.active_plugins : []);
+  for (const plugin of plugins) {
+    if (typeof plugin === 'string') names.push(plugin);
+    else if (plugin?.name) names.push(plugin.name);
+    else if (plugin?.metadata_name) names.push(plugin.metadata_name);
+  }
+  return [...new Set(names.map(name => String(name).trim()).filter(Boolean))];
+}
+
+function pluginScanDirsFromSession(session = {}) {
+  const dirs = [];
+  const addPluginParent = (plugin) => {
+    const pluginDir = String(plugin?.plugin_dir || plugin?.dir || '').trim();
+    if (pluginDir) dirs.push(path.dirname(pluginDir));
+  };
+  if (session.plugin) addPluginParent(session.plugin);
+  const plugins = Array.isArray(session.plugins)
+    ? session.plugins
+    : (Array.isArray(session.active_plugins) ? session.active_plugins : []);
+  for (const plugin of plugins) {
+    if (plugin && typeof plugin === 'object') addPluginParent(plugin);
+  }
+  return [...new Set(dirs.filter(Boolean))];
+}
+
+/**
+ * ${VAR} expansion for MCP server configs — args, env values, headers.
+ * Matches how the existing ~/.bahulam/config.json mcpServers block is
+ * handled so a plugin author with a working Claude Desktop MCP config
+ * gets the same env-var behavior after drop-in.
+ */
+function _expandEnvInMcpConfig(config) {
+  const sub = (v) => typeof v === 'string'
+    ? v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => process.env[name] ?? '')
+    : v;
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
+      return out;
+    }
+    return sub(v);
+  };
+  return walk(config);
+}
 
 export class LocalAgentRelay {
   constructor({ session, emit } = {}) {
@@ -69,17 +130,16 @@ export class LocalAgentRelay {
       err.code = 'CONFLICT';
       throw err;
     }
-    if (this.turnCount > 0) {
-      const err = new Error('Start a new local workspace session to switch history after a turn has run');
-      err.code = 'CONFLICT';
-      throw err;
-    }
     this.resumeLoaded = true;
     this.resumeSessionId = null;
+    this.turnCount = 0;
     this.displayHistory = [];
     this.agentHistory = [];
     this.jsonlWriter = null;
-    if (this.client) this.client.sessionId = null;
+    if (this.client) {
+      this.client.sessionId = null;
+      this.client.currentTaskId = null;
+    }
     this.emit('agent_history_new', {
       root_path: this.session.root_path,
     });
@@ -101,11 +161,6 @@ export class LocalAgentRelay {
     }
     if (this.running) {
       const err = new Error('A local agent turn is already running for this workspace');
-      err.code = 'CONFLICT';
-      throw err;
-    }
-    if (this.turnCount > 0 && this.resumeSessionId !== requestedSessionId) {
-      const err = new Error('Start a new local workspace session to switch history after a turn has run');
       err.code = 'CONFLICT';
       throw err;
     }
@@ -131,6 +186,7 @@ export class LocalAgentRelay {
       this.displayHistory = history.displayHistory || [];
       this.agentHistory = history.agentHistory || [];
       this.resumeLoaded = true;
+      this.turnCount = 0;
       if (this.client) this.client.sessionId = this.resumeSessionId;
       if (this.jsonlWriter?.sessionId && this.jsonlWriter.sessionId !== this.resumeSessionId) {
         this.jsonlWriter = null;
@@ -208,7 +264,7 @@ export class LocalAgentRelay {
         this.agentHistory.length ? this.agentHistory : null,
       )) {
         eventCount += 1;
-        writer.writeKeplerEvent(event);
+        writer.writeBahulamEvent(event);
 
         const contentUpdate = contentDeltaForEvent(event, assistantContent);
         if (contentUpdate) {
@@ -256,7 +312,7 @@ export class LocalAgentRelay {
       this._markUndeliveredFollowupsQueued(wasCancelled ? 'Task cancelled' : '');
       if (!userTurnWritten && (this.client.sessionId || wasCancelled)) writeUserTurn();
       if (wasCancelled) {
-        writer.writeKeplerEvent({
+        writer.writeBahulamEvent({
           type: 'cancelled',
           data: {
             task_id: this.client?.currentTaskId || null,
@@ -344,6 +400,14 @@ export class LocalAgentRelay {
 
   async close() {
     this.approvalManager?.rejectAll?.();
+    // Tear down plugin-owned MCP clients — the executor's registered
+    // <server>.<tool> entries are removed here so a rerun in the same
+    // process picks up any manifest edits cleanly.
+    for (const { plugin, name, client } of (this._mcpClients || [])) {
+      try { this.toolExecutor?.unregisterMcpServer?.(plugin, name); } catch { /* ignore */ }
+      try { await client.disconnect(); } catch { /* ignore */ }
+    }
+    this._mcpClients = [];
     try {
       await this.jsonlWriter?.close?.();
     } catch {}
@@ -482,7 +546,7 @@ export class LocalAgentRelay {
       error: result.error || null,
       http_status: result.httpStatus || null,
     };
-    this._ensureJsonlWriter().writeKeplerEvent({
+    this._ensureJsonlWriter().writeBahulamEvent({
       type: 'user_intervention',
       data: {
         instruction: item.instruction,
@@ -501,6 +565,14 @@ export class LocalAgentRelay {
     return payload;
   }
 
+  async executeTool(name, args = {}) {
+    await this._ensureReady();
+    if (!this.toolExecutor) {
+      throw new Error('Tool executor is not initialized');
+    }
+    return this.toolExecutor.execute(name, args);
+  }
+
   async _ensureReady() {
     if (this.ready) return this.ready;
     this.ready = this._initialize().catch((err) => {
@@ -511,7 +583,7 @@ export class LocalAgentRelay {
   }
 
   async _initialize() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
       const err = new Error('Not logged in. Run `bahulam login` from the CLI, then retry.');
@@ -526,9 +598,62 @@ export class LocalAgentRelay {
       process.chdir(this.session.root_path);
     }
 
-    const toolExecutor = createToolExecutor();
+    const { PluginRegistry } = await import('../plugins/registry.mjs');
+    const activePlugins = activePluginNamesFromSession(this.session);
+    const pluginDirs = pluginScanDirsFromSession(this.session);
+    const pluginRegistry = new PluginRegistry({
+      disabled: envList('BAHULAM_DISABLE_PLUGINS'),
+      enabled: activePlugins,
+      ...(pluginDirs.length ? { pluginDirs } : {}),
+    });
+    pluginRegistry.scan();
+
+    // Reactive pulse: every plugin state write bubbles up here and lands
+    // on the shared SSE bus as `plugin_state_changed`. Views subscribed
+    // to /api/events re-render as the agent works — the Shared
+    // Blackboard's live-update moment. `this.emit` is the same event
+    // sink server.mjs uses for tool_call / tool_done / agent events.
+    const stateEmit = (evt) => {
+      try { this.emit('plugin_state_changed', evt); }
+      catch { /* never let SSE failure break a tool call */ }
+    };
+    const toolExecutor = createToolExecutor({ pluginRegistry, stateEmit, channel: 'workspace' });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
+
+    // Plugin=MCP+UX: every plugin can declare mcpServers in its
+    // plugin.yaml (or a sibling mcp.json). Spawn each, discover its
+    // tools, and register them as `<server>.<tool>` in the shared
+    // executor. Failure of one server never blocks the workspace —
+    // its tools drop out, everything else keeps running.
+    this._mcpClients = [];   // {plugin, name, client} — for teardown on close()
+    for (const entry of pluginRegistry.listMcpServers?.() || []) {
+      try {
+        const { McpClient } = await import('../mcp/client.mjs');
+        const client = new McpClient(_expandEnvInMcpConfig(entry.config));
+        await client.connect();
+        const tools = await client.listTools();
+        let registered = 0;
+        for (const t of tools) {
+          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema)) {
+            registered++;
+          }
+        }
+        this._mcpClients.push({ plugin: entry.plugin, name: entry.name, client });
+        this.emit('plugin_mcp_ready', {
+          plugin: entry.plugin,
+          server: entry.name,
+          tools: registered,
+        });
+      } catch (err) {
+        // Never fatal: the plugin's JS tools + views still work.
+        this.emit('plugin_mcp_failed', {
+          plugin: entry.plugin,
+          server: entry.name,
+          error: String(err.message || err),
+        });
+      }
+    }
 
     const approval = new BrowserApprovalManager({
       emit: this.emit,
@@ -539,12 +664,13 @@ export class LocalAgentRelay {
     this.creds = creds;
     this.toolExecutor = toolExecutor;
     this.approvalManager = approval;
-    this.client = new TarangStreamClient({
+    this.client = new BahulamStreamClient({
       baseUrl: creds.backendUrl,
       token: creds.token,
       toolExecutor,
       approvalManager: approval,
       mode: 'remote',
+      pluginRegistry,
     });
     if (this.resumeSessionId) this.client.sessionId = this.resumeSessionId;
     this._ensureJsonlWriter();
@@ -553,6 +679,7 @@ export class LocalAgentRelay {
       backend_url: creds.backendUrl,
       root_path: this.session.root_path,
       tools: toolExecutor.listTools?.().length || 0,
+      plugins: pluginRegistry.list?.().map(plugin => plugin.metadata?.name).filter(Boolean) || [],
       backend_session_id: this.client.sessionId || null,
       approval_mode: this.approvalAutoMode ? 'auto' : 'ask',
     });

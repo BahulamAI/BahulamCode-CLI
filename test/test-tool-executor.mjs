@@ -3,7 +3,9 @@
  */
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
+import { createToolRegistry } from '../src/tools/registry.mjs';
 import { ProjectRegistry } from '../src/tools/project-overview.mjs';
+import { PluginRegistry } from '../src/plugins/registry.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -25,7 +27,20 @@ function test(name, fn) {
 console.log('\n\x1b[1mtest-tool-executor.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
-const unregisteredExecutor = createToolExecutor();
+await executor.waitForAutoRegister();
+
+function createExecutorWithoutAutoRegister(options = {}) {
+    const previous = process.env.BAHULAM_SKIP_AUTO_REGISTER;
+    process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
+    try {
+        return createToolExecutor(options);
+    } finally {
+        if (previous == null) delete process.env.BAHULAM_SKIP_AUTO_REGISTER;
+        else process.env.BAHULAM_SKIP_AUTO_REGISTER = previous;
+    }
+}
+
+const unregisteredExecutor = createExecutorWithoutAutoRegister();
 await test('directory tools reject paths before project registration', async () => {
     const result = await unregisteredExecutor.execute('list_files', {
         path: path.join(process.cwd(), 'package.json'),
@@ -79,10 +94,10 @@ await test('project overview is session-stable and exposes project_id', async ()
 });
 
 await test('project overview re-registration refreshes live project context', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-context-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-project-context-'));
     fs.writeFileSync(path.join(root, 'package.json'), '{"name":"ctx"}\n');
-    fs.mkdirSync(path.join(root, '.kepler'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'initial context\n');
+    fs.mkdirSync(path.join(root, '.bahulam'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.bahulam', 'project.md'), 'initial context\n');
 
     try {
         const ctxExecutor = createToolExecutor();
@@ -90,7 +105,7 @@ await test('project overview re-registration refreshes live project context', as
         assert.strictEqual(first.success, true);
         assert.match(first.project_resource.project_context, /initial context/);
 
-        fs.writeFileSync(path.join(root, '.kepler', 'project.md'), 'updated context\n');
+        fs.writeFileSync(path.join(root, '.bahulam', 'project.md'), 'updated context\n');
         const second = await ctxExecutor.execute('get_project_overview', { path: root });
         assert.strictEqual(second.success, true);
         assert.strictEqual(second.already_registered, true);
@@ -102,7 +117,7 @@ await test('project overview re-registration refreshes live project context', as
 });
 
 await test('registerProjectRoots makes prompt roots available to file tools', async () => {
-    const root = path.join(process.cwd(), '__kepler_prompt_roots_test__');
+    const root = path.join(process.cwd(), '__bahulam_prompt_roots_test__');
     const docs = path.join(root, 'docs');
     const cli = path.join(root, 'codekepler-npm');
     fs.rmSync(root, { recursive: true, force: true });
@@ -168,7 +183,7 @@ await test('read_file registers exact outside file under its own project', async
 });
 
 await test('project overview re-registration refreshes index when project drifts', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-project-drift-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-project-drift-'));
     fs.writeFileSync(path.join(root, 'package.json'), '{"name":"drift"}\n');
 
     try {
@@ -191,7 +206,7 @@ await test('project overview re-registration refreshes index when project drifts
 });
 
 await test('read_attachment renders Jupyter notebooks instead of rejecting octet-stream', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-notebook-read-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-notebook-read-'));
     const notebookPath = path.join(root, 'powerbi-data-extractor-testing.ipynb');
     fs.writeFileSync(notebookPath, JSON.stringify({
         metadata: { language_info: { name: 'python' } },
@@ -229,7 +244,7 @@ await test('search_code routes through the registered project index', async () =
 });
 
 await test('agent_create returns runnable spec for same-turn delegation refresh', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-agent-create-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-agent-create-'));
     const previousCwd = process.cwd();
     try {
         const agentExecutor = createToolExecutor();
@@ -252,6 +267,180 @@ await test('agent_create returns runnable spec for same-turn delegation refresh'
     }
 });
 
+await test('plugin agents are merged into available_agents with full specs', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-plugin-agent-'));
+    const previousCwd = process.cwd();
+    const pluginDir = path.join(root, '.bahulam', 'plugins', 'seo-toolkit');
+    const otherPluginDir = path.join(root, '.bahulam', 'plugins', 'content-tools');
+    fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
+    fs.mkdirSync(path.join(pluginDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(otherPluginDir, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: seo-toolkit',
+        '  version: 1.0.0',
+        'spec:',
+        '  agents:',
+        '    - slug: seo-manager',
+        '      name: SEO Manager',
+        '      description: SEO specialist',
+        '      role: specialist',
+        '      handler: agents/seo-manager.yaml',
+        '  tools:',
+        '    - name: hello_world',
+        '      description: Greet someone',
+        '      handler: tools/hello.mjs',
+        '      parameters:',
+        '        type: object',
+        '        properties:',
+        '          name:',
+        '            type: string',
+        '  workspace:',
+        '    views: []',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(pluginDir, 'agents', 'seo-manager.yaml'), [
+        'apiVersion: agent.framework/v1',
+        'kind: SubAgent',
+        'metadata:',
+        '  name: seo-manager',
+        '  role: specialist',
+        '  description: SEO specialist from handler',
+        'agent:',
+        '  max_tokens: 512',
+        '  max_iterations: 5',
+        '  system_prompt: Use hello_world when greeting.',
+        'tools:',
+        '  - hello_world',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(pluginDir, 'tools', 'hello.mjs'),
+        'export async function call(input) { return { success: true, output: `hello ${input?.name || "world"}` }; }\n',
+    );
+    fs.writeFileSync(path.join(otherPluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: content-tools',
+        '  version: 1.0.0',
+        'spec:',
+        '  tools:',
+        '    - name: content_score',
+        '      description: Score content',
+        '      handler: tools/score.mjs',
+        '  workspace:',
+        '    views: []',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(otherPluginDir, 'tools', 'score.mjs'),
+        'export async function call() { return { success: true, output: "score" }; }\n',
+    );
+
+    try {
+        process.chdir(root);
+        const pluginRegistry = new PluginRegistry({
+            pluginDirs: [path.join(root, '.bahulam', 'plugins')],
+            enabled: ['seo-toolkit'],
+        }).scan();
+        assert.strictEqual(pluginRegistry.count(), 1);
+        assert.deepStrictEqual(pluginRegistry.listTools().map(tool => tool.name), ['hello_world']);
+
+        const pluginExecutor = createExecutorWithoutAutoRegister({ pluginRegistry, channel: 'workspace' });
+        const ctx = pluginExecutor.getAgentContext();
+        const agent = ctx.available_agents.find(item => item.slug === 'seo-manager');
+
+        assert.ok(agent, 'plugin agent should be present in hot-path available_agents');
+        assert.strictEqual(agent.source_scope, 'plugin');
+        assert.strictEqual(agent.source, 'plugin:seo-toolkit');
+        assert.deepStrictEqual(agent.tools, ['hello_world']);
+        assert.ok(agent.spec, 'plugin agent should include a full spec for backend delegation');
+        assert.strictEqual(agent.spec.slug, 'seo-manager');
+        assert.match(agent.spec.system_prompt, /Use hello_world/);
+        assert.strictEqual(agent.spec.source_scope, 'plugin');
+        assert.strictEqual(agent.spec.source, 'plugin:seo-toolkit');
+        assert.strictEqual(agent.spec.config.metadata.source_scope, 'plugin');
+        assert.strictEqual(agent.spec.config.metadata.source, 'plugin:seo-toolkit');
+        assert.deepStrictEqual(agent.spec.tools, ['hello_world']);
+        assert.strictEqual(ctx.available_agents.some(item => item.slug === 'content-tools'), false);
+
+        const toolResult = await pluginExecutor.execute('hello_world', { name: 'Sree' });
+        assert.strictEqual(toolResult.success, true);
+        assert.match(toolResult.output, /hello Sree/);
+
+        const primaryModelToolResult = await pluginExecutor.execute(
+            'hello_world',
+            { name: 'Sree' },
+            { toolCallSource: 'model' },
+        );
+        assert.strictEqual(primaryModelToolResult.success, false);
+        assert.strictEqual(primaryModelToolResult._requires_agent_delegation, true);
+        assert.strictEqual(primaryModelToolResult._agent, 'seo-manager');
+        assert.match(primaryModelToolResult.output, /should not be called directly by the primary agent/);
+
+        const subAgentToolResult = await pluginExecutor.execute(
+            'hello_world',
+            { name: 'Sree' },
+            { toolCallSource: 'model', internal: true, subAgent: 'seo-manager' },
+        );
+        assert.strictEqual(subAgentToolResult.success, true);
+        assert.match(subAgentToolResult.output, /hello Sree/);
+
+        const listed = await pluginExecutor.execute('agents_list', { scope: 'plugin' });
+        assert.strictEqual(listed.success, true);
+        assert.ok(listed.agents.some(item => item.slug === 'seo-manager'));
+    } finally {
+        process.chdir(previousCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('classic tool registry exposes plugin tools for in-process subagents', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-plugin-tool-registry-'));
+    const pluginDir = path.join(root, '.bahulam', 'plugins', 'docker-tools');
+    fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), [
+        'apiVersion: bahulam.plugin/1',
+        'kind: Plugin',
+        'metadata:',
+        '  name: docker-tools',
+        '  version: 1.0.0',
+        'spec:',
+        '  tools:',
+        '    - name: docker_analyze',
+        '      description: Analyze Docker state',
+        '      handler: tools/docker-analyze.mjs',
+        '',
+    ].join('\n'));
+    fs.writeFileSync(
+        path.join(pluginDir, 'tools', 'docker-analyze.mjs'),
+        'export async function call(input) { return { success: true, output: `containers=${input?.count || 0}` }; }\n',
+    );
+
+    try {
+        const pluginRegistry = new PluginRegistry({
+            pluginDirs: [path.join(root, '.bahulam', 'plugins')],
+        }).scan();
+        const primaryRegistry = createToolRegistry({ pluginRegistry });
+        assert.strictEqual(primaryRegistry.has('docker_analyze'), false);
+        assert.strictEqual(primaryRegistry.list().some(tool => tool.name === 'docker_analyze'), false);
+
+        const registry = createToolRegistry({ pluginRegistry, exposePluginTools: true });
+        assert.ok(registry.has('docker_analyze'), 'plugin tool should be present in classic registry');
+        assert.ok(registry.list().some(tool => tool.name === 'docker_analyze'));
+
+        const result = await registry.call('docker_analyze', { count: 25 });
+        assert.strictEqual(result.success, true);
+        assert.match(result.output, /containers=25/);
+        assert.strictEqual(result._plugin, 'docker-tools');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Test 2: read_file reads existing file
 await test('read_file reads package.json', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
@@ -269,7 +458,7 @@ await test('read_file reads package.json', async () => {
 });
 
 await test('read_file reuses unchanged repeated reads and read_batch reads line ranges', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-read-cache-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-read-cache-'));
     const file = path.join(root, 'sample.txt');
     fs.writeFileSync(file, 'one\ntwo\nthree\nfour\n');
     try {
@@ -303,7 +492,7 @@ await test('read_file on missing file returns error', async () => {
 });
 
 await test('read_file allows OS temp scratch files', async () => {
-    const scratchFile = path.join(os.tmpdir(), `kepler-scratch-${Date.now()}.txt`);
+    const scratchFile = path.join(os.tmpdir(), `bahulam-scratch-${Date.now()}.txt`);
     fs.writeFileSync(scratchFile, 'scratch output\n');
     try {
         const result = await executor.execute('read_file', { path: scratchFile });
@@ -315,7 +504,7 @@ await test('read_file allows OS temp scratch files', async () => {
 });
 
 await test('read_file allows registered custom scratch roots', async () => {
-    const root = path.join(process.cwd(), '__kepler_custom_scratch__');
+    const root = path.join(process.cwd(), '__bahulam_custom_scratch__');
     fs.mkdirSync(root, { recursive: true });
     const scratchFile = path.join(root, 'agent-output.txt');
     fs.writeFileSync(scratchFile, 'custom scratch output\n');
@@ -331,8 +520,8 @@ await test('read_file allows registered custom scratch roots', async () => {
     }
 });
 
-await test('read_file allows project .kepler/tmp scratch files', async () => {
-    const scratchDir = path.join(process.cwd(), '.kepler', 'tmp');
+await test('read_file allows project .bahulam/tmp scratch files', async () => {
+    const scratchDir = path.join(process.cwd(), '.bahulam', 'tmp');
     const scratchFile = path.join(scratchDir, `agent-output-${Date.now()}.txt`);
     fs.mkdirSync(scratchDir, { recursive: true });
     fs.writeFileSync(scratchFile, 'project scratch output\n');
@@ -385,7 +574,7 @@ await test('shell substitution with dangerous payload stays blocked', async () =
 });
 
 await test('shell rm with tilde target runs after approval path', async () => {
-    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-home-rm-'));
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-home-rm-'));
     const lockFile = path.join(fakeHome, '.agent_framework', '.license_lock');
     const previousHome = process.env.HOME;
     fs.mkdirSync(path.dirname(lockFile), { recursive: true });
@@ -407,21 +596,23 @@ await test('shell rm with tilde target runs after approval path', async () => {
 });
 
 await test('shell observes likely long-running commands and returns tail', async () => {
-    const previous = process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
-    process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = '300';
+    const previous = process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS;
+    // 1500ms: enough for the subprocess to start and emit output reliably
+    // under concurrent test load, well below the 15s default.
+    process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS = '1500';
     try {
         const result = await executor.execute('shell', {
-            command: 'node -e "console.log(\'ready_tail\'); setInterval(() => {}, 1000)"',
+            command: 'node -e "console.log(\'ready_tail\'); setInterval(() => {}, 10000)"',
         });
         assert.strictEqual(result.success, true);
         assert.strictEqual(result._observation_timeout, true);
         assert.strictEqual(result._timed_out, true);
         assert.strictEqual(result.exit_code, 124);
-        assert.ok(result.output.includes('Observation timeout after 300ms'));
+        assert.ok(result.output.includes('Observation timeout after 1500ms'));
         assert.ok(result.output.includes('ready_tail'));
     } finally {
-        if (previous == null) delete process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS;
-        else process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS = previous;
+        if (previous == null) delete process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS;
+        else process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS = previous;
     }
 });
 
@@ -508,6 +699,112 @@ await test('write_file allows sensitive config with redacted diff', async () => 
     }
 });
 
+await test('edit_file returns idempotent success on no-op edits without running lint', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-noop-'));
+    const file = path.join(root, 'sources.py');
+    fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="noop-edit"\n');
+    fs.writeFileSync(file, 'VALUE = "already done"\n');
+
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        const result = await editExecutor.execute('edit_file', {
+            path: file,
+            search: 'VALUE = "already done"',
+            replace: 'VALUE = "already done"',
+        });
+        // success:true — desired state already in place, idempotent operation
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result._no_change, true);
+        assert.strictEqual(result.lines_added, 0);
+        assert.strictEqual(result.lines_removed, 0);
+        assert.ok(result.output.includes('no changes'));
+        // lint must not run — file unchanged, no point linting
+        assert.strictEqual(result.lint, undefined);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'VALUE = "already done"\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('edit_file accepts legacy old_string/new_string aliases', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-alias-'));
+    const file = path.join(root, 'sources.py');
+    fs.writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nname="alias-edit"\n');
+    fs.writeFileSync(file, 'name = "old"\nother = "old"\n');
+
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        const result = await editExecutor.execute('edit_file', {
+            file_path: file,
+            old_string: '"old"',
+            new_string: '"new"',
+            replace_all: true,
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'name = "new"\nother = "new"\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('edit_file auto-lint keeps the event loop responsive', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-edit-async-lint-'));
+    const bin = path.join(root, 'bin');
+    const file = path.join(root, 'app.js');
+    const marker = path.join(root, 'lint-started');
+    const done = path.join(root, 'lint-done');
+    const fakeNode = path.join(bin, 'node');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"async-lint"}\n');
+    fs.writeFileSync(file, 'const value = "old";\n');
+    fs.writeFileSync(fakeNode, [
+        '#!/bin/sh',
+        `printf started > "${marker.replace(/"/g, '\\"')}"`,
+        'sleep 1',
+        `printf done > "${done.replace(/"/g, '\\"')}"`,
+        'echo "All checks passed!"',
+    ].join('\n'));
+    fs.chmodSync(fakeNode, 0o755);
+
+    const previousPath = process.env.PATH;
+    let sawLintWhileRunning = false;
+    let interval = null;
+    try {
+        const editExecutor = createToolExecutor();
+        const registered = await editExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        process.env.PATH = `${bin}${path.delimiter}${previousPath || ''}`;
+        interval = setInterval(() => {
+            if (fs.existsSync(marker) && !fs.existsSync(done)) {
+                sawLintWhileRunning = true;
+            }
+        }, 5);
+
+        const result = await editExecutor.execute('edit_file', {
+            path: file,
+            search: '"old"',
+            replace: '"new"',
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.ok(result.lint.includes('All checks passed'));
+        assert.strictEqual(sawLintWhileRunning, true);
+        assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'const value = "new";\n');
+    } finally {
+        if (interval) clearInterval(interval);
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Test 8: unknown tool returns error
 await test('unknown tool returns error', async () => {
     const result = await executor.execute('nonexistent_tool', {});
@@ -550,7 +847,7 @@ await test('analyze_code rejects directories with actionable guidance', async ()
 });
 
 await test('multiple projects require explicit routing, while exact outside reads register their file project', async () => {
-    const root = path.join(process.cwd(), '__kepler_project_registry_test__');
+    const root = path.join(process.cwd(), '__bahulam_project_registry_test__');
     const first = path.join(root, 'first');
     const second = path.join(root, 'second');
     const undeclared = path.join(root, 'undeclared');

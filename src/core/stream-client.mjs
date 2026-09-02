@@ -1,8 +1,8 @@
 /**
- * TarangStreamClient — SSE consumer for Tarang backend.
+ * BahulamStreamClient — SSE consumer for Bahulam backend.
  *
  * Replaces OCC's agent-loop.mjs. Instead of calling the LLM API directly,
- * this client POSTs to the Tarang backend, parses the SSE stream, intercepts
+ * this client POSTs to the Bahulam backend, parses the SSE stream, intercepts
  * tool_request/tool_call events (executes locally, POSTs callback), and
  * yields all other events to the caller for rendering.
  *
@@ -11,6 +11,7 @@
 
 import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDecision } from './callback-client.mjs';
 import { ApprovalManager } from './approval.mjs';
+import { upsertFacts } from './memory-disk.mjs';
 import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
@@ -93,6 +94,17 @@ function transportDebug(message, data = {}) {
     } catch {}
 }
 
+function memoryFactsFromComplete(data) {
+    const facts = data?.memory_facts_to_persist;
+    if (!Array.isArray(facts) || facts.length === 0) return [];
+    return facts.filter(fact => (
+        fact
+        && typeof fact === 'object'
+        && fact.fact_id
+        && String(fact.content || '').trim()
+    ));
+}
+
 // Full jitter around the scheduled delay: pick a value in [delay*0.5, delay*1.5].
 // Spreads out reconnect storms so N clients dropping simultaneously don't
 // synchronize their retries. Clamped to the same 30s ceiling as the base delay.
@@ -117,10 +129,10 @@ function isOfflineLikelyError(err) {
     );
 }
 
-export class TarangStreamClient {
+export class BahulamStreamClient {
     /**
      * @param {Object} opts
-     * @param {string} opts.baseUrl - Tarang backend URL (ignored when mode='bundled')
+     * @param {string} opts.baseUrl - Bahulam backend URL (ignored when mode='bundled')
      * @param {string} opts.token - CLI auth token
      * @param {Object} opts.toolExecutor - { execute(name, args) }
      * @param {boolean} [opts.verbose=false]
@@ -136,6 +148,7 @@ export class TarangStreamClient {
         approvalManager = null,
         reconnectMaxElapsedMs = null,
         mode = null,
+        pluginRegistry = null,
     }) {
         this.baseUrl = (baseUrl || '').replace(/\/$/, '');
         this.token = token;
@@ -148,7 +161,7 @@ export class TarangStreamClient {
         this.retryDelayMs = null;
         this.pendingToolCallbacks = new Map();
         this.reconnectMaxElapsedMs = reconnectMaxElapsedMs
-            ?? Number(process.env.KEPLER_RECONNECT_MAX_ELAPSED_MS || 300_000);
+            ?? Number(process.env.BAHULAM_RECONNECT_MAX_ELAPSED_MS || 300_000);
         // Set by backend on first turn, reused on subsequent turns. Headless mode
         // (which starts fresh per invocation) can pre-seed via TARANG_SESSION_ID
         // so multi-turn benchmarks share one backend session across `node` runs.
@@ -173,7 +186,105 @@ export class TarangStreamClient {
             || (process.env.TARANG_ENV === 'remote' ? 'remote' : null)
             || (process.env.TARANG_ENV === 'bundled' ? 'bundled' : null)
             || 'remote';
+        this.pluginRegistry = pluginRegistry || null;
         this._bundledReady = false;
+    }
+
+    _getPluginToolMap() {
+        const tools = new Map();
+        if (!this.pluginRegistry) return tools;
+        for (const tool of this.pluginRegistry.listTools?.() || []) {
+            const name = String(tool.name || '').trim();
+            if (!name || tools.has(name)) continue;
+            tools.set(name, tool);
+        }
+        return tools;
+    }
+
+    /**
+     * Plugin tools are intentionally not advertised as primary client_tools.
+     * They are executable by the local callback handler, but the primary model
+     * should reach them by delegating to an agent that declares them.
+     */
+    _getPluginToolSchemas() {
+        return [];
+    }
+
+    _collectAgentScopedToolRefs(context = {}, clientAgents = []) {
+        const refs = new Map();
+        const pluginTools = this._getPluginToolMap();
+        const addAgent = (agent = {}) => {
+            const slug = String(agent.slug || agent.command || agent.name || '').trim();
+            const tools = Array.isArray(agent.tools) ? agent.tools : [];
+            for (const toolName of tools) {
+                const name = String(toolName || '').trim();
+                if (!name || !pluginTools.has(name)) continue;
+                if (!refs.has(name)) refs.set(name, new Set());
+                if (slug) refs.get(name).add(slug);
+            }
+        };
+
+        for (const agent of clientAgents || []) addAgent(agent);
+        for (const agent of context?.agent_ctx?.available_agents || []) addAgent(agent);
+        for (const agent of context?.available_agents || []) addAgent(agent);
+        if (context?.sub_agent) addAgent(context.sub_agent);
+        return refs;
+    }
+
+    /**
+     * Plugin tool schemas scoped to sub-agents that declare those tools.
+     * This keeps plugin tools out of the primary model's direct tool surface
+     * while still giving delegated/custom/plugin agents the schemas they need.
+     *
+     * @returns {Array<{name: string, description: string, input_schema: object, source_scope: string, plugin_name: string|null, allowed_agents: string[]}>}
+     */
+    _getClientAgentToolSchemas(context = {}, clientAgents = []) {
+        const pluginTools = this._getPluginToolMap();
+        if (!pluginTools.size) return [];
+        const refs = this._collectAgentScopedToolRefs(context, clientAgents);
+        return [...refs.entries()].map(([name, allowedAgents]) => {
+            const tool = pluginTools.get(name) || {};
+            return {
+                name,
+                description: tool.description || '',
+                input_schema: tool.input_schema || { type: 'object', properties: {} },
+                source_scope: 'plugin',
+                plugin_name: tool._plugin_name || tool.plugin_name || null,
+                allowed_agents: [...allowedAgents],
+            };
+        });
+    }
+
+    /**
+     * Get plugin agent schemas for client_agents injection.
+     * @returns {Array<{slug: string, name: string, role: string, description: string, tools: string[]}>}
+     */
+    _getPluginAgentSchemas() {
+        if (!this.pluginRegistry) return [];
+        // Only plugin agents admitted to the main-loop registry (settings
+        // plugins.agent_allowlist, or the session plugin in workspace-channel
+        // executors) are advertised. Workspace-scoped plugin agents stay out
+        // of the main-turn payload; without an executor registry, fall back
+        // to advertising everything (legacy behavior).
+        const runnables = this.toolExecutor?.listRunnables?.();
+        const admitted = Array.isArray(runnables)
+            ? new Set(runnables.filter(a => a.source_scope === 'plugin').map(a => a.slug))
+            : null;
+        return this.pluginRegistry.listAgents()
+            .filter(a => !admitted || admitted.has(a.slug || a.name || ''))
+            .map(a => ({
+                slug: a.slug || a.name || '',
+                name: a.name || a.slug || '',
+                role: a.role || 'specialist',
+                description: a.description || '',
+                tools: Array.isArray(a.tools) ? a.tools : [],
+                system_prompt: a.system_prompt || a.systemPrompt || a.prompt || '',
+                model: a.model || null,
+                models: a.models || null,
+                source: a.source || (a._plugin_name ? `plugin:${a._plugin_name}` : 'plugin'),
+                source_scope: 'plugin',
+                plugin_name: a._plugin_name || null,
+            }));
     }
 
     /**
@@ -251,6 +362,12 @@ export class TarangStreamClient {
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
+        const clientTools = this._getPluginToolSchemas();
+        if (clientTools.length > 0) body.client_tools = clientTools;
+        const clientAgents = this._getPluginAgentSchemas();
+        if (clientAgents.length > 0) body.client_agents = clientAgents;
+        const clientAgentTools = this._getClientAgentToolSchemas(context, clientAgents);
+        if (clientAgentTools.length > 0) body.client_agent_tools = clientAgentTools;
         const requestId = `cli-${_uuidLike()}`;
 
         // daemon cache-guard hook. If BAHULAM_CAPTURE_REQUEST is set to a file
@@ -461,6 +578,10 @@ export class TarangStreamClient {
             return;
         }
 
+        if (event === EVENT_TYPES.COMPLETE) {
+            this._persistMemoryFactsFromComplete(data);
+        }
+
         // Tool requests — show to user, then execute locally and POST callback.
         if (event === EVENT_TYPES.TOOL_REQUEST || event === EVENT_TYPES.TOOL_CALL) {
             yield rendered;
@@ -482,6 +603,23 @@ export class TarangStreamClient {
         if (event === EVENT_TYPES.TOOL_RESULT || event === EVENT_TYPES.TOOL_DONE) {
             for (const diffEvent of fileDiffEventsForToolResult(rendered)) {
                 yield diffEvent;
+            }
+        }
+    }
+
+    _persistMemoryFactsFromComplete(data) {
+        const facts = memoryFactsFromComplete(data);
+        if (facts.length === 0) return;
+        try {
+            upsertFacts(facts, process.cwd());
+            telemetry.track('memory.disk.upserted', { facts: facts.length });
+        } catch (err) {
+            telemetry.track('memory.disk.upsert_failed', {
+                facts: facts.length,
+                message: err?.message || String(err),
+            });
+            if (data && typeof data === 'object') {
+                data.memory_persist_error = err?.message || String(err);
             }
         }
     }
@@ -728,6 +866,7 @@ export class TarangStreamClient {
         const callId = call_id || request_id;
         const toolName = tool;
         const isInternal = Boolean(data?.internal || data?.sub_agent);
+        const subAgentRunId = data?.run_id || data?.sub_agent_run_id || null;
 
         if (this.verbose) {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
@@ -745,6 +884,8 @@ export class TarangStreamClient {
                     _cancelled: true,
                     internal: isInternal,
                     sub_agent: data?.sub_agent || null,
+                    run_id: subAgentRunId,
+                    sub_agent_run_id: subAgentRunId,
                     local_callback: false,
                 },
             };
@@ -756,6 +897,10 @@ export class TarangStreamClient {
         try {
             result = await this.toolExecutor.execute(toolName, args || {}, {
                 signal: this._toolAbort?.signal,
+                toolCallSource: 'model',
+                internal: isInternal,
+                subAgent: data?.sub_agent || null,
+                subAgentRunId,
             });
         } catch (err) {
             if (err?.name === 'AbortError' || this._cancelled) {
@@ -795,6 +940,8 @@ export class TarangStreamClient {
                 duration_ms: durationMs,
                 internal: isInternal,
                 sub_agent: data?.sub_agent || null,
+                run_id: subAgentRunId,
+                sub_agent_run_id: subAgentRunId,
                 local_callback: true,
             },
         };

@@ -9,18 +9,18 @@ import * as path from 'node:path';
  * new turns to that file, and never re-writes the historical entries during
  * activation. (Per PRD-068 §5.14 clarification.)
  *
- * KEPLER_DIR in core/jsonl-writer.mjs and core/paths.mjs is captured at
- * MODULE LOAD TIME from process.env.KEPLER_HOME. So we must set the env var
+ * BAHULAM_DIR in core/jsonl-writer.mjs and core/paths.mjs is captured at
+ * MODULE LOAD TIME from process.env.BAHULAM_HOME. So we must set the env var
  * BEFORE importing anything from ../src/core/. Use dynamic import inside
  * each test, and stash the modules on the test's `t.context`.
  */
 
 async function withIsolatedKepler(t, run) {
   const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-resume-test-'));
-  const prevHome = process.env.KEPLER_HOME;
-  process.env.KEPLER_HOME = isolated;
+  const prevHome = process.env.BAHULAM_HOME;
+  process.env.BAHULAM_HOME = isolated;
 
-  // Bust the module cache so KEPLER_DIR is re-evaluated with the new env.
+  // Bust the module cache so BAHULAM_DIR is re-evaluated with the new env.
   // Node ESM caches modules by URL; append a cachebust query.
   const bust = Date.now() + Math.random();
   const jsonl = await import(`../src/core/jsonl-writer.mjs?bust=${bust}`);
@@ -29,8 +29,8 @@ async function withIsolatedKepler(t, run) {
   try {
     await run({ JsonlWriter: jsonl.JsonlWriter, ...store, isolated });
   } finally {
-    if (prevHome === undefined) delete process.env.KEPLER_HOME;
-    else process.env.KEPLER_HOME = prevHome;
+    if (prevHome === undefined) delete process.env.BAHULAM_HOME;
+    else process.env.BAHULAM_HOME = prevHome;
     try { fs.rmSync(isolated, { recursive: true, force: true }); } catch {}
   }
 }
@@ -82,14 +82,14 @@ test('resume: new turns append to the same session file (no fork)', async (t) =>
   });
 });
 
-test('resume: fresh kepler start (no resume) mints a NEW session id', async (t) => {
+test('resume: fresh bahulam start (no resume) mints a NEW session id', async (t) => {
   await withIsolatedKepler(t, async ({ JsonlWriter, isolated }) => {
     const cwd = fs.mkdtempSync(path.join(isolated, 'proj-'));
 
     // Seed one session so we can be sure a "fresh start" doesn't pick it up.
     const seed = new JsonlWriter(cwd, 'test-v1');
     seed.setSessionId('previous-session');
-    seed.writeUserTurn('leftover from a prior kepler run');
+    seed.writeUserTurn('leftover from a prior bahulam run');
     await seed.close();
 
     const seedPath = seed._transcriptPath;

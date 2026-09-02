@@ -603,7 +603,7 @@ assert(agentLoader.get('nonexistent') === null, 'Get unknown returns null');
 assert(!agentLoader.has('nonexistent'), 'Has unknown returns false');
 
 const agentDir = path.join(os.tmpdir(), `occ-agent-test-${Date.now()}`);
-fs.mkdirSync(path.join(agentDir, '.kepler', 'agents'), { recursive: true });
+fs.mkdirSync(path.join(agentDir, '.bahulam/agents'), { recursive: true });
 fs.mkdirSync(path.join(agentDir, '.claude', 'agents'), { recursive: true });
 fs.writeFileSync(path.join(agentDir, '.claude', 'agents', 'reviewer.md'), `---
 name: reviewer
@@ -611,16 +611,16 @@ description: Claude compatibility reviewer
 ---
 Claude path prompt.
 `);
-fs.writeFileSync(path.join(agentDir, '.kepler', 'agents', 'reviewer.md'), `---
+fs.writeFileSync(path.join(agentDir, '.bahulam/agents', 'reviewer.md'), `---
 name: reviewer
-description: Kepler reviewer
+description: Bahulam reviewer
 ---
 Kepler path prompt.
 `);
-const keplerAgentLoader = new AgentLoader();
-keplerAgentLoader.load(agentDir);
-assertEqual(keplerAgentLoader.list().length, 1, 'Kepler agent loader dedupes by name');
-assertEqual(keplerAgentLoader.get('reviewer').description, 'Kepler reviewer', 'Kepler agent path is loaded');
+const bahulamAgentLoader = new AgentLoader();
+bahulamAgentLoader.load(agentDir);
+assertEqual(bahulamAgentLoader.list().length, 1, 'Bahulam agent loader dedupes by name');
+assertEqual(bahulamAgentLoader.get('reviewer').description, 'Bahulam reviewer', 'Bahulam agent path is loaded');
 fs.rmSync(agentDir, { recursive: true, force: true });
 
 const claudeOnlyAgentDir = path.join(os.tmpdir(), `occ-claude-agent-test-${Date.now()}`);

@@ -1,7 +1,7 @@
 /**
- * Tool Executor Bridge — maps Tarang backend tool names to OCC tool calls.
+ * Tool Executor Bridge — maps Bahulam backend tool names to OCC tool calls.
  *
- * The Tarang backend sends tool_request events with its own tool names and arg shapes.
+ * The Bahulam backend sends tool_request events with its own tool names and arg shapes.
  * This bridge translates those into OCC tool calls and wraps the results.
  *
  * Safety guardrails integrated — prevents destructive operations on source code.
@@ -16,25 +16,30 @@ import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
-import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { agentToSpec, createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
 import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { detectImageFile } from './attachments.mjs';
 import { streamResponse } from './streaming.mjs';
 import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
+import { loadBahulamSettings } from '../config/settings-loader.mjs';
+import { BUILTIN_AGENTS } from '../terminal/agents.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
+import { backgroundTasks } from './background-tasks.mjs';
 import { resolveLintCommand } from './lint-resolver.mjs';
+import { PluginRegistry } from '../plugins/registry.mjs';
+import { loadPluginTool } from '../plugins/executor.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { exec, execSync } from 'node:child_process';
 
 /**
- * Create a tool executor that bridges Tarang tool names to OCC tools.
+ * Create a tool executor that bridges Bahulam tool names to OCC tools.
  * @param {Object} [options]
  * @param {ProjectRegistry} [options.projectRegistry] - session-owned project registry
  * @returns {{ execute(name, args): Promise<Object>, listTools(): string[] }}
@@ -48,6 +53,19 @@ export function createToolExecutor({
     interactionHandler = null,
     onAutoRegisterStart = null,
     onAutoRegisterDone = null,
+    pluginRegistry = null,
+    // Optional emit hook: called (debounced per key) after any plugin
+    // state write commits. Wired by the workspace server so writes turn
+    // into SSE `plugin_state_changed` events for live view updates.
+    // REPL/headless callers leave this null — state still works, just
+    // no reactive pulse.
+    stateEmit = null,
+    // Execution channel. 'main' (REPL/headless/CLI): plugin agents are
+    // workspace-scoped and excluded from listings and the agent-context
+    // envelope unless allowlisted in settings plugins.agent_allowlist.
+    // 'workspace' (plugin workspace sessions via agent-relay): the
+    // session plugin's agents are fully available.
+    channel = 'main',
 } = {}) {
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
@@ -78,7 +96,7 @@ export function createToolExecutor({
         _memoryCache = { key, facts, digest };
         return _memoryCache;
     }
-    const occRegistry = createToolRegistry();
+    const occRegistry = createToolRegistry({ pluginRegistry, stateEmit });
     const skillTool = occRegistry.get('Skill');
     if (skillTool) skillTool._skillsLoader = skillsLoader;
     const installer = skillInstaller || new SkillInstaller({
@@ -139,14 +157,14 @@ export function createToolExecutor({
 
     function blockedShellOutput(reason) {
         const text = String(reason || 'Blocked by shell safety policy').trim();
-        const hint = /command substitution|backticks|\$\(\)/i.test(text)
+        const hint = /command substitution|backticks|\$\(/i.test(text)
             ? 'Retry with separate simple shell commands instead of backticks or $().'
             : 'Work only inside a registered project root.';
         return `BLOCKED: ${text}. ${hint}`;
     }
 
     function longRunningObservationTimeoutMs() {
-        const configured = Number(process.env.KEPLER_LONG_RUNNING_TIMEOUT_MS);
+        const configured = Number(process.env.BAHULAM_LONG_RUNNING_TIMEOUT_MS);
         return Number.isFinite(configured) && configured > 0 ? configured : 15_000;
     }
 
@@ -243,17 +261,140 @@ export function createToolExecutor({
             source_scope: agent.source_scope || 'unknown',
             source: agent.source || '',
             content_hash: agent.content_hash || '',
+            runnable: agent.runnable !== false,
         };
+    }
+
+    function pluginAgentToLocalShape(agentDef) {
+        const pluginName = agentDef._plugin_name
+            || String(agentDef.source || '').replace(/^plugin:/, '')
+            || 'unknown';
+        const source = `plugin:${pluginName}`;
+        const base = {
+            ...agentDef,
+            slug: agentDef.slug || agentDef.name || '',
+            name: agentDef.name || agentDef.slug || '',
+            description: agentDef.description || '',
+            role: agentDef.role || 'specialist',
+            model: agentDef.model || null,
+            models: agentDef.models || undefined,
+            tools: Array.isArray(agentDef.tools)
+                ? agentDef.tools
+                : (Array.isArray(agentDef.agent_tools) ? agentDef.agent_tools : []),
+            capabilities: Array.isArray(agentDef.capabilities) ? agentDef.capabilities : [],
+            domains: Array.isArray(agentDef.domains) ? agentDef.domains : [],
+            system_prompt: agentDef.system_prompt || agentDef.prompt || agentDef.instructions || '',
+            prompt: agentDef.prompt || agentDef.system_prompt || agentDef.instructions || '',
+            source_scope: 'plugin',
+            source,
+        };
+        const spec = {
+            ...agentToSpec(base),
+            source,
+            source_scope: 'plugin',
+            plugin_name: pluginName,
+        };
+        if (spec.config?.metadata && typeof spec.config.metadata === 'object') {
+            spec.config.metadata.source = source;
+            spec.config.metadata.source_scope = 'plugin';
+        }
+        const content = JSON.stringify(spec);
+        return {
+            ...base,
+            slug: spec.slug,
+            spec,
+            source,
+            source_scope: 'plugin',
+            content_hash: crypto.createHash('sha256').update(content).digest('hex'),
+        };
+    }
+
+    function listPluginAgents() {
+        if (!pluginRegistry) return [];
+        return pluginRegistry.listAgents()
+            .map(pluginAgentToLocalShape)
+            .filter(agent => agent.slug);
+    }
+
+    // Plugin agents are workspace-scoped entities. They enter the
+    // main-loop registry only via an explicit settings allowlist.
+    function pluginAgentAllowlist() {
+        try {
+            const { settings } = loadBahulamSettings({ cwd: process.cwd() });
+            const list = settings?.plugins?.agent_allowlist;
+            return Array.isArray(list) ? list.map(item => String(item)) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    const BUILTIN_RUNNABLES = BUILTIN_AGENTS.map(def => ({
+        slug: def.command,
+        name: def.name,
+        description: def.description || '',
+        role: 'builtin',
+        model: null,
+        models: undefined,
+        tools: [],
+        capabilities: [],
+        domains: [],
+        source_scope: 'builtin',
+        source: 'builtin',
+        content_hash: '',
+        read_only: Boolean(def.readOnly),
+        runnable: true,
+    }));
+
+    // The deterministic sub-agent registry. Resolution precedence:
+    // project agent → global agent → builtin → allowlisted plugin agent.
+    // In workspace-channel executors the session plugin's agents are
+    // runnable without an allowlist entry.
+    function listRunnables() {
+        const bySlug = new Map();
+        for (const agent of listLocalAgents(process.cwd())) {
+            if (agent.slug && !bySlug.has(agent.slug)) {
+                bySlug.set(agent.slug, { ...agent, runnable: true });
+            }
+        }
+        for (const builtin of BUILTIN_RUNNABLES) {
+            if (!bySlug.has(builtin.slug)) bySlug.set(builtin.slug, builtin);
+        }
+        const allowlist = new Set(pluginAgentAllowlist());
+        for (const agent of listPluginAgents()) {
+            if (!agent.slug || bySlug.has(agent.slug)) continue;
+            if (channel === 'workspace' || allowlist.has(agent.slug)) {
+                bySlug.set(agent.slug, { ...agent, runnable: true });
+            }
+        }
+        return [...bySlug.values()];
+    }
+
+    // Installed plugin agents NOT admitted to the main-loop registry —
+    // still discoverable (scope:'plugin') but flagged not runnable.
+    function listWorkspaceScopedPluginAgents() {
+        const runnableSlugs = new Set(listRunnables().map(agent => agent.slug));
+        return listPluginAgents()
+            .filter(agent => agent.slug && !runnableSlugs.has(agent.slug))
+            .map(agent => ({ ...agent, runnable: false }));
+    }
+
+    // Agent-context envelope population: the runnable registry minus
+    // builtins (the backend has its own delegation vocabulary for those;
+    // adding them to available_agents would change wire behavior).
+    function listAvailableAgents() {
+        return listRunnables().filter(agent => agent.source_scope !== 'builtin');
     }
 
     function filterLocalAgents(args = {}) {
         const scope = String(args.scope || '').trim();
-        if (scope && scope !== 'project' && scope !== 'global') {
-            throw new Error('scope must be "project" or "global"');
+        if (scope && !['project', 'global', 'plugin', 'builtin'].includes(scope)) {
+            throw new Error('scope must be "project", "global", "plugin", or "builtin"');
         }
-        return listLocalAgents(process.cwd())
-            .filter(agent => !scope || agent.source_scope === scope)
-            .filter(agent => agentMatches(agent, args.query || args.name || ''));
+        const pool = scope === 'plugin'
+            ? [...listRunnables(), ...listWorkspaceScopedPluginAgents()]
+            : listRunnables();
+        const combined = pool.filter(agent => !scope || agent.source_scope === scope);
+        return combined.filter(agent => agentMatches(agent, args.query || args.name || ''));
     }
 
     function selectAgentsForSync(args = {}) {
@@ -472,7 +613,7 @@ export function createToolExecutor({
     }
 
     /**
-     * Wrap an OCC string result into Tarang's { success, output } format.
+     * Wrap an OCC string result into Bahulam's { success, output } format.
      */
     function wrapResult(result, toolName) {
         if (typeof result === 'object' && result !== null && 'success' in result) {
@@ -495,7 +636,24 @@ export function createToolExecutor({
     const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
     function stripAnsi(s) { return String(s || '').replace(ANSI_RE, ''); }
 
-    function autoLint(filePath) {
+    function runAutoLintCommand(lint) {
+        return new Promise((resolve) => {
+            exec(lint.command, {
+                encoding: 'utf-8',
+                timeout: 15_000,
+                cwd: lint.cwd,
+                maxBuffer: 1_000_000,
+                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
+            }, (err, stdout = '', stderr = '') => {
+                const output = err
+                    ? stripAnsi(stderr || stdout || '').trim()
+                    : stripAnsi(stdout || stderr || '').trim();
+                resolve(output || null);
+            });
+        });
+    }
+
+    async function autoLint(filePath) {
         const project = projectRegistry.projectForPath(filePath);
         const lint = resolveLintCommand(filePath, {
             projectRoot: project?.resource?.root || projectRootFor(filePath),
@@ -504,23 +662,7 @@ export function createToolExecutor({
         });
         if (!lint?.command) return null;
 
-        try {
-            const output = execSync(lint.command, {
-                encoding: 'utf-8',
-                timeout: 15_000,
-                cwd: lint.cwd,
-                stdio: ['pipe', 'pipe', 'pipe'],
-                env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
-            });
-            const trimmed = stripAnsi(output).trim();
-            if (!trimmed) return null;
-            return trimmed;
-        } catch (err) {
-            // Non-zero exit means lint errors found
-            const output = stripAnsi(err.stderr || err.stdout || '').trim();
-            if (!output) return null;
-            return output;
-        }
+        return runAutoLintCommand(lint);
     }
 
     // ── Post-edit verification hint ──────────────────────────────
@@ -617,11 +759,189 @@ export function createToolExecutor({
         return { output: lines.join('\n'), files, directories, truncated };
     }
 
+    // ── Plugin tool map ──────────────────────────────────────────
+    // Plugin tools are registered here alongside the built-in toolMap.
+    // They are dispatched with lower priority (built-in tools win on name collision).
+    const pluginToolMap = new Map(); // name → async handler function
+
+    function registerPluginTool(name, handler, metadata = {}) {
+        if (pluginToolMap.has(name)) {
+            if (process.env.DEBUG) {
+                console.warn(`Plugin tool "${name}" already registered from another plugin — skipping.`);
+            }
+            return false;
+        }
+        handler._pluginTool = metadata;
+        pluginToolMap.set(name, handler);
+        return true;
+    }
+
+    // Per-plugin state handles are opened lazily on first tool call and
+    // cached process-wide. `makePluginState` itself dedupes on plugin
+    // name, so this Map only exists to avoid re-attaching stateEmit on
+    // every registered tool.
+    const _pluginStateHandles = new Map(); // pluginName -> state proxy
+    async function _pluginStateFor(pluginName) {
+        if (!pluginName) return null;
+        if (_pluginStateHandles.has(pluginName)) return _pluginStateHandles.get(pluginName);
+        const { makePluginState } = await import('../plugins/state.mjs');
+        const state = makePluginState(pluginName, { emit: stateEmit });
+        _pluginStateHandles.set(pluginName, state);
+        return state;
+    }
+
+    /**
+     * Register one MCP tool under `<serverName>.<toolName>` (namespaced
+     * to prevent collisions between plugins that ship servers with the
+     * same tool name). The MCP client is owned by the caller (agent-
+     * relay) which spawns/tears it down with the workspace lifetime.
+     * Handler receives the same options shape as JS plugin tools so
+     * `state`, `signal`, `pluginName` all work uniformly.
+     */
+    function registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema = {}) {
+        const qualified = `${serverName}.${toolName}`;
+        if (toolMap[qualified] || pluginToolMap.has(qualified)) {
+            if (process.env.DEBUG) {
+                console.warn(`MCP tool "${qualified}" from plugin "${pluginName}" collides with an existing tool — skipping.`);
+            }
+            return false;
+        }
+        const mcpHandler = async (args, options = {}) => {
+            // The lazy-state getter matches JS plugin tools so an MCP
+            // "wrapper" tool can trivially write its result to the same
+            // Shared Blackboard (rare, but useful for cache-and-return).
+            const handlerOpts = {
+                ...options,
+                pluginName,
+                mcpServer: serverName,
+                get state() {
+                    if (this._stateP) return this._stateP;
+                    this._stateP = _pluginStateFor(pluginName);
+                    return this._stateP;
+                },
+            };
+            try {
+                const result = await mcpClient.callTool(toolName, args || {});
+                // callTool returns joined text for text/* content; pass through as output.
+                const output = typeof result === 'string' ? result : (result?.output ?? result);
+                // Allow the caller (state-writer wrapper) to introspect via handlerOpts.
+                void handlerOpts;
+                return { success: true, output, _tool: qualified, _plugin: pluginName, _mcp_server: serverName };
+            } catch (err) {
+                return {
+                    success: false,
+                    output: `MCP tool error (${qualified}): ${err.message}`,
+                    _tool: qualified,
+                    _plugin: pluginName,
+                    _mcp_server: serverName,
+                };
+            }
+        };
+        mcpHandler._pluginTool = { pluginName, source: 'mcp', serverName, toolName };
+        pluginToolMap.set(qualified, mcpHandler);
+        // Track schema for tool-listing surfaces (also help /tools discovery).
+        pluginToolMap.get(qualified)._mcp = { pluginName, serverName, toolName, schema: toolSchema };
+        return true;
+    }
+
+    function registerPluginToolsFromRegistry() {
+        if (!pluginRegistry) return;
+        for (const toolDef of pluginRegistry.listTools?.() || []) {
+            const name = String(toolDef.name || '').trim();
+            if (!name || toolMap[name]) continue;
+            const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            registerPluginTool(name, async (args, options = {}) => {
+                const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
+                if (!handler) {
+                    return {
+                        success: false,
+                        output: `Plugin tool handler could not be loaded: ${name}`,
+                        _tool: name,
+                        _plugin: pluginName,
+                    };
+                }
+                // Shared-blackboard injection: handlers opt in by naming
+                // `state` in their signature (`async call(args, { state })`).
+                // The property is a getter so the SQLite file is only
+                // opened when a handler actually asks for it — plugins
+                // that never touch state pay zero disk / init cost.
+                const handlerOpts = {
+                    ...options,
+                    pluginName,
+                    get state() { /* eslint-disable no-unused-vars */
+                        // Sync getter fronting an async loader — first
+                        // access returns a Promise, which is unusual
+                        // for handler code but common enough as
+                        // `const s = await opts.state`. The awaited
+                        // value is cached on this options object so
+                        // repeat accesses in the same call don't re-await.
+                        if (this._stateP) return this._stateP;
+                        this._stateP = _pluginStateFor(pluginName);
+                        return this._stateP;
+                    },
+                };
+                try {
+                    const result = await handler.call(args || {}, handlerOpts);
+                    if (result && typeof result === 'object' && 'success' in result) {
+                        return { ...result, _tool: name, _plugin: pluginName };
+                    }
+                    return {
+                        success: true,
+                        output: typeof result === 'string' ? result : JSON.stringify(result),
+                        _tool: name,
+                        _plugin: pluginName,
+                    };
+                } catch (err) {
+                    return {
+                        success: false,
+                        output: `Plugin tool error (${name}): ${err.message}`,
+                        _tool: name,
+                        _plugin: pluginName,
+                    };
+                }
+            }, { pluginName, source: 'plugin' });
+        }
+    }
+
+    function pluginAgentForTool(toolName, pluginName) {
+        if (!pluginRegistry) return null;
+        return (pluginRegistry.listAgents?.() || []).find(agent => {
+            const agentPlugin = agent._plugin_name
+                || String(agent.source || '').replace(/^plugin:/, '')
+                || null;
+            if (pluginName && agentPlugin && agentPlugin !== pluginName) return false;
+            return Array.isArray(agent.tools) && agent.tools.includes(toolName);
+        }) || null;
+    }
+
+    function primaryModelPluginToolBlock(name, handler, options = {}) {
+        if (!handler?._pluginTool) return null;
+        if (options.toolCallSource !== 'model') return null;
+        if (options.internal || options.subAgent || options.allowPrimaryPluginToolCall) return null;
+
+        const pluginName = handler._pluginTool.pluginName || 'plugin';
+        const agent = pluginAgentForTool(name, pluginName);
+        const delegateHint = agent?.slug
+            ? `Delegate to the '${agent.slug}' sub-agent instead, or run it explicitly with /run ${agent.slug} "...".`
+            : `Delegate to the plugin's sub-agent instead, or run the plugin agent explicitly.`;
+        return {
+            success: false,
+            output: `Plugin tool '${name}' is scoped to plugin '${pluginName}' and should not be called directly by the primary agent. ${delegateHint}`,
+            _tool: name,
+            _plugin: pluginName,
+            _blocked: true,
+            _requires_agent_delegation: true,
+            _agent: agent?.slug || null,
+        };
+    }
+
     async function executeToolWithHooks(name, args, options = {}) {
-        const handler = toolMap[name];
+        const handler = toolMap[name] || pluginToolMap.get(name);
         if (!handler) {
             return { success: false, output: `Unknown tool: ${name}`, _tool: name };
         }
+        const pluginToolBlock = primaryModelPluginToolBlock(name, handler, options);
+        if (pluginToolBlock) return pluginToolBlock;
         const hooks = hookRunner || new HookRunner({ cwd: process.cwd() });
         try {
             throwIfAborted(options.signal);
@@ -975,6 +1295,30 @@ export function createToolExecutor({
             args._classification = classification.classification; // 'safe' or 'contained'
             const cwd = await commandCwd(args);
 
+            // Background execution: start via the BackgroundTasks registry
+            // and return immediately. Safety checks above still apply;
+            // results are retrieved with job_output / killed with job_kill.
+            if (args.run_in_background) {
+                const job = backgroundTasks.start({
+                    command: args.command,
+                    cwd,
+                    timeoutMs: args.timeout ? Math.min(Number(args.timeout), 3_600_000) : undefined,
+                    // Deterministic wake-on-finish: completion dispatches the
+                    // named agent through the trigger funnel (chain-guarded).
+                    on_complete: args.on_complete_agent ? {
+                        target: `agent:${String(args.on_complete_agent).trim()}`,
+                        instruction: args.on_complete_instruction || null,
+                    } : null,
+                });
+                return {
+                    success: true,
+                    output: `Background job started: ${job.id} (pid ${job.pid}). `
+                        + `Check progress with job_output {"job_id": "${job.id}"}; stop with job_kill.`,
+                    job_id: job.id,
+                    _tool: 'shell',
+                };
+            }
+
             // Pre-check: if command is rm/unlink, verify targets exist first
             const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
             if (rmMatch) {
@@ -1143,7 +1487,7 @@ export function createToolExecutor({
             updateProjectIndex(filePath);
 
             // Auto-lint the written file
-            const lintOutput = autoLint(filePath);
+            const lintOutput = await autoLint(filePath);
             if (lintOutput) {
                 wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;
@@ -1236,9 +1580,21 @@ export function createToolExecutor({
         // 4. edit_file → Edit + auto-lint + auto-fallback to sed
         edit_file: async (args) => {
             const rawPath = args.file_path || args.path;
+            const searchText = args.search ?? args.old_string ?? args.oldString;
+            const replaceText = args.replace ?? args.new_string ?? args.newString;
+            const replaceAll = args.replace_all === true || args.replaceAll === true;
+            if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
+                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'edit_file' };
+            }
+            if (typeof searchText !== 'string' || searchText.length === 0) {
+                return { success: false, output: 'Error: edit_file requires a non-empty search string.', _tool: 'edit_file' };
+            }
+            if (typeof replaceText !== 'string') {
+                return { success: false, output: 'Error: edit_file requires a replacement string.', _tool: 'edit_file' };
+            }
             const filePath = await resolvePath(rawPath, args);
             const before = readTextIfExists(filePath);
-            const writeCheck = validateWrite(filePath, args.replace, projectRootFor(filePath));
+            const writeCheck = validateWrite(filePath, replaceText, projectRootFor(filePath));
             if (!writeCheck.safe) {
                 return { success: false, output: `BLOCKED: ${writeCheck.reason}`, _tool: 'edit_file', _blocked: true };
             }
@@ -1256,46 +1612,55 @@ export function createToolExecutor({
             try {
                 result = await occRegistry.call('edit_file', {
                     file_path: filePath,
-                    search: args.search,
-                    replace: args.replace,
-                    replace_all: args.replace_all || false,
+                    search: searchText,
+                    replace: replaceText,
+                    replace_all: replaceAll,
                 });
             } catch (editErr) {
-                // OCC Edit failed (string not found) — fallback to Python replacement
+                // OCC Edit failed (string not found) — fallback to direct text replacement.
                 try {
-                    const search = args.search.replace(/'/g, "\\'").replace(/\n/g, "\\n");
-                    const replace = args.replace.replace(/'/g, "\\'").replace(/\n/g, "\\n");
-                    const pyCmd = `python3 -c "
-import sys
-with open('${filePath}', 'r') as f: content = f.read()
-old = '''${args.search}'''
-new = '''${args.replace}'''
-if old not in content:
-    print('ERROR: search string not found in file', file=sys.stderr)
-    sys.exit(1)
-content = content.replace(old, new, 1)
-with open('${filePath}', 'w') as f: f.write(content)
-print('OK: replaced')
-"`;
-                    const fallbackResult = execSync(pyCmd, {
-                        encoding: 'utf-8',
-                        timeout: 5000,
-                        cwd: projectRootFor(filePath),
-                    });
-                    result = `Edited ${filePath} (via fallback): ${fallbackResult.trim()}`;
-                } catch (sedErr) {
-                    return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${sedErr?.message || 'unknown'}. Try shell(sed) manually.`, _tool: 'edit_file' };
+                    const content = fs.readFileSync(filePath, 'utf-8');
+                    if (!content.includes(searchText)) {
+                        throw new Error('search string not found in file');
+                    }
+                    const nextContent = replaceAll
+                        ? content.split(searchText).join(replaceText)
+                        : content.replace(searchText, replaceText);
+                    if (nextContent !== content) {
+                        fs.writeFileSync(filePath, nextContent, 'utf-8');
+                    }
+                    result = `Edited ${filePath} (via fallback): OK: replaced`;
+                } catch (fallbackErr) {
+                    return { success: false, output: `edit_file failed: ${editErr?.message || 'unknown'}. Fallback also failed: ${fallbackErr?.message || 'unknown'}. Re-read the target range and provide an exact search string.`, _tool: 'edit_file' };
                 }
             }
 
             const wrapped = wrapResult(result, 'edit_file');
             const after = readTextIfExists(filePath);
+            if (wrapped.success !== false && before === after) {
+                const relativePath = path.relative(projectRootFor(filePath), filePath) || path.basename(filePath);
+                // File content is unchanged — the desired state is already in place.
+                // Return success so the agent doesn't treat this as a failure and
+                // loop into repeated read_file calls trying to diagnose why it failed.
+                // _no_change flags this for stagnation detection on repeated no-op edits.
+                return {
+                    success: true,
+                    output: `edit_file: no changes made to ${relativePath} — content already matches or replacement is identical to the original.`,
+                    _tool: 'edit_file',
+                    _no_change: true,
+                    no_change: true,
+                    file_path: filePath,
+                    relative_path: relativePath,
+                    lines_added: 0,
+                    lines_removed: 0,
+                };
+            }
             attachFileDiff(wrapped, filePath, before, after);
             updateProjectIndex(filePath);
             _hasEdited = true;
 
             // Auto-lint the edited file
-            const lintOutput = autoLint(filePath);
+            const lintOutput = await autoLint(filePath);
             if (lintOutput) {
                 wrapped.output += `\n\n--- Lint ---\n${lintOutput}`;
                 wrapped.lint = lintOutput;
@@ -1505,7 +1870,7 @@ print('OK: replaced')
             };
         },
 
-        // ── Tarang-specific tools (no OCC bridge) ──────────────
+        // ── Bahulam-specific tools (no OCC bridge) ──────────────
 
         // 8. read_files → batch Read (with AST truncation for large files)
         read_files: async (args) => {
@@ -1884,9 +2249,47 @@ print('OK: replaced')
         },
 
         // User-defined agents — metadata first, project YAML + backend sync on demand.
+        job_output: async (args = {}) => {
+            const jobId = String(args.job_id || '').trim();
+            if (!jobId) {
+                const jobs = backgroundTasks.list();
+                return {
+                    success: true,
+                    output: jobs.length
+                        ? JSON.stringify({ jobs }, null, 2)
+                        : 'No background jobs in this session.',
+                    jobs,
+                    _tool: 'job_output',
+                };
+            }
+            const job = args.block
+                ? await backgroundTasks.wait(jobId)
+                : backgroundTasks.describe(jobId);
+            if (!job) return { success: false, output: `Unknown job: ${jobId}`, _tool: 'job_output' };
+            const tailLines = Number(args.tail_lines) || 80;
+            const tail = String(job.tail || '').split('\n').slice(-tailLines).join('\n');
+            return {
+                success: true,
+                output: `${job.id} · ${job.status}`
+                    + (job.exit_code != null ? ` (exit ${job.exit_code})` : '')
+                    + ` · ${job.duration_s}s\n${tail}`,
+                job: { ...job, tail: undefined },
+                _tool: 'job_output',
+            };
+        },
+
+        job_kill: async (args = {}) => {
+            const job = backgroundTasks.kill(String(args.job_id || '').trim());
+            if (!job) return { success: false, output: `Unknown job: ${args.job_id}`, _tool: 'job_kill' };
+            return { success: true, output: `${job.id} → ${job.status}`, job, _tool: 'job_kill' };
+        },
+
         agents_list: async (args = {}) => {
             const agents = filterLocalAgents(args).map(compactAgentMetadata);
             const payload = { agents, count: agents.length };
+            if (agents.some(agent => agent.runnable === false)) {
+                payload.note = 'Agents with runnable:false are workspace-scoped plugin agents; add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
+            }
             return {
                 success: true,
                 output: JSON.stringify(payload, null, 2),
@@ -1917,7 +2320,8 @@ print('OK: replaced')
                     : null,
                 next_actions: [
                     `Edit ${result.filePath}`,
-                    `Run /agents sync ${result.slug} when ready`,
+                    `Run /run ${result.slug} "<task>" or delegate to it from chat immediately`,
+                    `Optional: /agents sync ${result.slug} to publish it to the backend for account/cloud reuse`,
                 ],
             };
             return {
@@ -1934,7 +2338,7 @@ print('OK: replaced')
                 const target = args.name || args.slug || '';
                 throw new Error(target ? `No local agent found: ${target}` : 'No local agents found in .bahulam/agents');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             const result = await syncAgentsToBackend({
                 backendUrl: creds.backendUrl,
                 token: creds.token,
@@ -1956,7 +2360,7 @@ print('OK: replaced')
             const local = filterLocalWorkflows(args).map(compactWorkflowMetadata);
             let backend = [];
             try {
-                const creds = new TarangAuth().loadCredentials();
+                const creds = new BahulamAuth().loadCredentials();
                 if (creds.backendUrl && creds.token) {
                     const resp = await fetch(`${creds.backendUrl}${WORKFLOW_SYNC_ENDPOINT}`, {
                         headers: {
@@ -2022,7 +2426,7 @@ print('OK: replaced')
                 const target = args.name || args.slug || '';
                 throw new Error(target ? `No local workflow found: ${target}` : 'No local workflows found in .bahulam/workflows');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
                 throw new Error('Not logged in. Run bahulam login first.');
             }
@@ -2094,7 +2498,7 @@ print('OK: replaced')
             if (!target) {
                 throw new Error('workflow_id is required');
             }
-            const creds = new TarangAuth().loadCredentials();
+            const creds = new BahulamAuth().loadCredentials();
             if (!creds.backendUrl || !creds.token) {
                 throw new Error('Not logged in. Run bahulam login first.');
             }
@@ -2271,10 +2675,12 @@ print('OK: replaced')
         },
     };
 
+    registerPluginToolsFromRegistry();
+
     return {
         /**
-         * Execute a Tarang tool by name.
-         * @param {string} name - Tarang tool name
+         * Execute a Bahulam tool by name.
+         * @param {string} name - Bahulam tool name
          * @param {Object} args - Tool arguments
          * @returns {Promise<Object>} - { success, output, ... }
          */
@@ -2284,7 +2690,33 @@ print('OK: replaced')
 
         /** List all available tool names. */
         listTools() {
-            return Object.keys(toolMap);
+            return [...Object.keys(toolMap), ...pluginToolMap.keys()];
+        },
+
+        /**
+         * Register one MCP-backed tool as `<serverName>.<toolName>`.
+         * Called by the workspace lifecycle after spawning per-plugin
+         * MCP clients. Returns true on success, false on name collision.
+         */
+        registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema) {
+            return registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema);
+        },
+
+        /**
+         * Unregister every MCP tool sourced from one server, called on
+         * plugin teardown / workspace close so subsequent sessions don't
+         * see stale `serverName.tool` entries.
+         */
+        unregisterMcpServer(pluginName, serverName) {
+            let removed = 0;
+            for (const [key, fn] of pluginToolMap) {
+                const meta = fn?._mcp;
+                if (meta && meta.pluginName === pluginName && meta.serverName === serverName) {
+                    pluginToolMap.delete(key);
+                    removed++;
+                }
+            }
+            return removed;
         },
 
         getProjectResources() {
@@ -2318,6 +2750,8 @@ print('OK: replaced')
             return results;
         },
 
+        listRunnables,
+
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();
             const mem = _readMemorySnapshot();
@@ -2333,7 +2767,7 @@ print('OK: replaced')
                 // hasn't changed between turns.
                 memory_facts: mem.facts,
                 memory_digest: mem.digest,
-                available_agents: listLocalAgents(process.cwd()).map(agent => ({
+                available_agents: listAvailableAgents().map(agent => ({
                     slug: agent.slug,
                     name: agent.name,
                     description: agent.description,
@@ -2344,8 +2778,20 @@ print('OK: replaced')
                     capabilities: agent.capabilities,
                     domains: agent.domains,
                     source_scope: agent.source_scope,
+                    source: agent.source,
                     spec: agent.spec,
                 })),
+                // Background jobs the model should know about. Stable fields
+                // only (no durations) so the entry — and the prompt cache —
+                // changes on status transitions, not every turn.
+                ...(backgroundTasks.list().length ? {
+                    background_jobs: backgroundTasks.list().map(job => ({
+                        id: job.id,
+                        name: job.name,
+                        status: job.status,
+                        exit_code: job.exit_code,
+                    })),
+                } : {}),
                 available_workflows: listLocalWorkflows(process.cwd()).map(workflow => ({
                     slug: workflow.slug,
                     name: workflow.name,

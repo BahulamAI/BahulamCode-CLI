@@ -1,8 +1,8 @@
 /**
- * System Prompt Builder — loads and merges CLAUDE.md and KEPLER.md files.
+ * System Prompt Builder — loads and merges CLAUDE.md and BAHULAM.md files.
  *
  * Features:
- * - Loads CLAUDE.md from: ~/.claude/CLAUDE.md, project root, parent dirs
+ * - Loads CLAUDE.md and BAHULAM.md from: global dir, project root, parent dirs
  * - Merges in order (global -> project -> local)
  * - Splits at cache boundary (static prefix cached, dynamic suffix not)
  * - Includes tool schemas in the system prompt
@@ -10,30 +10,49 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { loadKeplerMemory } from '../config/memory-loader.mjs';
+import { loadBahulamMemory } from '../config/memory-loader.mjs';
 
 /**
- * Load all CLAUDE.md files and merge them in order.
+ * Load all instruction files and merge them in order (global → parent → project).
+ *
+ * Three first-class formats, per industry standard (2026):
+ *   AGENTS.md   — universal baseline: build rules, code style, monorepo layout.
+ *                 Loaded by 30+ agents (Cursor, Copilot CLI, Gemini CLI, Claude Code).
+ *   BAHULAM.md  — Bahulam-native persistent memory: tool directives, preferences,
+ *                 project-specific context that travels every session.
+ *   CLAUDE.md   — Claude Code / Claude-specific instructions and memory tiers.
+ *
+ * Search order per directory: AGENTS.md → BAHULAM.md → .bahulam/BAHULAM.md
+ *                                       → CLAUDE.md  → .claude/CLAUDE.md
+ *
  * @param {string} [cwd] - current working directory
- * @returns {string[]} Array of CLAUDE.md contents in merge order
+ * @returns {Array<{source,content,path}>} files in merge order
  */
 export function loadClaudeMdFiles(cwd = process.cwd()) {
     const files = [];
 
-    // 1. Global: ~/.claude/CLAUDE.md
-    const globalPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-    if (fs.existsSync(globalPath)) {
-        try {
-            files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8') });
-        } catch { /* skip */ }
+    // 1. Global files
+    for (const globalPath of [
+        path.join(os.homedir(), '.bahulam', 'AGENTS.md'),
+        path.join(os.homedir(), '.bahulam', 'BAHULAM.md'),
+        path.join(os.homedir(), '.claude', 'CLAUDE.md'),
+    ]) {
+        if (fs.existsSync(globalPath)) {
+            try {
+                files.push({ source: 'global', content: fs.readFileSync(globalPath, 'utf-8'), path: globalPath });
+            } catch { /* skip */ }
+        }
     }
 
-    // 2. Walk from cwd up to root, collecting CLAUDE.md files
+    // 2. Walk from cwd up to root, collecting per-directory instruction files
     const projectFiles = [];
     let dir = path.resolve(cwd);
     const root = path.parse(dir).root;
     while (dir !== root) {
         const candidates = [
+            path.join(dir, 'AGENTS.md'),
+            path.join(dir, 'BAHULAM.md'),
+            path.join(dir, '.bahulam', 'BAHULAM.md'),
             path.join(dir, 'CLAUDE.md'),
             path.join(dir, '.claude', 'CLAUDE.md'),
         ];
@@ -47,7 +66,7 @@ export function loadClaudeMdFiles(cwd = process.cwd()) {
         dir = path.dirname(dir);
     }
 
-    // Reverse so parent dirs come first (global -> project -> local)
+    // Reverse so parent dirs come first (global → project → local)
     projectFiles.reverse();
     files.push(...projectFiles);
 
@@ -89,7 +108,7 @@ export function buildSystemPrompt({ cwd, tools, override, addDirs } = {}) {
         parts.push(f.content);
     }
 
-    for (const f of loadKeplerMemory({ cwd })) {
+    for (const f of loadBahulamMemory({ cwd })) {
         parts.push(f.content);
     }
 

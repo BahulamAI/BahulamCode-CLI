@@ -90,7 +90,7 @@ function currentWorkingDirectory() {
 //                              handles the display width from here)
 //
 // The point: keep the basename + parent visible even when the full path
-// is long, so users don't see "Editing /Users/sree/Sites/Tarang-Orca/
+// is long, so users don't see "Editing /Users/sree/Sites/.../
 // codekepler-ba…" with the actual filename lost off the right edge.
 function shortPath(filePath, cwd = currentWorkingDirectory()) {
   const value = String(filePath || '');

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { deepMerge } from '../core/policy-resolver.mjs';
 
-export const DEFAULT_KEPLER_SETTINGS = Object.freeze({
+export const DEFAULT_BAHULAM_SETTINGS = Object.freeze({
   env: {},
   permissions: {
     shellAllowlist: [],
@@ -16,6 +16,7 @@ export const DEFAULT_KEPLER_SETTINGS = Object.freeze({
   },
 });
 
+
 function readJson(filePath) {
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -25,10 +26,10 @@ function readJson(filePath) {
   }
 }
 
-export function loadKeplerSettings({ cwd = process.cwd() } = {}) {
+export function loadBahulamSettings({ cwd = process.cwd() } = {}) {
   const base = path.join(cwd, '.bahulam');
   const layers = [
-    { name: 'default', path: null, data: DEFAULT_KEPLER_SETTINGS },
+    { name: 'default', path: null, data: DEFAULT_BAHULAM_SETTINGS },
   ];
   for (const [name, file] of [
     ['project', path.join(base, 'settings.json')],
@@ -43,3 +44,4 @@ export function loadKeplerSettings({ cwd = process.cwd() } = {}) {
   for (const layer of layers) settings = deepMerge(settings, layer.data || {});
   return { settings, layers };
 }
+

@@ -17,15 +17,19 @@ function readIfExists(filePath, maxChars = 12000) {
   }
 }
 
-export function loadKeplerMemory({ cwd = process.cwd() } = {}) {
+function readMemoryFile(dir, maxChars) {
+  return readIfExists(path.join(dir, 'BAHULAM.md'), maxChars);
+}
+
+export function loadBahulamMemory({ cwd = process.cwd() } = {}) {
   const files = [];
-  const global = readIfExists(path.join(bahulamHome(), 'KEPLER.md'));
+  const global = readMemoryFile(bahulamHome());
   if (global) files.push({ source: 'global', ...global });
 
-  const topLevel = readIfExists(path.join(cwd, 'KEPLER.md'));
+  const topLevel = readMemoryFile(cwd);
   if (topLevel) files.push({ source: 'project-top-level', ...topLevel });
 
-  const project = readIfExists(path.join(projectConfigDir(cwd), 'KEPLER.md'));
+  const project = readMemoryFile(projectConfigDir(cwd));
   if (project) files.push({ source: 'project', ...project });
 
   return files;

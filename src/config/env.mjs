@@ -27,8 +27,8 @@ export const ENV_SCHEMA = {
     CLAUDE_CODE_BRIEF: { type: 'boolean', default: false, description: 'Brief output mode' },
     CLAUDE_CODE_DISABLE_CRON: { type: 'boolean', default: false, description: 'Disable cron tasks' },
     CLAUDE_CODE_ENABLE_TASKS: { type: 'boolean', default: false, description: 'Enable task system' },
-    KEPLER_STAGNATION_DETECTION: { type: 'boolean', default: false, description: 'Detect consecutive identical tool-call loops' },
-    KEPLER_STAGNATION_THRESHOLD: { type: 'number', default: 3, description: 'Consecutive identical calls before warning' },
+    BAHULAM_STAGNATION_DETECTION: { type: 'boolean', default: false, description: 'Detect repeated tool-call or no-op edit loops' },
+    BAHULAM_STAGNATION_THRESHOLD: { type: 'number', default: 3, description: 'Consecutive repeated calls before warning' },
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: { type: 'boolean', default: false, description: 'Enable agent teams' },
     CLAUDE_CODE_DEBUG: { type: 'boolean', default: false, description: 'Debug mode' },
     CLAUDE_CODE_DISABLE_TELEMETRY: { type: 'boolean', default: false, description: 'Disable telemetry' },
@@ -44,6 +44,13 @@ export const ENV_SCHEMA = {
     // UI and Display
     SHOW_THINKING: { type: 'boolean', default: false, description: 'Show thinking blocks' },
     SHOW_TOOL_RESULTS: { type: 'boolean', default: false, description: 'Show tool results in REPL' },
+    BAHULAM_PLAIN: { type: 'boolean', default: false, description: 'Disable ANSI output and fixed terminal UI' },
+    BAHULAM_TTY_MODE: { type: 'string', default: 'rich', description: 'Terminal UI mode: rich, stable, transcript, or plain' },
+    BAHULAM_FIXED_INPUT: { type: 'boolean', default: true, description: 'Enable the fixed bottom input dock in rich TTY mode' },
+    BAHULAM_INPUT_ROWS_MAX: { type: 'number', default: 6, description: 'Maximum input rows reserved by the fixed input dock' },
+    BAHULAM_PROMPT_BOTTOM_PADDING: { type: 'number', default: 5, description: 'Blank rows reserved below the prompt when the fixed dock is disabled' },
+    BAHULAM_PASTE_FLUSH_MS: { type: 'number', default: 35, description: 'Debounce window for non-bracketed multiline paste input' },
+    BAHULAM_BLOCK_SEPARATOR: { type: 'string', default: 'space', description: 'Tool/content separator style: space, dotted, or off' },
     NO_COLOR: { type: 'boolean', default: false, description: 'Disable colored output' },
     TERM: { type: 'string', description: 'Terminal type' },
 
@@ -109,6 +116,8 @@ export const ENV_SCHEMA = {
     // Extended: Plugins
     CLAUDE_CODE_PLUGIN_DIR: { type: 'string', description: 'Custom plugin directory' },
     CLAUDE_CODE_DISABLE_PLUGINS: { type: 'boolean', default: false, description: 'Disable all plugins' },
+    BAHULAM_PLUGIN_DIR: { type: 'string', description: 'Bahulam plugin directory (comma-separated paths)' },
+    BAHULAM_DISABLE_PLUGINS: { type: 'string', description: 'Comma-separated plugin names to disable' },
 
     // Extended: Session
     CLAUDE_CODE_SESSION_TTL: { type: 'number', default: 86400000, description: 'Session TTL in ms (default 24h)' },

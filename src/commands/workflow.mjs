@@ -16,8 +16,8 @@
  */
 
 import { resolveBackendUrl } from '../core/backend-url.mjs';
-import { TarangAuth } from '../auth/tarang-auth.mjs';
-import { TarangStreamClient } from '../core/stream-client.mjs';
+import { BahulamAuth } from '../auth/bahulam-auth.mjs';
+import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import { EventFormatter } from '../ui/formatter.mjs';
@@ -87,7 +87,7 @@ function printWorkflowUsage() {
 // ── Helpers ────────────────────────────────────────────────────
 
 function getAuthHeaders() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
         process.stderr.write(`${RED}✗ Not authenticated. Run `bahulam-code login` first.${RESET}\n`);
@@ -100,7 +100,7 @@ function getAuthHeaders() {
 }
 
 function getBaseUrl() {
-    const auth = new TarangAuth();
+    const auth = new BahulamAuth();
     return auth.loadCredentials().backendUrl || resolveBackendUrl();
 }
 
@@ -540,7 +540,7 @@ async function handleRunMulti(args) {
             process.exit(1);
         }
 
-        const client = new TarangStreamClient({
+        const client = new BahulamStreamClient({
             baseUrl,
             token: headers.Authorization.replace(/^Bearer\s+/i, ''),
             toolExecutor: createToolExecutor(),

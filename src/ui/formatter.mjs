@@ -1,5 +1,5 @@
 /**
- * Formatter — Clean terminal output for Tarang events.
+ * Formatter — Clean terminal output for Bahulam events.
  *
  * Style reference: Claude Code screenshot
  *   ◐ Cyan spinner + cyan text for working/thinking
@@ -135,7 +135,7 @@ export class EventFormatter {
         if (!this._lastBlock) return;
         if (compactSame && this._lastBlock === nextBlock) return;
 
-        const mode = String(process.env.KEPLER_BLOCK_SEPARATOR || 'space').toLowerCase();
+        const mode = String(process.env.BAHULAM_BLOCK_SEPARATOR || 'space').toLowerCase();
         if (mode === 'off' || mode === 'none') return;
         if (mode === 'dotted' || mode === 'dots') {
             const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);

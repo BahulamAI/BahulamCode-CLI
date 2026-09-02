@@ -57,7 +57,6 @@ await test('generate_image calls authenticated backend and writes file', async (
   const oldEnv = saveEnv([
     'BAHULAM_HOME',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'BAHULAM_PRODUCT',
     'OPENROUTER_API_KEY',
@@ -65,7 +64,7 @@ await test('generate_image calls authenticated backend and writes file', async (
     'BAHULAM_GATEWAY_API_KEY',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-'));
   const b64 = Buffer.from('fake-png-bytes').toString('base64');
   const captured = {};
 
@@ -73,7 +72,6 @@ await test('generate_image calls authenticated backend and writes file', async (
     process.chdir(tmp);
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     process.env.B0_TOKEN = 'cli_test_token';
-    delete process.env.KEPLER_TOKEN;
     process.env.TARANG_BACKEND_URL = 'https://backend.example';
     process.env.BAHULAM_PRODUCT = 'bahulam';
     delete process.env.OPENROUTER_API_KEY;
@@ -134,13 +132,12 @@ await test('generate_image falls back to direct image endpoint with provider key
   const oldEnv = saveEnv([
     'BAHULAM_HOME',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'OPENROUTER_API_KEY',
     'OPENROUTER_BASE_URL',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-direct-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-direct-'));
   const b64 = Buffer.from('direct-png-bytes').toString('base64');
   const captured = {};
 
@@ -148,7 +145,6 @@ await test('generate_image falls back to direct image endpoint with provider key
     process.chdir(tmp);
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     delete process.env.B0_TOKEN;
-    delete process.env.KEPLER_TOKEN;
     process.env.OPENROUTER_API_KEY = 'or_test';
     process.env.OPENROUTER_BASE_URL = 'https://openrouter.example/api/v1';
     process.env.BAHULAM_IMAGE_GENERATION_MODEL = 'test/image-model';
@@ -191,13 +187,12 @@ await test('tool executor bridges generate_image calls', async () => {
     'BAHULAM_HOME',
     'BAHULAM_SKIP_AUTO_REGISTER',
     'B0_TOKEN',
-    'KEPLER_TOKEN',
     'TARANG_BACKEND_URL',
     'OPENROUTER_API_KEY',
     'OPENROUTER_BASE_URL',
     'BAHULAM_IMAGE_GENERATION_MODEL',
   ]);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kepler-generate-image-bridge-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-generate-image-bridge-'));
   const b64 = Buffer.from('bridge-png-bytes').toString('base64');
 
   try {
@@ -205,7 +200,6 @@ await test('tool executor bridges generate_image calls', async () => {
     process.env.BAHULAM_HOME = path.join(tmp, 'home');
     process.env.BAHULAM_SKIP_AUTO_REGISTER = 'true';
     delete process.env.B0_TOKEN;
-    delete process.env.KEPLER_TOKEN;
     process.env.OPENROUTER_API_KEY = 'or_test';
     process.env.OPENROUTER_BASE_URL = 'https://openrouter.example/api/v1';
     process.env.BAHULAM_IMAGE_GENERATION_MODEL = 'test/image-model';

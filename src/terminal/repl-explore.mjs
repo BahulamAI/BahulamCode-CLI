@@ -25,7 +25,7 @@ const EXPLORE_TOOL_CATEGORY = new Map([
 ]);
 
 export function exploreCollapseEnabled() {
-  return process.env.KEPLER_EXPLORE_COLLAPSE !== '0';
+  return process.env.BAHULAM_EXPLORE_COLLAPSE !== '0';
 }
 
 export function isExploreTool(tool) {

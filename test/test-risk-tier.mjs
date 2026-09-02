@@ -211,11 +211,11 @@ test('executor classifier does not mark mutating shell forms safe', () => {
 
 test('executor classifier treats rm as approved-contained unless target is hard-blocked', () => {
   for (const command of [
-    'rm apps/kepler-docs/package-lock.json',
+    'rm apps/my-docs/package-lock.json',
     'rm ~/.agent_framework/.license_lock',
-    'rm -rf apps/kepler-docs/node_modules',
-    'cd /Users/sree/Sites/Tarang\\ Orca/appstak-platform && rm apps/kepler-docs/package-lock.json && rm -rf apps/kepler-docs/node_modules',
-    'rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/kepler-docs/node_modules',
+    'rm -rf apps/my-docs/node_modules',
+    'cd /Users/sree/Sites/Tarang\\ Orca/appstak-platform && rm apps/my-docs/package-lock.json && rm -rf apps/my-docs/node_modules',
+    'rm -rf /Users/sree/Sites/Tarang\\ Orca/appstak-platform/apps/my-docs/node_modules',
   ]) {
     const result = classifyCommand(command);
     assert.equal(result.classification, 'contained', command);
