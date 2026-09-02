@@ -182,6 +182,37 @@ await test('parses SSE id and retry fields', async () => {
     assert.strictEqual(client.retryDelayMs, 25);
 });
 
+await test('ignores transport errors after complete event', async () => {
+    telemetry.clear();
+    const server = http.createServer((req, res) => {
+        if (req.url === '/api/execute') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'task-post-complete-drop' });
+            res.write(`id: 1\nevent: complete\ndata: ${JSON.stringify({ summary: 'Done' })}\n\n`);
+            setTimeout(() => res.socket?.destroy(new Error('drop after complete')), 5);
+        } else {
+            res.writeHead(404);
+            res.end();
+        }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const client = new BahulamStreamClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        token: 'test',
+        toolExecutor: mockToolExecutor,
+        reconnectMaxElapsedMs: 1000,
+    });
+    const events = [];
+    for await (const evt of client.execute('test')) events.push(evt);
+    server.close();
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].type, EVENT_TYPES.COMPLETE);
+    assert.strictEqual(client.lastEventId, '1');
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.post_complete_error_ignored'], 1);
+    assert.strictEqual(telemetry.getStats().eventCounts['stream.reconnect.attempt'] || 0, 0);
+});
+
 await test('reconnects to task events after mid-stream drop', async () => {
     telemetry.clear();
     let replayRequested = false;

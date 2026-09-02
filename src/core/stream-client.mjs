@@ -171,6 +171,7 @@ export class BahulamStreamClient {
         this._pauseWaiters = new Set();
         this._abort = null;
         this._toolAbort = null;
+        this._sawComplete = false;
 
         // Transport mode:
         //   'remote' → cloud backend runs the agent loop server-side.
@@ -352,6 +353,7 @@ export class BahulamStreamClient {
         this._cancelled = false;
         this.currentTaskId = null;
         this._firstEventTimedOut = false;
+        this._sawComplete = false;
 
         // Bundled mode: spawn the local Python runtime on first turn.
         // After this, this.baseUrl points at http://127.0.0.1:<random-port>
@@ -500,6 +502,21 @@ export class BahulamStreamClient {
             if (this._cancelled) {
                 return;
             }
+            if (this._sawComplete) {
+                telemetry.track('stream.post_complete_error_ignored', {
+                    task_id: this.currentTaskId || null,
+                    last_event_id: this.lastEventId || null,
+                    message: err?.message || 'stream closed after complete',
+                    error_code: err?.cause?.code || err?.code || '',
+                });
+                transportDebug('execute.post_complete_error_ignored', {
+                    task_id: this.currentTaskId || null,
+                    last_event_id: this.lastEventId || null,
+                    error: err?.message || 'stream closed after complete',
+                    code: err?.cause?.code || err?.code || '',
+                });
+                return;
+            }
             if (this._firstEventTimedOut) {
                 yield {
                     type: EVENT_TYPES.ERROR,
@@ -579,6 +596,7 @@ export class BahulamStreamClient {
         }
 
         if (event === EVENT_TYPES.COMPLETE) {
+            this._sawComplete = true;
             this._persistMemoryFactsFromComplete(data);
         }
 
