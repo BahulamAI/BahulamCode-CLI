@@ -73,8 +73,8 @@ export async function createPluginToolExecutor(manifest, opts = {}) {
   const pluginName = manifest.metadata?.name || '';
 
   for (const toolDef of tools) {
-    if (!toolDef.handler) continue;
-    const handler = await loadPluginTool(pluginDir, toolDef.handler);
+    if (!toolDef.tool) continue;
+    const handler = await loadPluginTool(pluginDir, toolDef.tool);
     if (handler) {
       handlers.set(toolDef.name, { handler, toolDef });
     }

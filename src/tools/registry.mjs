@@ -128,11 +128,11 @@ export function createToolRegistry({
                 inputSchema: toolDef.input_schema || toolDef.parameters || { type: 'object', properties: {} },
                 validateInput() { return []; },
                 async call(input, options = {}) {
-                    const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
+                    const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.tool || toolDef.handler);
                     if (!handler) {
                         return {
                             success: false,
-                            output: `Plugin tool handler could not be loaded: ${name}`,
+                            output: `Plugin tool module could not be loaded: ${name}`,
                             _tool: name,
                             _plugin: pluginName,
                         };

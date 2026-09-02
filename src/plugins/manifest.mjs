@@ -26,40 +26,40 @@ function normalizeToolNames(value) {
   }).filter(Boolean);
 }
 
-function loadAgentHandler(agentDef, pluginDir) {
-  const handler = String(agentDef.handler || agentDef.file || '').trim();
-  if (!handler || !pluginDir) return {};
+function loadAgentFile(agentDef, pluginDir) {
+  const file = String(agentDef.file || agentDef.handler || '').trim();
+  if (!file || !pluginDir) return {};
   try {
-    const handlerPath = path.resolve(pluginDir, handler);
-    const raw = fs.readFileSync(handlerPath, 'utf-8');
-    return path.extname(handlerPath).toLowerCase() === '.json'
+    const filePath = path.resolve(pluginDir, file);
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    return path.extname(filePath).toLowerCase() === '.json'
       ? JSON.parse(raw)
       : parseYaml(raw);
   } catch (err) {
     if (process.env.DEBUG) {
-      console.error(`Failed to load plugin agent handler ${handler}: ${err.message}`);
+      console.error(`Failed to load plugin agent file ${file}: ${err.message}`);
     }
     return {};
   }
 }
 
 function normalizeAgentDef(agentDef, pluginName, pluginDir) {
-  const handlerConfig = loadAgentHandler(agentDef, pluginDir);
-  const metadata = handlerConfig.metadata || handlerConfig.meta || {};
-  const agent = handlerConfig.agent || handlerConfig.spec?.agent || {};
-  const handlerTools = (
-    handlerConfig.tools
-    || handlerConfig.spec?.tools
+  const fileConfig = loadAgentFile(agentDef, pluginDir);
+  const metadata = fileConfig.metadata || fileConfig.meta || {};
+  const agent = fileConfig.agent || fileConfig.spec?.agent || {};
+  const fileTools = (
+    fileConfig.tools
+    || fileConfig.spec?.tools
     || agent.tools
     || []
   );
   const inlineTools = normalizeToolNames(agentDef.tools);
 
   return {
-    slug: agentDef.slug || metadata.slug || handlerConfig.slug || metadata.name || handlerConfig.name || agentDef.name || '',
-    name: agentDef.name || metadata.name || handlerConfig.name || agentDef.slug || '',
-    description: agentDef.description || metadata.description || handlerConfig.description || '',
-    role: agentDef.role || metadata.role || handlerConfig.role || 'specialist',
+    slug: agentDef.slug || metadata.slug || fileConfig.slug || metadata.name || fileConfig.name || agentDef.name || '',
+    name: agentDef.name || metadata.name || fileConfig.name || agentDef.slug || '',
+    description: agentDef.description || metadata.description || fileConfig.description || '',
+    role: agentDef.role || metadata.role || fileConfig.role || 'specialist',
     system_prompt: (
       agentDef.system_prompt
       || agentDef.systemPrompt
@@ -67,16 +67,16 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
       || agent.system_prompt
       || agent.systemPrompt
       || agent.prompt
-      || handlerConfig.system_prompt
-      || handlerConfig.prompt
+      || fileConfig.system_prompt
+      || fileConfig.prompt
       || ''
     ),
-    tools: inlineTools.length ? inlineTools : normalizeToolNames(handlerTools),
-    model: agentDef.model || agent.model || handlerConfig.model || null,
-    models: agentDef.models || agent.models || handlerConfig.models || undefined,
-    max_tokens: agentDef.max_tokens || agent.max_tokens || handlerConfig.max_tokens || undefined,
-    max_iterations: agentDef.max_iterations || agent.max_iterations || handlerConfig.max_iterations || undefined,
-    handler: agentDef.handler || agentDef.file || '',
+    tools: inlineTools.length ? inlineTools : normalizeToolNames(fileTools),
+    model: agentDef.model || agent.model || fileConfig.model || null,
+    models: agentDef.models || agent.models || fileConfig.models || undefined,
+    max_tokens: agentDef.max_tokens || agent.max_tokens || fileConfig.max_tokens || undefined,
+    max_iterations: agentDef.max_iterations || agent.max_iterations || fileConfig.max_iterations || undefined,
+    file: agentDef.file || agentDef.handler || '',
     source: `plugin:${pluginName}`,
     source_scope: 'plugin',
   };
@@ -164,7 +164,7 @@ export function normalizeManifest(raw, source = '') {
       name: toolDef.name || '',
       description: toolDef.description || '',
       input_schema: toolDef.parameters || toolDef.input_schema || toolDef.inputSchema || { type: 'object', properties: {} },
-      handler: toolDef.handler || toolDef.file || '',
+      tool: toolDef.tool || toolDef.file || toolDef.handler || '',
       plugin_name: name,
     };
     if (tool.name) tools.push(tool);
@@ -277,7 +277,7 @@ export function validatePluginManifest(manifest) {
   if (manifest.spec) {
     for (const tool of (manifest.spec.tools || [])) {
       if (!tool.name) errors.push('Tool missing name');
-      if (!tool.handler) errors.push(`Tool "${tool.name || '(unnamed)'}" missing handler path`);
+      if (!tool.tool) errors.push(`Tool "${tool.name || '(unnamed)'}" missing tool module path (tool: ./tools/<name>.mjs)`);
     }
     for (const agent of (manifest.spec.agents || [])) {
       if (!agent.slug && !agent.name) errors.push('Agent missing slug or name');

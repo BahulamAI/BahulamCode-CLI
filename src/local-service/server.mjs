@@ -90,6 +90,14 @@ export async function startLocalWorkspaceService({
     return event;
   }
 
+  // Reactive shared canvas across PROCESS boundaries: in-process state
+  // writes (workspace relay, view buttons) emit plugin_state_changed
+  // directly, but writes from the terminal REPL, headless runs, or graph
+  // job nodes happen in OTHER processes and would leave open views
+  // stale. Watching the state files themselves means every writer —
+  // whoever and wherever — pulses every open view.
+  const stopStateWatcher = installPluginStateWatcher({ emit, events });
+
   const server = http.createServer(async (req, res) => {
     try {
       assertLoopbackRequest(req);
@@ -138,6 +146,7 @@ export async function startLocalWorkspaceService({
     host: loopbackHost,
     close: () => new Promise((resolve) => {
       emit('session_stopped', {});
+      stopStateWatcher();
       const relay = agentRelay;
       for (const client of sseClients) {
         try {
@@ -151,6 +160,88 @@ export async function startLocalWorkspaceService({
       });
     }),
     emit,
+  };
+}
+
+/**
+ * Watch ~/.bahulam/data/<plugin>/ for state.db changes and emit coarse
+ * plugin_state_changed events. SQLite WAL files change on every commit,
+ * so any writer in any process pulses the views. Coarse shape
+ * {kind:'*', target:'*', source:'fswatch'} — views re-query state (they
+ * already fetch-on-event, so coarseness only costs one extra query).
+ * In-process writes already emitted a precise event; the suppression
+ * window keeps the watcher from double-pulsing those.
+ */
+function installPluginStateWatcher({ emit, events }) {
+  const dataRoot = path.join(os.homedir(), '.bahulam', 'data');
+  const watchers = new Map(); // dir → FSWatcher
+  const timers = new Map();   // plugin → debounce timer
+  const DEBOUNCE_MS = 150;
+  const SUPPRESS_MS = 500;
+
+  const recentlyEmittedInProcess = (plugin) => {
+    const cutoff = Date.now() - SUPPRESS_MS;
+    for (let i = events.length - 1; i >= 0 && i >= events.length - 25; i--) {
+      const evt = events[i];
+      if (Date.parse(evt.ts) < cutoff) break;
+      if (evt.type === 'plugin_state_changed'
+          && evt.data?.plugin === plugin
+          && evt.data?.source !== 'fswatch') return true;
+    }
+    return false;
+  };
+
+  const pulse = (plugin) => {
+    if (timers.has(plugin)) clearTimeout(timers.get(plugin));
+    timers.set(plugin, setTimeout(() => {
+      timers.delete(plugin);
+      if (recentlyEmittedInProcess(plugin)) return;
+      try {
+        emit('plugin_state_changed', { plugin, kind: '*', target: '*', source: 'fswatch' });
+      } catch { /* SSE bus is best-effort */ }
+    }, DEBOUNCE_MS));
+  };
+
+  const watchPluginDir = (plugin) => {
+    const dir = path.join(dataRoot, plugin);
+    if (watchers.has(dir)) return;
+    try {
+      const watcher = fs.watch(dir, () => pulse(plugin));
+      watcher.on('error', () => {
+        try { watcher.close(); } catch { /* already closed */ }
+        watchers.delete(dir);
+      });
+      watchers.set(dir, watcher);
+    } catch { /* dir may have vanished between scan and watch */ }
+  };
+
+  const scan = () => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dataRoot, { withFileTypes: true });
+    } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) watchPluginDir(entry.name);
+    }
+  };
+
+  try { fs.mkdirSync(dataRoot, { recursive: true }); } catch { /* best effort */ }
+  scan();
+  let rootWatcher = null;
+  try {
+    // New plugins create their data dir on first write — pick them up live.
+    rootWatcher = fs.watch(dataRoot, () => scan());
+    rootWatcher.on('error', () => { /* root watch is best-effort */ });
+  } catch { /* unsupported fs — views fall back to in-process events only */ }
+
+  return () => {
+    if (rootWatcher) { try { rootWatcher.close(); } catch { /* closed */ } }
+    for (const watcher of watchers.values()) {
+      try { watcher.close(); } catch { /* closed */ }
+    }
+    for (const timer of timers.values()) clearTimeout(timer);
+    watchers.clear();
+    timers.clear();
   };
 }
 

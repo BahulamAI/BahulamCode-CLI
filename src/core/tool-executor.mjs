@@ -851,11 +851,11 @@ export function createToolExecutor({
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
             registerPluginTool(name, async (args, options = {}) => {
-                const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.handler);
+                const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.tool);
                 if (!handler) {
                     return {
                         success: false,
-                        output: `Plugin tool handler could not be loaded: ${name}`,
+                        output: `Plugin tool module could not be loaded: ${name}`,
                         _tool: name,
                         _plugin: pluginName,
                     };
@@ -920,6 +920,14 @@ export function createToolExecutor({
         if (options.internal || options.subAgent || options.allowPrimaryPluginToolCall) return null;
 
         const pluginName = handler._pluginTool.pluginName || 'plugin';
+        // Tools-only plugins have no delegation owner: with no agent to
+        // route through, the primary agent uses the tools directly (the
+        // user consented by enabling the plugin). The delegate-only rule
+        // applies only when the plugin ships an owning agent.
+        const pluginShipsAgents = (pluginRegistry?.listAgents?.() || [])
+            .some(agent => (agent._plugin_name || '') === pluginName);
+        if (!pluginShipsAgents) return null;
+
         const agent = pluginAgentForTool(name, pluginName);
         const delegateHint = agent?.slug
             ? `Delegate to the '${agent.slug}' sub-agent instead, or run it explicitly with /run ${agent.slug} "...".`
@@ -2751,6 +2759,19 @@ export function createToolExecutor({
         },
 
         listRunnables,
+
+        // Plugin tool schemas (name/description/input_schema) for callers
+        // that compose model-facing tool lists — e.g. the graph engine's
+        // direct substrate giving a plugin agent its declared tools.
+        listPluginToolSchemas() {
+            if (!pluginRegistry) return [];
+            return (pluginRegistry.listTools?.() || []).map(tool => ({
+                name: tool.name,
+                description: tool.description || '',
+                input_schema: tool.input_schema || { type: 'object', properties: {} },
+                plugin_name: tool._plugin_name || tool.plugin_name || null,
+            })).filter(tool => tool.name);
+        },
 
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();

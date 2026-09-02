@@ -206,6 +206,11 @@ export class LocalAgent {
         maxTurns = null,
         stagnationDetection = false,
         stagnationThreshold = 3,
+        // Additional tool schemas beyond the built-in set — e.g. plugin
+        // tools a sub-agent node declares. Execution still routes through
+        // the (scoped) toolExecutor; this only makes the schemas visible
+        // to the model.
+        extraToolSchemas = [],
     }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
@@ -218,6 +223,7 @@ export class LocalAgent {
         this.maxTurns = maxTurns || MAX_ITERATIONS;
         this.stagnationDetection = stagnationDetection;
         this.stagnationThreshold = stagnationThreshold;
+        this.extraToolSchemas = Array.isArray(extraToolSchemas) ? extraToolSchemas : [];
         this._cancelled = false;
         this.promptCache = new PromptCache();
     }
@@ -498,7 +504,10 @@ export class LocalAgent {
     }
 
     _buildToolDefs() {
-        return TOOL_SCHEMAS;
+        if (!this.extraToolSchemas.length) return TOOL_SCHEMAS;
+        const names = new Set(TOOL_SCHEMAS.map(t => t.name));
+        const extras = this.extraToolSchemas.filter(t => t?.name && !names.has(t.name));
+        return extras.length ? [...TOOL_SCHEMAS, ...extras] : TOOL_SCHEMAS;
     }
 
     _buildSystemPrompt(context, retrievedContext = null) {

@@ -117,23 +117,23 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     if (!tool.description || tool.description.length < 8) {
       warnings.push(`Tool "${t}": description is missing or very short (<8 chars) — the model uses this to decide when to call it`);
     }
-    if (!tool.handler) { errors.push(`Tool "${t}": missing handler path`); continue; }
+    if (!tool.tool) { errors.push(`Tool "${t}": missing tool module path (tool: ./tools/<name>.mjs)`); continue; }
 
-    const handlerPath = path.resolve(pluginDir, tool.handler);
+    const toolModulePath = path.resolve(pluginDir, tool.tool);
     // Traversal guard
-    const inside = handlerPath === pluginDir || handlerPath.startsWith(pluginDir + path.sep);
-    if (!inside) errors.push(`Tool "${t}": handler path escapes the plugin directory`);
-    else if (!fs.existsSync(handlerPath)) errors.push(`Tool "${t}": handler file not found: ${tool.handler}`);
+    const inside = toolModulePath === pluginDir || toolModulePath.startsWith(pluginDir + path.sep);
+    if (!inside) errors.push(`Tool "${t}": tool module path escapes the plugin directory`);
+    else if (!fs.existsSync(toolModulePath)) errors.push(`Tool "${t}": tool module not found: ${tool.tool}`);
     else {
       try {
         // Cache-bust because a previous install may have imported an older
         // copy at the same path in this process.
-        const mod = await import(`${pathToFileURL(handlerPath).href}?preflight=${Date.now()}`);
+        const mod = await import(`${pathToFileURL(toolModulePath).href}?preflight=${Date.now()}`);
         if (typeof mod.call !== 'function') {
-          errors.push(`Tool "${t}": handler ${tool.handler} does not export an async \`call\` function`);
+          errors.push(`Tool "${t}": tool module ${tool.tool} does not export an async \`call\` function`);
         }
       } catch (err) {
-        errors.push(`Tool "${t}": handler ${tool.handler} failed to import: ${err.message}`);
+        errors.push(`Tool "${t}": tool module ${tool.tool} failed to import: ${err.message}`);
       }
     }
 

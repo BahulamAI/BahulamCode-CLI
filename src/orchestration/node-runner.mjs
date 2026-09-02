@@ -50,6 +50,15 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
     );
   }
 
+  // Plugin tools the agent declares need their schemas in the model's
+  // tool list (built-ins are hardcoded in LocalAgent; plugin schemas are
+  // dynamic). Execution still flows through the scoped executor.
+  const declaredTools = new Set(
+    (Array.isArray(effectiveAgent.tools) ? effectiveAgent.tools : []).map(String),
+  );
+  const extraToolSchemas = (ctx.toolExecutor?.listPluginToolSchemas?.() || [])
+    .filter(schema => declaredTools.has(schema.name));
+
   const localAgent = new LocalAgent({
     apiKey,
     openRouterKey,
@@ -58,6 +67,7 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
     cwd: ctx.cwd || process.cwd(),
     systemPromptOverride: effectiveAgent.prompt || effectiveAgent.system_prompt || null,
     maxTurns: effectiveAgent.max_iterations || null,
+    extraToolSchemas,
   });
   if (options.signal) options.signal.addEventListener('abort', () => localAgent.cancel?.(), { once: true });
 
