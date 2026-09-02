@@ -672,10 +672,13 @@ export function clearInputPrompt() {
   return true;
 }
 
-export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null } = {}) {
+export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null, fixedRows = null } = {}) {
   if (!mounted) return false;
   contentTrackingActive = false;
-  setInputRowsTo(computeInputRowsForBuffer(prefix, value));
+  const requestedRows = fixedRows == null
+    ? computeInputRowsForBuffer(prefix, value)
+    : Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(Number(fixedRows) || MIN_INPUT_ROWS)));
+  setInputRowsTo(requestedRows);
   renderFrame({ context, tips, meta, prefix, value, cursor, overlayLines: null });
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);

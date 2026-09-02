@@ -498,7 +498,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes("startContentStream();\n      process.stderr.write(`\\n${transcriptHeader('bahulam', { tone: 'assistant' })}\\n`);"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
-  assert.ok(replSource.includes('renderDockInput(userPrompt(), rl.line || \'\','));
+  assert.ok(replSource.includes('renderDockInput(userPrompt(), displayLine,'));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));
   assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
   assert.ok(replSource.includes("case 'file_diff':"));
@@ -538,6 +538,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("process.env.BAHULAM_PASTE_FLUSH_MS || '35'"));
   assert.ok(replSource.includes('function insertPromptText'));
   assert.ok(replSource.includes('_suppressBracketedPasteLines'));
+  assert.ok(replSource.includes('_suppressRawPasteLines'));
+  assert.ok(replSource.includes('_pastedInputValue'));
+  assert.ok(replSource.includes('_pastedInputLabel'));
+  assert.ok(replSource.includes('isRawMultilinePasteChunk(s)'));
+  assert.ok(replSource.includes('insertPromptText(normalizePastedText(s),'));
+  assert.ok(replSource.includes('pastedTextLabel(payload)'));
+  assert.ok(replSource.includes('displayLine = _pastedInputLabel'));
+  assert.ok(replSource.includes('fixedRows = 1'));
+  assert.ok(replSource.includes('fixedRows,'));
   assert.ok(replSource.includes('_promptHasInsertedPaste'));
   assert.ok(replSource.includes("if (key.name === 'return' || key.name === 'enter') return;"));
   assert.ok(replSource.includes('const submitInsertedPaste = _promptHasInsertedPaste'));

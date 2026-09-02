@@ -10,6 +10,7 @@ import {
   tailWithEllipsis,
   cursorPositionInLines,
 } from '../src/ui/text-layout.mjs';
+import { isRawMultilinePasteChunk, normalizePastedText, pastedTextLabel } from '../src/terminal/paste-input.mjs';
 import * as dock from '../src/ui/input-dock.mjs';
 import { strip as stripAnsi, width as visibleWidth } from '../src/ui/palette.mjs';
 
@@ -158,6 +159,16 @@ test('long path in a 40-col terminal: chunks safely within budget', () => {
   }
 });
 
+test('raw multiline clipboard chunks are treated as paste edits', () => {
+  assert.strictEqual(isRawMultilinePasteChunk('first line\nsecond line'), true);
+  assert.strictEqual(isRawMultilinePasteChunk('first line\r\nsecond line\r\nthird line'), true);
+  assert.strictEqual(isRawMultilinePasteChunk('\r'), false);
+  assert.strictEqual(isRawMultilinePasteChunk('\n'), false);
+  assert.strictEqual(isRawMultilinePasteChunk('a\r'), false);
+  assert.strictEqual(normalizePastedText('a\r\nb\rc'), 'a\nb\nc');
+  assert.strictEqual(pastedTextLabel('first line\nsecond line'), '[text copied · 2 lines]');
+});
+
 // ── dock module surface: dynamic growth entry points exist ──────────────
 
 test('input-dock exports the dynamic-growth API surface', () => {
@@ -240,6 +251,12 @@ test('renderDockInput accepts a meta option alongside context and tips', () => {
   const source = dock.renderDockInput.toString();
   assert.ok(source.includes('meta'),
     'renderDockInput should destructure meta from its options');
+});
+
+test('renderDockInput accepts fixedRows for compact pasted input', () => {
+  const source = dock.renderDockInput.toString();
+  assert.ok(source.includes('fixedRows'),
+    'renderDockInput should allow callers to keep the dock at a fixed height');
 });
 
 test('prepareInputPrompt accepts a meta option alongside context and tips', () => {

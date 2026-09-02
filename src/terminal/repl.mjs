@@ -71,6 +71,7 @@ import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
+import { isRawMultilinePasteChunk, normalizePastedText, pastedTextLabel } from './paste-input.mjs';
 import {
   MODEL_CATEGORY_ORDER,
   formatCategoryBadge,
@@ -4857,6 +4858,9 @@ export async function startTerminalRepl() {
   let _bracketedPasteStartLine = '';
   let _bracketedPasteStartCursor = 0;
   let _promptHasInsertedPaste = false;
+  let _suppressRawPasteLines = false;
+  let _pastedInputValue = '';
+  let _pastedInputLabel = '';
   const _pasteEndListeners = new Set();
   function onBracketedPasteEnd(cb) { _pasteEndListeners.add(cb); return () => _pasteEndListeners.delete(cb); }
   function isInBracketedPaste() { return _inBracketedPaste; }
@@ -4876,7 +4880,25 @@ export async function startTerminalRepl() {
       while (i < s.length) {
         if (!_inBracketedPaste) {
           const start = s.indexOf(PASTE_BEGIN, i);
-          if (start === -1) return;
+          if (start === -1) {
+            if (isRawMultilinePasteChunk(s)) {
+              _suppressRawPasteLines = true;
+              const baseLine = String(rl?.line || '');
+              const baseCursor = typeof rl?.cursor === 'number' ? rl.cursor : baseLine.length;
+              setImmediate(() => {
+                try {
+                  insertPromptText(normalizePastedText(s), {
+                    baseLine,
+                    baseCursor,
+                    fromPaste: true,
+                  });
+                } finally {
+                  _suppressRawPasteLines = false;
+                }
+              });
+            }
+            return;
+          }
           _inBracketedPaste = true;
           _bracketedPasteBuffer = '';
           _suppressBracketedPasteLines = true;
@@ -5138,7 +5160,11 @@ export async function startTerminalRepl() {
     const line = String(baseLine || '');
     const cursor = typeof baseCursor === 'number' ? Math.max(0, Math.min(line.length, baseCursor)) : line.length;
     const next = `${line.slice(0, cursor)}${payload}${line.slice(cursor)}`;
-    if (fromPaste) _promptHasInsertedPaste = true;
+    if (fromPaste) {
+      _promptHasInsertedPaste = true;
+      _pastedInputValue = next;
+      _pastedInputLabel = pastedTextLabel(payload);
+    }
     replaceReadlineLine(next, cursor + payload.length);
     renderIdleDockInput();
   }
@@ -5178,15 +5204,28 @@ export async function startTerminalRepl() {
 
   function renderIdleDockInput() {
     if (!isInputDockMounted()) return false;
+    const line = rl.line || '';
+    let displayLine = line;
+    let displayCursor = typeof rl.cursor === 'number' ? rl.cursor : null;
+    let fixedRows = null;
+    if (_pastedInputValue && line === _pastedInputValue) {
+      displayLine = _pastedInputLabel;
+      displayCursor = _pastedInputLabel.length;
+      fixedRows = 1;
+    } else if (_pastedInputValue) {
+      _pastedInputValue = '';
+      _pastedInputLabel = '';
+    }
     // rl.cursor is readline's byte offset within rl.line. Threading it
     // through to focusDockInput makes arrow-key navigation visually move
     // the terminal cursor within the buffer instead of always landing at
     // the end of the string.
-    return renderDockInput(userPrompt(), rl.line || '', {
+    return renderDockInput(userPrompt(), displayLine, {
       context: buildContextStrip(),
       meta: buildDockMeta(),
       tips: idleInputTips(),
-      cursor: typeof rl.cursor === 'number' ? rl.cursor : null,
+      cursor: displayCursor,
+      fixedRows,
     });
   }
 
@@ -5232,7 +5271,7 @@ export async function startTerminalRepl() {
     readline.emitKeypressEvents(process.stdin, rl);
     process.stdin.on('keypress', (_str, key = {}) => {
       if (!inputActive) return;
-      if (_inBracketedPaste || _suppressBracketedPasteLines) return;
+      if (_inBracketedPaste || _suppressBracketedPasteLines || _suppressRawPasteLines) return;
       if (key.name === 'return' || key.name === 'enter') return;
       if (key.name === 'f2') {
         clearSlashHint();
@@ -5243,7 +5282,7 @@ export async function startTerminalRepl() {
       }
       setImmediate(() => {
         if (!inputActive) return;
-        if (_inBracketedPaste || _suppressBracketedPasteLines) return;
+        if (_inBracketedPaste || _suppressBracketedPasteLines || _suppressRawPasteLines) return;
         if (slashHintVisible && key.name === 'tab' && acceptSlashHint()) return;
         if (slashHintVisible && key.name === 'down' && moveSlashHintSelection(1)) return;
         if (slashHintVisible && key.name === 'up' && moveSlashHintSelection(-1)) return;
@@ -5305,12 +5344,16 @@ export async function startTerminalRepl() {
     if (pastedLines.length > 1 || trailing) {
       const text = [...pastedLines, trailing].join('\n');
       _promptHasInsertedPaste = true;
+      _pastedInputValue = text;
+      _pastedInputLabel = pastedTextLabel(text);
       replaceReadlineLine(text);
       renderIdleDockInput();
       return;
     }
     const line = pastedLines.join('\n');
     _promptHasInsertedPaste = false;
+    _pastedInputValue = '';
+    _pastedInputLabel = '';
     queueOrRunLine(line);
   }
 
@@ -5320,7 +5363,7 @@ export async function startTerminalRepl() {
   // or the user pressed Enter normally), the debounce falls back to old
   // behavior — a single Enter flushes almost instantly.
   rl.on('line', async (line) => {
-    if (_suppressBracketedPasteLines) {
+    if (_suppressBracketedPasteLines || _suppressRawPasteLines) {
       _pasteLines = [];
       if (_pasteFlushTimer) {
         clearTimeout(_pasteFlushTimer);
@@ -5369,6 +5412,8 @@ export async function startTerminalRepl() {
     let input = line.trim();
     const selectedSlashCommand = selectedSlashCommandFor(input);
     inputActive = false;
+    _pastedInputValue = '';
+    _pastedInputLabel = '';
     clearSlashHint();
     if (selectedSlashCommand) input = selectedSlashCommand;
     if (!input) {
