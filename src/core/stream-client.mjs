@@ -866,6 +866,7 @@ export class BahulamStreamClient {
         const callId = call_id || request_id;
         const toolName = tool;
         const isInternal = Boolean(data?.internal || data?.sub_agent);
+        const subAgentRunId = data?.run_id || data?.sub_agent_run_id || null;
 
         if (this.verbose) {
             process.stderr.write(`\x1b[2m[tool] ${toolName}(${JSON.stringify(args).slice(0, 80)}...)\x1b[0m\n`);
@@ -883,6 +884,8 @@ export class BahulamStreamClient {
                     _cancelled: true,
                     internal: isInternal,
                     sub_agent: data?.sub_agent || null,
+                    run_id: subAgentRunId,
+                    sub_agent_run_id: subAgentRunId,
                     local_callback: false,
                 },
             };
@@ -897,6 +900,7 @@ export class BahulamStreamClient {
                 toolCallSource: 'model',
                 internal: isInternal,
                 subAgent: data?.sub_agent || null,
+                subAgentRunId,
             });
         } catch (err) {
             if (err?.name === 'AbortError' || this._cancelled) {
@@ -936,6 +940,8 @@ export class BahulamStreamClient {
                 duration_ms: durationMs,
                 internal: isInternal,
                 sub_agent: data?.sub_agent || null,
+                run_id: subAgentRunId,
+                sub_agent_run_id: subAgentRunId,
                 local_callback: true,
             },
         };

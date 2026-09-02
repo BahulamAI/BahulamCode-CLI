@@ -306,6 +306,8 @@ async function main() {
   \x1b[1mUsage:\x1b[0m
     bahulam                        Start interactive REPL
     bahulam "instruction"          Run a single instruction
+    bahulam --agent <slug> -p "x"  Run a named agent (local deterministic graph)
+    bahulam --workflow <name> -p   Run a named workflow (local deterministic graph)
     bahulam --headless -p "x"      Non-interactive: auto-approve, JSONL output
     bahulam --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline

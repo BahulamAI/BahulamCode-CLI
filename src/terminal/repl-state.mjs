@@ -43,7 +43,8 @@ export const runtime = {
 
   // Explore-run collapse (read/list/search/index bursts as concise progress).
   exploreRun: { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 },
-  foldedSubAgentTools: null, // { agentType, entries, startedAt } for default/quiet folded sub-agent tools
+  foldedSubAgentTools: null, // current folded sub-agent tool bucket
+  foldedSubAgentToolMap: new Map(), // run-aware buckets for parallel sub-agents
 
   // Animated spinner state (single shared interval; text/frame drive inPlace).
   spinInterval: null,
@@ -61,7 +62,7 @@ export const runtime = {
   // its inner tool calls stream into a fixed-height status block (last
   // N lines under the spinner) instead of appending to the transcript.
   // Full detail stays on the recorded cards (/expand, /last, `d`).
-  subAgentWindow: { active: false, lines: [] },
+  subAgentWindow: { active: false, lines: [], groups: new Map() },
 
   // PRD-092: Watch panel — toggled by /watch. When active, the spinner
   // area renders a compact agent-activity summary instead of the spinner.
@@ -106,6 +107,7 @@ export const session = {
   lastTurnDuration: 0,
   toolCounts: {},      // per-tool histogram (mission report)
   subAgentCounts: {},  // per-sub-agent histogram (mission report)
+  activeSubAgentRuns: new Map(), // run_id -> active sub-agent lane
   savedUsd: 0,         // total sub-agent cost (for "saved by routing")
   lastTask: '',        // most recent user prompt (mission report title)
   lastReasoning: '',   // captured from agent for /why

@@ -458,7 +458,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('drawPinnedStatus(fitted)'));
   assert.ok(renderSource.includes('clearPinnedStatus()'));
   assert.ok(replSource.includes('showSubAgentTools'));
-  assert.ok(replSource.includes('foldSubAgentToolCall(data)'));
+  assert.ok(replSource.includes('foldSubAgentToolCall(eventData)'));
+  assert.ok(replSource.includes('createSubAgentLane(agentType, query, runId, data)'));
+  assert.ok(replSource.includes('data.tool_call_id'));
+  assert.ok(replSource.includes('const callId = explicitToolCallId(data);'));
   assert.ok(replSource.includes('flushFoldedSubAgentTools();'));
   assert.ok(agentsSource.includes('displayEventForDirectAgent(event, agent)'));
   assert.ok(renderSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));

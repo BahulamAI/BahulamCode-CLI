@@ -41,6 +41,12 @@ export function normalizeGraphSpec(input) {
     tools: Array.isArray(node.tools) ? node.tools : (Array.isArray(node.data?.tools) ? node.data.tools : []),
     config: node.config || node.data?.config || {},
     continue_on_error: Boolean(node.continue_on_error),
+    // job nodes: a process instead of an LLM
+    command: node.command || node.data?.command || null,
+    timeout_s: Number(node.timeout_s ?? node.data?.timeout_s) || null,
+    // service nodes: long-lived process (dev server); the node completes
+    // at READINESS, the process lives until the graph run ends.
+    ready: node.ready || node.data?.ready || null,
   }));
   const edges = (source.edges || []).map(edge => ({ source: edge.source, target: edge.target }));
   return {
@@ -59,9 +65,10 @@ function normalizeModel(value) {
 }
 
 /**
- * Validate the graph and return agent nodes in execution (topological)
- * order. Throws before any LLM call on: unknown edge endpoints, cycles,
- * or agent nodes unreachable from the trigger.
+ * Validate the graph and return executable nodes (type 'agent' or 'job')
+ * in execution (topological) order. Throws before any LLM call on:
+ * unknown edge endpoints, cycles, unreachable nodes, agent nodes with no
+ * definition reference, or job nodes with no command.
  */
 export function validateGraph(spec) {
   const byId = new Map(spec.nodes.map(node => [node.id, node]));
@@ -100,17 +107,20 @@ export function validateGraph(spec) {
     stack.push(...outgoing.get(id));
   }
 
-  const agentNodes = order
+  const executableNodes = order
     .map(id => byId.get(id))
-    .filter(node => node.type === 'agent');
-  if (!agentNodes.length) throw new Error(`Graph '${spec.name}' has no agent nodes`);
-  for (const node of agentNodes) {
+    .filter(node => node.type === 'agent' || node.type === 'job' || node.type === 'service');
+  if (!executableNodes.length) throw new Error(`Graph '${spec.name}' has no agent, job, or service nodes`);
+  for (const node of executableNodes) {
     if (!reachable.has(node.id)) {
-      throw new Error(`Agent node '${node.id}' is not reachable from the trigger`);
+      throw new Error(`Node '${node.id}' is not reachable from the trigger`);
     }
-    if (!node.agent && !node.agent_slug) {
+    if (node.type === 'agent' && !node.agent && !node.agent_slug) {
       throw new Error(`Agent node '${node.id}' has neither an inline agent nor an agent_slug`);
     }
+    if ((node.type === 'job' || node.type === 'service') && !String(node.command || '').trim()) {
+      throw new Error(`${node.type === 'job' ? 'Job' : 'Service'} node '${node.id}' has no command`);
+    }
   }
-  return agentNodes;
+  return executableNodes;
 }

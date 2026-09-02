@@ -28,6 +28,7 @@ import { BUILTIN_AGENTS } from '../terminal/agents.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
+import { backgroundTasks } from './background-tasks.mjs';
 import { resolveLintCommand } from './lint-resolver.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadPluginTool } from '../plugins/executor.mjs';
@@ -1294,6 +1295,30 @@ export function createToolExecutor({
             args._classification = classification.classification; // 'safe' or 'contained'
             const cwd = await commandCwd(args);
 
+            // Background execution: start via the BackgroundTasks registry
+            // and return immediately. Safety checks above still apply;
+            // results are retrieved with job_output / killed with job_kill.
+            if (args.run_in_background) {
+                const job = backgroundTasks.start({
+                    command: args.command,
+                    cwd,
+                    timeoutMs: args.timeout ? Math.min(Number(args.timeout), 3_600_000) : undefined,
+                    // Deterministic wake-on-finish: completion dispatches the
+                    // named agent through the trigger funnel (chain-guarded).
+                    on_complete: args.on_complete_agent ? {
+                        target: `agent:${String(args.on_complete_agent).trim()}`,
+                        instruction: args.on_complete_instruction || null,
+                    } : null,
+                });
+                return {
+                    success: true,
+                    output: `Background job started: ${job.id} (pid ${job.pid}). `
+                        + `Check progress with job_output {"job_id": "${job.id}"}; stop with job_kill.`,
+                    job_id: job.id,
+                    _tool: 'shell',
+                };
+            }
+
             // Pre-check: if command is rm/unlink, verify targets exist first
             const rmMatch = (args.command || '').match(/^rm\s+(?:-\w+\s+)*(.+)$/);
             if (rmMatch) {
@@ -2224,6 +2249,41 @@ export function createToolExecutor({
         },
 
         // User-defined agents — metadata first, project YAML + backend sync on demand.
+        job_output: async (args = {}) => {
+            const jobId = String(args.job_id || '').trim();
+            if (!jobId) {
+                const jobs = backgroundTasks.list();
+                return {
+                    success: true,
+                    output: jobs.length
+                        ? JSON.stringify({ jobs }, null, 2)
+                        : 'No background jobs in this session.',
+                    jobs,
+                    _tool: 'job_output',
+                };
+            }
+            const job = args.block
+                ? await backgroundTasks.wait(jobId)
+                : backgroundTasks.describe(jobId);
+            if (!job) return { success: false, output: `Unknown job: ${jobId}`, _tool: 'job_output' };
+            const tailLines = Number(args.tail_lines) || 80;
+            const tail = String(job.tail || '').split('\n').slice(-tailLines).join('\n');
+            return {
+                success: true,
+                output: `${job.id} · ${job.status}`
+                    + (job.exit_code != null ? ` (exit ${job.exit_code})` : '')
+                    + ` · ${job.duration_s}s\n${tail}`,
+                job: { ...job, tail: undefined },
+                _tool: 'job_output',
+            };
+        },
+
+        job_kill: async (args = {}) => {
+            const job = backgroundTasks.kill(String(args.job_id || '').trim());
+            if (!job) return { success: false, output: `Unknown job: ${args.job_id}`, _tool: 'job_kill' };
+            return { success: true, output: `${job.id} → ${job.status}`, job, _tool: 'job_kill' };
+        },
+
         agents_list: async (args = {}) => {
             const agents = filterLocalAgents(args).map(compactAgentMetadata);
             const payload = { agents, count: agents.length };
@@ -2721,6 +2781,17 @@ export function createToolExecutor({
                     source: agent.source,
                     spec: agent.spec,
                 })),
+                // Background jobs the model should know about. Stable fields
+                // only (no durations) so the entry — and the prompt cache —
+                // changes on status transitions, not every turn.
+                ...(backgroundTasks.list().length ? {
+                    background_jobs: backgroundTasks.list().map(job => ({
+                        id: job.id,
+                        name: job.name,
+                        status: job.status,
+                        exit_code: job.exit_code,
+                    })),
+                } : {}),
                 available_workflows: listLocalWorkflows(process.cwd()).map(workflow => ({
                     slug: workflow.slug,
                     name: workflow.name,

@@ -63,7 +63,7 @@ const READ_TOOLS = new Set([
   'analyze_code',
   'validate_file', 'validate_structure',
   'agents_list', 'workflow_list',
-  'bahulam_info',
+  'bahulam_info', 'job_output',
 ]);
 
 const READ_PATH_KEYS = [

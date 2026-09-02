@@ -12,6 +12,10 @@ const BASE_READ_TOOLS = ['read_file', 'search_code', 'list_files', 'get_file_inf
 export function deriveApprovalScope(agentNodes, resolveAgent) {
   const allowed = new Set(BASE_READ_TOOLS);
   for (const node of agentNodes) {
+    if (node.type === 'job' || node.type === 'service') {
+      allowed.add('shell');
+      continue;
+    }
     const agent = node.agent || resolveAgent(node.agent_slug);
     if (!agent) continue;
     const agentTools = (Array.isArray(agent.tools) ? agent.tools : []).map(canonicalToolName);

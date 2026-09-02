@@ -75,8 +75,14 @@ function resolveAgentBySlug(slug, ctx) {
  * listRunnables() already returns agents deduped in that precedence.
  */
 function resolveTarget(target, ctx) {
-  const typed = typeof target === 'object' && target?.kind ? target : null;
-  const name = typed ? typed.slug : String(target || '').trim();
+  const raw = typeof target === 'string' ? String(target || '').trim() : '';
+  const prefixed = raw.match(/^(agent|workflow):(.+)$/);
+  const typed = typeof target === 'object' && target?.kind
+    ? target
+    : prefixed
+      ? { kind: prefixed[1], slug: prefixed[2].trim() }
+      : null;
+  const name = typed ? typed.slug : raw;
   if (!name) return null;
 
   if (typed?.kind === 'agent' && typed.agent) {
