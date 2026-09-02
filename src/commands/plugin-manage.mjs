@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
+import { parsePiSource } from '../plugins/pi-compose.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -32,7 +33,6 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 
-const REGISTRY_URL = 'https://raw.githubusercontent.com/BahulamAI/awesome-bahulam-plugins/main/registry.json';
 const INSTALL_STAMP = '.bahulam-plugin.json';
 
 function searchDirs(cwd) {
@@ -42,7 +42,7 @@ function searchDirs(cwd) {
   ];
 }
 
-function pluginTargetDir({ global, cwd }) {
+export function pluginTargetDir({ global, cwd }) {
   return global
     ? path.join(os.homedir(), '.bahulam', 'plugins')
     : path.join(cwd, '.bahulam', 'plugins');
@@ -62,10 +62,18 @@ function scanInstalled(cwd) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      // Skip dotfile dirs (.bahulam, .git, etc.) that occasionally sit
+      // alongside plugin dirs — they aren't plugins and clutter the list.
+      if (entry.name.startsWith('.')) continue;
       const pluginDir = path.join(dir, entry.name);
       const disabled = entry.name.endsWith('.disabled');
       const parsed = disabled ? null : readManifest(pluginDir);
+      // Require a plugin.yaml/plugin.json to count as a plugin. Anything
+      // else in the plugins/ dir is stray (readManifest returns null).
+      if (!parsed && !disabled) continue;
       const stamp = readStamp(pluginDir);
+      const agentSlugs = (parsed?.manifest?.spec?.agents || [])
+        .map(a => a.slug || a.name).filter(Boolean);
       found.push({
         scope,
         directory: pluginDir,
@@ -76,11 +84,60 @@ function scanInstalled(cwd) {
         tools: parsed?.manifest?.spec?.tools?.length || 0,
         agents: parsed?.manifest?.spec?.agents?.length || 0,
         views: parsed?.manifest?.spec?.workspace?.views?.length || 0,
+        composes: parsed?.manifest?.spec?.composes?.length || 0,
+        agentSlugs,
         disabled,
         origin: stamp?.origin || null,
         installed_at: stamp?.installed_at || null,
       });
     }
+  }
+  return found;
+}
+
+// Read the effective agent allowlist from settings for the current cwd
+// (project settings override user-global). Empty array = nothing
+// allowlisted; plugin agents stay workspace-scoped per PRD-102 §6.2.1.
+async function readAgentAllowlist(cwd) {
+  try {
+    const { loadBahulamSettings } = await import('../config/settings-loader.mjs');
+    const { settings } = loadBahulamSettings({ cwd });
+    const list = settings?.plugins?.agent_allowlist;
+    return Array.isArray(list) ? list.map(String) : [];
+  } catch { return []; }
+}
+
+// pi ingredients scan: ~/.bahulam/plugins-pi/<name>/. Each entry is an
+// npm package (has package.json) and may have a probe cache.
+function scanPiIngredients() {
+  const found = [];
+  try {
+    const { bahulamHome } = require('../core/paths.mjs');
+    // require in ESM won't work synchronously — inline the path calc
+  } catch { /* fall through */ }
+  const home = process.env.BAHULAM_HOME || path.join(os.homedir(), '.bahulam');
+  const piDir = path.join(home, 'plugins-pi');
+  if (!fs.existsSync(piDir)) return found;
+  for (const entry of fs.readdirSync(piDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const dir = path.join(piDir, entry.name);
+    let version = null, description = '', toolCount = 0;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'));
+      version = pkg.version || null;
+      description = pkg.description || '';
+    } catch { /* not a valid pi package */ continue; }
+    try {
+      const cache = JSON.parse(fs.readFileSync(path.join(dir, '.bahulam-tools.json'), 'utf-8'));
+      toolCount = Array.isArray(cache.tools) ? cache.tools.length : 0;
+    } catch { /* no probe cache yet */ }
+    found.push({
+      name: entry.name,
+      version,
+      description,
+      directory: dir,
+      toolCount,
+    });
   }
   return found;
 }
@@ -116,8 +173,11 @@ function rmrf(dir) { fs.rmSync(dir, { recursive: true, force: true }); }
 
 // ── install ─────────────────────────────────────────────────────────
 
-function classifySource(source) {
+export function classifySource(source) {
   if (!source) return { kind: 'invalid' };
+  const pi = parsePiSource(source);
+  if (pi) return pi;
+  if (String(source).trim().startsWith('pi:')) return { kind: 'invalid', reason: 'invalid pi source' };
   if (/^(git@|https?:\/\/).*(\.git|github\.com|gitlab\.com|bitbucket\.org)/i.test(source)) return { kind: 'git', url: source };
   if (/^https?:\/\/.+\.(tar\.gz|tgz|zip)(\?.*)?$/i.test(source)) return { kind: 'tarball', url: source };
   const abs = path.isAbsolute(source) ? source : path.resolve(process.cwd(), source);
@@ -125,17 +185,7 @@ function classifySource(source) {
   return { kind: 'name', name: source };
 }
 
-async function fetchRegistryEntry(name) {
-  try {
-    const res = await fetch(REGISTRY_URL);
-    if (!res.ok) return null;
-    const registry = await res.json();
-    const list = Array.isArray(registry) ? registry : (registry.plugins || []);
-    return list.find(entry => (entry.name || '').toLowerCase() === name.toLowerCase()) || null;
-  } catch { return null; }
-}
-
-async function installFromGit({ url, targetDir, name, ref, subdir, force }) {
+export async function installFromGit({ url, targetDir, name, ref, subdir, force }) {
   const dirName = name || url.replace(/\.git$/, '').split('/').filter(Boolean).pop();
   const dest = path.join(targetDir, dirName);
   if (fs.existsSync(dest)) {
@@ -159,7 +209,7 @@ async function installFromGit({ url, targetDir, name, ref, subdir, force }) {
   return dest;
 }
 
-async function installFromTarball({ url, targetDir, name, force }) {
+export async function installFromTarball({ url, targetDir, name, force }) {
   const guessed = name || path.basename(url).replace(/\.(tar\.gz|tgz|zip)(\?.*)?$/i, '');
   const dest = path.join(targetDir, guessed);
   if (fs.existsSync(dest)) {
@@ -179,7 +229,99 @@ async function installFromTarball({ url, targetDir, name, force }) {
   return dest;
 }
 
-async function installFromLocal({ src, targetDir, force }) {
+export async function installFromPi({ packageName, versionRange, force }) {
+  // Pi packages live in ~/.bahulam/plugins-pi/ (or $BAHULAM_HOME/plugins-pi/)
+  // so `bahulam plugin list` doesn't confuse them with our own packs. The
+  // tool executor reads from the same canonical path via bahulamHome().
+  const { bahulamHome } = await import('../core/paths.mjs');
+  const piDir = path.join(bahulamHome(), 'plugins-pi');
+  const safeName = packageName.replace(/[/@]/g, '_');
+  const dest = path.join(piDir, safeName);
+  if (fs.existsSync(dest)) {
+    if (!force) throw new Error(`already installed: ${dest} (use --force to overwrite)`);
+    rmrf(dest);
+  }
+  fs.mkdirSync(dest, { recursive: true });
+
+  // Use `npm pack` to fetch the tarball without polluting a global npm
+  // install. Extract into `<piDir>/<safeName>/package/` following npm's
+  // tarball layout, then flatten one level so the plugin root has
+  // package.json at top.
+  const spec = versionRange ? `${packageName}@${versionRange}` : packageName;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-pi-'));
+  try {
+    await run('npm', ['pack', spec, '--pack-destination', tmp, '--silent'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const tarballs = fs.readdirSync(tmp).filter(f => f.endsWith('.tgz'));
+    if (!tarballs.length) throw new Error(`npm pack produced no tarball for ${spec}`);
+    await run('tar', ['-xzf', path.join(tmp, tarballs[0]), '-C', dest, '--strip-components=1']);
+
+    // Pi packages typically declare their runtime deps under
+    // `peerDependencies` (assuming pi will provide them). We're the host
+    // now, so materialize those. Two steps because npm arborist crashes
+    // when peerDependencies use `*` versions during install:
+    //   1. Rewrite package.json to move peers into dependencies (resolved
+    //      version), and drop the peers block so the resolver stops
+    //      reconciling.
+    //   2. `npm install` — the dependencies section is normal for npm.
+    const pkgPath = path.join(dest, 'package.json');
+    let pkgJson = {};
+    try { pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')); } catch { /* ignore */ }
+    const merged = { ...(pkgJson.dependencies || {}) };
+    for (const [name, range] of Object.entries(pkgJson.peerDependencies || {})) {
+      if (!merged[name]) merged[name] = range === '*' ? 'latest' : range;
+    }
+    if (Object.keys(merged).length) {
+      const rewritten = { ...pkgJson, dependencies: merged };
+      delete rewritten.peerDependencies;
+      fs.writeFileSync(pkgPath, JSON.stringify(rewritten, null, 2));
+      process.stderr.write(`  ${DIM}installing ${Object.keys(merged).length} pi runtime deps…${RESET}\n`);
+      await run('npm', ['install', '--no-audit', '--no-fund', '--legacy-peer-deps', '--silent'], {
+        cwd: dest,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+
+    // Read the resolved version so the stamp captures what we actually got.
+    let resolvedVersion = null;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dest, 'package.json'), 'utf-8'));
+      resolvedVersion = pkg.version || null;
+    } catch { /* leave null */ }
+
+    writeStamp(dest, {
+      origin: {
+        kind: 'pi',
+        spec: `pi:${spec}`,
+        package_name: packageName,
+        version_range: versionRange || null,
+        resolved_version: resolvedVersion,
+      },
+    });
+
+    // Probe the extension once so `<dest>/.bahulam-tools.json` exists
+    // right after install — lets the user inspect discovered tools with
+    // `cat` and lets executor invocations skip the first-run probe cost.
+    // Best-effort: failure here is non-fatal (returns tools:[] until next
+    // invocation retries) so a broken extension can still be diagnosed.
+    try {
+      const { discoverPiTools } = await import('../plugins/pi-compat/probe.mjs');
+      const shape = await discoverPiTools(dest, { pluginName: packageName, force: true });
+      process.stderr.write(`  ${DIM}discovered${RESET}  ${(shape.tools || []).length} tool(s), ${(shape.commands || []).length} command(s)\n`);
+    } catch (probeErr) {
+      process.stderr.write(`  ${YELLOW}!${RESET} Tool discovery failed: ${probeErr.message}\n`);
+      process.stderr.write(`  ${DIM}The package installed but no tools were probed. Re-probe with:${RESET}\n`);
+      process.stderr.write(`  ${DIM}  node -e "import('${path.resolve('src/plugins/pi-compat/probe.mjs')}').then(m => m.discoverPiTools('${dest}', { pluginName: '${packageName}', force: true }))"${RESET}\n`);
+    }
+  } catch (err) {
+    rmrf(dest);
+    throw new Error(`pi install failed for ${spec}: ${err.message}`);
+  } finally {
+    rmrf(tmp);
+  }
+  return dest;
+}
+
+export async function installFromLocal({ src, targetDir, force }) {
   const manifestScan = readManifest(src);
   const name = manifestScan?.manifest?.metadata?.name || path.basename(src);
   const dest = path.join(targetDir, name);
@@ -193,90 +335,141 @@ async function installFromLocal({ src, targetDir, force }) {
   return dest;
 }
 
-async function cmdInstall(args, cwd) {
-  const source = args.source;
-  if (!source) throw new Error('install requires a source (git URL, tarball URL, local path, or registry name)');
-  const targetDir = pluginTargetDir({ global: args.global, cwd });
-  const classified = classifySource(source);
-
-  let dest;
-  if (classified.kind === 'git') {
-    dest = await installFromGit({ url: classified.url, targetDir, ref: args.ref, force: args.force });
-  } else if (classified.kind === 'tarball') {
-    dest = await installFromTarball({ url: classified.url, targetDir, force: args.force });
-  } else if (classified.kind === 'local') {
-    dest = await installFromLocal({ src: classified.path, targetDir, force: args.force });
-  } else if (classified.kind === 'name') {
-    const entry = await fetchRegistryEntry(classified.name);
-    if (!entry) throw new Error(`no registry entry for "${classified.name}". Provide a git URL or local path instead.`);
-    if (entry.repository) {
-      dest = await installFromGit({ url: entry.repository, targetDir, name: entry.name, ref: args.ref || entry.ref, subdir: entry.subdir || null, force: args.force });
-    } else if (entry.tarball) {
-      dest = await installFromTarball({ url: entry.tarball, targetDir, name: entry.name, force: args.force });
-    } else {
-      throw new Error(`registry entry "${classified.name}" has no repository or tarball URL`);
+/**
+ * Auto-install pi packages referenced by a pack's spec.composes:. Callers
+ * invoke this after preflight so a hand-authored pack that composes
+ * missing pi ingredients still resolves in one command.
+ */
+export async function resolveComposeDependencies(manifest, { targetDir } = {}) {
+  const composes = manifest?.spec?.composes || [];
+  if (!composes.length) return;
+  const { discoverPiTools } = await import('../plugins/pi-compat/probe.mjs');
+  const { bahulamHome } = await import('../core/paths.mjs');
+  const piBaseDir = path.join(bahulamHome(), 'plugins-pi');
+  for (const compose of composes) {
+    if (!compose.package_name) continue;
+    const safeName = compose.package_name.replace(/[/@]/g, '_');
+    const piDest = path.join(piBaseDir, safeName);
+    if (!fs.existsSync(piDest)) {
+      process.stderr.write(`  ${DIM}composing${RESET}  ${compose.source} → installing\n`);
+      try {
+        await installFromPi({
+          packageName: compose.package_name,
+          versionRange: compose.version_range,
+          targetDir,
+          force: false,
+        });
+      } catch (err) {
+        process.stderr.write(`  ${YELLOW}!${RESET} Failed to install ${compose.source}: ${err.message}\n`);
+        continue;
+      }
     }
-  } else {
-    throw new Error(`could not resolve source: ${source}`);
+    try {
+      await discoverPiTools(piDest, { pluginName: compose.package_name });
+    } catch (err) {
+      process.stderr.write(`  ${YELLOW}!${RESET} Probe failed for ${compose.source}: ${err.message}\n`);
+    }
   }
-
-  // Hard preflight: schema, tool names, handlers import, view files exist,
-  // agent tool refs resolve, no shadow of built-ins, no collisions.
-  // Any error rolls back the install so we never leave a broken plugin on disk.
-  const preflight = await preflightPlugin(dest, {
-    existingPluginNames: () => existingInstalledNames(cwd),
-  });
-  if (!preflight.ok) {
-    rmrf(dest);
-    const detail = preflight.errors.map(e => `    · ${e}`).join('\n');
-    throw new Error(`preflight failed — rolled back ${dest}:\n${detail}`);
-  }
-  if (preflight.warnings.length) {
-    for (const w of preflight.warnings) process.stderr.write(`${YELLOW}!${RESET} ${w}\n`);
-  }
-  const m = preflight.manifest;
-  const stamp = readStamp(dest);
-  if (stamp) writeStamp(dest, stamp);
-
-  if (args.json) {
-    process.stdout.write(JSON.stringify({ ok: true, name: m.metadata.name, version: m.metadata.version, directory: dest }, null, 2) + '\n');
-    return;
-  }
-  process.stderr.write(`\n${GREEN}✓${RESET} Installed ${BOLD}${m.metadata.name}${RESET} v${m.metadata.version}\n`);
-  process.stderr.write(`  ${DIM}location${RESET}  ${dest}\n`);
-  process.stderr.write(`  ${DIM}tools${RESET}     ${(m.spec.tools || []).map(t => t.name).join(', ') || '(none)'}\n`);
-  process.stderr.write(`  ${DIM}agents${RESET}    ${(m.spec.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
-  const views = m.spec.workspace?.views || [];
-  process.stderr.write(`  ${DIM}views${RESET}     ${views.length ? views.map(v => v.name).join(', ') : '(none)'}\n`);
-  process.stderr.write(`\n  ${DIM}Open with:${RESET} ${CYAN}bahulam plugin ${m.metadata.name}${RESET}\n\n`);
 }
 
 // ── list ────────────────────────────────────────────────────────────
 
-function cmdList(args, cwd) {
+async function cmdList(args, cwd) {
   const plugins = scanInstalled(cwd);
-  if (args.json) {
-    process.stdout.write(JSON.stringify({ ok: true, plugins }, null, 2) + '\n');
-    return;
-  }
-  if (!plugins.length) {
-    process.stderr.write(`${DIM}No plugins installed.${RESET}\n`);
-    process.stderr.write(`Install one:  ${CYAN}bahulam plugin install <git-url|local-path|name>${RESET}\n`);
-    return;
-  }
-  const nameW = Math.max(8, ...plugins.map(p => p.name.length));
-  const verW = Math.max(7, ...plugins.map(p => (p.version || '—').length));
-  const scopeW = 7;
-  const header = `${BOLD}${'NAME'.padEnd(nameW)}  ${'VERSION'.padEnd(verW)}  ${'SCOPE'.padEnd(scopeW)}  STATUS  SURFACE${RESET}\n`;
-  process.stderr.write(header);
+  const pi = scanPiIngredients();
+  const allowlist = new Set(await readAgentAllowlist(cwd));
+  // A pack is "enabled" for this session when at least one of its
+  // agents is in plugins.agent_allowlist (PRD-102 §6.2.1). Packs with
+  // no agents (tools-only packs) always count as enabled — the
+  // allowlist gate only exists for agents.
+  const enabled = (p) => p.agentSlugs.length === 0 || p.agentSlugs.some(s => allowlist.has(s));
+  const composerFor = (piName) => plugins.filter(p =>
+    (p.composes > 0) && Boolean(p) // composes is a count; details need re-read
+  );
+  // For pi ingredient "used by" hints we re-read manifests once — cheap.
+  const pluginComposes = new Map(); // pluginName → [piPackageName, …]
   for (const p of plugins) {
-    const status = p.disabled ? `${YELLOW}disabled${RESET}` : `${GREEN}active${RESET}  `;
-    const surface = `${p.tools}t ${p.agents}a ${p.views}v`;
-    process.stderr.write(
-      `${p.name.padEnd(nameW)}  ${(p.version || '—').padEnd(verW)}  ${p.scope.padEnd(scopeW)}  ${status}  ${DIM}${surface}${RESET}\n`
-    );
+    if (!p.composes) continue;
+    try {
+      const m = readManifest(p.directory);
+      const composes = m?.manifest?.spec?.composes || [];
+      pluginComposes.set(p.name, composes.map(c => c.package_name || c.packageName).filter(Boolean));
+    } catch { /* skip */ }
   }
-  process.stderr.write(`\n${DIM}${plugins.length} plugin${plugins.length === 1 ? '' : 's'} · surface: t=tools a=agents v=views${RESET}\n`);
+  const usedBy = (piName) => [...pluginComposes.entries()]
+    .filter(([, refs]) => refs.includes(piName))
+    .map(([name]) => name);
+
+  if (args.json) {
+    const withEnable = plugins.map(p => ({
+      ...p,
+      enabled: enabled(p),
+      allowlisted_agents: p.agentSlugs.filter(s => allowlist.has(s)),
+    }));
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      plugins: withEnable,
+      pi_ingredients: pi.map(x => ({ ...x, used_by: usedBy(x.name) })),
+      agent_allowlist: [...allowlist],
+    }, null, 2) + '\n');
+    return;
+  }
+
+  // ── Bahulam packs ──
+  if (!plugins.length && !pi.length) {
+    process.stderr.write(`${DIM}No plugins installed.${RESET}\n`);
+    process.stderr.write(`Install one:  ${CYAN}bahulam install <git-url|local-path|pi:name>${RESET}\n`);
+    return;
+  }
+
+  if (plugins.length) {
+    process.stderr.write(`\n${BOLD}BAHULAM PACKS${RESET}  ${DIM}(installed via bahulam install)${RESET}\n`);
+    const nameW = Math.max(8, ...plugins.map(p => p.name.length));
+    const verW = Math.max(7, ...plugins.map(p => (p.version || '—').length));
+    const header = `${BOLD}${'NAME'.padEnd(nameW)}  ${'VERSION'.padEnd(verW)}  STATUS    ENABLED?  SURFACE${RESET}\n`;
+    process.stderr.write(header);
+    for (const p of plugins) {
+      const status = p.disabled ? `${YELLOW}disabled${RESET}` : `${GREEN}active${RESET}  `;
+      const enableCol = p.disabled ? DIM + '—       ' + RESET
+        : enabled(p) ? GREEN + 'enabled ' + RESET
+        : YELLOW + 'not-enab' + RESET;
+      const surface = `${p.tools}t ${p.agents}a ${p.views}v${p.composes ? ` +${p.composes}c` : ''}`;
+      process.stderr.write(
+        `${p.name.padEnd(nameW)}  ${(p.version || '—').padEnd(verW)}  ${status}  ${enableCol}  ${DIM}${surface}${RESET}\n`
+      );
+    }
+    process.stderr.write(`\n${DIM}surface: t=native-tools a=agents v=views c=composed-pi-packages${RESET}\n`);
+    const notEnabled = plugins.filter(p => !p.disabled && !enabled(p));
+    if (notEnabled.length) {
+      process.stderr.write(`\n${YELLOW}!${RESET} ${notEnabled.length} pack${notEnabled.length === 1 ? '' : 's'} installed but NOT enabled in this session.\n`);
+      process.stderr.write(`  Their plugin agents won't appear in the model's toolset until allowlisted.\n`);
+      process.stderr.write(`  Add to ${CYAN}.bahulam/settings.json${RESET}:\n`);
+      const slugs = notEnabled.flatMap(p => p.agentSlugs);
+      process.stderr.write(`  ${DIM}{ "plugins": { "agent_allowlist": ${JSON.stringify(slugs)} } }${RESET}\n`);
+    }
+  }
+
+  // ── Pi ingredients ──
+  if (pi.length) {
+    process.stderr.write(`\n${BOLD}PI INGREDIENTS${RESET}  ${DIM}(installed via bahulam pull pi:<name> — composable, not directly runnable)${RESET}\n`);
+    const nameW = Math.max(8, ...pi.map(p => p.name.length));
+    const verW = Math.max(7, ...pi.map(p => (p.version || '—').length));
+    process.stderr.write(`${BOLD}${'NAME'.padEnd(nameW)}  ${'VERSION'.padEnd(verW)}  TOOLS   COMPOSED-BY${RESET}\n`);
+    for (const p of pi) {
+      const users = usedBy(p.name);
+      const composers = users.length ? users.join(', ') : `${DIM}(nothing yet — add to a pack's composes:)${RESET}`;
+      process.stderr.write(
+        `${p.name.padEnd(nameW)}  ${(p.version || '—').padEnd(verW)}  ${String(p.toolCount).padStart(3)}     ${composers}\n`
+      );
+    }
+    const orphans = pi.filter(p => usedBy(p.name).length === 0);
+    if (orphans.length) {
+      process.stderr.write(`\n${YELLOW}!${RESET} ${orphans.length} pi ingredient${orphans.length === 1 ? '' : 's'} installed but not composed by any pack.\n`);
+      process.stderr.write(`  Pi ingredients are unusable on their own — reference in a pack's ${CYAN}spec.composes:${RESET} block.\n`);
+    }
+  }
+
+  process.stderr.write('\n');
 }
 
 // ── remove ──────────────────────────────────────────────────────────
@@ -431,9 +624,8 @@ async function cmdValidate(args, cwd) {
 export async function handlePluginManagementCommand(args, { cwd = process.cwd(), throwOnError = false } = {}) {
   try {
     switch (args.action) {
-      case 'install': await cmdInstall(args, cwd); return;
       case 'validate': case 'check': case 'lint': await cmdValidate(args, cwd); return;
-      case 'list': case 'ls': cmdList(args, cwd); return;
+      case 'list': case 'ls': await cmdList(args, cwd); return;
       case 'remove': case 'rm': case 'uninstall': cmdRemove(args, cwd); return;
       case 'enable': toggle(args, cwd, true); return;
       case 'disable': toggle(args, cwd, false); return;

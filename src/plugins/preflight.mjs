@@ -22,6 +22,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
+import { composedToolName, validateCompose } from './pi-compose.mjs';
 
 const TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const AGENT_SLUG_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -86,6 +87,7 @@ export async function preflightPlugin(pluginDir, opts = {}) {
   const views = manifest.spec?.workspace?.views || [];
   const mcpServers = manifest.spec?.mcpServers || {};
   const mcpServerNames = new Set(Object.keys(mcpServers));
+  const composes = manifest.spec?.composes || [];
 
   // MCP server sanity — every server should have EITHER command (stdio)
   // OR url (remote). Anything else is meaningless config.
@@ -101,6 +103,26 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     }
   }
 
+  // Pi composition sanity. Composed tools become part of the agent-visible
+  // tool namespace, but they are not local files and are not imported here.
+  const composedToolNames = new Set();
+  for (const compose of composes) {
+    const validated = validateCompose(compose);
+    errors.push(...validated.errors);
+    warnings.push(...validated.warnings);
+    if (compose.as && mcpServerNames.has(compose.as)) {
+      errors.push(`Compose #${compose._index}: namespace "${compose.as}" collides with an MCP server name`);
+    }
+    for (const exposedName of compose.expose || []) {
+      const fullName = composedToolName(compose, exposedName);
+      if (composedToolNames.has(fullName)) errors.push(`Composed tool "${fullName}": duplicate name`);
+      if (RESERVED_TOOL_NAMES.has(fullName)) {
+        errors.push(`Composed tool "${fullName}": shadows a built-in tool`);
+      }
+      composedToolNames.add(fullName);
+    }
+  }
+
   // 2 + 3 + 4. Tool checks
   const toolNames = new Set();
   for (const [i, tool] of tools.entries()) {
@@ -113,6 +135,9 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     toolNames.add(tool.name);
     if (RESERVED_TOOL_NAMES.has(tool.name)) {
       errors.push(`Tool "${t}": shadows a built-in tool — pick a different name (built-ins always win)`);
+    }
+    if (composedToolNames.has(tool.name)) {
+      errors.push(`Tool "${t}": collides with a composed pi tool`);
     }
     if (!tool.description || tool.description.length < 8) {
       warnings.push(`Tool "${t}": description is missing or very short (<8 chars) — the model uses this to decide when to call it`);
@@ -166,12 +191,12 @@ export async function preflightPlugin(pluginDir, opts = {}) {
       // plugin's mcpServers. The <tool> half is discovered live.
       if (toolRef.includes('.')) {
         const serverName = toolRef.split('.', 1)[0];
-        if (!mcpServerNames.has(serverName)) {
+        if (!mcpServerNames.has(serverName) && !composedToolNames.has(toolRef)) {
           errors.push(`Agent "${slug}": tool "${toolRef}" references MCP server "${serverName}" which is not declared in mcpServers`);
         }
         continue;
       }
-      if (!toolNames.has(toolRef) && !RESERVED_TOOL_NAMES.has(toolRef)) {
+      if (!toolNames.has(toolRef) && !composedToolNames.has(toolRef) && !RESERVED_TOOL_NAMES.has(toolRef)) {
         errors.push(`Agent "${slug}": tool "${toolRef}" is not defined by this plugin and is not a built-in`);
       }
     }

@@ -24,7 +24,7 @@ const subcommand = process.argv[2];
 const subcommandArgs = process.argv.slice(3);
 
 const PLUGIN_MANAGEMENT_COMMANDS = new Set([
-  'install', 'validate', 'check', 'lint',
+  'validate', 'check', 'lint',
   'list', 'ls', 'remove', 'rm', 'uninstall',
   'enable', 'disable', 'info', 'update', 'upgrade',
 ]);
@@ -63,8 +63,7 @@ function parsePluginArgs(argv) {
   }
   if (positional.length && PLUGIN_MANAGEMENT_COMMANDS.has(positional[0].toLowerCase())) {
     parsed.action = positional.shift().toLowerCase();
-    if (parsed.action === 'install') parsed.source = positional.shift() || null;
-    else if (['validate', 'check', 'lint'].includes(parsed.action)) {
+    if (['validate', 'check', 'lint'].includes(parsed.action)) {
       // Accepts either a directory path or an installed plugin name.
       const arg = positional.shift() || null;
       if (arg && (arg.includes('/') || fs.existsSync?.(arg))) parsed.source = arg;
@@ -279,7 +278,28 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'pull') {
+    const { handlePullCommand } = await import('../commands/install.mjs');
+    await handlePullCommand(subcommandArgs, { cwd: process.cwd() });
+    return;
+  }
+
+  if (subcommand === 'install') {
+    const { handleInstallCommand } = await import('../commands/install.mjs');
+    await handleInstallCommand(subcommandArgs, { cwd: process.cwd() });
+    return;
+  }
+
   if (subcommand === 'plugin' || subcommand === 'plugins') {
+    // `install`/`pull` moved to top-level. Detect the old form and redirect.
+    if (subcommandArgs[0] === 'install' || subcommandArgs[0] === 'pull') {
+      const verb = subcommandArgs[0];
+      const rest = subcommandArgs.slice(1);
+      process.stderr.write(`\x1b[33m!\x1b[0m \`bahulam plugin ${verb}\` moved to top-level. Use:\n`);
+      process.stderr.write(`    \x1b[36mbahulam install ${rest.join(' ')}\x1b[0m   (pack — scaffolds around pi:, installs git/tarball/local)\n`);
+      process.stderr.write(`    \x1b[36mbahulam pull ${rest.join(' ')}\x1b[0m      (ingredient only — pi: sources)\n`);
+      process.exit(2);
+    }
     const args = parsePluginArgs(subcommandArgs);
     if (args.action && args.action !== 'open') {
       const { handlePluginManagementCommand } = await import('../commands/plugin-manage.mjs');
@@ -332,8 +352,14 @@ async function main() {
     bahulam workspace list         List recent local workspace sessions
     bahulam local open [path]      Alias for workspace open
 
-  \x1b[1mPlugins:\x1b[0m
-    bahulam plugin <name> [path]   Open a workspace with a named plugin
+  \x1b[1mPacks & ingredients:\x1b[0m
+    bahulam pull pi:<name>         Pull a pi ingredient (composable, not runnable on its own)
+    bahulam install pi:<name>      Pull ingredient + scaffold a full Bahulam pack around it
+    bahulam install <git-url>      Install a hand-authored pack from git
+    bahulam install <local-path>   Install a hand-authored pack from disk
+    bahulam plugin list            List installed packs and pi ingredients
+    bahulam plugin remove <name>   Remove an installed pack
+    bahulam plugin <name> [path]   Open a workspace with an installed pack
 
   \x1b[1mAnalytics:\x1b[0m
     bahulam sessions               List recent local sessions

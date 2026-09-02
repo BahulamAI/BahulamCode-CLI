@@ -122,6 +122,25 @@ export function createToolRegistry({
             const name = String(toolDef.name || '').trim();
             if (!name || tools.has(name)) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._composed?.kind === 'pi') {
+                tools.set(name, {
+                    name,
+                    description: toolDef.description || '',
+                    inputSchema: toolDef.input_schema || toolDef.parameters || { type: 'object', properties: {} },
+                    validateInput() { return []; },
+                    async call() {
+                        return {
+                            success: false,
+                            output: `Composed pi tool '${name}' is registered but pi runtime execution is not wired yet`,
+                            _tool: name,
+                            _plugin: pluginName,
+                            _composed: toolDef._composed,
+                            _blocked: true,
+                        };
+                    },
+                });
+                continue;
+            }
             tools.set(name, {
                 name,
                 description: toolDef.description || '',

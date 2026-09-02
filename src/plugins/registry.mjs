@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
+import { expandComposedTools } from './pi-compose.mjs';
 
 const DEFAULT_PLUGIN_DIRS = () => [
   path.join(process.cwd(), '.bahulam', 'plugins'),
@@ -159,6 +160,11 @@ export class PluginRegistry {
           _plugin_dir: plugin._dir,
         });
       }
+      tools.push(...expandComposedTools(
+        plugin.metadata?.name || '',
+        plugin._dir,
+        plugin.spec?.composes || [],
+      ));
     }
     return tools;
   }

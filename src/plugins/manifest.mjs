@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { load as yamlLoad } from 'js-yaml';
+import { normalizeComposes } from './pi-compose.mjs';
 
 /**
  * Parse a YAML text string into an object using js-yaml.
@@ -185,6 +186,7 @@ export function normalizeManifest(raw, source = '') {
   // Inline wins on name collision so authors can override a portable
   // config for the local plugin without editing mcp.json.
   const mcpServers = _readMcpServers(spec.mcpServers, source);
+  const composes = normalizeComposes(spec.composes);
 
   return {
     apiVersion,
@@ -201,6 +203,7 @@ export function normalizeManifest(raw, source = '') {
       agents,
       workspace,
       mcpServers,
+      composes,
     },
     source,
     _dir: source ? path.dirname(source) : '',

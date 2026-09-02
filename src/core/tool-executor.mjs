@@ -850,6 +850,53 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._composed?.kind === 'pi') {
+                // Composed pi tools resolve at invocation time: look up the
+                // installed pi package's directory, load the specific handler
+                // via the shim-backed probe, invoke, return the result. Handler
+                // cache is per-session (per tool name) to amortize the ~50ms
+                // child-process overhead on repeat calls.
+                let _piInvokeP = null;
+                registerPluginTool(name, async (args, options = {}) => {
+                    try {
+                        if (!_piInvokeP) {
+                            const { loadPiToolHandler } = await import('../plugins/pi-compat/probe.mjs');
+                            const packageName = toolDef._composed.package_name;
+                            const originalName = toolDef._composed.original_name;
+                            const { bahulamHome } = await import('./paths.mjs');
+                            const piBaseDir = path.join(bahulamHome(), 'plugins-pi');
+                            const piDir = path.join(piBaseDir, packageName.replace(/[/@]/g, '_'));
+                            if (!fs.existsSync(piDir)) {
+                                return {
+                                    success: false,
+                                    output: `Composed pi tool '${name}' unavailable: pi package ${packageName} is not installed. Run \`bahulam plugin install pi:${packageName}\`.`,
+                                    _tool: name,
+                                    _plugin: pluginName,
+                                    _composed: toolDef._composed,
+                                };
+                            }
+                            _piInvokeP = loadPiToolHandler(piDir, originalName, { pluginName: packageName });
+                        }
+                        const invoke = await _piInvokeP;
+                        const result = await invoke(args || {});
+                        return {
+                            ...(result && typeof result === 'object' ? result : { success: true, output: String(result) }),
+                            _tool: name,
+                            _plugin: pluginName,
+                            _composed: toolDef._composed,
+                        };
+                    } catch (err) {
+                        return {
+                            success: false,
+                            output: `Composed pi tool '${name}' failed: ${err.message}`,
+                            _tool: name,
+                            _plugin: pluginName,
+                            _composed: toolDef._composed,
+                        };
+                    }
+                }, { pluginName, source: 'pi', composed: toolDef._composed });
+                continue;
+            }
             registerPluginTool(name, async (args, options = {}) => {
                 const handler = await loadPluginTool(toolDef._plugin_dir, toolDef.tool);
                 if (!handler) {
