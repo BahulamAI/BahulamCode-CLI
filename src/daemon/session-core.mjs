@@ -99,10 +99,13 @@ export const DAEMON_OWNED_FIELDS = Object.freeze([
  *   • It's input state tied to a keyboard (`inputHistory`).
  *   • It's a rendering flag whose value depends on the current visible
  *     transcript, not the session's actual state (`inSubAgent`).
+ *   • It's an active renderer collection that does not JSON round-trip
+ *     safely (`activeSubAgentRuns` is a Map).
  */
 export const CLIENT_OWNED_SESSION_FIELDS = Object.freeze([
   'inputHistory',
   'inSubAgent',
+  'activeSubAgentRuns',
   'creditsLowWarned',
   'msgsLowWarned',
   '_lastEmittedThinking',

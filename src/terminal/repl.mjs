@@ -1559,11 +1559,35 @@ function subAgentRunId(data = {}) {
   return data?.run_id || data?.sub_agent_run_id || null;
 }
 
+function activeSubAgentRunsMap() {
+  const runs = session.activeSubAgentRuns;
+  if (runs instanceof Map) return runs;
+
+  const restored = new Map();
+  if (Array.isArray(runs)) {
+    for (const item of runs) {
+      if (Array.isArray(item) && item.length >= 2) {
+        restored.set(item[0], item[1]);
+      } else if (item && typeof item === 'object') {
+        const runId = item.runId || item.run_id || item.id;
+        if (runId) restored.set(runId, item);
+      }
+    }
+  } else if (runs && typeof runs === 'object') {
+    for (const [key, value] of Object.entries(runs)) {
+      if (value && typeof value === 'object') restored.set(key, value);
+    }
+  }
+
+  session.activeSubAgentRuns = restored;
+  return restored;
+}
+
 function normalizeSubAgentRunData(data = {}) {
   if (!data || typeof data !== 'object') return data;
   const runId = subAgentRunId(data);
   if (!runId) return data;
-  const laneRun = session.activeSubAgentRuns?.get(runId);
+  const laneRun = activeSubAgentRunsMap().get(runId);
   const patch = {};
   if (!data.run_id) patch.run_id = runId;
   if (laneRun?.type && !data.sub_agent) patch.sub_agent = laneRun.type;
@@ -1591,7 +1615,7 @@ function ensureFoldedSubAgentTools(agentType, key = agentType, data = {}) {
   let fold = runtime.foldedSubAgentToolMap.get(key);
   if (!fold) {
     const runId = subAgentRunId(data);
-    const laneRun = runId ? session.activeSubAgentRuns?.get(runId) : null;
+    const laneRun = runId ? activeSubAgentRunsMap().get(runId) : null;
     fold = {
       key,
       runId,
@@ -1604,7 +1628,7 @@ function ensureFoldedSubAgentTools(agentType, key = agentType, data = {}) {
     runtime.foldedSubAgentToolMap.set(key, fold);
   } else {
     const runId = subAgentRunId(data);
-    const laneRun = runId ? session.activeSubAgentRuns?.get(runId) : null;
+    const laneRun = runId ? activeSubAgentRunsMap().get(runId) : null;
     if (runId && !fold.runId) fold.runId = runId;
     if (laneRun) fold.label = subAgentLaneLabel(laneRun);
     if (laneRun?.query && !fold.query) fold.query = laneRun.query;
@@ -1614,8 +1638,8 @@ function ensureFoldedSubAgentTools(agentType, key = agentType, data = {}) {
 }
 
 function createSubAgentLane(agentType, query, runId, data = {}) {
-  session.activeSubAgentRuns = session.activeSubAgentRuns || new Map();
-  const sameTypeOrdinals = [...session.activeSubAgentRuns.values()]
+  const activeRuns = activeSubAgentRunsMap();
+  const sameTypeOrdinals = [...activeRuns.values()]
     .filter(run => run.type === agentType)
     .map(run => Number(run.ordinal || 1));
   const ordinal = sameTypeOrdinals.length ? Math.max(...sameTypeOrdinals) + 1 : 1;
@@ -1631,16 +1655,14 @@ function createSubAgentLane(agentType, query, runId, data = {}) {
     // the close line agree even for the first run of a batch.
     forceOrdinal: Number(data?.parallel_batch) > 1,
   };
-  session.activeSubAgentRuns.set(runId, lane);
+  activeRuns.set(runId, lane);
   ensureFoldedSubAgentTools(agentType, runId, { type: agentType, query, run_id: runId });
   _syncSubAgentWindow();
   return lane;
 }
 
 function activeSubAgentLanes() {
-  return session.activeSubAgentRuns instanceof Map
-    ? [...session.activeSubAgentRuns.values()]
-    : [];
+  return [...activeSubAgentRunsMap().values()];
 }
 
 function subAgentLaneLabel(lane, lanes = activeSubAgentLanes()) {
@@ -2322,8 +2344,8 @@ function renderEvent(event) {
       // concurrent runs of the same type are only distinguishable by the
       // backend-issued run_id; label lanes explore#1 / explore#2 when
       // more than one run is active. Solo runs render exactly as before.
-      session.activeSubAgentRuns = session.activeSubAgentRuns || new Map();
-      const hadActiveRuns = session.activeSubAgentRuns.size > 0;
+      const activeRuns = activeSubAgentRunsMap();
+      const hadActiveRuns = activeRuns.size > 0;
       if (!hadActiveRuns) {
         stopSpinner();
         clearPendingHead();
@@ -2331,7 +2353,8 @@ function renderEvent(event) {
       }
       const runId = data?.run_id || `${agentType}:${Date.now().toString(36)}`;
       const lane = createSubAgentLane(agentType, query, runId, data);
-      const parallel = session.activeSubAgentRuns.size > 1 || lane.forceOrdinal;
+      const activeRunsAfterStart = activeSubAgentRunsMap();
+      const parallel = activeRunsAfterStart.size > 1 || lane.forceOrdinal;
       const label = subAgentLaneLabel(lane);
       renderBlockBoundary('subagent');
       process.stderr.write(renderSubAgentOpen({ id: runId, type: label, query, parentDepth: parallel ? 0 : undefined }).replace(/^\n/, '') + '\n');
@@ -2342,7 +2365,7 @@ function renderEvent(event) {
       // inner tool calls stream here instead of flooding the transcript.
       setSubAgentWindowActive(true);
       if (hadActiveRuns) {
-        updateSpinner(`${session.activeSubAgentRuns.size} agents running`);
+        updateSpinner(`${activeRunsAfterStart.size} agents running`);
       } else {
         // Phase per sub-agent run: the status line counts elapsed time and
         // tool calls live ("plan agent · 4 calls · 32s") for the whole run.
@@ -2367,16 +2390,17 @@ function renderEvent(event) {
       if (!eventRunId && hasParallelSubAgentRuns()) {
         break;
       }
-      const laneRun = session.activeSubAgentRuns?.get(eventRunId);
+      const laneRun = activeSubAgentRunsMap().get(eventRunId);
       if (laneRun) laneRun.tools++;
       foldSubAgentToolProgress(eventData);
-      const laneParallel = (session.activeSubAgentRuns?.size || 0) > 1;
+      const activeRuns = activeSubAgentRunsMap();
+      const laneParallel = activeRuns.size > 1;
       if (laneParallel) {
         bumpSpinnerProgress();
         const activeLanes = activeSubAgentLanes();
         const lanes = activeLanes
           .map(r => `${subAgentLaneLabel(r, activeLanes)} ${r.tools}`).join(' · ');
-        updateSpinner(`${session.activeSubAgentRuns.size} agents · ${lanes}`);
+        updateSpinner(`${activeRuns.size} agents · ${lanes}`);
         break;
       }
       // Feed the live window from THIS event — it always fires (55/55 in
@@ -2433,16 +2457,17 @@ function renderEvent(event) {
       // Retire this run's display lane; while sibling runs are still
       // active keep the shared window/spinner alive for them.
       const eventRunId = subAgentRunId(eventData);
-      const doneRun = session.activeSubAgentRuns?.get(eventRunId);
+      const activeRuns = activeSubAgentRunsMap();
+      const doneRun = activeRuns.get(eventRunId);
       const doneLabel = doneRun ? subAgentLaneLabel(doneRun) : agentType;
       const doneFold = eventRunId ? removeFoldedSubAgentTools(eventRunId) : null;
       if (doneFold) {
         doneFold.agentType = doneLabel;
         doneFold.label = doneLabel;
       }
-      if (eventRunId) session.activeSubAgentRuns?.delete(eventRunId);
-      else session.activeSubAgentRuns?.clear();
-      const siblingsActive = (session.activeSubAgentRuns?.size || 0) > 0;
+      if (eventRunId) activeRuns.delete(eventRunId);
+      else activeRuns.clear();
+      const siblingsActive = activeRuns.size > 0;
       // In verbose mode each sub-agent tool already rendered a full
       // transcript card live — flushing the fold would list every tool a
       // second time. The fold batch is the durable record ONLY when tools
@@ -2733,17 +2758,18 @@ function renderEvent(event) {
       // late events land correctly instead of corrupting fresh state —
       // but only for ONE turn boundary: if they're still around at the
       // next complete with no closure, force-clean to avoid stale lanes.
-      const lanesLive = (session.activeSubAgentRuns?.size || 0) > 0;
+      const activeRuns = activeSubAgentRunsMap();
+      const lanesLive = activeRuns.size > 0;
       if (lanesLive && !session._lanesPreservedAtTurnEnd) {
         session._lanesPreservedAtTurnEnd = true;
-        const n = session.activeSubAgentRuns.size;
+        const n = activeRuns.size;
         process.stderr.write(`  ${c.dim(`${n} agent run${n === 1 ? '' : 's'} still active in background — progress continues below`)}\n`);
       } else {
         session._lanesPreservedAtTurnEnd = false;
         if (showSubAgentTools(getVerbosity())) resetFoldedSubAgentTools();
         else flushFoldedSubAgentTools();
         resetSubAgents();
-        session.activeSubAgentRuns?.clear();
+        activeRuns.clear();
         setSubAgentWindowActive(false);
       }
       session.inSubAgent = false;
