@@ -497,6 +497,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("transcriptHeader('bahulam', { tone: 'assistant' })"));
   assert.ok(!replSource.includes("startContentStream();\n      process.stderr.write(`\\n${transcriptHeader('bahulam', { tone: 'assistant' })}\\n`);"));
   assert.ok(replSource.includes('function renderIdleDockInput()'));
+  assert.ok(replSource.includes("if (isInputDockMounted()) redrawDockInput();"));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), displayLine,'));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));

@@ -76,19 +76,20 @@ export function tailWithEllipsis(lines, maxRows, ellipsis = '… ') {
  *
  * Used to place the terminal cursor after rendering the input buffer.
  */
-export function cursorPositionInLines(visibleLines, offset) {
+export function cursorPositionInLines(visibleLines, offset, measure = visibleWidth) {
   const arr = Array.isArray(visibleLines) ? visibleLines : [];
+  const widthOf = typeof measure === 'function' ? measure : visibleWidth;
   let remaining = Math.max(0, Math.floor(offset));
   for (let row = 0; row < arr.length; row++) {
     const line = arr[row] || '';
-    const w = visibleWidth(line);
+    const w = widthOf(line);
     if (remaining <= w) return { row, col: remaining };
     remaining -= w;
     // Newline between wrapped lines doesn't count as a visible column,
     // but consumes zero of the remaining offset either.
   }
   const lastRow = Math.max(0, arr.length - 1);
-  return { row: lastRow, col: visibleWidth(arr[lastRow] || '') };
+  return { row: lastRow, col: widthOf(arr[lastRow] || '') };
 }
 
 // ── internals ────────────────────────────────────────────────────────────

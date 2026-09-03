@@ -137,6 +137,11 @@ test('cursorPositionInLines: empty input returns {0,0}', () => {
   assert.deepStrictEqual(cursorPositionInLines([''], 0), { row: 0, col: 0 });
 });
 
+test('cursorPositionInLines: accepts terminal-cell width measurement', () => {
+  const measure = (line) => line === 'a\tb' ? 9 : visibleWidth(line);
+  assert.deepStrictEqual(cursorPositionInLines(['a\tb'], 9, measure), { row: 0, col: 9 });
+});
+
 // ── integration-ish: pasted multi-line input into a 2-row dock ──────────
 
 test('20-line paste into 2-row dock: shows last 2 lines with ellipsis', () => {
@@ -178,7 +183,7 @@ test('input-dock exports the dynamic-growth API surface', () => {
   for (const fn of ['renderDockInput', 'focusDockInput', 'prepareInputPrompt',
                     'clearInputPrompt', 'mountInputDock', 'unmountInputDock',
                     'clearDockArea', 'moveToContent', 'isInputDockMounted',
-                    'renderDockOverlay']) {
+                    'renderDockOverlay', 'redrawDockInput']) {
     assert.strictEqual(typeof dock[fn], 'function', `missing export: ${fn}`);
   }
 });
@@ -257,6 +262,16 @@ test('renderDockInput accepts fixedRows for compact pasted input', () => {
   const source = dock.renderDockInput.toString();
   assert.ok(source.includes('fixedRows'),
     'renderDockInput should allow callers to keep the dock at a fixed height');
+});
+
+test('dock cursor target accounts for tab stops from the indented input column', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'rich', fixedInput: true, columns: 80, rows: 24 });
+  const { cursorTargetForInput, terminalCellWidthFromColumn } = dock._internals();
+  const inputColumn = dock.inputRowColumn();
+  const target = cursorTargetForInput('You › ', '\titem', 1);
+  const expectedOffset = terminalCellWidthFromColumn('You › \t', inputColumn);
+  assert.strictEqual(target.col, inputColumn + expectedOffset);
+  assert.strictEqual(target.col, 17);
 });
 
 test('prepareInputPrompt accepts a meta option alongside context and tips', () => {

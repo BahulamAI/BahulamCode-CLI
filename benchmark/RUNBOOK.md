@@ -83,7 +83,7 @@ Set on every Railway service via `railway variables --set KEY=VALUE`.
 | `BAHULAM_GATEWAY_URL` | `https://gateway.bahulam.ai/v1` (or dev gateway) |
 | `BAHULAM_RUNTIME_MODE` | `bundled` |
 | `LLM_GATEWAY` | `BahulamGateway` |
-| `CANDIDATE_MODEL` | e.g. `deepseek/deepseek-v4-flash`, `stealth/ox-alpha`, `xiaomi/mimo-v2.5` |
+| `CANDIDATE_MODEL` | e.g. `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `stealth/ox-alpha` |
 | `SCREENING_INSTANCE_FILE` | `screening-5.txt` (pipeline test), `screening-30.txt` (screen), `screening-300.txt` (full lite) |
 | `HARNESS_PARALLEL` | `3` (safe default for Railway compute + gateway rate limits) |
 | `HARNESS_TIMEOUT_S` | `600` for short screens, `1200` (20 min) for the full 300 |
@@ -319,14 +319,14 @@ model. Each service builds its own image, has its own volume, and pushes to its
 own branch. Concurrency is bounded by Bahulam gateway rate limits (safe at
 ~3 services × parallel=3 = 9 concurrent CLI processes hitting the gateway).
 
-Example: run `deepseek-v4-flash-0731`, `xiaomi/mimo-v2.5`, `tencent/hy3` in
+Example: run `deepseek-v4-flash-0731`, `deepseek/deepseek-v4-pro`, `tencent/hy3` in
 parallel:
 
 ```bash
-for slug in deepseek-v4-flash-0731 mimo-v2.5 hy3; do
+for slug in deepseek-v4-flash-0731 deepseek-v4-pro hy3; do
   case "$slug" in
     deepseek-v4-flash-0731) MODEL=deepseek/deepseek-v4-flash-0731 ;;
-    mimo-v2.5)              MODEL=xiaomi/mimo-v2.5 ;;
+    deepseek-v4-pro)        MODEL=deepseek/deepseek-v4-pro ;;
     hy3)                    MODEL=tencent/hy3 ;;
   esac
   railway add --service "bahulam-screening-$slug" \

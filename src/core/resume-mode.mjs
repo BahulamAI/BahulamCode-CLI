@@ -30,7 +30,6 @@ const MODEL_CONTEXT_WINDOWS = {
   'openai/gpt-5':                       400000,
   'openai/gpt-5-mini':                  400000,
   'google/gemini-2.5-pro':              1000000,
-  'xiaomi/mimo-v2.5':                   128000,
 };
 const DEFAULT_CONTEXT_WINDOW = 128000;
 

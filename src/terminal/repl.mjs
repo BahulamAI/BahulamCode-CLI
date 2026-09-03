@@ -184,6 +184,7 @@ import {
   moveToContent,
   prepareInputPrompt,
   redrawDockFrame,
+  redrawDockInput,
   renderDockInput,
   unmountInputDock,
 } from '../ui/input-dock.mjs';
@@ -4324,11 +4325,13 @@ export async function startTerminalRepl() {
       options: Array.isArray(req?.options) ? req.options : [],
       context: req?.context || '',
     });
+    if (isInputDockMounted()) redrawDockInput();
     if (res?.answer) {
       process.stderr.write(`  ${c.green('✓')} ${c.dim('answered:')} ${c.brand(res.answer)}\n`);
     } else {
       process.stderr.write(`  ${c.dim('Question declined — agent proceeds with its own judgment.')}\n`);
     }
+    if (isInputDockMounted()) redrawDockInput();
     return res;
   };
 

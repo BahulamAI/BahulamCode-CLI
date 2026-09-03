@@ -748,6 +748,8 @@ export class LocalAgentRelay {
       lines.push(
         'Use analyze_image(path=..., question=...) for images.',
         'Use read_table(path=...) for CSV/TSV/Excel-style tables.',
+        'Use browser/web inspection tools for HTML and browser-rendered web assets when available.',
+        'For video and audio, inspect file metadata and ask for a transcript or frame extraction when content analysis is needed.',
         'Use read_attachment(path=...) for text, PDFs, Markdown, JSON/YAML, and Jupyter notebooks.',
         'For unsupported binary files, inspect metadata or ask before attempting lossy conversion.',
       );
@@ -902,7 +904,10 @@ function attachmentToolHint(file) {
   const ext = String(file?.path || file?.name || '').split('.').pop().toLowerCase();
   if (kind === 'image' || mime.startsWith('image/')) return 'analyze_image';
   if (kind === 'spreadsheet' || kind === 'table' || ['csv', 'tsv', 'xlsx', 'xls', 'ods'].includes(ext)) return 'read_table';
-  if (['pdf', 'markdown', 'text', 'code', 'config', 'notebook'].includes(kind) || ['txt', 'md', 'mdx', 'pdf', 'json', 'yaml', 'yml', 'toml', 'html', 'xml', 'ipynb', 'log', 'rst', 'sql', 'sh'].includes(ext)) return 'read_attachment';
+  if (kind === 'web' || ['html', 'htm'].includes(ext)) return 'web_preview';
+  if (kind === 'video' || mime.startsWith('video/')) return 'media_metadata';
+  if (kind === 'audio' || mime.startsWith('audio/')) return 'media_metadata';
+  if (['pdf', 'markdown', 'text', 'code', 'config', 'notebook'].includes(kind) || ['txt', 'md', 'mdx', 'pdf', 'json', 'yaml', 'yml', 'toml', 'xml', 'ipynb', 'log', 'rst', 'sql', 'sh'].includes(ext)) return 'read_attachment';
   return '';
 }
 

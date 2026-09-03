@@ -16,6 +16,9 @@ try {
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, 'README.md'), '# Local Workspace\n');
   fs.writeFileSync(path.join(workspace, 'flow.mmd'), 'graph TD\n  A[Start] --> B[Done]\n');
+  fs.writeFileSync(path.join(workspace, 'index.html'), '<!doctype html><title>Local app</title><main>OK</main>\n');
+  fs.writeFileSync(path.join(workspace, 'clip.mp4'), Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32, 0, 0, 0, 0, 0x6d, 0x70, 0x34, 0x32, 0x69, 0x73, 0x6f, 0x6d]));
+  fs.writeFileSync(path.join(workspace, 'tone.mp3'), Buffer.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0]));
   fs.writeFileSync(path.join(workspace, 'diagram.drawio'), '<mxfile><diagram name="Page-1">abc</diagram></mxfile>\n');
   fs.writeFileSync(path.join(workspace, 'legacy.ipynb'), JSON.stringify({
     metadata: { language: 'python' },
@@ -41,7 +44,7 @@ try {
 
   const { createLocalWorkspaceSession, loadLocalWorkspaceSession, verifyLocalAccessToken } =
     await import('../src/local-service/session-store.mjs');
-  const { listWorkspacePath } = await import('../src/local-service/file-access.mjs');
+  const { listWorkspacePath, searchWorkspaceFiles } = await import('../src/local-service/file-access.mjs');
   const { getLocalMachineIdentity, isLoopbackAddress, normalizeLoopbackHost } =
     await import('../src/local-service/machine.mjs');
   const { startLocalWorkspaceService } = await import('../src/local-service/server.mjs');
@@ -72,6 +75,25 @@ try {
   const mermaidListing = listWorkspacePath(session, 'flow.mmd');
   assert.equal(mermaidListing.file.viewer, 'mermaid');
   assert.equal(mermaidListing.file.text_like, true);
+
+  const webListing = listWorkspacePath(session, 'index.html');
+  assert.equal(webListing.file.viewer, 'web');
+  assert.equal(webListing.file.kind, 'web');
+  assert.equal(webListing.file.text_like, true);
+
+  const videoListing = listWorkspacePath(session, 'clip.mp4');
+  assert.equal(videoListing.file.viewer, 'video');
+  assert.equal(videoListing.file.kind, 'video');
+  assert.equal(videoListing.file.text_like, false);
+
+  const audioListing = listWorkspacePath(session, 'tone.mp3');
+  assert.equal(audioListing.file.viewer, 'audio');
+  assert.equal(audioListing.file.kind, 'audio');
+  assert.equal(audioListing.file.text_like, false);
+
+  const mediaSearch = searchWorkspaceFiles(session, { kinds: ['image', 'video', 'audio'] });
+  assert.equal(mediaSearch.results.some((entry) => entry.path === 'clip.mp4' && entry.viewer === 'video'), true);
+  assert.equal(mediaSearch.results.some((entry) => entry.path === 'tone.mp3' && entry.viewer === 'audio'), true);
 
   const deckListing = listWorkspacePath(session, 'deck.pptx');
   assert.equal(deckListing.file.viewer, 'presentation');
@@ -222,6 +244,11 @@ try {
     assert.match(html, /id="attachFiles"/);
     assert.match(html, /id="fileUpload"/);
     assert.match(html, /id="uploadTray"/);
+    assert.match(html, /id="fileSearch"/);
+    assert.match(html, /data-file-filter="media"/);
+    assert.match(html, /\/api\/workspace\/search/);
+    assert.match(html, /function renderSearchResults/);
+    assert.match(html, /function entryIcon/);
     assert.match(html, /\/api\/files\/upload/);
     assert.match(html, /\/api\/file\/save/);
     assert.match(html, /\/api\/approvals\/mode/);
@@ -243,6 +270,10 @@ try {
     assert.match(html, /function renderSpreadsheetFile/);
     assert.match(html, /function renderOfficeFile/);
     assert.match(html, /function renderNotebookFile/);
+    assert.match(html, /function renderMedia/);
+    assert.match(html, /function renderWebFile/);
+    assert.match(html, /<video controls/);
+    assert.match(html, /<audio controls/);
     assert.match(html, /function notebookCells/);
     assert.match(html, /worksheets/);
     assert.match(html, /Auto detect/);
@@ -366,6 +397,23 @@ try {
     assert.equal(filesRes.file.viewer, 'markdown');
     assert.equal(filesRes.file.language, 'markdown');
 
+    const webFileRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=index.html`).then((res) => res.json());
+    assert.equal(webFileRes.file.viewer, 'web');
+    assert.match(webFileRes.preview.content, /Local app/);
+
+    const mediaSearchRes = await fetch(`http://127.0.0.1:${service.port}/api/workspace/search?token=${encodeURIComponent(token)}&kind=image%2Cvideo%2Caudio`).then((res) => res.json());
+    assert.equal(mediaSearchRes.ok, true);
+    assert.equal(mediaSearchRes.results.some((entry) => entry.path === 'clip.mp4' && entry.viewer === 'video'), true);
+    assert.equal(mediaSearchRes.results.some((entry) => entry.path === 'tone.mp3' && entry.viewer === 'audio'), true);
+
+    const videoRangeRes = await fetch(`http://127.0.0.1:${service.port}/api/file/raw?token=${encodeURIComponent(token)}&path=clip.mp4`, {
+      headers: { Range: 'bytes=0-7' },
+    });
+    assert.equal(videoRangeRes.status, 206);
+    assert.match(videoRangeRes.headers.get('content-type') || '', /^video\/mp4/);
+    assert.equal(videoRangeRes.headers.get('content-range'), 'bytes 0-7/24');
+    assert.equal((await videoRangeRes.arrayBuffer()).byteLength, 8);
+
     const saveRes = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -428,7 +476,7 @@ try {
     }).then((res) => res.json());
     assert.equal(uploadRes.ok, true);
     assert.equal(uploadRes.files.length, 2);
-    assert.match(uploadRes.directory, /^bahulam-uploads\//);
+    assert.equal(uploadRes.directory, 'bahulam-uploads');
     assert.equal(uploadRes.files[0].viewer, 'image');
     assert.equal(uploadRes.files[0].kind, 'image');
     assert.equal(uploadRes.files[1].extension, 'ipynb');
@@ -437,6 +485,24 @@ try {
     assert.equal(uploadRes.files[1].uploaded, true);
     assert.equal(fs.existsSync(path.join(workspace, uploadRes.files[0].path)), true);
     assert.deepEqual(fs.readFileSync(path.join(workspace, uploadRes.files[0].path)).subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    const uploadAgainRes = await fetch(`http://127.0.0.1:${service.port}/api/files/upload?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: [
+          {
+            name: 'uploaded image.png',
+            mime_type: 'image/png',
+            data_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/l9zI3wAAAABJRU5ErkJggg==',
+          },
+        ],
+      }),
+    }).then((res) => res.json());
+    assert.equal(uploadAgainRes.ok, true);
+    assert.equal(uploadAgainRes.directory, uploadRes.directory);
+    assert.equal(path.dirname(uploadAgainRes.files[0].path), uploadRes.directory);
+    assert.equal(uploadAgainRes.files[0].path.endsWith('/uploaded image-2.png'), true);
 
     const uploadedImageRes = await fetch(`http://127.0.0.1:${service.port}/api/files?token=${encodeURIComponent(token)}&path=${encodeURIComponent(uploadRes.files[0].path)}`).then((res) => res.json());
     assert.equal(uploadedImageRes.file.viewer, 'image');

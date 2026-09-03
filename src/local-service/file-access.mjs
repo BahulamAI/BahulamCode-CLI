@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const DEFAULT_MAX_ENTRIES = 300;
+const DEFAULT_MAX_SEARCH_RESULTS = 200;
 const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
 export const DEFAULT_MAX_RAW_BYTES = 100 * 1024 * 1024;
 
@@ -42,8 +43,8 @@ const EXTENSION_FILE_TYPES = new Map([
   ['env', { kind: 'config', language: 'plaintext', label: 'Environment', textLike: true }],
   ['properties', { kind: 'config', language: 'plaintext', label: 'Properties', textLike: true }],
   ['xml', { kind: 'code', language: 'xml', label: 'XML', textLike: true }],
-  ['html', { kind: 'code', language: 'html', label: 'HTML', textLike: true }],
-  ['htm', { kind: 'code', language: 'html', label: 'HTML', textLike: true }],
+  ['html', { kind: 'web', language: 'html', label: 'HTML', textLike: true }],
+  ['htm', { kind: 'web', language: 'html', label: 'HTML', textLike: true }],
   ['css', { kind: 'code', language: 'css', label: 'CSS', textLike: true }],
   ['scss', { kind: 'code', language: 'scss', label: 'SCSS', textLike: true }],
   ['sass', { kind: 'code', language: 'scss', label: 'Sass', textLike: true }],
@@ -110,6 +111,18 @@ const EXTENSION_FILE_TYPES = new Map([
   ['svg', { kind: 'image', language: 'xml', label: 'SVG Image', textLike: false }],
   ['bmp', { kind: 'image', language: null, label: 'Bitmap Image', textLike: false }],
   ['ico', { kind: 'image', language: null, label: 'Icon', textLike: false }],
+  ['avif', { kind: 'image', language: null, label: 'AVIF Image', textLike: false }],
+  ['mp4', { kind: 'video', language: null, label: 'MP4 Video', textLike: false }],
+  ['webm', { kind: 'video', language: null, label: 'WebM Video', textLike: false }],
+  ['mov', { kind: 'video', language: null, label: 'QuickTime Video', textLike: false }],
+  ['m4v', { kind: 'video', language: null, label: 'M4V Video', textLike: false }],
+  ['ogv', { kind: 'video', language: null, label: 'Ogg Video', textLike: false }],
+  ['mp3', { kind: 'audio', language: null, label: 'MP3 Audio', textLike: false }],
+  ['m4a', { kind: 'audio', language: null, label: 'M4A Audio', textLike: false }],
+  ['wav', { kind: 'audio', language: null, label: 'WAV Audio', textLike: false }],
+  ['ogg', { kind: 'audio', language: null, label: 'Ogg Audio', textLike: false }],
+  ['flac', { kind: 'audio', language: null, label: 'FLAC Audio', textLike: false }],
+  ['aac', { kind: 'audio', language: null, label: 'AAC Audio', textLike: false }],
   ['pdf', { kind: 'pdf', language: null, label: 'PDF', textLike: false }],
   ['xlsx', { kind: 'spreadsheet', language: null, label: 'Excel Workbook', textLike: false }],
   ['xls', { kind: 'spreadsheet', language: null, label: 'Excel Workbook', textLike: false }],
@@ -165,12 +178,16 @@ export function listWorkspacePath(session, requestedPath = '.', { maxEntries = D
         try {
           childStat = fs.statSync(fullPath);
         } catch {}
+        const file = childStat?.isFile() ? describeFile(root, fullPath, childStat) : null;
         return {
           name: entry.name,
           path: normalizeRelative(root, fullPath),
           type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other',
           size: childStat?.size ?? null,
           updated_at: childStat?.mtime ? childStat.mtime.toISOString() : null,
+          kind: file?.kind ?? (entry.isDirectory() ? 'directory' : null),
+          viewer: file?.viewer ?? (entry.isDirectory() ? 'directory' : null),
+          label: file?.label ?? null,
         };
       });
 
@@ -198,6 +215,88 @@ export function listWorkspacePath(session, requestedPath = '.', { maxEntries = D
     type: 'other',
     path: normalizeRelative(root, target),
     error: 'Unsupported filesystem entry',
+  };
+}
+
+export function searchWorkspaceFiles(session, {
+  query = '',
+  kinds = [],
+  maxResults = DEFAULT_MAX_SEARCH_RESULTS,
+} = {}) {
+  const root = fs.realpathSync(session.root_path);
+  const wanted = new Set((Array.isArray(kinds) ? kinds : String(kinds || '').split(','))
+    .map((kind) => String(kind || '').trim().toLowerCase())
+    .filter(Boolean)
+    .filter((kind) => kind !== 'all'));
+  const term = String(query || '').trim().toLowerCase();
+  const limit = Math.max(1, Math.min(1000, Number(maxResults) || DEFAULT_MAX_SEARCH_RESULTS));
+  const results = [];
+
+  function visit(dir) {
+    if (results.length >= limit) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (results.length >= limit) break;
+      if (shouldHideEntry(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      let stat = null;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
+      const rel = normalizeRelative(root, fullPath);
+      if (entry.isDirectory()) {
+        if ((!term || entry.name.toLowerCase().includes(term) || rel.toLowerCase().includes(term))
+            && (!wanted.size || wanted.has('directory'))) {
+          results.push({
+            name: entry.name,
+            path: rel,
+            type: 'directory',
+            size: null,
+            updated_at: stat.mtime.toISOString(),
+            kind: 'directory',
+            viewer: 'directory',
+          });
+        }
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const file = describeFile(root, fullPath, stat);
+      if (wanted.size && !wanted.has(file.kind) && !wanted.has(file.viewer)) continue;
+      if (term && !entry.name.toLowerCase().includes(term) && !rel.toLowerCase().includes(term)) continue;
+      results.push({
+        name: entry.name,
+        path: rel,
+        type: 'file',
+        size: stat.size,
+        updated_at: stat.mtime.toISOString(),
+        kind: file.kind,
+        viewer: file.viewer,
+        label: file.label,
+      });
+    }
+  }
+
+  visit(root);
+  return {
+    ok: true,
+    type: 'search',
+    query: term,
+    kinds: [...wanted],
+    results,
+    truncated: results.length >= limit,
   };
 }
 
@@ -252,6 +351,18 @@ export function contentTypeForPath(filePath) {
     case 'svg': return 'image/svg+xml';
     case 'bmp': return 'image/bmp';
     case 'ico': return 'image/x-icon';
+    case 'avif': return 'image/avif';
+    case 'mp4': return 'video/mp4';
+    case 'webm': return 'video/webm';
+    case 'mov': return 'video/quicktime';
+    case 'm4v': return 'video/x-m4v';
+    case 'ogv': return 'video/ogg';
+    case 'mp3': return 'audio/mpeg';
+    case 'm4a': return 'audio/mp4';
+    case 'wav': return 'audio/wav';
+    case 'ogg': return 'audio/ogg';
+    case 'flac': return 'audio/flac';
+    case 'aac': return 'audio/aac';
     case 'pdf': return 'application/pdf';
     case 'txt':
     case 'log':
@@ -351,7 +462,10 @@ function viewerForKind(kind) {
     case 'mermaid': return 'mermaid';
     case 'drawio': return 'drawio';
     case 'image': return 'image';
+    case 'video': return 'video';
+    case 'audio': return 'audio';
     case 'pdf': return 'pdf';
+    case 'web': return 'web';
     case 'spreadsheet': return 'spreadsheet';
     case 'document': return 'document';
     case 'presentation': return 'presentation';

@@ -518,6 +518,21 @@ function drawInputLines(lines) {
   // No save/restore — caller parks cursor via focusDockInput.
 }
 
+function terminalCellWidthFromColumn(text, startColumn = 1) {
+  let col = Math.max(1, Math.floor(Number(startColumn) || 1));
+  const start = col;
+  for (const ch of queue.stripSequences(String(text ?? ''))) {
+    const cp = ch.codePointAt(0);
+    if (cp === 0x09) {
+      col = (Math.floor((col - 1) / 8) + 1) * 8 + 1;
+      continue;
+    }
+    if (cp === 0x0a || cp === 0x0d) continue;
+    col += queue.cellWidth(ch);
+  }
+  return Math.max(0, col - start);
+}
+
 export function isInputDockMounted() {
   return mounted;
 }
@@ -650,6 +665,20 @@ export function redrawDockFrame() {
   return true;
 }
 
+export function redrawDockInput() {
+  if (!mounted) return false;
+  contentTrackingActive = false;
+  renderFrame(lastFrame);
+  if (Array.isArray(lastFrame.overlayLines)) {
+    drawInputLines(lastFrame.overlayLines);
+  } else {
+    const layout = layoutInput(lastFrame.prefix, lastFrame.value);
+    drawInputLines(layout.lines);
+  }
+  parkCursorAtInput();
+  return true;
+}
+
 export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) {
   if (!mounted) return false;
   contentTrackingActive = false;
@@ -725,28 +754,35 @@ export function renderDockOverlay({
 export function focusDockInput(prefix, value = '', cursorInValue = null) {
   if (!mounted) return false;
   contentTrackingActive = false;
+  const target = cursorTargetForInput(prefix, value, cursorInValue);
+  if (queue.isActive()) {
+    // Record the park position — every queue op re-parks here so readline
+    // echoes always land in the input row, even mid-stream.
+    queue.park(target.row, target.col);
+    return true;
+  }
+  moveTo(target.row, target.col);
+  return true;
+}
+
+function cursorTargetForInput(prefix, value = '', cursorInValue = null) {
   const layout = layoutInput(prefix, value);
   const valueStr = String(value || '');
   const rawCursor = cursorInValue == null
     ? valueStr.length
     : Math.max(0, Math.min(valueStr.length, Math.floor(cursorInValue)));
   const cursorSlice = valueStr.slice(0, rawCursor);
-  const offset = visibleWidth(`${prefix || ''}${cursorSlice}`);
-  const pos = cursorPositionInLines(layout.wrapped, offset);
+  const inputColumn = INPUT_INDENT + 1;
+  const measureInputLine = (line) => terminalCellWidthFromColumn(line, inputColumn);
+  const offset = terminalCellWidthFromColumn(`${prefix || ''}${cursorSlice}`, inputColumn);
+  const pos = cursorPositionInLines(layout.wrapped, offset, measureInputLine);
   const visibleRowIdx = Math.max(
     0,
     Math.min(inputRows - 1, pos.row - Math.max(0, layout.wrapped.length - inputRows)),
   );
   const row = inputRowStart() + visibleRowIdx;
   const col = Math.min(cols(), INPUT_INDENT + 1 + Math.max(0, pos.col));
-  if (queue.isActive()) {
-    // Record the park position — every queue op re-parks here so readline
-    // echoes always land in the input row, even mid-stream.
-    queue.park(row, col);
-    return true;
-  }
-  moveTo(row, col);
-  return true;
+  return { row, col };
 }
 
 export function inputRowColumn() {
@@ -766,6 +802,8 @@ export function _internals() {
     drawableColumns,
     resetContentCursor,
     contentCursor: () => ({ row: contentCursorRow, col: contentCursorCol, active: contentTrackingActive }),
+    cursorTargetForInput,
+    terminalCellWidthFromColumn,
     overlayRowsForWrapped,
     FIXED_ROWS,
     MAX_INPUT_ROWS_CAP,
