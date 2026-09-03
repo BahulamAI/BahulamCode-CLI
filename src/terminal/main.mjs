@@ -297,7 +297,7 @@ async function main() {
       const verb = subcommandArgs[0];
       const rest = subcommandArgs.slice(1);
       process.stderr.write(`\x1b[33m!\x1b[0m \`bahulam plugin ${verb}\` moved to top-level. Use:\n`);
-      process.stderr.write(`    \x1b[36mbahulam install ${rest.join(' ')}\x1b[0m   (pack — scaffolds around pi:, installs git/tarball/local)\n`);
+      process.stderr.write(`    \x1b[36mbahulam install ${rest.join(' ')}\x1b[0m   (pack — registry, scaffolds around pi:, git/tarball/local)\n`);
       process.stderr.write(`    \x1b[36mbahulam pull ${rest.join(' ')}\x1b[0m      (ingredient only — pi: sources)\n`);
       process.exit(2);
     }
@@ -356,6 +356,8 @@ async function main() {
   \x1b[1mPacks & ingredients:\x1b[0m
     bahulam pull pi:<name>         Pull a pi ingredient (composable, not runnable on its own)
     bahulam install pi:<name>      Pull ingredient + scaffold a full Bahulam pack around it
+    bahulam install <name>         Install from awesome-bahulam-plugins
+    bahulam install bahulam:<name> Explicit awesome-bahulam-plugins lookup
     bahulam install <git-url>      Install a hand-authored pack from git
     bahulam install <local-path>   Install a hand-authored pack from disk
     bahulam plugin list            List installed packs and pi ingredients

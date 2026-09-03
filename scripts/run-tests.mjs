@@ -43,6 +43,7 @@ const UNIT_TESTS = [
     'test/test-rate-limit-display.mjs',
     'test/test-preflight.mjs',
     'test/test-plugin-composes.mjs',
+    'test/test-plugin-registry-install.mjs',
     'test/pi-compat-smoke.mjs',
     'test/pi-scaffold-smoke.mjs',
     'test/pi-requirements-smoke.mjs',

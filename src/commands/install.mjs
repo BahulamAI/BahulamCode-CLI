@@ -40,6 +40,9 @@ const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 
+const DEFAULT_BAHULAM_PLUGIN_REGISTRY_URL =
+  'https://raw.githubusercontent.com/BahulamAI/awesome-bahulam-plugins/main/registry.json';
+
 function parseArgs(argv) {
   const parsed = {
     source: null,
@@ -152,10 +155,13 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
 
   Install a pack. For pi sources, pulls the ingredient and scaffolds a
   full Bahulam pack (composition + state layer + workspace + agent), then
-  installs it. For git/tarball/local sources, installs the existing pack.
+  installs it. For registry/git/tarball/local sources, installs the
+  existing pack.
 
   Sources:
     pi:<npm-package>[@<version>]     Scaffold + install from a pi package
+    <registry-name>                  Install from awesome-bahulam-plugins
+    bahulam:<registry-name>          Explicit awesome-bahulam-plugins lookup
     <git-url>[.git]                  Clone a hand-authored pack
     <tarball-url>                    Download + install a pack tarball
     <local-path>                     Copy + install a local pack directory
@@ -166,7 +172,7 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
     --no-state             Skip the persistent state layer (pi sources only)
     --no-workspace         Skip the reactive workspace panel (pi sources only)
     --project              Install into ./.bahulam/plugins/ instead of ~/.bahulam/plugins/
-    --ref <ref>            Git branch/tag/commit (git sources only)
+    --ref <ref>            Git branch/tag/commit (git or registry sources)
     --json                 Machine-readable output
 
 `);
@@ -186,6 +192,12 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
       throw new Error(`unrecognized source: ${args.source}`);
     }
 
+    const registryName = registryNameFromSource(args.source, classified);
+    if (registryName) {
+      await installFromBahulamRegistry({ name: registryName, targetDir, cwd, args });
+      return;
+    }
+
     // Non-pi paths reuse the plugin-manage install machinery.
     let dest;
     if (classified.kind === 'git') {
@@ -194,8 +206,6 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
       dest = await installFromTarball({ url: classified.url, targetDir, force: args.force });
     } else if (classified.kind === 'local') {
       dest = await installFromLocal({ src: classified.path, targetDir, force: args.force });
-    } else if (classified.kind === 'name') {
-      throw new Error(`registry lookup for bare names is not yet wired into \`bahulam install\`. Provide a git URL, tarball URL, local path, or pi: source.`);
     } else {
       throw new Error(`could not resolve source: ${args.source}`);
     }
@@ -205,6 +215,118 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
     process.stderr.write(`\x1b[31m✗\x1b[0m ${err.message}\n`);
     process.exit(1);
   }
+}
+
+export function registryNameFromSource(source, classified = null) {
+  const raw = String(source || '').trim();
+  const prefix = 'bahulam:';
+  if (raw.toLowerCase().startsWith(prefix)) {
+    const name = raw.slice(prefix.length).trim();
+    if (!name) {
+      throw new Error(`bahulam registry source requires a plugin name, e.g. ${CYAN}bahulam:manim-studio${RESET}`);
+    }
+    return name;
+  }
+  if (classified?.kind === 'name') return classified.name;
+  return null;
+}
+
+async function installFromBahulamRegistry({ name, targetDir, cwd, args }) {
+  const entry = await resolveBahulamRegistryPlugin(name, { cwd });
+  const repository = entry.repository || entry.repo || entry.url;
+  if (!repository) {
+    throw new Error(`registry entry "${entry.name}" is missing a repository URL`);
+  }
+  const ref = args.ref || entry.ref || null;
+  const subdir = entry.subdir || entry.path || null;
+
+  process.stderr.write(
+    `${DIM}registry${RESET}  ${entry.name} → ${repository}` +
+    `${subdir ? `#${subdir}` : ''}${ref ? ` @ ${ref}` : ''}\n`,
+  );
+
+  const dest = await installFromGit({
+    url: repository,
+    targetDir,
+    name: entry.name,
+    ref,
+    subdir,
+    force: args.force,
+  });
+  await preflightAndReport({ dest, args, cwd });
+}
+
+export async function resolveBahulamRegistryPlugin(name, { cwd = process.cwd(), registry = null } = {}) {
+  const doc = registry || await loadBahulamPluginRegistry({ cwd });
+  const entries = Array.isArray(doc) ? doc : Array.isArray(doc?.plugins) ? doc.plugins : [];
+  if (!entries.length) {
+    throw new Error('Bahulam plugin registry did not contain any plugins');
+  }
+
+  const needle = normalizeRegistryName(name);
+  const entry = entries.find(item => {
+    const names = [
+      item?.name,
+      item?.slug,
+      item?.id,
+      ...(Array.isArray(item?.aliases) ? item.aliases : []),
+    ];
+    return names.some(candidate => normalizeRegistryName(candidate) === needle);
+  });
+
+  if (!entry) {
+    throw new Error(
+      `plugin not found in Bahulam registry: ${name}\n` +
+      `Available: ${entries.map(item => item.name).filter(Boolean).join(', ') || '(none)'}`,
+    );
+  }
+  return entry;
+}
+
+async function loadBahulamPluginRegistry({ cwd = process.cwd() } = {}) {
+  const explicit =
+    process.env.BAHULAM_PLUGIN_REGISTRY ||
+    process.env.BAHULAM_PLUGIN_REGISTRY_PATH ||
+    process.env.BAHULAM_PLUGIN_REGISTRY_URL;
+  if (explicit) return readRegistryLocation(explicit, cwd);
+
+  try {
+    return await readRegistryLocation(DEFAULT_BAHULAM_PLUGIN_REGISTRY_URL, cwd);
+  } catch (err) {
+    const localPath = findLocalRegistry(cwd);
+    if (localPath) return readRegistryJson(localPath);
+    throw new Error(`failed to load Bahulam plugin registry: ${err.message}`);
+  }
+}
+
+async function readRegistryLocation(location, cwd) {
+  if (/^https?:\/\//i.test(location)) {
+    const res = await fetch(location, { headers: { accept: 'application/json' } });
+    if (!res.ok) throw new Error(`${location} returned HTTP ${res.status}`);
+    return res.json();
+  }
+  const filePath = path.isAbsolute(location) ? location : path.resolve(cwd, location);
+  return readRegistryJson(filePath);
+}
+
+function readRegistryJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch (err) {
+    throw new Error(`failed to read registry ${filePath}: ${err.message}`);
+  }
+}
+
+function findLocalRegistry(cwd) {
+  const candidates = [
+    path.resolve(cwd, '../awesome-bahulam-plugins/registry.json'),
+    path.resolve(cwd, 'awesome-bahulam-plugins/registry.json'),
+  ];
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+function normalizeRegistryName(name) {
+  return String(name || '').trim().replace(/^bahulam:/i, '').toLowerCase();
 }
 
 async function installPiWithScaffolding({ classified, targetDir, cwd, args }) {
