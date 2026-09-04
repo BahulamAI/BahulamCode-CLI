@@ -157,6 +157,44 @@ export function normalizeManifest(raw, source = '') {
     const agent = normalizeAgentDef(agentDef, name, pluginDir);
     if (agent.slug) agents.push(agent);
   }
+  // Optional: `spec.agents_from: <dir>` — load one-agent-per-file yaml
+  // definitions from a directory (non-recursive, alphabetical, silent
+  // if the directory is absent). Each file's root is the agent shape
+  // that would otherwise appear inline under `agents:`.
+  if (typeof spec.agents_from === 'string' && spec.agents_from.trim() && pluginDir) {
+    const agentsDir = path.resolve(pluginDir, spec.agents_from.trim());
+    try {
+      if (fs.existsSync(agentsDir) && fs.statSync(agentsDir).isDirectory()) {
+        const files = fs.readdirSync(agentsDir)
+          .filter(f => /\.(ya?ml)$/i.test(f))
+          .sort();
+        for (const f of files) {
+          const filePath = path.join(agentsDir, f);
+          let agentDef;
+          try {
+            agentDef = parseYaml(fs.readFileSync(filePath, 'utf-8'));
+          } catch (err) {
+            console.warn(`Failed to parse plugin agent file ${filePath}: ${err.message}`);
+            continue;
+          }
+          if (!agentDef || typeof agentDef !== 'object') {
+            console.warn(`Skipping plugin agent file ${filePath}: not a mapping`);
+            continue;
+          }
+          const agent = normalizeAgentDef(agentDef, name, pluginDir);
+          if (!agent.slug) {
+            console.warn(`Skipping plugin agent file ${filePath}: no slug`);
+            continue;
+          }
+          agents.push(agent);
+        }
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`Failed to load agents_from ${agentsDir}: ${err.message}`);
+      }
+    }
+  }
 
   // Normalize tools
   const tools = [];
