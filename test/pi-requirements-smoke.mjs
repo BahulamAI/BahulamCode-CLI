@@ -153,14 +153,14 @@ const scaffold = scaffoldPiPack({
   state: true,
   workspace: true,
 });
-const manifest = fs.readFileSync(path.join(scaffold.dest, 'plugin.yaml'), 'utf-8');
-ok('manifest mentions Requirements block',    /Requirements & constraints/.test(manifest));
-ok('manifest lists ffmpeg + install hint',    /ffmpeg/i.test(manifest) && /brew install/.test(manifest));
-ok('manifest lists API key credential',       /FAKE_MEDIA_API_KEY/.test(manifest));
-ok('manifest lists workspace-scoped rule',    /workspace-relative/.test(manifest));
-ok('manifest lists projectId regex',          /projectId.*must match/i.test(manifest) || /projectId.*regex/i.test(manifest) || /projectId.*\^\[a-z0-9-\]/.test(manifest));
-ok('manifest lists required fields',          /render` requires: `projectId`, `sourcePath`/.test(manifest));
-ok('required fields ahead of regex',          manifest.indexOf('render` requires') < manifest.indexOf('must match'));
+const workspaceAgent = fs.readFileSync(path.join(scaffold.dest, 'config/workspace.yaml'), 'utf-8');
+ok('workspace agent mentions Requirements block', /Requirements & constraints/.test(workspaceAgent));
+ok('workspace agent lists ffmpeg + install hint', /ffmpeg/i.test(workspaceAgent) && /brew install/.test(workspaceAgent));
+ok('workspace agent lists API key credential',    /FAKE_MEDIA_API_KEY/.test(workspaceAgent));
+ok('workspace agent lists workspace-scoped rule', /workspace-relative/.test(workspaceAgent));
+ok('workspace agent lists projectId regex',       /projectId.*must match/i.test(workspaceAgent) || /projectId.*regex/i.test(workspaceAgent) || /projectId.*\^\[a-z0-9-\]/.test(workspaceAgent));
+ok('workspace agent lists required fields',       /render` requires: `projectId`, `sourcePath`/.test(workspaceAgent));
+ok('required fields ahead of regex',              workspaceAgent.indexOf('render` requires') < workspaceAgent.indexOf('must match'));
 
 // ── Host check: with an impossible binary, missing must be > 0 ──
 const impossibleReqs = {

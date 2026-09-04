@@ -43,6 +43,21 @@ function addAgent(agents, seen, agent) {
   agents.push(agent);
 }
 
+function normalizeViews(value) {
+  return Array.isArray(value) ? value.filter(view => view && typeof view === 'object') : [];
+}
+
+function normalizeWorkspaceDeclaration(value) {
+  if (typeof value === 'string' && value.trim()) {
+    return { agentPath: value.trim(), views: [] };
+  }
+  if (value && typeof value === 'object') {
+    const agentPath = String(value.agent || value.file || value.source || '').trim();
+    return { agentPath, views: normalizeViews(value.views) };
+  }
+  return { agentPath: '', views: [] };
+}
+
 function loadAgentFile(agentDef, pluginDir) {
   const file = String(agentDef.file || agentDef.handler || '').trim();
   if (!file || !pluginDir) return {};
@@ -61,7 +76,9 @@ function loadAgentFile(agentDef, pluginDir) {
 }
 
 function normalizeAgentDef(agentDef, pluginName, pluginDir) {
-  const fileConfig = loadAgentFile(agentDef, pluginDir);
+  const loadedConfig = loadAgentFile(agentDef, pluginDir);
+  const hasLoadedConfig = loadedConfig && Object.keys(loadedConfig).length > 0;
+  const fileConfig = hasLoadedConfig ? loadedConfig : (agentDef || {});
   const metadata = fileConfig.metadata || fileConfig.meta || {};
   const agent = fileConfig.agent || fileConfig.config?.agent || {};
   const fileTools = (
@@ -71,11 +88,24 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
     || []
   );
   const inlineTools = normalizeToolNames(agentDef.tools);
+  const slug = (
+    agentDef.slug
+    || metadata.slug
+    || fileConfig.slug
+    || agent.slug
+    || agentDef.id
+    || metadata.role
+    || fileConfig.role
+    || metadata.name
+    || fileConfig.name
+    || agentDef.name
+    || ''
+  );
 
   return {
-    slug: agentDef.slug || metadata.slug || fileConfig.slug || metadata.name || fileConfig.name || agentDef.name || '',
-    name: agentDef.name || metadata.name || fileConfig.name || agentDef.slug || '',
-    description: agentDef.description || metadata.description || fileConfig.description || '',
+    slug,
+    name: agentDef.name || metadata.name || fileConfig.name || agent.name || slug || '',
+    description: agentDef.description || metadata.description || fileConfig.description || agent.description || '',
     role: agentDef.role || metadata.role || fileConfig.role || 'specialist',
     system_prompt: (
       agentDef.system_prompt
@@ -93,10 +123,37 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
     models: agentDef.models || agent.models || fileConfig.models || undefined,
     max_tokens: agentDef.max_tokens || agent.max_tokens || fileConfig.max_tokens || undefined,
     max_iterations: agentDef.max_iterations || agent.max_iterations || fileConfig.max_iterations || undefined,
+    disallowed_tools: metadata.disallowedTools || metadata.disallowed_tools || fileConfig.disallowedTools || fileConfig.disallowed_tools || [],
+    can_delegate: agentDef.can_delegate ?? agent.can_delegate ?? fileConfig.can_delegate ?? false,
+    can_be_delegated_to: agentDef.can_be_delegated_to ?? agent.can_be_delegated_to ?? fileConfig.can_be_delegated_to ?? true,
+    apiVersion: fileConfig.apiVersion || fileConfig.api_version || undefined,
+    kind: fileConfig.kind || undefined,
     file: agentDef.file || agentDef.handler || '',
     source: `plugin:${pluginName}`,
     source_scope: 'plugin',
   };
+}
+
+function loadAgentPath(agentPath, pluginDir, pluginName, label) {
+  if (!agentPath || !pluginDir) return null;
+  const fullPath = path.resolve(pluginDir, agentPath);
+  try {
+    if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return null;
+    const agentDef = parseYaml(fs.readFileSync(fullPath, 'utf-8'));
+    if (!agentDef || typeof agentDef !== 'object') {
+      console.warn(`Skipping ${label} ${fullPath}: not a mapping`);
+      return null;
+    }
+    const agent = normalizeAgentDef(agentDef, pluginName, pluginDir);
+    if (!agent.slug) {
+      console.warn(`Skipping ${label} ${fullPath}: no slug`);
+      return null;
+    }
+    return agent;
+  } catch (err) {
+    console.warn(`Failed to load ${label} ${fullPath}: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -173,35 +230,17 @@ export function normalizeManifest(raw, source = '') {
   for (const agentDef of (config.agents || [])) {
     addAgent(agents, agentSlugs, normalizeAgentDef(agentDef, name, pluginDir));
   }
-  // Optional: `config.workspace_agent: <path>` loads a single yaml file
-  // as the plugin's primary/entry agent — mirrors the SaaS
-  // workspace.yaml convention so codekepler-backend can consume the
-  // same file directly. Loaded like any other agent; appears in
-  // spec.agents[]. Its slug is what distinguishes it from sub-agents.
-  if (typeof config.workspace_agent === 'string' && config.workspace_agent.trim() && pluginDir) {
-    const wsAgentPath = path.resolve(pluginDir, config.workspace_agent);
-    try {
-      if (fs.existsSync(wsAgentPath) && fs.statSync(wsAgentPath).isFile()) {
-        const agentDef = parseYaml(fs.readFileSync(wsAgentPath, 'utf-8'));
-        if (agentDef && typeof agentDef === 'object') {
-          const agent = normalizeAgentDef(agentDef, name, pluginDir);
-          if (agent.slug) {
-            addAgent(agents, agentSlugs, agent);
-          } else {
-            console.warn(`Skipping workspace_agent ${wsAgentPath}: no slug`);
-          }
-        } else {
-          console.warn(`Skipping workspace_agent ${wsAgentPath}: not a mapping`);
-        }
-      }
-    } catch (err) {
-      console.warn(`Failed to load workspace_agent ${wsAgentPath}: ${err.message}`);
+  const workspaceDecl = normalizeWorkspaceDeclaration(config.workspace);
+  if (workspaceDecl.agentPath) {
+    const workspaceAgent = loadAgentPath(workspaceDecl.agentPath, pluginDir, name, 'workspace');
+    if (workspaceAgent) {
+      workspaceAgent.entry_agent = true;
+      addAgent(agents, agentSlugs, workspaceAgent);
     }
   }
   // Optional authoring convenience: `config.agents_from: <dir|string[]>`.
-  // Published plugins should inline `config.agents[]` so backend and
-  // marketplace consumers can parse one file. npm expands these paths
-  // after inline agents; duplicate slugs keep the inline definition.
+  // This is for delegated sub-agents. The primary/entry agent should
+  // live at `config.workspace: ./config/workspace.yaml`.
   const agentsFrom = normalizePathList(config.agents_from);
   for (const agentsFromPath of agentsFrom) {
     if (!pluginDir) continue;
@@ -252,11 +291,12 @@ export function normalizeManifest(raw, source = '') {
     if (tool.name) tools.push(tool);
   }
 
-  // Normalize workspace
-  const workspace = config.workspace || {};
-  if (workspace.views && !Array.isArray(workspace.views)) {
-    workspace.views = [];
-  }
+  // Normalize browser workspace views. New manifests use `config.views`.
+  // Older installed manifests with `config.workspace.views` still render.
+  const views = [
+    ...workspaceDecl.views,
+    ...normalizeViews(config.views),
+  ];
 
   // Normalize MCP servers — the Plugin=MCP+UX story. Two sources are
   // merged so authors can either:
@@ -283,7 +323,8 @@ export function normalizeManifest(raw, source = '') {
       tools,
       agents,
       ...(agentsFrom.length ? { agents_from: agentsFrom } : {}),
-      workspace,
+      workspace: workspaceDecl.agentPath,
+      views,
       mcpServers,
       composes,
     },

@@ -142,7 +142,7 @@ system_prompt: "kept"
   });
 });
 
-await test('workspace_agent loads a single yaml file as the primary agent', async () => {
+await test('workspace loads a single yaml file as the primary agent', async () => {
   await withTempPlugin({
     'plugin.yaml': `apiVersion: bahulam.plugin/1
 kind: Plugin
@@ -151,8 +151,12 @@ metadata:
   version: 0.0.1
 config:
   tools: []
-  workspace_agent: ./config/workspace.yaml
+  workspace: ./config/workspace.yaml
   agents_from: ./config/agents/
+  views:
+    - type: panel
+      name: Test Panel
+      source: ./workspace/panel.html
 `,
     'config/workspace.yaml': `slug: director
 name: The Director
@@ -172,6 +176,87 @@ system_prompt: "sub-agent"
     assert.deepStrictEqual(slugs, ['animator', 'director']);
     const director = manifest.config.agents.find(a => a.slug === 'director');
     assert.strictEqual(director.role, 'primary');
+    assert.strictEqual(director.entry_agent, true);
+    assert.strictEqual(manifest.config.workspace, './config/workspace.yaml');
+    assert.strictEqual(manifest.config.views[0].name, 'Test Panel');
+  });
+});
+
+await test('framework-shaped agent yaml normalizes into plugin agents', async () => {
+  await withTempPlugin({
+    'plugin.yaml': `apiVersion: bahulam.plugin/1
+kind: Plugin
+metadata:
+  name: framework-agent-test
+  version: 0.0.1
+config:
+  tools: []
+  workspace: ./config/workspace.yaml
+  agents_from: ./config/agents/
+`,
+    'config/workspace.yaml': `apiVersion: agent.framework/v1
+kind: SingleAgent
+metadata:
+  slug: director
+  name: Director Agent
+  role: director
+  description: Primary framework-shaped agent
+agent:
+  max_tokens: 8192
+  max_iterations: 20
+  system_prompt: "delegate work"
+tools: [delegate]
+`,
+    'config/agents/reviewer.yaml': `apiVersion: agent.framework/v1
+kind: SubAgent
+metadata:
+  slug: reviewer
+  name: Review Agent
+  role: reviewer
+  description: Framework-shaped subagent
+  disallowedTools: [shell]
+agent:
+  max_tokens: 1024
+  max_iterations: 3
+  system_prompt: "review work"
+tools:
+  - read_file
+`,
+  }, (dir) => {
+    const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
+    const director = manifest.config.agents.find(a => a.slug === 'director');
+    const reviewer = manifest.config.agents.find(a => a.slug === 'reviewer');
+    assert.strictEqual(director.entry_agent, true);
+    assert.strictEqual(director.kind, 'SingleAgent');
+    assert.strictEqual(director.max_tokens, 8192);
+    assert.deepStrictEqual(director.tools, ['delegate']);
+    assert.strictEqual(reviewer.kind, 'SubAgent');
+    assert.strictEqual(reviewer.role, 'reviewer');
+    assert.strictEqual(reviewer.max_iterations, 3);
+    assert.deepStrictEqual(reviewer.disallowed_tools, ['shell']);
+    assert.deepStrictEqual(reviewer.tools, ['read_file']);
+  });
+});
+
+await test('legacy workspace.views normalizes into config.views', async () => {
+  await withTempPlugin({
+    'plugin.yaml': `apiVersion: bahulam.plugin/1
+kind: Plugin
+metadata:
+  name: legacy-view-test
+  version: 0.0.1
+config:
+  tools: []
+  workspace:
+    views:
+      - type: panel
+        name: Legacy Panel
+        source: ./workspace/panel.html
+`,
+  }, (dir) => {
+    const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
+    assert.strictEqual(manifest.config.workspace, '');
+    assert.strictEqual(manifest.config.views[0].name, 'Legacy Panel');
   });
 });
 

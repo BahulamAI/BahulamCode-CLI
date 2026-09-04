@@ -236,11 +236,10 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
   ];
 
   const workspaceBlock = hasWorkspace ? [
-    '  workspace:',
-    '    views:',
-    '      - type: panel',
-    `        name: ${yamlString(slug.replace(/-/g, ' '))}`,
-    '        source: ./workspace/panel.html',
+    '  views:',
+    '    - type: panel',
+    `      name: ${yamlString(slug.replace(/-/g, ' '))}`,
+    '      source: ./workspace/panel.html',
     '',
   ] : [];
 
@@ -257,7 +256,7 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
     'config:',
     ...tools,
     ...composesBlock,
-    '  agents_from: ./config/agents/',
+    '  workspace: ./config/workspace.yaml',
     '',
     ...workspaceBlock,
   ].join('\n');
@@ -270,16 +269,21 @@ function renderAgentFile({ namespace, exposeTools, agentSlug, agentDescription, 
   ];
 
   return [
-    `# config/agents/${agentSlug}.yaml — auto-loaded when plugin.yaml declares`,
-    '# config.agents_from: ./config/agents/.',
-    `slug: ${agentSlug}`,
-    `name: ${yamlString(agentSlug.replace(/-/g, ' '))}`,
-    'role: specialist',
-    'description: >',
-    `  ${agentDescription}`,
+    '# config/workspace.yaml — entry agent loaded when plugin.yaml declares',
+    '# config.workspace: ./config/workspace.yaml.',
+    'apiVersion: agent.framework/v1',
+    'kind: SingleAgent',
+    'metadata:',
+    `  slug: ${agentSlug}`,
+    `  name: ${yamlString(agentSlug.replace(/-/g, ' '))}`,
+    '  role: specialist',
+    '  description: >',
+    `    ${agentDescription}`,
+    'agent:',
+    '  max_iterations: 10',
+    `  system_prompt: ${yamlBlock(systemPrompt, 4)}`,
     'tools:',
     ...agentToolRefs.map(t => `  - ${t}`),
-    `system_prompt: ${yamlBlock(systemPrompt, 2)}`,
     '',
   ].join('\n');
 }
@@ -546,9 +550,9 @@ export function scaffoldPiPack({
   });
   fs.writeFileSync(path.join(dest, 'plugin.yaml'), manifest);
 
-  const agentsDir = path.join(dest, 'config', 'agents');
-  fs.mkdirSync(agentsDir, { recursive: true });
-  fs.writeFileSync(path.join(agentsDir, `${agentSlug}.yaml`), renderAgentFile({
+  const configDir = path.join(dest, 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'workspace.yaml'), renderAgentFile({
     namespace,
     exposeTools: toolNames,
     agentSlug,

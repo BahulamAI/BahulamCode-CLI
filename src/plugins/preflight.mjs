@@ -86,10 +86,19 @@ export async function preflightPlugin(pluginDir, opts = {}) {
 
   const tools = manifest.config?.tools || [];
   const agents = manifest.config?.agents || [];
-  const views = manifest.config?.workspace?.views || [];
+  const workspacePath = manifest.config?.workspace || '';
+  const views = manifest.config?.views || [];
   const mcpServers = manifest.config?.mcpServers || {};
   const mcpServerNames = new Set(Object.keys(mcpServers));
   const composes = manifest.config?.composes || [];
+
+  if (workspacePath) {
+    const full = path.resolve(pluginDir, workspacePath);
+    const inside = full === pluginDir || full.startsWith(pluginDir + path.sep);
+    if (!inside) errors.push(`Workspace entry agent path escapes the plugin directory: ${workspacePath}`);
+    else if (!fs.existsSync(full)) errors.push(`Workspace entry agent not found: ${workspacePath}`);
+    else if (!fs.statSync(full).isFile()) errors.push(`Workspace entry agent is not a file: ${workspacePath}`);
+  }
 
   // MCP server sanity — every server should have EITHER command (stdio)
   // OR url (remote). Anything else is meaningless config.

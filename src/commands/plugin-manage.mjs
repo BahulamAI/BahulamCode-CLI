@@ -83,7 +83,7 @@ function scanInstalled(cwd) {
         description: parsed?.manifest?.metadata?.description || '',
         tools: parsed?.manifest?.config?.tools?.length || 0,
         agents: parsed?.manifest?.config?.agents?.length || 0,
-        views: parsed?.manifest?.config?.workspace?.views?.length || 0,
+        views: parsed?.manifest?.config?.views?.length || 0,
         composes: parsed?.manifest?.config?.composes?.length || 0,
         agentSlugs,
         disabled,
@@ -590,7 +590,7 @@ function cmdInfo(args, cwd) {
   if (m) {
     process.stderr.write(`\n  ${DIM}tools${RESET}      ${(m.config.tools || []).map(t => t.name).join(', ') || '(none)'}\n`);
     process.stderr.write(`  ${DIM}agents${RESET}     ${(m.config.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
-    const views = m.config.workspace?.views || [];
+    const views = m.config.views || [];
     process.stderr.write(`  ${DIM}views${RESET}      ${views.length ? views.map(v => v.name).join(', ') : '(none)'}\n`);
   }
   process.stderr.write('\n');

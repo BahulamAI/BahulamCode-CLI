@@ -435,7 +435,7 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
   const composedCount = (m.config.composes || []).reduce((n, c) => n + ((c.expose || []).length || 0), 0);
   process.stderr.write(`  ${DIM}tools${RESET}     ${nativeTools.length ? nativeTools.join(', ') : '(none)'}${composedCount ? ` ${DIM}+ ${composedCount} composed${RESET}` : ''}\n`);
   process.stderr.write(`  ${DIM}agents${RESET}    ${(m.config.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
-  const views = m.config.workspace?.views || [];
+  const views = m.config.views || [];
   process.stderr.write(`  ${DIM}views${RESET}     ${views.length ? views.map(v => v.name).join(', ') : '(none)'}\n`);
   if (meta) {
     process.stderr.write(`  ${DIM}scaffolded${RESET} from ${CYAN}pi:${meta.packageName}${RESET} (namespace ${CYAN}${meta.namespace}${RESET}, ${meta.exposeTools.length} composed tool${meta.exposeTools.length === 1 ? '' : 's'})\n`);

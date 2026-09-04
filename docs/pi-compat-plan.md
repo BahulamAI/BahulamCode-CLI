@@ -17,19 +17,19 @@ Native `config.tools` are optional. We should not author wrapper tools for every
 
 ```yaml
 config:
+  workspace: ./config/workspace.yaml       # entry agent
+  agents_from: ./config/agents/            # optional delegated subagents
   tools: [...]                              # optional authored tools for state/glue
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
-      as: fx                                # namespace prefix
+      as: fx                                # namespace prefix, e.g. fx__add_transitions
       expose: [add_transitions, add_captions]
       verified: true
     - source: pi:@complex/orchestrator@^2.0.0
       mode: sub_agent                       # escape hatch (Sprint 3+)
       expose_as_agent: complex-specialist
   mcpServers: {...}                         # (unchanged)
-  agents:
-    - slug: video-producer
-      tools: [fx.add_transitions, fx.add_captions, ...]  # composed tools can be enough
+  views: [...]
 ```
 
 ## What already exists (audit)
