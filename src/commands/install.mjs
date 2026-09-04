@@ -4,7 +4,7 @@
  *   bahulam pull <src>     — install an ingredient (currently pi:<name>).
  *                            No pack scaffolding; the raw package lands in
  *                            ~/.bahulam/plugins-pi/ and is only useful when
- *                            referenced by a pack's spec.composes:.
+ *                            referenced by a pack's config.composes:.
  *
  *   bahulam install <src>  — install a full pack.
  *                            For pi:<name>: pulls the ingredient AND
@@ -88,7 +88,7 @@ export async function handlePullCommand(argv, { cwd = process.cwd() } = {}) {
 
   Pull an ingredient (pi package) into ~/.bahulam/plugins-pi/. The
   ingredient is composable but not directly runnable — reference it from
-  a pack's ${CYAN}spec.composes:${RESET} block, or use ${CYAN}bahulam install pi:<name>${RESET}
+  a pack's ${CYAN}config.composes:${RESET} block, or use ${CYAN}bahulam install pi:<name>${RESET}
   to auto-scaffold a full pack around it.
 
   Sources:
@@ -133,7 +133,7 @@ export async function handlePullCommand(argv, { cwd = process.cwd() } = {}) {
     process.stderr.write(`  ${DIM}location${RESET}  ${dest}\n`);
     process.stderr.write(`  ${YELLOW}!${RESET} Pi packages run with your full system permissions. Bahulam does not audit pi packages.\n`);
     process.stderr.write(`  ${DIM}Wrap in a pack:${RESET}  ${CYAN}bahulam install pi:${classified.package_name}${RESET}\n`);
-    process.stderr.write(`  ${DIM}Compose in yours:${RESET} ${CYAN}spec.composes: [{source: pi:${classified.package_name}, expose: [...]}]${RESET}\n\n`);
+    process.stderr.write(`  ${DIM}Compose in yours:${RESET} ${CYAN}config.composes: [{source: pi:${classified.package_name}, expose: [...]}]${RESET}\n\n`);
   } catch (err) {
     process.stderr.write(`\x1b[31m✗\x1b[0m ${err.message}\n`);
     process.exit(1);
@@ -397,7 +397,7 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
 
   // Host check for each composed pi ingredient (same policy as the
   // scaffolder path). Blocks install if a required binary is missing.
-  const composes = m.spec?.composes || [];
+  const composes = m.config?.composes || [];
   if (composes.length && !meta) {
     // meta present == scaffolder path already did this pre-scaffold
     const { bahulamHome } = await import('../core/paths.mjs');
@@ -431,11 +431,11 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
 
   process.stderr.write(`\n${GREEN}✓${RESET} Installed ${BOLD}${m.metadata.name}${RESET} v${m.metadata.version}\n`);
   process.stderr.write(`  ${DIM}location${RESET}  ${dest}\n`);
-  const nativeTools = (m.spec.tools || []).map(t => t.name);
-  const composedCount = (m.spec.composes || []).reduce((n, c) => n + ((c.expose || []).length || 0), 0);
+  const nativeTools = (m.config.tools || []).map(t => t.name);
+  const composedCount = (m.config.composes || []).reduce((n, c) => n + ((c.expose || []).length || 0), 0);
   process.stderr.write(`  ${DIM}tools${RESET}     ${nativeTools.length ? nativeTools.join(', ') : '(none)'}${composedCount ? ` ${DIM}+ ${composedCount} composed${RESET}` : ''}\n`);
-  process.stderr.write(`  ${DIM}agents${RESET}    ${(m.spec.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
-  const views = m.spec.workspace?.views || [];
+  process.stderr.write(`  ${DIM}agents${RESET}    ${(m.config.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
+  const views = m.config.workspace?.views || [];
   process.stderr.write(`  ${DIM}views${RESET}     ${views.length ? views.map(v => v.name).join(', ') : '(none)'}\n`);
   if (meta) {
     process.stderr.write(`  ${DIM}scaffolded${RESET} from ${CYAN}pi:${meta.packageName}${RESET} (namespace ${CYAN}${meta.namespace}${RESET}, ${meta.exposeTools.length} composed tool${meta.exposeTools.length === 1 ? '' : 's'})\n`);

@@ -16,6 +16,7 @@ import { parseAgentDefinition } from './parser.mjs';
 export class AgentLoader {
     constructor() {
         this.agents = new Map();
+        this.aliases = new Map();
         this.searchPaths = [];
     }
 
@@ -48,9 +49,7 @@ export class AgentLoader {
                 try {
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const agent = parseAgentDefinition(content, ext);
-                    if (agent && agent.name && !this.agents.has(agent.name)) {
-                        this.agents.set(agent.name, { ...agent, source: filePath });
-                    }
+                    this._register(agent, filePath);
                 } catch (err) {
                     if (process.env.DEBUG) {
                         console.error(`Failed to load agent ${filePath}: ${err.message}`);
@@ -71,21 +70,39 @@ export class AgentLoader {
     loadFromPlugins(plugins) {
         if (!Array.isArray(plugins)) return this;
         for (const plugin of plugins) {
-            const agents = plugin.spec?.agents || [];
+            const agents = plugin.config?.agents || [];
             for (const agentDef of agents) {
                 const slug = agentDef.slug || agentDef.name || '';
                 if (!slug) continue;
-                // Project agents take precedence — skip if already registered
-                if (this.agents.has(slug)) continue;
-                this.agents.set(slug, {
+                this._register({
                     ...agentDef,
                     slug,
                     source: `plugin:${plugin.metadata?.name || 'unknown'}`,
                     source_scope: 'plugin',
-                });
+                }, null);
             }
         }
         return this;
+    }
+
+    _register(agent, sourcePath = null) {
+        if (!agent) return null;
+        const slug = normalizeKey(agent.slug || agent.id || agent.name);
+        if (!slug) return null;
+        const aliases = [
+            slug,
+            normalizeKey(agent.name),
+            normalizeKey(agent.id),
+        ].filter(Boolean);
+
+        // Earlier search paths have higher precedence: project beats global,
+        // and both beat plugin-provided agents.
+        if (aliases.some(alias => this.aliases.has(alias))) return null;
+
+        const stored = { ...agent, slug: agent.slug || slug, ...(sourcePath ? { source: sourcePath } : {}) };
+        this.agents.set(slug, stored);
+        for (const alias of aliases) this.aliases.set(alias, slug);
+        return stored;
     }
 
     /**
@@ -94,7 +111,9 @@ export class AgentLoader {
      * @returns {object|null}
      */
     get(name) {
-        return this.agents.get(name) || null;
+        const key = normalizeKey(name);
+        const slug = this.aliases.get(key) || key;
+        return this.agents.get(slug) || null;
     }
 
     /**
@@ -111,6 +130,14 @@ export class AgentLoader {
      * @returns {boolean}
      */
     has(name) {
-        return this.agents.has(name);
+        return Boolean(this.get(name));
     }
+}
+
+function normalizeKey(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
 }

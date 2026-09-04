@@ -76,7 +76,28 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         const { dispatch } = await import('../orchestration/dispatch.mjs');
         const { listLocalWorkflows } = await import('../agents/workflow_scaffold.mjs');
         const pluginRegistry = new PluginRegistry().scan();
-        const toolExecutor = createToolExecutor({ pluginRegistry });
+        let toolExecutor = null;
+        const runDelegateFromTool = async ({ agent: targetAgent, slug, instruction: task, options = {} }) => {
+            const outcome = await dispatch({
+                type: 'invoke',
+                source: 'tool:delegate',
+                target: { kind: 'agent', slug: slug || targetAgent?.slug, agent: targetAgent },
+                params: { instruction: task || '' },
+                channel: 'local',
+                substrate: 'direct',
+                signal: options.signal,
+            }, {
+                toolExecutor,
+                listRunnables: () => toolExecutor.listRunnables(),
+                listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
+                renderEvent: (event) => emit({ type: event.type, ...event.data }),
+                credentials: { apiKey: anthKey, openRouterKey: orKey },
+                defaultModel: model || null,
+                cwd: process.cwd(),
+            });
+            return outcome;
+        };
+        toolExecutor = createToolExecutor({ pluginRegistry, delegateRunner: runDelegateFromTool });
         const timer = setTimeout(() => {
             emit({ type: 'timeout', duration_s: timeout });
             process.exit(2);
@@ -121,7 +142,30 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const pluginRegistry = new PluginRegistry().scan();
 
     // Projects are registered and indexed only when the agent requests an overview.
-    const toolExecutor = createToolExecutor({ pluginRegistry });
+    let toolExecutor = null;
+    const runDelegateFromTool = async ({ agent: targetAgent, slug, instruction: task, options = {} }) => {
+        const { dispatch } = await import('../orchestration/dispatch.mjs');
+        const { listLocalWorkflows } = await import('../agents/workflow_scaffold.mjs');
+        const outcome = await dispatch({
+            type: 'invoke',
+            source: 'tool:delegate',
+            target: { kind: 'agent', slug: slug || targetAgent?.slug, agent: targetAgent },
+            params: { instruction: task || '' },
+            channel: 'local',
+            substrate: 'direct',
+            signal: options.signal,
+        }, {
+            toolExecutor,
+            listRunnables: () => toolExecutor.listRunnables(),
+            listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
+            renderEvent: (event) => emit({ type: event.type, ...event.data }),
+            credentials: { apiKey: anthKey, openRouterKey: orKey },
+            defaultModel: model || null,
+            cwd: process.cwd(),
+        });
+        return outcome;
+    };
+    toolExecutor = createToolExecutor({ pluginRegistry, delegateRunner: runDelegateFromTool });
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });

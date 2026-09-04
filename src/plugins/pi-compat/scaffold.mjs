@@ -185,7 +185,7 @@ function generatePrompt(packageName, namespace, toolNames, hasState, requirement
  * (quoted keys, over-escaping); a small emitter here yields a diff-
  * friendly manifest the user can edit.
  */
-function renderManifest({ slug, packageName, versionRange, namespace, exposeTools, agentSlug, agentDescription, hasState, hasWorkspace, systemPrompt }) {
+function renderManifest({ slug, packageName, versionRange, namespace, exposeTools, hasState, hasWorkspace }) {
   const versionSpec = versionRange ? `${packageName}@${versionRange}` : packageName;
   const tools = hasState ? [
     '  tools:',
@@ -235,24 +235,6 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
     '',
   ];
 
-  const agentToolRefs = [
-    ...(hasState ? ['save_item', 'list_items', 'drop_item'] : []),
-    ...exposeTools.map(t => `${namespace}${COMPOSED_TOOL_SEPARATOR}${t}`),
-  ];
-
-  const agentBlock = [
-    '  agents:',
-    `    - slug: ${agentSlug}`,
-    `      name: ${yamlString(agentSlug.replace(/-/g, ' '))}`,
-    '      role: specialist',
-    '      description: >',
-    `        ${agentDescription}`,
-    '      tools:',
-    ...agentToolRefs.map(t => `        - ${t}`),
-    `      system_prompt: ${yamlBlock(systemPrompt, 8)}`,
-    '',
-  ];
-
   const workspaceBlock = hasWorkspace ? [
     '  workspace:',
     '    views:',
@@ -272,11 +254,33 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
     `    Auto-scaffolded pack composing pi:${packageName}.`,
     `    Edit tools/, workspace/, and this manifest to customize.`,
     '',
-    'spec:',
+    'config:',
     ...tools,
     ...composesBlock,
-    ...agentBlock,
+    '  agents_from: ./config/agents/',
+    '',
     ...workspaceBlock,
+  ].join('\n');
+}
+
+function renderAgentFile({ namespace, exposeTools, agentSlug, agentDescription, hasState, systemPrompt }) {
+  const agentToolRefs = [
+    ...(hasState ? ['save_item', 'list_items', 'drop_item'] : []),
+    ...exposeTools.map(t => `${namespace}${COMPOSED_TOOL_SEPARATOR}${t}`),
+  ];
+
+  return [
+    `# config/agents/${agentSlug}.yaml — auto-loaded when plugin.yaml declares`,
+    '# config.agents_from: ./config/agents/.',
+    `slug: ${agentSlug}`,
+    `name: ${yamlString(agentSlug.replace(/-/g, ' '))}`,
+    'role: specialist',
+    'description: >',
+    `  ${agentDescription}`,
+    'tools:',
+    ...agentToolRefs.map(t => `  - ${t}`),
+    `system_prompt: ${yamlBlock(systemPrompt, 2)}`,
+    '',
   ].join('\n');
 }
 
@@ -537,13 +541,21 @@ export function scaffoldPiPack({
     versionRange,
     namespace,
     exposeTools: toolNames,
+    hasState: state,
+    hasWorkspace: workspace,
+  });
+  fs.writeFileSync(path.join(dest, 'plugin.yaml'), manifest);
+
+  const agentsDir = path.join(dest, 'config', 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(path.join(agentsDir, `${agentSlug}.yaml`), renderAgentFile({
+    namespace,
+    exposeTools: toolNames,
     agentSlug,
     agentDescription,
     hasState: state,
-    hasWorkspace: workspace,
     systemPrompt,
-  });
-  fs.writeFileSync(path.join(dest, 'plugin.yaml'), manifest);
+  }));
 
   if (state) {
     const toolsDir = path.join(dest, 'tools');

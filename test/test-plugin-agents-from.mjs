@@ -1,8 +1,8 @@
-// Test the `spec.agents_from` loader path in manifest.mjs.
+// Test the `config.agents_from` loader path in manifest.mjs.
 // A plugin can declare `agents_from: <relative-dir>` and manifest parsing
 // will auto-load every *.yaml file in that dir as an agent (each file's
 // root is a full agent block: slug, name, role, tools, system_prompt).
-// This coexists with inline `spec.agents:` — both are merged.
+// This coexists with inline `config.agents:` — both are merged.
 //
 // Run: node test/test-plugin-agents-from.mjs
 
@@ -46,7 +46,7 @@ kind: Plugin
 metadata:
   name: agents-from-test
   version: 0.0.1
-spec:
+config:
   tools: []
   agents_from: ./config/agents/
 `,
@@ -64,19 +64,19 @@ system_prompt: "You are the second."
 `,
   }, (dir) => {
     const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
-    const slugs = (manifest.spec.agents || []).map(a => a.slug).sort();
+    const slugs = (manifest.config.agents || []).map(a => a.slug).sort();
     assert.deepStrictEqual(slugs, ['first', 'second']);
   });
 });
 
-await test('agents_from + inline agents both merge into spec.agents[]', async () => {
+await test('agents_from + inline agents both merge into config.agents[]', async () => {
   await withTempPlugin({
     'plugin.yaml': `apiVersion: bahulam.plugin/1
 kind: Plugin
 metadata:
   name: mixed-test
   version: 0.0.1
-spec:
+config:
   tools: []
   agents_from: ./config/agents/
   agents:
@@ -94,7 +94,7 @@ system_prompt: "loaded from file"
 `,
   }, (dir) => {
     const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
-    const slugs = (manifest.spec.agents || []).map(a => a.slug).sort();
+    const slugs = (manifest.config.agents || []).map(a => a.slug).sort();
     assert.deepStrictEqual(slugs, ['from-file', 'inline-only']);
   });
 });
@@ -106,13 +106,13 @@ kind: Plugin
 metadata:
   name: missing-dir
   version: 0.0.1
-spec:
+config:
   tools: []
   agents_from: ./config/does-not-exist/
 `,
   }, (dir) => {
     const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
-    assert.deepStrictEqual(manifest.spec.agents || [], []);
+    assert.deepStrictEqual(manifest.config.agents || [], []);
   });
 });
 
@@ -123,7 +123,7 @@ kind: Plugin
 metadata:
   name: filter-test
   version: 0.0.1
-spec:
+config:
   tools: []
   agents_from: ./config/agents/
 `,
@@ -137,7 +137,7 @@ system_prompt: "kept"
     'config/agents/notes.txt': 'ignored',
   }, (dir) => {
     const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
-    const slugs = (manifest.spec.agents || []).map(a => a.slug);
+    const slugs = (manifest.config.agents || []).map(a => a.slug);
     assert.deepStrictEqual(slugs, ['keep']);
   });
 });
@@ -149,7 +149,7 @@ kind: Plugin
 metadata:
   name: order-test
   version: 0.0.1
-spec:
+config:
   tools: []
   agents_from: ./config/agents/
 `,
@@ -158,7 +158,7 @@ spec:
     'config/agents/m-middle.yaml': `slug: m-middle\nname: M\nrole: specialist\ntools: []\nsystem_prompt: m\n`,
   }, (dir) => {
     const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
-    const slugs = (manifest.spec.agents || []).map(a => a.slug);
+    const slugs = (manifest.config.agents || []).map(a => a.slug);
     assert.deepStrictEqual(slugs, ['a-first', 'm-middle', 'z-last']);
   });
 });

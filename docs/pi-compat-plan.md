@@ -11,12 +11,12 @@ Bahulam packs compose ingredients from three sources — our authored tools, MCP
 
 ## What "composition" means concretely
 
-A pack's `plugin.yaml` declares pi packages under `spec.composes:`. The runtime installs each pi package, discovers its tools, and exposes them to the pack's agents through our existing tool executor. Our loop drives everything; the pi handlers execute inside our process.
+A pack's `plugin.yaml` declares pi packages under `config.composes:`. The runtime installs each pi package, discovers its tools, and exposes them to the pack's agents through our existing tool executor. Our loop drives everything; the pi handlers execute inside our process.
 
-Native `spec.tools` are optional. We should not author wrapper tools for every pi package. A Bahulam pack can be composed-only: agents + prompts + `spec.composes` + optional workspace views. Author native tools only when the pack needs Bahulam-owned persistence, domain glue, post-processing, policy wrapping, or workspace-facing state changes.
+Native `config.tools` are optional. We should not author wrapper tools for every pi package. A Bahulam pack can be composed-only: agents + prompts + `config.composes` + optional workspace views. Author native tools only when the pack needs Bahulam-owned persistence, domain glue, post-processing, policy wrapping, or workspace-facing state changes.
 
 ```yaml
-spec:
+config:
   tools: [...]                              # optional authored tools for state/glue
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
@@ -37,7 +37,7 @@ spec:
 We already have the contract layer. Reading `src/plugins/pi-compose.mjs` confirms:
 
 - `parsePiSource(source)` — parses `pi:@scope/pkg@^1.0.0` into `{package_name, version_range}` (handles scoped-vs-flat npm names correctly)
-- `normalizeCompose(def, index)` / `normalizeComposes(value)` — normalize `spec.composes[]` entries
+- `normalizeCompose(def, index)` / `normalizeComposes(value)` — normalize `config.composes[]` entries
 - `composedToolName(compose, exposed)` — computes `<namespace>.<exposed>` when `as:` is present, flat otherwise
 - `validateCompose(compose)` — validates source URI, `as:` namespace shape, `expose[]` list; returns `{errors, warnings}`
 - `expandComposedTools(pluginName, pluginDir, composes)` — turns composes into placeholder tool records with `_composed` metadata
@@ -207,11 +207,11 @@ Update `validateCompose`:
 
 **File:** `src/plugins/registry.mjs`
 
-On pack install, walk `manifest.spec.composes[]`:
+On pack install, walk `manifest.config.composes[]`:
 1. For each compose entry with `mode: 'tools'`: install pi source if not present (Step 1), run discovery (Step 2)
 2. For each compose entry with `mode: 'sub_agent'`: install pi source, register a synthetic agent named `expose_as_agent` in the pack's agent list, mark with `_delegates_to: { pi_package, ... }`
 3. Cross-check `verified: true` entries against `~/.bahulam/verified-pi-packages.json` (Sprint 2 registry, empty in Sprint 1)
-4. Build the effective tool map: `[...(spec.tools || []), ...expandComposedTools(...)]` — native tools are optional; the placeholder records from `pi-compose.mjs:116` get filled in with real handlers at execution time
+4. Build the effective tool map: `[...(config.tools || []), ...expandComposedTools(...)]` — native tools are optional; the placeholder records from `pi-compose.mjs:116` get filled in with real handlers at execution time
 
 ### Step 6 — Tool executor integration for `mode: tools` (~1 day)
 
@@ -322,7 +322,7 @@ Some pi packages ship `.ts` entry points. Node's ESM loader can handle `.ts` via
 After Steps 1–7 land, prove the composition model works end-to-end by upgrading `awesome-bahulam-plugins/plugins/manim-studio` from bare Manim into a composed video pipeline:
 
 1. **Identify pi packages** — pick 2 real, popular pi packages that add value (e.g., `pi:@ffmpeg/transitions` for post-production, `pi:@design/thumbnail-gen` for poster art)
-2. **Compose them in `manim-studio/plugin.yaml`** — add a `spec.composes:` block with `verified: true` (we've reviewed them for the proof)
+2. **Compose them in `manim-studio/plugin.yaml`** — add a `config.composes:` block with `verified: true` (we've reviewed them for the proof)
 3. **Update the animator agent** — extend `tools:` to include the composed tool names (`fx.add_transitions`, `thumbnail.generate`)
 4. **Update the system prompt** — teach the agent to call the new tools after rendering
 5. **Run the demo prompt end-to-end** — verify:

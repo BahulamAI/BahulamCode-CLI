@@ -16,6 +16,15 @@ function stripAnsi(str) {
     return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+function trimShellBackgroundOperator(command) {
+    const raw = String(command || '');
+    let i = raw.length - 1;
+    while (i >= 0 && /\s/.test(raw[i])) i -= 1;
+    if (raw[i] !== '&') return raw;
+    if (raw[i - 1] === '&' || raw[i - 1] === '\\') return raw;
+    return raw.slice(0, i).trimEnd();
+}
+
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
 const TIMEOUT_TAIL_BYTES = 64 * 1024;
 const TRUNCATION_MARKER = '\n[output truncated at 1MB]';
@@ -44,7 +53,7 @@ export const BashTool = {
         const abortSignal = input.signal || input._signal || null;
 
         if (input.run_in_background) {
-            return runBackground(input.command, input.cwd);
+            return runBackground(trimShellBackgroundOperator(input.command), input.cwd);
         }
 
         if (abortSignal?.aborted) {
@@ -200,6 +209,12 @@ function killProcess(proc, signal) {
     try { proc.kill(signal); } catch { /* already exited */ }
 }
 
+function unrefChildStdio(proc) {
+    for (const stream of [proc?.stdout, proc?.stderr]) {
+        try { stream?.unref?.(); } catch { /* best effort */ }
+    }
+}
+
 // Background jobs store
 const backgroundJobs = new Map();
 let bgJobId = 0;
@@ -227,6 +242,7 @@ function runBackground(command, cwd) {
     });
 
     proc.unref();
+    unrefChildStdio(proc);
     return `Background job started: id=${id}, pid=${proc.pid}`;
 }
 

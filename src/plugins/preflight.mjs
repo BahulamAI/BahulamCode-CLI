@@ -84,12 +84,12 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     warnings.push(`metadata.name "${name}" should be lowercase kebab-case for registry compatibility`);
   }
 
-  const tools = manifest.spec?.tools || [];
-  const agents = manifest.spec?.agents || [];
-  const views = manifest.spec?.workspace?.views || [];
-  const mcpServers = manifest.spec?.mcpServers || {};
+  const tools = manifest.config?.tools || [];
+  const agents = manifest.config?.agents || [];
+  const views = manifest.config?.workspace?.views || [];
+  const mcpServers = manifest.config?.mcpServers || {};
   const mcpServerNames = new Set(Object.keys(mcpServers));
-  const composes = manifest.spec?.composes || [];
+  const composes = manifest.config?.composes || [];
 
   // MCP server sanity — every server should have EITHER command (stdio)
   // OR url (remote). Anything else is meaningless config.

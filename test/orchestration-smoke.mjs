@@ -220,6 +220,11 @@ const ctx = {
   const killed = backgroundTasks.kill(dev.id);
   expect('job kill', ['killed'].includes(killed.status), true);
   await backgroundTasks.wait(dev.id);
+  const amp = backgroundTasks.start({ command: 'sleep 30 &' });
+  expect('managed background strips trailing shell ampersand', amp.command, 'sleep 30');
+  expect('managed background preserves original command', amp.original_command, 'sleep 30 &');
+  backgroundTasks.kill(amp.id);
+  await backgroundTasks.wait(amp.id);
   expect('registry lists jobs', backgroundTasks.list().length >= 3, true);
 }
 

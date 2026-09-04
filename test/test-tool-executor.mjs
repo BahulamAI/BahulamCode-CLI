@@ -80,6 +80,56 @@ await test('listTools returns core and agent tools', async () => {
     assert.ok(tools.includes('agents_list'));
     assert.ok(tools.includes('agent_create'));
     assert.ok(tools.includes('agent_sync'));
+    assert.ok(tools.includes('delegate'));
+});
+
+await test('agent context exposes unified agents and sub-agent observability', async () => {
+    const ctx = executor.getAgentContext();
+    assert.ok(executor.listRunnables().some(agent => agent.slug === 'explore' && agent.source_scope === 'platform'));
+    assert.strictEqual(ctx.available_agents.some(agent => agent.source_scope === 'platform'), false);
+    assert.ok(Array.isArray(ctx.sub_agent_observability?.events));
+    assert.ok(ctx.sub_agent_observability.events.some(event => event.type === 'sub_agent_start'));
+    assert.ok(ctx.sub_agent_observability.correlation_fields.includes('sub_agent'));
+});
+
+await test('delegate routes through the unified runnable registry', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-delegate-agent-'));
+    const previousCwd = process.cwd();
+    try {
+        fs.mkdirSync(path.join(root, '.bahulam', 'agents'), { recursive: true });
+        fs.writeFileSync(path.join(root, '.bahulam', 'agents', 'probe.yaml'), [
+            'apiVersion: agent.framework/v1',
+            'kind: SubAgent',
+            'metadata:',
+            '  name: probe',
+            '  role: specialist',
+            '  description: Delegate probe',
+            'agent:',
+            '  system_prompt: Return ok.',
+            'tools:',
+            '  - read_file',
+            '',
+        ].join('\n'));
+        process.chdir(root);
+        let delegated = null;
+        const delegateExecutor = createExecutorWithoutAutoRegister({
+            delegateRunner: async request => {
+                delegated = request;
+                return { dispatched: true, result: { output: `delegated:${request.slug}` } };
+            },
+        });
+        const result = await delegateExecutor.execute('delegate', {
+            agent: 'probe',
+            instruction: 'run probe',
+        });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.output, 'delegated:probe');
+        assert.strictEqual(delegated.slug, 'probe');
+        assert.strictEqual(delegated.agent.source_scope, 'project');
+    } finally {
+        process.chdir(previousCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 await test('project overview is session-stable and exposes project_id', async () => {

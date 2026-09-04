@@ -153,7 +153,7 @@ export class PluginRegistry {
   listTools() {
     const tools = [];
     for (const plugin of this.plugins.values()) {
-      for (const tool of (plugin.spec?.tools || [])) {
+      for (const tool of (plugin.config?.tools || [])) {
         tools.push({
           ...tool,
           _plugin_name: plugin.metadata?.name,
@@ -163,7 +163,7 @@ export class PluginRegistry {
       tools.push(...expandComposedTools(
         plugin.metadata?.name || '',
         plugin._dir,
-        plugin.spec?.composes || [],
+        plugin.config?.composes || [],
       ));
     }
     return tools;
@@ -183,7 +183,7 @@ export class PluginRegistry {
   listMcpServers() {
     const out = [];
     for (const plugin of this.plugins.values()) {
-      const servers = plugin.spec?.mcpServers || {};
+      const servers = plugin.config?.mcpServers || {};
       const pluginName = plugin.metadata?.name || '';
       for (const [name, config] of Object.entries(servers)) {
         if (config && typeof config === 'object') {
@@ -201,7 +201,7 @@ export class PluginRegistry {
   listAgents() {
     const agents = [];
     for (const plugin of this.plugins.values()) {
-      for (const agent of (plugin.spec?.agents || [])) {
+      for (const agent of (plugin.config?.agents || [])) {
         agents.push({
           ...agent,
           _plugin_name: plugin.metadata?.name,

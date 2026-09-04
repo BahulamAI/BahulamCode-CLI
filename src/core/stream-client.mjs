@@ -226,6 +226,7 @@ export class BahulamStreamClient {
         };
 
         for (const agent of clientAgents || []) addAgent(agent);
+        for (const agent of context?.agent_context?.available_agents || []) addAgent(agent);
         for (const agent of context?.agent_ctx?.available_agents || []) addAgent(agent);
         for (const agent of context?.available_agents || []) addAgent(agent);
         if (context?.sub_agent) addAgent(context.sub_agent);

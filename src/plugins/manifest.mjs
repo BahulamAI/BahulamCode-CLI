@@ -27,6 +27,22 @@ function normalizeToolNames(value) {
   }).filter(Boolean);
 }
 
+function normalizePathList(value) {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function addAgent(agents, seen, agent) {
+  if (!agent?.slug) return;
+  const key = String(agent.slug).trim().toLowerCase();
+  if (!key || seen.has(key)) return;
+  seen.add(key);
+  agents.push(agent);
+}
+
 function loadAgentFile(agentDef, pluginDir) {
   const file = String(agentDef.file || agentDef.handler || '').trim();
   if (!file || !pluginDir) return {};
@@ -47,10 +63,10 @@ function loadAgentFile(agentDef, pluginDir) {
 function normalizeAgentDef(agentDef, pluginName, pluginDir) {
   const fileConfig = loadAgentFile(agentDef, pluginDir);
   const metadata = fileConfig.metadata || fileConfig.meta || {};
-  const agent = fileConfig.agent || fileConfig.spec?.agent || {};
+  const agent = fileConfig.agent || fileConfig.config?.agent || {};
   const fileTools = (
     fileConfig.tools
-    || fileConfig.spec?.tools
+    || fileConfig.config?.tools
     || agent.tools
     || []
   );
@@ -141,8 +157,8 @@ export function normalizeManifest(raw, source = '') {
   }
 
   const meta = raw.metadata || raw.meta || {};
-  const spec = raw.spec || raw.plugin || {};
-  const name = meta.name || spec.name || '';
+  const config = raw.config || raw.plugin || {};
+  const name = meta.name || config.name || '';
   if (!name) {
     if (process.env.DEBUG) {
       console.warn(`Plugin manifest missing name: ${source}`);
@@ -152,17 +168,19 @@ export function normalizeManifest(raw, source = '') {
 
   // Normalize agents
   const agents = [];
+  const agentSlugs = new Set();
   const pluginDir = source ? path.dirname(source) : '';
-  for (const agentDef of (spec.agents || [])) {
-    const agent = normalizeAgentDef(agentDef, name, pluginDir);
-    if (agent.slug) agents.push(agent);
+  for (const agentDef of (config.agents || [])) {
+    addAgent(agents, agentSlugs, normalizeAgentDef(agentDef, name, pluginDir));
   }
-  // Optional: `spec.agents_from: <dir>` — load one-agent-per-file yaml
-  // definitions from a directory (non-recursive, alphabetical, silent
-  // if the directory is absent). Each file's root is the agent shape
-  // that would otherwise appear inline under `agents:`.
-  if (typeof spec.agents_from === 'string' && spec.agents_from.trim() && pluginDir) {
-    const agentsDir = path.resolve(pluginDir, spec.agents_from.trim());
+  // Optional authoring convenience: `config.agents_from: <dir|string[]>`.
+  // Published plugins should inline `config.agents[]` so backend and
+  // marketplace consumers can parse one file. npm expands these paths
+  // after inline agents; duplicate slugs keep the inline definition.
+  const agentsFrom = normalizePathList(config.agents_from);
+  for (const agentsFromPath of agentsFrom) {
+    if (!pluginDir) continue;
+    const agentsDir = path.resolve(pluginDir, agentsFromPath);
     try {
       if (fs.existsSync(agentsDir) && fs.statSync(agentsDir).isDirectory()) {
         const files = fs.readdirSync(agentsDir)
@@ -186,7 +204,7 @@ export function normalizeManifest(raw, source = '') {
             console.warn(`Skipping plugin agent file ${filePath}: no slug`);
             continue;
           }
-          agents.push(agent);
+          addAgent(agents, agentSlugs, agent);
         }
       }
     } catch (err) {
@@ -198,7 +216,7 @@ export function normalizeManifest(raw, source = '') {
 
   // Normalize tools
   const tools = [];
-  for (const toolDef of (spec.tools || [])) {
+  for (const toolDef of (config.tools || [])) {
     const tool = {
       name: toolDef.name || '',
       description: toolDef.description || '',
@@ -210,7 +228,7 @@ export function normalizeManifest(raw, source = '') {
   }
 
   // Normalize workspace
-  const workspace = spec.workspace || {};
+  const workspace = config.workspace || {};
   if (workspace.views && !Array.isArray(workspace.views)) {
     workspace.views = [];
   }
@@ -223,8 +241,8 @@ export function normalizeManifest(raw, source = '') {
   //       transfers with zero edits)
   // Inline wins on name collision so authors can override a portable
   // config for the local plugin without editing mcp.json.
-  const mcpServers = _readMcpServers(spec.mcpServers, source);
-  const composes = normalizeComposes(spec.composes);
+  const mcpServers = _readMcpServers(config.mcpServers, source);
+  const composes = normalizeComposes(config.composes);
 
   return {
     apiVersion,
@@ -236,9 +254,10 @@ export function normalizeManifest(raw, source = '') {
       author: meta.author || '',
       repository: meta.repository || '',
     },
-    spec: {
+    config: {
       tools,
       agents,
+      ...(agentsFrom.length ? { agents_from: agentsFrom } : {}),
       workspace,
       mcpServers,
       composes,
@@ -315,12 +334,12 @@ export function validatePluginManifest(manifest) {
     errors.push('Plugin metadata.name is required');
   }
 
-  if (manifest.spec) {
-    for (const tool of (manifest.spec.tools || [])) {
+  if (manifest.config) {
+    for (const tool of (manifest.config.tools || [])) {
       if (!tool.name) errors.push('Tool missing name');
       if (!tool.tool) errors.push(`Tool "${tool.name || '(unnamed)'}" missing tool module path (tool: ./tools/<name>.mjs)`);
     }
-    for (const agent of (manifest.spec.agents || [])) {
+    for (const agent of (manifest.config.agents || [])) {
       if (!agent.slug && !agent.name) errors.push('Agent missing slug or name');
     }
   }

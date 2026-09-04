@@ -1,6 +1,6 @@
 // Smoke test for the pi-pack scaffolder.
 // Builds a fake pi ingredient on disk, runs the scaffolder, verifies:
-//   - generated pack directory has plugin.yaml, tools/, workspace/
+//   - generated pack directory has plugin.yaml, config/agents/, tools/, workspace/
 //   - manifest declares composes with the expected namespace and expose list
 //   - preflight accepts the generated pack
 //
@@ -78,6 +78,7 @@ const result = scaffoldPiPack({
 });
 ok('scaffold returned dest',       fs.existsSync(result.dest));
 ok('plugin.yaml written',          fs.existsSync(path.join(result.dest, 'plugin.yaml')));
+ok('agent yaml written',           fs.existsSync(path.join(result.dest, 'config/agents/web-specialist.yaml')));
 ok('save-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/save-item.mjs')));
 ok('list-items.mjs written',       fs.existsSync(path.join(result.dest, 'tools/list-items.mjs')));
 ok('drop-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/drop-item.mjs')));
@@ -86,14 +87,17 @@ eq('slug derived',                 result.slug, 'pi-web-access');
 eq('namespace derived',            result.namespace, 'web');
 eq('expose list matches tools',    result.exposeTools.sort(), ['fetch_content', 'web_search']);
 
-// ── Manifest sanity: composes block wired, agent has both native+composed tools ──
+// ── Manifest sanity: composes block wired, agent file has both native+composed tools ──
 const manifestText = fs.readFileSync(path.join(result.dest, 'plugin.yaml'), 'utf-8');
+const agentText = fs.readFileSync(path.join(result.dest, 'config/agents/web-specialist.yaml'), 'utf-8');
 ok('manifest declares pi source',   /source:\s+pi:pi-web-access@\^0\.27\.0/.test(manifestText));
 ok('manifest namespace is web',     /as:\s+web/.test(manifestText));
 ok('manifest exposes web_search',      /-\s+web_search/.test(manifestText));
-ok('agent grants web__web_search',     /-\s+web__web_search/.test(manifestText));
-ok('agent does not use dot separator', !/-\s+web\.web_search/.test(manifestText));
-ok('agent grants native save_item',    /-\s+save_item/.test(manifestText));
+ok('manifest points to config agents', /agents_from:\s+\.\/config\/agents\//.test(manifestText));
+ok('manifest has no inline agents',    !/^\s+agents:/m.test(manifestText));
+ok('agent grants web__web_search',     /-\s+web__web_search/.test(agentText));
+ok('agent does not use dot separator', !/-\s+web\.web_search/.test(agentText));
+ok('agent grants native save_item',    /-\s+save_item/.test(agentText));
 
 // ── Pure-composition variant (no state, no workspace) ──
 const thinResult = scaffoldPiPack({
@@ -108,9 +112,11 @@ const thinResult = scaffoldPiPack({
 });
 ok('thin pack: no tools dir',       !fs.existsSync(path.join(thinResult.dest, 'tools')));
 ok('thin pack: no workspace dir',   !fs.existsSync(path.join(thinResult.dest, 'workspace')));
+ok('thin pack: agent yaml written', fs.existsSync(path.join(thinResult.dest, 'config/agents/web-specialist.yaml')));
 const thinManifest = fs.readFileSync(path.join(thinResult.dest, 'plugin.yaml'), 'utf-8');
 ok('thin pack: empty tools block',  /tools:\s*\[\]/.test(thinManifest));
 ok('thin pack: still composes',     /source:\s+pi:pi-web-access@\^0\.27\.0/.test(thinManifest));
+ok('thin pack: points to config agents', /agents_from:\s+\.\/config\/agents\//.test(thinManifest));
 
 // ── Preflight the generated packs (this is the acceptance gate that
 // `bahulam install` will run against every generated pack). ──

@@ -59,7 +59,7 @@ import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
-import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgentDefinition } from './agents.mjs';
+import { BUILTIN_AGENTS, runAgentDefinition } from './agents.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
@@ -921,23 +921,35 @@ function printAgentsUsage() {
   process.stderr.write(`         /agents sync [name]\n`);
 }
 
-function printAgentsList() {
-  const local = listLocalAgents(safeCwd());
-  process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-  for (const agent of BUILTIN_AGENTS) {
-    process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
+function printAgentsList(ctx = {}) {
+  const agents = ctx.toolExecutor?.filterAgents?.({}) || [
+    ...listLocalAgents(safeCwd()),
+    ...BUILTIN_AGENTS.map(agent => ({
+      slug: agent.command,
+      name: agent.name,
+      description: agent.description,
+      source_scope: 'platform',
+    })),
+  ];
+  const groups = new Map();
+  for (const agent of agents) {
+    const scope = agent.source_scope || 'unknown';
+    if (!groups.has(scope)) groups.set(scope, []);
+    groups.get(scope).push(agent);
   }
 
-  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.bahulam/agents + ~/.bahulam/agents')}\n`);
+  process.stderr.write(`\n  ${c.bold('Agents')} ${c.dim('platform + project + global + admitted plugin')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-  if (!local.length) {
+  if (!agents.length) {
     process.stderr.write(`  ${c.dim('(none)')}\n`);
   } else {
-    for (const agent of local) {
-      const scope = agent.source_scope === 'project' ? c.green('project') : c.dim(agent.source_scope);
-      const model = agent.model ? c.dim(` · ${agent.model}`) : '';
-      process.stderr.write(`  ${c.brand(agent.slug.padEnd(18))} ${scope} ${agent.description || ''}${model}\n`);
+    for (const [scope, items] of groups) {
+      process.stderr.write(`  ${c.dim(scope)}\n`);
+      for (const agent of items) {
+        const model = agent.model ? c.dim(` · ${agent.model}`) : '';
+        const desc = agent.description ? ` ${agent.description}` : '';
+        process.stderr.write(`    ${c.brand(String(agent.slug || agent.command || agent.name).padEnd(18))}${desc}${model}\n`);
+      }
     }
   }
   process.stderr.write('\n');
@@ -949,7 +961,7 @@ async function handleAgentsCommand(rest = '', ctx) {
   const action = (parts.shift() || 'list').toLowerCase();
 
   if (action === 'list' || action === 'ls') {
-    printAgentsList();
+    printAgentsList(ctx);
     return;
   }
 
@@ -3186,6 +3198,23 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
   return execContext;
 }
 
+function makeDispatchContext(ctx) {
+  const creds = ctx.auth?.loadCredentials?.() || {};
+  return {
+    toolExecutor: ctx.toolExecutor,
+    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
+    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
+    renderEvent,
+    sessionSubstrate: makeSessionSubstrate(ctx),
+    auth: { token: creds.token || null },
+    credentials: {
+      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+    },
+    cwd: safeCwd(),
+  };
+}
+
 function stripWrappingQuotes(value = '') {
   const text = String(value || '').trim();
   if (text.length >= 2) {
@@ -3215,10 +3244,7 @@ function printRunUsage(ctx) {
   process.stderr.write(`  ${c.gray('Example: /run docker-analyzer Analyze all running Docker containers')}\n`);
 
   const targets = new Map();
-  for (const agent of listLocalAgents(safeCwd())) addRunTarget(targets, agent);
-  for (const agent of BUILTIN_AGENTS) addRunTarget(targets, agent);
   for (const agent of ctx.toolExecutor?.listRunnables?.() || []) addRunTarget(targets, agent);
-  for (const agent of pluginRegistry?.listAgents?.() || []) addRunTarget(targets, agent);
 
   const agents = [...targets.values()].filter(item => item.kind === 'agent').slice(0, 12);
   if (agents.length) {
@@ -3251,28 +3277,8 @@ async function handleRunCommand(rest = '', ctx) {
     return;
   }
 
-  const localAgent = listLocalAgents(safeCwd()).find(agent => localAgentMatches(agent, target));
-  const builtinAgent = findBuiltinAgent(target);
-  const registeredAgent = ctx.toolExecutor?.listRunnables?.()
-    ?.find(agent => localAgentMatches(agent, target));
-  const pluginAgent = pluginRegistry?.listAgents?.()
-    ?.find(agent => localAgentMatches(agent, target));
-  const runnableAgent = localAgent || builtinAgent || registeredAgent || pluginAgent;
-
-  const creds = ctx.auth?.loadCredentials?.() || {};
-  const dispatchCtx = {
-    toolExecutor: ctx.toolExecutor,
-    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
-    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
-    renderEvent,
-    sessionSubstrate: makeSessionSubstrate(ctx),
-    auth: { token: creds.token || null },
-    credentials: {
-      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
-      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
-    },
-    cwd: safeCwd(),
-  };
+  const runnableAgent = ctx.toolExecutor?.findAgent?.(target) || null;
+  const dispatchCtx = makeDispatchContext(ctx);
 
   try {
     if (!runnableAgent) process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
@@ -4254,7 +4260,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.gray(`Example: ${cmd} ${cmd === '/explore' ? 'how does authentication work?' : cmd === '/review' ? 'check src/core/ for bugs' : 'design a caching layer'}`)}\n`);
         return;
       }
-      return await runAgent(cmd.slice(1), rest, ctx, session, renderEvent);
+      return await handleRunCommand(`${cmd.slice(1)} ${rest}`, ctx);
     }
 
     case '/logout': {
@@ -4335,6 +4341,18 @@ export async function startTerminalRepl() {
     return res;
   };
 
+  async function runDelegateFromTool({ agent, slug, instruction, context = {}, options = {} }) {
+    const dispatchCtx = makeDispatchContext(ctx);
+    return await dispatch({
+      type: 'invoke',
+      source: 'tool:delegate',
+      target: { kind: 'agent', slug: slug || agent?.slug, agent },
+      params: { instruction, context },
+      channel: 'local',
+      signal: options.signal,
+    }, dispatchCtx);
+  }
+
   function makeToolExecutor({ showIndexStatus = false } = {}) {
     const shouldShowIndexStatus = showIndexStatus && process.stderr.isTTY && !term().plain;
     let stopIndexSpinner = null;
@@ -4342,6 +4360,7 @@ export async function startTerminalRepl() {
       checkpoints,
       hookRunner,
       pluginRegistry,
+      delegateRunner: runDelegateFromTool,
       interactionHandler: askUserInteraction,
       onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
         const name = path.basename(root || safeCwd()) || root || 'project';
@@ -4378,20 +4397,7 @@ export async function startTerminalRepl() {
   // agent through the trigger funnel when they exit. The ctx builder runs
   // lazily at fire time so it sees the live tool executor.
   registerJobCompletionDispatch(() => {
-    const creds = ctx.auth?.loadCredentials?.() || {};
-    return {
-      toolExecutor: ctx.toolExecutor,
-      listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
-      listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
-      renderEvent,
-      sessionSubstrate: makeSessionSubstrate(ctx),
-      auth: { token: creds.token || null },
-      credentials: {
-        apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
-        openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
-      },
-      cwd: safeCwd(),
-    };
+    return makeDispatchContext(ctx);
   });
 
   let startupOutputRow = 1;
