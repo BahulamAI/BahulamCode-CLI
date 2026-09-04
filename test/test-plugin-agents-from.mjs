@@ -142,6 +142,39 @@ system_prompt: "kept"
   });
 });
 
+await test('workspace_agent loads a single yaml file as the primary agent', async () => {
+  await withTempPlugin({
+    'plugin.yaml': `apiVersion: bahulam.plugin/1
+kind: Plugin
+metadata:
+  name: workspace-agent-test
+  version: 0.0.1
+config:
+  tools: []
+  workspace_agent: ./config/workspace.yaml
+  agents_from: ./config/agents/
+`,
+    'config/workspace.yaml': `slug: director
+name: The Director
+role: primary
+tools: [delegate]
+system_prompt: "primary/entry agent"
+`,
+    'config/agents/animator.yaml': `slug: animator
+name: The Animator
+role: specialist
+tools: []
+system_prompt: "sub-agent"
+`,
+  }, (dir) => {
+    const manifest = parsePluginManifestFile(path.join(dir, 'plugin.yaml'));
+    const slugs = (manifest.config.agents || []).map(a => a.slug).sort();
+    assert.deepStrictEqual(slugs, ['animator', 'director']);
+    const director = manifest.config.agents.find(a => a.slug === 'director');
+    assert.strictEqual(director.role, 'primary');
+  });
+});
+
 await test('agents_from load order is alphabetical (stable)', async () => {
   await withTempPlugin({
     'plugin.yaml': `apiVersion: bahulam.plugin/1

@@ -173,6 +173,31 @@ export function normalizeManifest(raw, source = '') {
   for (const agentDef of (config.agents || [])) {
     addAgent(agents, agentSlugs, normalizeAgentDef(agentDef, name, pluginDir));
   }
+  // Optional: `config.workspace_agent: <path>` loads a single yaml file
+  // as the plugin's primary/entry agent — mirrors the SaaS
+  // workspace.yaml convention so codekepler-backend can consume the
+  // same file directly. Loaded like any other agent; appears in
+  // spec.agents[]. Its slug is what distinguishes it from sub-agents.
+  if (typeof config.workspace_agent === 'string' && config.workspace_agent.trim() && pluginDir) {
+    const wsAgentPath = path.resolve(pluginDir, config.workspace_agent);
+    try {
+      if (fs.existsSync(wsAgentPath) && fs.statSync(wsAgentPath).isFile()) {
+        const agentDef = parseYaml(fs.readFileSync(wsAgentPath, 'utf-8'));
+        if (agentDef && typeof agentDef === 'object') {
+          const agent = normalizeAgentDef(agentDef, name, pluginDir);
+          if (agent.slug) {
+            addAgent(agents, agentSlugs, agent);
+          } else {
+            console.warn(`Skipping workspace_agent ${wsAgentPath}: no slug`);
+          }
+        } else {
+          console.warn(`Skipping workspace_agent ${wsAgentPath}: not a mapping`);
+        }
+      }
+    } catch (err) {
+      console.warn(`Failed to load workspace_agent ${wsAgentPath}: ${err.message}`);
+    }
+  }
   // Optional authoring convenience: `config.agents_from: <dir|string[]>`.
   // Published plugins should inline `config.agents[]` so backend and
   // marketplace consumers can parse one file. npm expands these paths
