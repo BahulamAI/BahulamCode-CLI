@@ -7,9 +7,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { execSync } from 'child_process';
 import { PluginRegistry } from './registry.mjs';
+import { parsePluginManifestFile } from './manifest.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 export class PluginLoader {
   /**
@@ -21,11 +22,11 @@ export class PluginLoader {
   constructor(options = {}) {
     const { pluginDir, pluginDirs, disabled } = options;
     this.registry = new PluginRegistry({
-      pluginDir: pluginDir || path.join(os.homedir(), '.bahulam', 'plugins'),
+      pluginDir: pluginDir || path.join(bahulamHome(), 'plugins'),
       pluginDirs,
       disabled,
     });
-    this.pluginDir = pluginDir || path.join(os.homedir(), '.bahulam', 'plugins');
+    this.pluginDir = pluginDir || path.join(bahulamHome(), 'plugins');
   }
 
   /**
@@ -73,7 +74,6 @@ export class PluginLoader {
       const exists = fs.existsSync(manifestPath) ? manifestPath : (fs.existsSync(altPath) ? altPath : null);
 
       if (exists) {
-        const { parsePluginManifestFile } = await import('./manifest.mjs');
         const manifest = parsePluginManifestFile(exists);
         if (manifest) {
           this.registry.register(manifest);

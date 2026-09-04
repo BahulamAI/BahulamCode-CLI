@@ -7,13 +7,13 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { expandComposedTools } from './pi-compose.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const DEFAULT_PLUGIN_DIRS = () => [
   path.join(process.cwd(), '.bahulam', 'plugins'),
-  path.join(os.homedir(), '.bahulam', 'plugins'),
+  path.join(bahulamHome(), 'plugins'),
 ];
 
 export class PluginRegistry {

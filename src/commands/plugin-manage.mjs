@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
 import { parsePiSource } from '../plugins/pi-compose.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -38,13 +39,13 @@ const INSTALL_STAMP = '.bahulam-plugin.json';
 function searchDirs(cwd) {
   return [
     { scope: 'project', dir: path.join(cwd, '.bahulam', 'plugins') },
-    { scope: 'global', dir: path.join(os.homedir(), '.bahulam', 'plugins') },
+    { scope: 'global', dir: path.join(bahulamHome(), 'plugins') },
   ];
 }
 
 export function pluginTargetDir({ global, cwd }) {
   return global
-    ? path.join(os.homedir(), '.bahulam', 'plugins')
+    ? path.join(bahulamHome(), 'plugins')
     : path.join(cwd, '.bahulam', 'plugins');
 }
 

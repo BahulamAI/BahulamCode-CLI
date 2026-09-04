@@ -18,11 +18,11 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { composedToolName, validateCompose } from './pi-compose.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const AGENT_SLUG_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -249,7 +249,7 @@ export function existingInstalledNames(cwd = process.cwd()) {
   const names = [];
   for (const dir of [
     path.join(cwd, '.bahulam', 'plugins'),
-    path.join(os.homedir(), '.bahulam', 'plugins'),
+    path.join(bahulamHome(), 'plugins'),
   ]) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
