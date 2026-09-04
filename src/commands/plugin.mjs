@@ -11,7 +11,6 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createLocalWorkspaceSession,
@@ -21,6 +20,7 @@ import {
 } from '../local-service/session-store.mjs';
 import { startLocalWorkspaceService } from '../local-service/server.mjs';
 import { openLocalBrowser } from '../local-service/browser.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -33,20 +33,22 @@ const RED = '\x1b[31m';
 /**
  * Standard directories to search for plugins.
  */
-const PLUGIN_SEARCH_DIRS = [
-  path.join(process.cwd(), '.bahulam', 'plugins'),
-  path.join(os.homedir(), '.bahulam', 'plugins'),
-];
+function pluginSearchDirs(cwd = process.cwd()) {
+  return [
+    path.join(cwd, '.bahulam', 'plugins'),
+    path.join(bahulamHome(), 'plugins'),
+  ];
+}
 
 /**
  * Find a plugin directory by name across all standard search paths.
  * Returns the directory path and manifests on success, null on miss.
  */
-function findPluginDir(name) {
+function findPluginDir(name, cwd = process.cwd()) {
   const needle = String(name || '').trim().toLowerCase();
   if (!needle) return null;
 
-  for (const searchDir of PLUGIN_SEARCH_DIRS) {
+  for (const searchDir of pluginSearchDirs(cwd)) {
     try {
       if (!fs.existsSync(searchDir)) continue;
       const entries = fs.readdirSync(searchDir, { withFileTypes: true });
@@ -113,17 +115,18 @@ export async function handlePluginCommand(args, { cwd = process.cwd() } = {}) {
   const targetPath = String(args.targetPath || cwd).trim();
 
   if (!pluginName || args.help) {
-    printPluginUsage();
+    printPluginUsage(cwd);
     process.exit(args.help ? 0 : 1);
   }
 
   // 1. Find the plugin
-  const found = findPluginDir(pluginName);
+  const found = findPluginDir(pluginName, cwd);
   if (!found) {
+    const searchDirs = pluginSearchDirs(cwd);
     process.stderr.write(
       `${RED}✗ Plugin "${pluginName}" not found.${RESET}\n` +
       `  ${DIM}Searched:${RESET}\n` +
-      PLUGIN_SEARCH_DIRS.map(d => `    ${d}`).join('\n') + '\n' +
+      searchDirs.map(d => `    ${d}`).join('\n') + '\n' +
       `  ${DIM}Create a plugin.yaml or plugin.json in one of these directories.${RESET}\n`
     );
     process.exit(1);
@@ -210,7 +213,7 @@ export async function handlePluginCommand(args, { cwd = process.cwd() } = {}) {
   });
 }
 
-function printPluginUsage() {
+function printPluginUsage(cwd = process.cwd()) {
   process.stderr.write(
     `${BOLD}PLUGIN COMMANDS${RESET}\n` +
     `  ${CYAN}bahulam plugin <name> [path]${RESET}                Open a workspace with a plugin loaded\n` +
@@ -238,7 +241,7 @@ function printPluginUsage() {
     `    --force           overwrite existing install\n` +
     `\n` +
     `  ${DIM}Search paths (later overrides earlier):${RESET}\n` +
-    PLUGIN_SEARCH_DIRS.map(d => `    ${d}`).join('\n') + '\n' +
+    pluginSearchDirs(cwd).map(d => `    ${d}`).join('\n') + '\n' +
     `\n` +
     `  ${DIM}Example:${RESET}\n` +
     `    bahulam plugin install https://github.com/community/seo-toolkit\n` +

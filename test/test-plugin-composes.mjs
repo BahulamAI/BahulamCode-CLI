@@ -68,23 +68,42 @@ await test('classifies pi install sources without treating malformed pi specs as
   });
 });
 
-await test('normalizes spec.composes into the plugin manifest', async () => {
+await test('normalizes config.composes into the plugin manifest', async () => {
   const manifest = parsePluginManifest(`
 apiVersion: bahulam.plugin/1
 metadata:
   name: composed-studio
   version: 1.0.0
-spec:
+config:
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
       as: fx
       expose: [add_transitions, add_captions]
       verified: true
 `);
-  assert.strictEqual(manifest.spec.composes.length, 1);
-  assert.strictEqual(manifest.spec.composes[0].package_name, '@ffmpeg/transitions');
-  assert.strictEqual(manifest.spec.composes[0].as, 'fx');
-  assert.deepStrictEqual(manifest.spec.composes[0].expose, ['add_transitions', 'add_captions']);
+  assert.strictEqual(manifest.config.composes.length, 1);
+  assert.strictEqual(manifest.config.composes[0].package_name, '@ffmpeg/transitions');
+  assert.strictEqual(manifest.config.composes[0].as, 'fx');
+  assert.deepStrictEqual(manifest.config.composes[0].expose, ['add_transitions', 'add_captions']);
+});
+
+await test('legacy top-level spec does not populate plugin config', async () => {
+  const manifest = parsePluginManifest(`
+apiVersion: bahulam.plugin/1
+metadata:
+  name: legacy-studio
+  version: 1.0.0
+spec:
+  tools:
+    - name: legacy_tool
+      tool: ./tools/legacy.mjs
+  composes:
+    - source: pi:@ffmpeg/transitions@^2.0.0
+      expose: [add_captions]
+      verified: true
+`);
+  assert.deepStrictEqual(manifest.config.tools, []);
+  assert.deepStrictEqual(manifest.config.composes, []);
 });
 
 await test('preflight accepts agent references to namespaced composed tools', async () => {
@@ -94,7 +113,7 @@ apiVersion: bahulam.plugin/1
 metadata:
   name: video-studio-pro
   version: 1.0.0
-spec:
+config:
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
       as: fx
@@ -119,7 +138,7 @@ apiVersion: bahulam.plugin/1
 metadata:
   name: collision-studio
   version: 1.0.0
-spec:
+config:
   tools:
     - name: research_keywords
       tool: ./tools/research.mjs
@@ -142,7 +161,7 @@ apiVersion: bahulam.plugin/1
 metadata:
   name: namespace-collision
   version: 1.0.0
-spec:
+config:
   mcpServers:
     fx:
       command: node
@@ -168,7 +187,7 @@ apiVersion: bahulam.plugin/1
 metadata:
   name: video-studio-pro
   version: 1.0.0
-spec:
+config:
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
       as: fx
@@ -176,7 +195,7 @@ spec:
       verified: true
 `);
     const manifest = parsePluginManifestFile(path.join(pluginDir, 'plugin.yaml'));
-    assert.strictEqual(manifest.spec.composes.length, 1);
+    assert.strictEqual(manifest.config.composes.length, 1);
 
     const registry = new PluginRegistry({ pluginDirs: [root] }).scan();
     const tool = registry.listTools().find(item => item.name === 'fx__add_captions');
@@ -196,7 +215,7 @@ apiVersion: bahulam.plugin/1
 metadata:
   name: video-studio-pro
   version: 1.0.0
-spec:
+config:
   composes:
     - source: pi:@ffmpeg/transitions@^2.0.0
       as: fx

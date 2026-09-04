@@ -18,11 +18,11 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { composedToolName, validateCompose } from './pi-compose.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const AGENT_SLUG_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -84,12 +84,21 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     warnings.push(`metadata.name "${name}" should be lowercase kebab-case for registry compatibility`);
   }
 
-  const tools = manifest.spec?.tools || [];
-  const agents = manifest.spec?.agents || [];
-  const views = manifest.spec?.workspace?.views || [];
-  const mcpServers = manifest.spec?.mcpServers || {};
+  const tools = manifest.config?.tools || [];
+  const agents = manifest.config?.agents || [];
+  const workspacePath = manifest.config?.workspace || '';
+  const views = manifest.config?.views || [];
+  const mcpServers = manifest.config?.mcpServers || {};
   const mcpServerNames = new Set(Object.keys(mcpServers));
-  const composes = manifest.spec?.composes || [];
+  const composes = manifest.config?.composes || [];
+
+  if (workspacePath) {
+    const full = path.resolve(pluginDir, workspacePath);
+    const inside = full === pluginDir || full.startsWith(pluginDir + path.sep);
+    if (!inside) errors.push(`Workspace entry agent path escapes the plugin directory: ${workspacePath}`);
+    else if (!fs.existsSync(full)) errors.push(`Workspace entry agent not found: ${workspacePath}`);
+    else if (!fs.statSync(full).isFile()) errors.push(`Workspace entry agent is not a file: ${workspacePath}`);
+  }
 
   // MCP server sanity — every server should have EITHER command (stdio)
   // OR url (remote). Anything else is meaningless config.
@@ -240,7 +249,7 @@ export function existingInstalledNames(cwd = process.cwd()) {
   const names = [];
   for (const dir of [
     path.join(cwd, '.bahulam', 'plugins'),
-    path.join(os.homedir(), '.bahulam', 'plugins'),
+    path.join(bahulamHome(), 'plugins'),
   ]) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

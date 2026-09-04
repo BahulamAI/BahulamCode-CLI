@@ -111,7 +111,7 @@ metadata:
   name: test-pack
   version: 0.0.1
   description: Composes the fake pi package for end-to-end verification.
-spec:
+config:
   tools:
     - name: noop
       description: A native no-op tool.
@@ -162,7 +162,7 @@ await executor.waitForAutoRegister?.();
   fs.writeFileSync(path.join(orphanPackDir, 'plugin.yaml'), `apiVersion: bahulam.plugin/1
 kind: Plugin
 metadata: { name: orphan-pack, version: 0.0.1, description: References an unknown pi package. }
-spec:
+config:
   tools:
     - name: noop
       description: Native tool.

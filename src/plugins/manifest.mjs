@@ -27,6 +27,37 @@ function normalizeToolNames(value) {
   }).filter(Boolean);
 }
 
+function normalizePathList(value) {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function addAgent(agents, seen, agent) {
+  if (!agent?.slug) return;
+  const key = String(agent.slug).trim().toLowerCase();
+  if (!key || seen.has(key)) return;
+  seen.add(key);
+  agents.push(agent);
+}
+
+function normalizeViews(value) {
+  return Array.isArray(value) ? value.filter(view => view && typeof view === 'object') : [];
+}
+
+function normalizeWorkspaceDeclaration(value) {
+  if (typeof value === 'string' && value.trim()) {
+    return { agentPath: value.trim(), views: [] };
+  }
+  if (value && typeof value === 'object') {
+    const agentPath = String(value.agent || value.file || value.source || '').trim();
+    return { agentPath, views: normalizeViews(value.views) };
+  }
+  return { agentPath: '', views: [] };
+}
+
 function loadAgentFile(agentDef, pluginDir) {
   const file = String(agentDef.file || agentDef.handler || '').trim();
   if (!file || !pluginDir) return {};
@@ -45,21 +76,36 @@ function loadAgentFile(agentDef, pluginDir) {
 }
 
 function normalizeAgentDef(agentDef, pluginName, pluginDir) {
-  const fileConfig = loadAgentFile(agentDef, pluginDir);
+  const loadedConfig = loadAgentFile(agentDef, pluginDir);
+  const hasLoadedConfig = loadedConfig && Object.keys(loadedConfig).length > 0;
+  const fileConfig = hasLoadedConfig ? loadedConfig : (agentDef || {});
   const metadata = fileConfig.metadata || fileConfig.meta || {};
-  const agent = fileConfig.agent || fileConfig.spec?.agent || {};
+  const agent = fileConfig.agent || fileConfig.config?.agent || {};
   const fileTools = (
     fileConfig.tools
-    || fileConfig.spec?.tools
+    || fileConfig.config?.tools
     || agent.tools
     || []
   );
   const inlineTools = normalizeToolNames(agentDef.tools);
+  const slug = (
+    agentDef.slug
+    || metadata.slug
+    || fileConfig.slug
+    || agent.slug
+    || agentDef.id
+    || metadata.name
+    || fileConfig.name
+    || agentDef.name
+    || metadata.role
+    || fileConfig.role
+    || ''
+  );
 
   return {
-    slug: agentDef.slug || metadata.slug || fileConfig.slug || metadata.name || fileConfig.name || agentDef.name || '',
-    name: agentDef.name || metadata.name || fileConfig.name || agentDef.slug || '',
-    description: agentDef.description || metadata.description || fileConfig.description || '',
+    slug,
+    name: agentDef.name || metadata.name || fileConfig.name || agent.name || slug || '',
+    description: agentDef.description || metadata.description || fileConfig.description || agent.description || '',
     role: agentDef.role || metadata.role || fileConfig.role || 'specialist',
     system_prompt: (
       agentDef.system_prompt
@@ -77,10 +123,37 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
     models: agentDef.models || agent.models || fileConfig.models || undefined,
     max_tokens: agentDef.max_tokens || agent.max_tokens || fileConfig.max_tokens || undefined,
     max_iterations: agentDef.max_iterations || agent.max_iterations || fileConfig.max_iterations || undefined,
+    disallowed_tools: metadata.disallowedTools || metadata.disallowed_tools || fileConfig.disallowedTools || fileConfig.disallowed_tools || [],
+    can_delegate: agentDef.can_delegate ?? agent.can_delegate ?? fileConfig.can_delegate ?? false,
+    can_be_delegated_to: agentDef.can_be_delegated_to ?? agent.can_be_delegated_to ?? fileConfig.can_be_delegated_to ?? true,
+    apiVersion: fileConfig.apiVersion || fileConfig.api_version || undefined,
+    kind: fileConfig.kind || undefined,
     file: agentDef.file || agentDef.handler || '',
     source: `plugin:${pluginName}`,
     source_scope: 'plugin',
   };
+}
+
+function loadAgentPath(agentPath, pluginDir, pluginName, label) {
+  if (!agentPath || !pluginDir) return null;
+  const fullPath = path.resolve(pluginDir, agentPath);
+  try {
+    if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return null;
+    const agentDef = parseYaml(fs.readFileSync(fullPath, 'utf-8'));
+    if (!agentDef || typeof agentDef !== 'object') {
+      console.warn(`Skipping ${label} ${fullPath}: not a mapping`);
+      return null;
+    }
+    const agent = normalizeAgentDef(agentDef, pluginName, pluginDir);
+    if (!agent.slug) {
+      console.warn(`Skipping ${label} ${fullPath}: no slug`);
+      return null;
+    }
+    return agent;
+  } catch (err) {
+    console.warn(`Failed to load ${label} ${fullPath}: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -141,8 +214,8 @@ export function normalizeManifest(raw, source = '') {
   }
 
   const meta = raw.metadata || raw.meta || {};
-  const spec = raw.spec || raw.plugin || {};
-  const name = meta.name || spec.name || '';
+  const config = raw.config || raw.plugin || {};
+  const name = meta.name || config.name || '';
   if (!name) {
     if (process.env.DEBUG) {
       console.warn(`Plugin manifest missing name: ${source}`);
@@ -152,15 +225,62 @@ export function normalizeManifest(raw, source = '') {
 
   // Normalize agents
   const agents = [];
+  const agentSlugs = new Set();
   const pluginDir = source ? path.dirname(source) : '';
-  for (const agentDef of (spec.agents || [])) {
-    const agent = normalizeAgentDef(agentDef, name, pluginDir);
-    if (agent.slug) agents.push(agent);
+  for (const agentDef of (config.agents || [])) {
+    addAgent(agents, agentSlugs, normalizeAgentDef(agentDef, name, pluginDir));
+  }
+  const workspaceDecl = normalizeWorkspaceDeclaration(config.workspace);
+  if (workspaceDecl.agentPath) {
+    const workspaceAgent = loadAgentPath(workspaceDecl.agentPath, pluginDir, name, 'workspace');
+    if (workspaceAgent) {
+      workspaceAgent.entry_agent = true;
+      addAgent(agents, agentSlugs, workspaceAgent);
+    }
+  }
+  // Optional authoring convenience: `config.agents_from: <dir|string[]>`.
+  // This is for delegated sub-agents. The primary/entry agent should
+  // live at `config.workspace: ./config/workspace.yaml`.
+  const agentsFrom = normalizePathList(config.agents_from);
+  for (const agentsFromPath of agentsFrom) {
+    if (!pluginDir) continue;
+    const agentsDir = path.resolve(pluginDir, agentsFromPath);
+    try {
+      if (fs.existsSync(agentsDir) && fs.statSync(agentsDir).isDirectory()) {
+        const files = fs.readdirSync(agentsDir)
+          .filter(f => /\.(ya?ml)$/i.test(f))
+          .sort();
+        for (const f of files) {
+          const filePath = path.join(agentsDir, f);
+          let agentDef;
+          try {
+            agentDef = parseYaml(fs.readFileSync(filePath, 'utf-8'));
+          } catch (err) {
+            console.warn(`Failed to parse plugin agent file ${filePath}: ${err.message}`);
+            continue;
+          }
+          if (!agentDef || typeof agentDef !== 'object') {
+            console.warn(`Skipping plugin agent file ${filePath}: not a mapping`);
+            continue;
+          }
+          const agent = normalizeAgentDef(agentDef, name, pluginDir);
+          if (!agent.slug) {
+            console.warn(`Skipping plugin agent file ${filePath}: no slug`);
+            continue;
+          }
+          addAgent(agents, agentSlugs, agent);
+        }
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`Failed to load agents_from ${agentsDir}: ${err.message}`);
+      }
+    }
   }
 
   // Normalize tools
   const tools = [];
-  for (const toolDef of (spec.tools || [])) {
+  for (const toolDef of (config.tools || [])) {
     const tool = {
       name: toolDef.name || '',
       description: toolDef.description || '',
@@ -171,11 +291,12 @@ export function normalizeManifest(raw, source = '') {
     if (tool.name) tools.push(tool);
   }
 
-  // Normalize workspace
-  const workspace = spec.workspace || {};
-  if (workspace.views && !Array.isArray(workspace.views)) {
-    workspace.views = [];
-  }
+  // Normalize browser workspace views. New manifests use `config.views`.
+  // Older installed manifests with `config.workspace.views` still render.
+  const views = [
+    ...workspaceDecl.views,
+    ...normalizeViews(config.views),
+  ];
 
   // Normalize MCP servers — the Plugin=MCP+UX story. Two sources are
   // merged so authors can either:
@@ -185,8 +306,8 @@ export function normalizeManifest(raw, source = '') {
   //       transfers with zero edits)
   // Inline wins on name collision so authors can override a portable
   // config for the local plugin without editing mcp.json.
-  const mcpServers = _readMcpServers(spec.mcpServers, source);
-  const composes = normalizeComposes(spec.composes);
+  const mcpServers = _readMcpServers(config.mcpServers, source);
+  const composes = normalizeComposes(config.composes);
 
   return {
     apiVersion,
@@ -198,10 +319,12 @@ export function normalizeManifest(raw, source = '') {
       author: meta.author || '',
       repository: meta.repository || '',
     },
-    spec: {
+    config: {
       tools,
       agents,
-      workspace,
+      ...(agentsFrom.length ? { agents_from: agentsFrom } : {}),
+      workspace: workspaceDecl.agentPath,
+      views,
       mcpServers,
       composes,
     },
@@ -277,12 +400,12 @@ export function validatePluginManifest(manifest) {
     errors.push('Plugin metadata.name is required');
   }
 
-  if (manifest.spec) {
-    for (const tool of (manifest.spec.tools || [])) {
+  if (manifest.config) {
+    for (const tool of (manifest.config.tools || [])) {
       if (!tool.name) errors.push('Tool missing name');
       if (!tool.tool) errors.push(`Tool "${tool.name || '(unnamed)'}" missing tool module path (tool: ./tools/<name>.mjs)`);
     }
-    for (const agent of (manifest.spec.agents || [])) {
+    for (const agent of (manifest.config.agents || [])) {
       if (!agent.slug && !agent.name) errors.push('Agent missing slug or name');
     }
   }

@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
 import { parsePiSource } from '../plugins/pi-compose.mjs';
+import { bahulamHome } from '../core/paths.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -38,13 +39,13 @@ const INSTALL_STAMP = '.bahulam-plugin.json';
 function searchDirs(cwd) {
   return [
     { scope: 'project', dir: path.join(cwd, '.bahulam', 'plugins') },
-    { scope: 'global', dir: path.join(os.homedir(), '.bahulam', 'plugins') },
+    { scope: 'global', dir: path.join(bahulamHome(), 'plugins') },
   ];
 }
 
 export function pluginTargetDir({ global, cwd }) {
   return global
-    ? path.join(os.homedir(), '.bahulam', 'plugins')
+    ? path.join(bahulamHome(), 'plugins')
     : path.join(cwd, '.bahulam', 'plugins');
 }
 
@@ -72,7 +73,7 @@ function scanInstalled(cwd) {
       // else in the plugins/ dir is stray (readManifest returns null).
       if (!parsed && !disabled) continue;
       const stamp = readStamp(pluginDir);
-      const agentSlugs = (parsed?.manifest?.spec?.agents || [])
+      const agentSlugs = (parsed?.manifest?.config?.agents || [])
         .map(a => a.slug || a.name).filter(Boolean);
       found.push({
         scope,
@@ -81,10 +82,10 @@ function scanInstalled(cwd) {
         name: parsed?.manifest?.metadata?.name || entry.name.replace(/\.disabled$/, ''),
         version: parsed?.manifest?.metadata?.version || null,
         description: parsed?.manifest?.metadata?.description || '',
-        tools: parsed?.manifest?.spec?.tools?.length || 0,
-        agents: parsed?.manifest?.spec?.agents?.length || 0,
-        views: parsed?.manifest?.spec?.workspace?.views?.length || 0,
-        composes: parsed?.manifest?.spec?.composes?.length || 0,
+        tools: parsed?.manifest?.config?.tools?.length || 0,
+        agents: parsed?.manifest?.config?.agents?.length || 0,
+        views: parsed?.manifest?.config?.views?.length || 0,
+        composes: parsed?.manifest?.config?.composes?.length || 0,
         agentSlugs,
         disabled,
         origin: stamp?.origin || null,
@@ -390,12 +391,12 @@ export async function installFromLocal({ src, targetDir, force }) {
 }
 
 /**
- * Auto-install pi packages referenced by a pack's spec.composes:. Callers
+ * Auto-install pi packages referenced by a pack's config.composes:. Callers
  * invoke this after preflight so a hand-authored pack that composes
  * missing pi ingredients still resolves in one command.
  */
 export async function resolveComposeDependencies(manifest, { targetDir } = {}) {
-  const composes = manifest?.spec?.composes || [];
+  const composes = manifest?.config?.composes || [];
   if (!composes.length) return;
   const { discoverPiTools } = await import('../plugins/pi-compat/probe.mjs');
   const { bahulamHome } = await import('../core/paths.mjs');
@@ -446,7 +447,7 @@ async function cmdList(args, cwd) {
     if (!p.composes) continue;
     try {
       const m = readManifest(p.directory);
-      const composes = m?.manifest?.spec?.composes || [];
+      const composes = m?.manifest?.config?.composes || [];
       pluginComposes.set(p.name, composes.map(c => c.package_name || c.packageName).filter(Boolean));
     } catch { /* skip */ }
   }
@@ -519,7 +520,7 @@ async function cmdList(args, cwd) {
     const orphans = pi.filter(p => usedBy(p.name).length === 0);
     if (orphans.length) {
       process.stderr.write(`\n${YELLOW}!${RESET} ${orphans.length} pi ingredient${orphans.length === 1 ? '' : 's'} installed but not composed by any pack.\n`);
-      process.stderr.write(`  Pi ingredients are unusable on their own — reference in a pack's ${CYAN}spec.composes:${RESET} block.\n`);
+      process.stderr.write(`  Pi ingredients are unusable on their own — reference in a pack's ${CYAN}config.composes:${RESET} block.\n`);
     }
   }
 
@@ -588,9 +589,9 @@ function cmdInfo(args, cwd) {
   }
   if (found.installed_at) process.stderr.write(`  ${DIM}installed${RESET}  ${found.installed_at}\n`);
   if (m) {
-    process.stderr.write(`\n  ${DIM}tools${RESET}      ${(m.spec.tools || []).map(t => t.name).join(', ') || '(none)'}\n`);
-    process.stderr.write(`  ${DIM}agents${RESET}     ${(m.spec.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
-    const views = m.spec.workspace?.views || [];
+    process.stderr.write(`\n  ${DIM}tools${RESET}      ${(m.config.tools || []).map(t => t.name).join(', ') || '(none)'}\n`);
+    process.stderr.write(`  ${DIM}agents${RESET}     ${(m.config.agents || []).map(a => a.slug).join(', ') || '(none)'}\n`);
+    const views = m.config.views || [];
     process.stderr.write(`  ${DIM}views${RESET}      ${views.length ? views.map(v => v.name).join(', ') : '(none)'}\n`);
   }
   process.stderr.write('\n');
@@ -711,7 +712,7 @@ async function cmdDoctor(args, cwd) {
     const found = findByName(target, cwd);
     if (!found) throw new Error(`plugin not found: ${target}`);
     const scan = readManifest(found.directory);
-    const composes = scan?.manifest?.spec?.composes || [];
+    const composes = scan?.manifest?.config?.composes || [];
     for (const c of composes) {
       if (!c.package_name) continue;
       const safe = c.package_name.replace(/[/@]/g, '_');
