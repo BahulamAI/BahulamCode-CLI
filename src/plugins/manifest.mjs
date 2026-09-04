@@ -94,11 +94,11 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
     || fileConfig.slug
     || agent.slug
     || agentDef.id
-    || metadata.role
-    || fileConfig.role
     || metadata.name
     || fileConfig.name
     || agentDef.name
+    || metadata.role
+    || fileConfig.role
     || ''
   );
 

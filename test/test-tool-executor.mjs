@@ -11,6 +11,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert';
 
+if (!process.env.BAHULAM_HOME) {
+    process.env.BAHULAM_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-tool-executor-home-'));
+}
+
 let passed = 0;
 let failed = 0;
 
@@ -451,7 +455,7 @@ await test('classic tool registry exposes plugin tools for in-process subagents'
         'metadata:',
         '  name: docker-tools',
         '  version: 1.0.0',
-        'spec:',
+        'config:',
         '  tools:',
         '    - name: docker_analyze',
         '      description: Analyze Docker state',
