@@ -696,7 +696,7 @@ await test('list_files can return a bounded directory tree', async () => {
     });
     assert.strictEqual(result.success, true);
     assert.strictEqual(result._format, 'tree');
-    assert.ok(result.output.includes('codekepler-npm/'));
+    assert.ok(result.output.includes(`${path.basename(process.cwd())}/`));
     assert.ok(result.output.includes('package.json'));
     assert.ok(Array.isArray(result.directories));
     assert.ok(Array.isArray(result.files));

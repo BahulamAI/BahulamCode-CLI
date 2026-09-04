@@ -33,7 +33,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+let DatabaseSync = null;
 
 // Silence the single "SQLite is an experimental feature" warning that
 // node:sqlite emits at first import. Users would see it on every plugin
@@ -49,6 +52,14 @@ import { DatabaseSync } from 'node:sqlite';
   };
 }
 
+if (process.env.BAHULAM_PLUGIN_STATE_BACKEND !== 'json') {
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch {
+    DatabaseSync = null;
+  }
+}
+
 const DATA_ROOT = () => path.join(os.homedir(), '.bahulam', 'data');
 const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const DEBOUNCE_MS = 50;
@@ -57,6 +68,134 @@ const DEBOUNCE_MS = 50;
 // handle per process, and this is a single-process dev tool. Handles live
 // for the lifetime of the CLI; explicit close() is available for tests.
 const _handles = new Map(); // pluginName -> { db, dir, path }
+
+class JsonStatement {
+  constructor(db, sql) {
+    this.db = db;
+    this.sql = String(sql || '').trim().replace(/\s+/g, ' ').toUpperCase();
+  }
+
+  get(...args) {
+    if (this.sql === 'SELECT VALUE FROM KV WHERE KEY = ?') {
+      const key = String(args[0]);
+      return this.db.store.kv[key] ? { value: this.db.store.kv[key].value } : undefined;
+    }
+    throw new Error('Raw SELECT is only available with native node:sqlite');
+  }
+
+  all(...args) {
+    if (this.sql === 'SELECT KEY FROM KV ORDER BY KEY') {
+      return Object.keys(this.db.store.kv).sort().map(key => ({ key }));
+    }
+    if (this.sql === 'SELECT ID, PAYLOAD, CREATED_AT FROM RECORDS WHERE STREAM = ? ORDER BY ID ASC LIMIT ?') {
+      return this.db.records(String(args[0]), Number(args[1]), 'asc');
+    }
+    if (this.sql === 'SELECT ID, PAYLOAD, CREATED_AT FROM RECORDS WHERE STREAM = ? ORDER BY ID DESC LIMIT ?') {
+      return this.db.records(String(args[0]), Number(args[1]), 'desc');
+    }
+    if (this.sql === 'SELECT COUNT(*) AS N FROM RECORDS WHERE STREAM = ?') {
+      return [{ n: this.db.store.records.filter(row => row.stream === String(args[0])).length }];
+    }
+    throw new Error('Raw SELECT is only available with native node:sqlite');
+  }
+
+  run(...args) {
+    if (this.sql.startsWith('INSERT INTO KV(')) {
+      const [key, value, updated_at] = args;
+      this.db.store.kv[String(key)] = { value: String(value), updated_at: String(updated_at) };
+      this.db.save();
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql === 'DELETE FROM KV WHERE KEY = ?') {
+      const key = String(args[0]);
+      const existed = Object.prototype.hasOwnProperty.call(this.db.store.kv, key);
+      if (existed) {
+        delete this.db.store.kv[key];
+        this.db.save();
+      }
+      return { changes: existed ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (this.sql === 'INSERT INTO RECORDS(STREAM, PAYLOAD, CREATED_AT) VALUES(?, ?, ?)') {
+      const row = {
+        id: this.db.store.nextRecordId++,
+        stream: String(args[0]),
+        payload: String(args[1]),
+        created_at: String(args[2]),
+      };
+      this.db.store.records.push(row);
+      this.db.save();
+      return { changes: 1, lastInsertRowid: row.id };
+    }
+    if (this.sql === 'DELETE FROM RECORDS WHERE STREAM = ?') {
+      const stream = String(args[0]);
+      const before = this.db.store.records.length;
+      this.db.store.records = this.db.store.records.filter(row => row.stream !== stream);
+      const changes = before - this.db.store.records.length;
+      if (changes) this.db.save();
+      return { changes, lastInsertRowid: 0 };
+    }
+    if (this.sql === 'DELETE FROM RECORDS WHERE STREAM = ? AND ID = ?') {
+      const stream = String(args[0]);
+      const id = Number(args[1]);
+      const before = this.db.store.records.length;
+      this.db.store.records = this.db.store.records.filter(row => !(row.stream === stream && row.id === id));
+      const changes = before - this.db.store.records.length;
+      if (changes) this.db.save();
+      return { changes, lastInsertRowid: 0 };
+    }
+    throw new Error('Raw DML is only available with native node:sqlite');
+  }
+}
+
+class JsonStateDb {
+  constructor(dbPath) {
+    this.path = dbPath;
+    this.store = {
+      kv: {},
+      records: [],
+      nextRecordId: 1,
+    };
+    try {
+      if (fs.existsSync(dbPath)) {
+        const parsed = JSON.parse(fs.readFileSync(dbPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          this.store = {
+            kv: parsed.kv && typeof parsed.kv === 'object' ? parsed.kv : {},
+            records: Array.isArray(parsed.records) ? parsed.records : [],
+            nextRecordId: Number(parsed.nextRecordId) || 1,
+          };
+        }
+      } else {
+        this.save();
+      }
+    } catch {
+      this.save();
+    }
+  }
+
+  exec() {}
+
+  prepare(sql) {
+    return new JsonStatement(this, sql);
+  }
+
+  records(stream, limit, order) {
+    const cap = Math.max(1, Math.min(10000, Math.floor(limit) || 50));
+    const rows = this.store.records
+      .filter(row => row.stream === stream)
+      .sort((a, b) => order === 'asc' ? a.id - b.id : b.id - a.id)
+      .slice(0, cap);
+    return rows.map(row => ({ id: row.id, payload: row.payload, created_at: row.created_at }));
+  }
+
+  save() {
+    fs.writeFileSync(this.path, JSON.stringify(this.store, null, 2));
+  }
+
+  close() {
+    this.save();
+  }
+}
 
 function pluginDataDir(pluginName) {
   if (!PLUGIN_NAME_RE.test(pluginName)) {
@@ -71,7 +210,7 @@ function openDb(pluginName) {
   if (_handles.has(pluginName)) return _handles.get(pluginName);
   const dir = pluginDataDir(pluginName);
   const dbPath = path.join(dir, 'state.db');
-  const db = new DatabaseSync(dbPath);
+  const db = DatabaseSync ? new DatabaseSync(dbPath) : new JsonStateDb(dbPath);
   // WAL: multiple readers, one writer; robust against concurrent view+agent.
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');
