@@ -9,6 +9,7 @@ import { SessionManager } from '../core/session.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { readEnv, listEnvVars } from '../config/env.mjs';
 import * as telemetry from '../telemetry/index.mjs';
+import { DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 
 const checkpoints = new CheckpointManager();
 let sessionManager = null;
@@ -134,12 +135,14 @@ export const COMMANDS = {
     '/fast': {
         description: 'Toggle fast mode (uses faster, cheaper model)',
         handler(args, state) {
-            if (state.model?.includes('haiku')) {
-                state.model = 'claude-sonnet-4-6';
-                return 'Fast mode OFF — using claude-sonnet-4-6';
+            if (state.fastMode) {
+                state.fastMode = false;
+                state.model = DEFAULT_REASONING_MODEL;
+                return `Fast mode OFF — using ${DEFAULT_REASONING_MODEL}`;
             }
-            state.model = 'claude-haiku-4-5';
-            return 'Fast mode ON — using claude-haiku-4-5';
+            state.fastMode = true;
+            state.model = DEFAULT_FAST_MODEL;
+            return `Fast mode ON — using ${DEFAULT_FAST_MODEL}`;
         },
     },
 
