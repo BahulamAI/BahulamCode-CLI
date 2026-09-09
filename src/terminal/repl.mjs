@@ -1335,8 +1335,8 @@ async function _checkForUpgradeAndAnnounce() {
   const [x, y, z] = asTuple(current);
   const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
   if (!newer) return;
-  process.stderr.write(`  ${c.brand('◆')} ${c.dim('New version available:')} ${c.bold(c.green(latest))} ${c.dim(`(current ${current})`)}\n`);
-  process.stderr.write(`  ${c.dim('  Upgrade:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(`${pkgName}@${latest}`))} ${c.dim(`(installed ${current})`)}\n`);
+  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -1385,6 +1385,8 @@ function buildContextStrip() {
   // volume + elapsed. Historical rate calc was double-counting the cache tokens
   // vs OpenRouter's convention (see computeCacheTotals) which was misleading.
   const parts = [];
+  const model = compactDockModel(activeDockModel());
+  if (model) parts.push(c.dim(`model ${model}`));
   // ctx: last turn's cumulative input tokens — approximates the CURRENT
   // prompt size. Only shown once we've completed at least one turn (so
   // the initial banner doesn't read '0 ctx'). This is the number the
@@ -1397,12 +1399,26 @@ function buildContextStrip() {
   return parts.join(c.dim(' · '));
 }
 
-// ── Dock meta line (model · cwd ⎇ branch · turn N) ─────────────────────
+// ── Dock meta line (cwd ⎇ branch · turn N) ─────────────────────────────
 //
 // The dock's meta row shows durable session context. Git branch is cached
 // so we don't shell out on every keystroke; refreshed at most every 5s.
 
 const _dockGitCache = { branch: null, at: 0, cwd: null };
+
+function activeDockModel() {
+  return session.modelOverrides?.reasoning
+    || session.model
+    || session.modelLimits?.coder?.model
+    || session.user?.default_reasoning_model
+    || null;
+}
+
+function compactDockModel(model) {
+  const value = String(model || '').trim();
+  if (!value) return '';
+  return value.replace(/^(anthropic|openai|google|deepseek|xai|meta)\//, '');
+}
 
 function _probeGitBranch(cwd) {
   const now = Date.now();
@@ -1432,11 +1448,6 @@ function buildDockMeta() {
 
   if (session.turns > 0) {
     parts.push(`turn ${session.turns}`);
-  }
-
-  const totalTokens = session.inputTokens + session.outputTokens;
-  if (totalTokens > 0) {
-    parts.push(`${formatTokens(totalTokens)} tok`);
   }
 
   return parts.join(' · ');

@@ -343,7 +343,7 @@ export async function runPreflight({ auth, cwd, version, silent = false } = {}) 
   const t = term();
   const write = (s) => { if (!silent) process.stderr.write(s); };
 
-  const header = `${icons.search} ${paint.bold(paint.brand.primary('Bahulam Code v' + (version || '?')))} ${paint.text.dim('· initializing orbit')}`;
+  const header = `${icons.search} ${paint.bold(paint.brand.primary('Bahulam Code v' + (version || '?')))} ${paint.text.dim('· starting session')}`;
   write('\n' + header + '\n\n');
 
   const checks = [];

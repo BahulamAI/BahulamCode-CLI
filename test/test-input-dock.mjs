@@ -264,6 +264,16 @@ test('renderDockInput accepts fixedRows for compact pasted input', () => {
     'renderDockInput should allow callers to keep the dock at a fixed height');
 });
 
+test('renderDockInput updates frame state before resizing rows', () => {
+  const source = dock.renderDockInput.toString();
+  const stateIdx = source.indexOf('lastFrame = { ...lastFrame');
+  const resizeIdx = source.indexOf('setInputRowsTo(requestedRows)');
+  assert.ok(stateIdx >= 0, 'renderDockInput should update lastFrame with the current input');
+  assert.ok(resizeIdx >= 0, 'renderDockInput should resize rows from the current input');
+  assert.ok(stateIdx < resizeIdx,
+    'renderDockInput must update lastFrame before resize redraws during shrink/backspace');
+});
+
 test('dock cursor target accounts for tab stops from the indented input column', () => {
   _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'rich', fixedInput: true, columns: 80, rows: 24 });
   const { cursorTargetForInput, terminalCellWidthFromColumn } = dock._internals();
