@@ -500,6 +500,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("if (isInputDockMounted()) redrawDockInput();"));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), displayLine,'));
+  assert.ok(replSource.includes('function _probeTaskSummary(cwd)'));
+  assert.ok(replSource.includes('taskCounts(board)'));
+  assert.ok(replSource.includes('taskSummary'));
+  assert.ok(replSource.includes("_dockTaskCache.at = 0"));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));
   assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
   assert.ok(replSource.includes("case 'file_diff':"));

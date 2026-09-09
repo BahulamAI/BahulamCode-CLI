@@ -920,6 +920,23 @@ export function createToolExecutor({
             };
         },
 
+        TodoWrite: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const result = await occRegistry.call('TodoWrite', args || {}, {
+                ...options,
+                cwd: process.cwd(),
+            });
+            return {
+                success: !/^Validation error:/i.test(String(result || '')),
+                output: String(result || ''),
+                _tool: 'TodoWrite',
+            };
+        },
+
+        todo_write: async (args, options = {}) => {
+            return toolMap.TodoWrite(args, options);
+        },
+
         // Reserved meta-tool adapter. Cloud backends may implement Delegate
         // natively; local callbacks use this to route through the exact same
         // registry + dispatch funnel as /run and workflows.

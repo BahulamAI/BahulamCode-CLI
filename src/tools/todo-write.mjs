@@ -1,3 +1,5 @@
+import { syncTodoWriteToTaskFiles } from '../core/tasks.mjs';
+
 /**
  * TodoWrite Tool — in-memory task management.
  *
@@ -45,7 +47,7 @@ export const TodoWriteTool = {
         return [];
     },
 
-    async call(input) {
+    async call(input, options = {}) {
         // Replace entire todo list (matches Claude Code behavior)
         todos.length = 0;
         nextId = 1;
@@ -63,6 +65,14 @@ export const TodoWriteTool = {
             `[${t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '~' : ' '}] ${t.id}. ${t.content} (${t.priority})`
         ).join('\n');
 
-        return `Updated ${todos.length} todos:\n${summary}`;
+        let syncLine = '';
+        try {
+            const synced = syncTodoWriteToTaskFiles({ cwd: options.cwd || process.cwd(), todos });
+            syncLine = `\nSynced to .bahulam/tasks: ${synced.counts.active} active, ${synced.counts.backlog} backlog, ${synced.counts.done} done`;
+        } catch (err) {
+            syncLine = `\nTask markdown sync skipped: ${err.message || String(err)}`;
+        }
+
+        return `Updated ${todos.length} todos:\n${summary}${syncLine}`;
     },
 };

@@ -1399,12 +1399,13 @@ function buildContextStrip() {
   return parts.join(c.dim(' · '));
 }
 
-// ── Dock meta line (cwd ⎇ branch · turn N) ─────────────────────────────
+// ── Dock meta line (cwd ⎇ branch · turn N · task …) ────────────────────
 //
-// The dock's meta row shows durable session context. Git branch is cached
-// so we don't shell out on every keystroke; refreshed at most every 5s.
+// The dock's meta row shows durable session context. Git branch and task
+// state are cached so we don't hit disk/shell on every keystroke.
 
 const _dockGitCache = { branch: null, at: 0, cwd: null };
+const _dockTaskCache = { summary: '', at: 0, cwd: null };
 
 function activeDockModel() {
   return session.modelOverrides?.reasoning
@@ -1438,6 +1439,36 @@ function _probeGitBranch(cwd) {
   return branch;
 }
 
+function compactTaskText(text, max = 36) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return value.slice(0, Math.max(0, max - 1)) + '…';
+}
+
+function _probeTaskSummary(cwd) {
+  const now = Date.now();
+  if (_dockTaskCache.cwd === cwd && (now - _dockTaskCache.at) < 1500) {
+    return _dockTaskCache.summary;
+  }
+  let summary = '';
+  try {
+    const board = loadTaskBoard({ cwd });
+    const counts = taskCounts(board);
+    const active = board.lists.active?.tasks?.find(task => !task.checked) || board.lists.active?.tasks?.[0];
+    if (active?.text) {
+      summary = `task ${compactTaskText(active.text)}`;
+    } else if (counts.blocked > 0 || counts.backlog > 0) {
+      summary = `tasks ${counts.active} active, ${counts.blocked} blocked, ${counts.backlog} backlog`;
+    }
+  } catch {
+    summary = '';
+  }
+  _dockTaskCache.cwd = cwd;
+  _dockTaskCache.at = now;
+  _dockTaskCache.summary = summary;
+  return summary;
+}
+
 function buildDockMeta() {
   const parts = [];
 
@@ -1445,6 +1476,9 @@ function buildDockMeta() {
   const projectName = path.basename(cwd);
   const branch = _probeGitBranch(cwd);
   parts.push(branch ? `${projectName} ⎇ ${branch}` : projectName);
+
+  const taskSummary = _probeTaskSummary(cwd);
+  if (taskSummary) parts.push(taskSummary);
 
   if (session.turns > 0) {
     parts.push(`turn ${session.turns}`);
@@ -2236,6 +2270,9 @@ function renderEvent(event) {
     case 'tool_result':
     case 'tool_done': {
       const eventData = normalizeSubAgentRunData(data);
+      if (String(eventData?.tool || '').toLowerCase() === 'todowrite' || String(eventData?._tool || '').toLowerCase() === 'todowrite') {
+        _dockTaskCache.at = 0;
+      }
       if (watchState.active) {
         const success = eventData?.success !== false;
         watchState.addEntry('done', { label: eventData?.tool, detail: success ? '✓' : '✗' });
@@ -3062,6 +3099,7 @@ function refreshTaskContext(ctx) {
     const previous = ctx.latestProjectContext || null;
     ctx.latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous });
     ctx.latestEnvelope = null;
+    _dockTaskCache.at = 0;
   } catch { /* best effort */ }
 }
 
