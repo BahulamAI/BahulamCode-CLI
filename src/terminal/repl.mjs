@@ -72,7 +72,7 @@ import { PluginRegistry } from '../plugins/registry.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
-import { isRawMultilinePasteChunk, normalizePastedText, pastedTextLabel } from './paste-input.mjs';
+import { classifyPastedPromptPayload, isRawMultilinePasteChunk, pastedTextLabel } from './paste-input.mjs';
 import {
   MODEL_CATEGORY_ORDER,
   formatCategoryBadge,
@@ -97,6 +97,7 @@ import {
   appendDocumentsToInstruction,
   attachmentSummaryLine,
   documentSummaryLine,
+  looksLikeAttachmentReference,
   prepareImageAttachments,
   prepareDocumentAttachments,
   publicAttachmentMetadata,
@@ -5103,10 +5104,12 @@ export async function startTerminalRepl() {
               const baseCursor = typeof rl?.cursor === 'number' ? rl.cursor : baseLine.length;
               setImmediate(() => {
                 try {
-                  insertPromptText(normalizePastedText(s), {
+                  const pasted = classifyPastedPromptPayload(s, { looksLikeAttachmentReference });
+                  insertPromptText(pasted.text, {
                     baseLine,
                     baseCursor,
                     fromPaste: true,
+                    pasteLabel: pasted.label,
                   });
                 } finally {
                   _suppressRawPasteLines = false;
@@ -5173,7 +5176,7 @@ export async function startTerminalRepl() {
   }
 
   function idleInputTips() {
-    return '[Enter] send  [/] commands  [Tab] complete  [F2] details';
+    return '[Enter] send  [/] commands  [Tab] complete  [@clipboard] image  [F2] details';
   }
 
   function executionInputTips() {
@@ -5370,7 +5373,7 @@ export async function startTerminalRepl() {
     }
   }
 
-  function insertPromptText(text, { baseLine = rl.line || '', baseCursor = rl.cursor, fromPaste = false } = {}) {
+  function insertPromptText(text, { baseLine = rl.line || '', baseCursor = rl.cursor, fromPaste = false, pasteLabel = null } = {}) {
     const payload = String(text || '');
     if (!payload) return;
     const line = String(baseLine || '');
@@ -5379,10 +5382,19 @@ export async function startTerminalRepl() {
     if (fromPaste) {
       _promptHasInsertedPaste = true;
       _pastedInputValue = next;
-      _pastedInputLabel = pastedTextLabel(payload);
+      _pastedInputLabel = pasteLabel || pastedTextLabel(payload);
     }
     replaceReadlineLine(next, cursor + payload.length);
     renderIdleDockInput();
+  }
+
+  function insertClipboardImageReference({ baseLine = rl.line || '', baseCursor = rl.cursor, fromPaste = true } = {}) {
+    const line = String(baseLine || '');
+    const cursor = typeof baseCursor === 'number' ? Math.max(0, Math.min(line.length, baseCursor)) : line.length;
+    const needsLeadingSpace = cursor > 0 && !/\s/.test(line[cursor - 1]);
+    const needsTrailingSpace = cursor < line.length && !/\s/.test(line[cursor]);
+    const token = `${needsLeadingSpace ? ' ' : ''}@clipboard${needsTrailingSpace ? ' ' : ' '}`;
+    insertPromptText(token, { baseLine: line, baseCursor: cursor, fromPaste, pasteLabel: '[clipboard image]' });
   }
 
   function acceptSlashHint() {
@@ -5491,6 +5503,10 @@ export async function startTerminalRepl() {
       if (!inputActive) return;
       if (_inBracketedPaste || _suppressBracketedPasteLines || _suppressRawPasteLines) return;
       if (key.name === 'return' || key.name === 'enter') return;
+      if (key.ctrl && key.name === 'v') {
+        insertClipboardImageReference();
+        return;
+      }
       if (key.name === 'f2') {
         clearSlashHint();
         if (isInputDockMounted()) moveToContent();
@@ -5560,11 +5576,11 @@ export async function startTerminalRepl() {
     const pastedLines = _pasteLines.slice();
     _pasteLines = [];
     if (pastedLines.length > 1 || trailing) {
-      const text = [...pastedLines, trailing].join('\n');
+      const pasted = classifyPastedPromptPayload([...pastedLines, trailing].join('\n'), { looksLikeAttachmentReference });
       _promptHasInsertedPaste = true;
-      _pastedInputValue = text;
-      _pastedInputLabel = pastedTextLabel(text);
-      replaceReadlineLine(text);
+      _pastedInputValue = pasted.text;
+      _pastedInputLabel = pasted.label;
+      replaceReadlineLine(pasted.text);
       renderIdleDockInput();
       return;
     }
@@ -5619,10 +5635,12 @@ export async function startTerminalRepl() {
     }
     // Readline has finished emitting synchronous `line` events by now.
     // Treat paste as editing the prompt buffer; Enter remains the submit.
-    insertPromptText(payload || '', {
+    const pasted = classifyPastedPromptPayload(payload, { looksLikeAttachmentReference });
+    insertPromptText(pasted.text, {
       baseLine: _bracketedPasteStartLine,
       baseCursor: _bracketedPasteStartCursor,
       fromPaste: true,
+      pasteLabel: pasted.label,
     });
   });
 
@@ -5919,7 +5937,7 @@ export async function startTerminalRepl() {
         process.stderr.write('\n');
       }
       renderBlockBoundary('user', { compactSame: true });
-      process.stderr.write(`${transcriptHeader('you', { tone: 'user' })} ${paint.text.dim('follow-up')}\n`);
+      process.stderr.write(`${transcriptHeader('you', { tone: 'user' })} ${paint.text.dim('added instruction')}\n`);
       for (const line of String(instruction || '').split('\n')) {
         process.stderr.write(`${transcriptLine(line, { tone: 'user' })}\n`);
       }

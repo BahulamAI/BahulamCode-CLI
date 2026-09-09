@@ -10,7 +10,14 @@ import {
   tailWithEllipsis,
   cursorPositionInLines,
 } from '../src/ui/text-layout.mjs';
-import { isRawMultilinePasteChunk, normalizePastedText, pastedTextLabel } from '../src/terminal/paste-input.mjs';
+import {
+  classifyPastedPromptPayload,
+  clipboardPathCandidate,
+  isRawMultilinePasteChunk,
+  normalizePastedText,
+  pastedTextLabel,
+  quotedAttachmentReference,
+} from '../src/terminal/paste-input.mjs';
 import * as dock from '../src/ui/input-dock.mjs';
 import { strip as stripAnsi, width as visibleWidth } from '../src/ui/palette.mjs';
 
@@ -178,6 +185,42 @@ test('raw multiline clipboard chunks are treated as paste edits', () => {
   assert.strictEqual(isRawMultilinePasteChunk('a\r'), false);
   assert.strictEqual(normalizePastedText('a\r\nb\rc'), 'a\nb\nc');
   assert.strictEqual(pastedTextLabel('first line\nsecond line'), '[text copied · 2 lines]');
+});
+
+test('paste classifier treats empty paste as clipboard image token', () => {
+  const out = classifyPastedPromptPayload('');
+  assert.strictEqual(out.kind, 'clipboard_image');
+  assert.strictEqual(out.text, '@clipboard ');
+  assert.strictEqual(out.label, '[clipboard image]');
+});
+
+test('paste classifier keeps prose as clipboard text', () => {
+  const out = classifyPastedPromptPayload('hello\nworld');
+  assert.strictEqual(out.kind, 'clipboard_text');
+  assert.strictEqual(out.text, 'hello\nworld');
+  assert.strictEqual(out.label, '[clipboard text · 2 lines]');
+});
+
+test('paste classifier converts attachment paths to @refs', () => {
+  const looksLikeAttachmentReference = value => value.endsWith('.png') || value.endsWith('.pdf');
+  const one = classifyPastedPromptPayload('/tmp/screen.png', { looksLikeAttachmentReference });
+  assert.strictEqual(one.kind, 'clipboard_path');
+  assert.strictEqual(one.text, '@/tmp/screen.png ');
+  assert.strictEqual(one.label, '[clipboard path]');
+
+  const many = classifyPastedPromptPayload('/tmp/screen.png\n/tmp/spec.pdf', { looksLikeAttachmentReference });
+  assert.strictEqual(many.kind, 'clipboard_paths');
+  assert.strictEqual(many.text, '@/tmp/screen.png\n@/tmp/spec.pdf ');
+  assert.strictEqual(many.label, '[clipboard paths · 2]');
+});
+
+test('paste classifier supports quoted and file URI paths', () => {
+  const looksLikeAttachmentReference = value => value.endsWith('.png');
+  assert.strictEqual(clipboardPathCandidate('file:///tmp/screen%20shot.png'), '/tmp/screen shot.png');
+  assert.strictEqual(quotedAttachmentReference('/tmp/screen shot.png'), '@"/tmp/screen shot.png"');
+  const out = classifyPastedPromptPayload('"file:///tmp/screen%20shot.png"', { looksLikeAttachmentReference });
+  assert.strictEqual(out.kind, 'clipboard_path');
+  assert.strictEqual(out.text, '@"/tmp/screen shot.png" ');
 });
 
 // ── dock module surface: dynamic growth entry points exist ──────────────
