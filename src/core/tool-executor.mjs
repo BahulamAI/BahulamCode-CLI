@@ -28,7 +28,7 @@ import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
 import { backgroundTasks } from './background-tasks.mjs';
-import { resolveLintCommand } from './lint-resolver.mjs';
+import { normalizeLintOutput, resolveLintCommand } from './lint-resolver.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadPluginTool } from '../plugins/executor.mjs';
 import * as fs from 'node:fs';
@@ -499,9 +499,11 @@ export function createToolExecutor({
                 maxBuffer: 1_000_000,
                 env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
             }, (err, stdout = '', stderr = '') => {
-                const output = err
-                    ? stripAnsi(stderr || stdout || '').trim()
-                    : stripAnsi(stdout || stderr || '').trim();
+                const output = normalizeLintOutput(lint, {
+                    stdout: stripAnsi(stdout),
+                    stderr: stripAnsi(stderr),
+                    errored: Boolean(err),
+                });
                 resolve(output || null);
             });
         });

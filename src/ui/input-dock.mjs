@@ -242,7 +242,7 @@ function overlayRowsForWrapped(wrappedLength, requestedMaxRows = DEFAULT_OVERLAY
 // takes over inside drawInputLines so at most inputRowsMax rows render.
 function computeInputRowsForBuffer(prefix, value) {
   const budget = inputTextBudget();
-  const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget);
+  const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget, { preserveTrailingWhitespace: true });
   const wanted = Math.max(MIN_INPUT_ROWS, wrapped.length);
   return Math.min(inputRowsMax, wanted);
 }
@@ -485,7 +485,7 @@ export function clearDockArea({ restore = true, geometry = null } = {}) {
 function layoutInput(prefix, value) {
   const budget = inputTextBudget();
   const combined = `${prefix || ''}${value || ''}`;
-  const wrapped = wrapToLines(combined, budget);
+  const wrapped = wrapToLines(combined, budget, { preserveTrailingWhitespace: true });
   const tail = tailWithEllipsis(wrapped, inputRows);
   return {
     lines: tail.visible,

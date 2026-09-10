@@ -82,6 +82,12 @@ test('wrapToLines: ANSI-styled input wraps by visible width, not raw length', ()
   assert.strictEqual(stripAnsi(out[0]), 'hello world');
 });
 
+test('wrapToLines: can preserve trailing spaces for input cursor layout', () => {
+  const out = wrapToLines('hello world ', 6, { preserveTrailingWhitespace: true });
+  assert.deepStrictEqual(out, ['hello ', 'world ']);
+  assert.deepStrictEqual(wrapToLines('      ', 3, { preserveTrailingWhitespace: true }), ['   ', '   ']);
+});
+
 // ── tailWithEllipsis ────────────────────────────────────────────────────
 
 test('tailWithEllipsis: input shorter than maxRows returns as-is', () => {
@@ -282,6 +288,17 @@ test('dock cursor target accounts for tab stops from the indented input column',
   const expectedOffset = terminalCellWidthFromColumn('You › \t', inputColumn);
   assert.strictEqual(target.col, inputColumn + expectedOffset);
   assert.strictEqual(target.col, 17);
+});
+
+test('dock cursor target advances for trailing spaces in wrapped input', () => {
+  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, ttyMode: 'rich', fixedInput: true, columns: 20, rows: 24 });
+  const { cursorTargetForInput } = dock._internals();
+  const inputColumn = dock.inputRowColumn();
+  const stem = '1234567890123456789012345 hello ';
+  const withoutSpace = cursorTargetForInput('', `${stem}world`, 37);
+  const withSpace = cursorTargetForInput('', `${stem}world `, 38);
+  assert.strictEqual(withoutSpace.col, inputColumn + 5);
+  assert.strictEqual(withSpace.col, inputColumn + 6);
 });
 
 test('prepareInputPrompt accepts a meta option alongside context and tips', () => {

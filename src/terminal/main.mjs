@@ -380,7 +380,10 @@ async function main() {
     /help                   Show available commands
     /stats                  Session metrics (tokens, cost, tools)
     /cost                   Detailed cost breakdown by model
-    /model [role] [model]   Show or set session model override
+    /model                  Open interactive model overrides
+    /model status           Show model overrides and catalog source
+    /model refresh          Refresh model catalog from backend
+    /model list [category]  List curated platform models
     /history                Conversation history
     /new                    Start a new session
     /clear                  Clear conversation history
