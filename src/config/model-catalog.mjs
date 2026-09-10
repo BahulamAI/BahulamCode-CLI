@@ -37,6 +37,8 @@ function normalizeSnapshotRow(row) {
     provider: row.provider || (id.includes('/') ? id.split('/', 1)[0] : 'unknown'),
     label: row.label || id,
     category,
+    input_modalities: row.inputModalities ?? row.input_modalities ?? null,
+    output_modalities: row.outputModalities ?? row.output_modalities ?? null,
     input_cost_usd_per_m: row.inputCost ?? row.input_cost_usd_per_m ?? null,
     output_cost_usd_per_m: row.outputCost ?? row.output_cost_usd_per_m ?? null,
     context_length: row.context ?? row.context_length ?? null,
