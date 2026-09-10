@@ -25,6 +25,7 @@ import { makePluginState, _resetForTests } from '../src/plugins/state.mjs';
 import { parsePluginManifest, validatePluginManifest } from '../src/plugins/manifest.mjs';
 import { expandStateContextTools } from '../src/plugins/state-tools.mjs';
 import { PluginRegistry } from '../src/plugins/registry.mjs';
+import { createToolRegistry } from '../src/tools/registry.mjs';
 let passed = 0;
 let failed = 0;
 let skipped = 0;
@@ -142,6 +143,30 @@ await test('context_tools keep their where/params binding contract', async () =>
   assert.deepStrictEqual(tool.params, ['topic']);
   assert.strictEqual(tool.limit, 50, 'defaults to 50 rows');
   assert.strictEqual(tool.parameters.properties.topic.type, 'string');
+});
+
+await test('an omitted params: list defaults to the declared properties, minus limit', async () => {
+  const manifest = parsePluginManifest(`
+apiVersion: bahulam.plugin/1
+metadata: { name: p }
+config:
+  state:
+    tables:
+      - name: t
+        columns: [{ name: id, type: INTEGER }, { name: topic, type: TEXT }]
+    context_tools:
+      - name: list_t
+        table: t
+        parameters:
+          type: object
+          properties:
+            topic: { type: string }
+            limit: { type: integer }
+        where: "topic = ?"
+`);
+  // `limit` is consumed by the CLI to cap rows — binding it into the WHERE
+  // clause would silently filter on it, so it is excluded from the default.
+  assert.deepStrictEqual(manifest.config.state.context_tools[0].params, ['topic']);
 });
 
 await test('manifest rejects identifiers that could escape a quoted DDL string', async () => {
@@ -412,6 +437,50 @@ config:
 
   const registry = new PluginRegistry({ pluginDirs: [root] }).scan();
   assert.deepStrictEqual(registry.listTools().map(t => t.name), ['greet']);
+});
+
+await test('the classic tool registry opens plugin state WITH its declared tables', async (tmp) => {
+  // Regression: createToolRegistry's pluginStateFor() used to call
+  // makePluginState(name, { emit }) with no `tables`, so a tool invoked
+  // through this path saw no declared schema — and, because
+  // applyDeclaredSchema treats an empty list as "declares nothing", it
+  // would actively un-apply a schema the executor path had applied.
+  const root = path.join(tmp, 'plugins');
+  const pluginDir = path.join(root, 'exam-tutor');
+  fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), `
+apiVersion: bahulam.plugin/1
+metadata: { name: exam-tutor }
+config:
+  tools:
+    - name: roundtrip
+      tool: ./tools/roundtrip.mjs
+  state:
+    tables:
+      - name: questions
+        columns:
+          - { name: id, type: INTEGER, primary: true, autoincrement: true }
+          - { name: topic, type: TEXT }
+`, 'utf-8');
+  // Writes through the declared table AND reads it back via readTable —
+  // readTable refuses tables that are not in handle.declaredTables, so a
+  // pass proves the declarations reached this code path.
+  fs.writeFileSync(path.join(pluginDir, 'tools', 'roundtrip.mjs'), `
+export async function call(args = {}, options = {}) {
+  const state = options.state ? await options.state : null;
+  if (!state) return { success: false, output: 'no state handle' };
+  state.query('INSERT INTO questions(topic) VALUES(?)', [String(args.topic)]);
+  return { success: true, output: state.readTable('questions', { limit: 10 }) };
+}
+`, 'utf-8');
+
+  const pluginRegistry = new PluginRegistry({ pluginDirs: [root] }).scan();
+  const toolRegistry = createToolRegistry({ pluginRegistry, exposePluginTools: true });
+
+  const result = await toolRegistry.call('roundtrip', { topic: 'algebra' });
+  assert.strictEqual(result.success, true, `expected success, got ${JSON.stringify(result)}`);
+  assert.strictEqual(result.output.length, 1, 'readTable reached the declared table');
+  assert.strictEqual(result.output[0].topic, 'algebra');
 });
 
 console.log(`\n${passed}/${passed + failed} passed${skipped ? `, ${skipped} skipped` : ''}`);

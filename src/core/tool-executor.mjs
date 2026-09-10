@@ -787,14 +787,11 @@ export function createToolExecutor({
                                 _plugin: pluginName,
                             };
                         }
-                        const bound = (spec.params || []).map(key => {
-                            const value = args?.[key];
-                            return value === undefined ? null : value;
-                        });
-                        // A WHERE clause with nothing bound can only match
-                        // nothing; fall back to an unfiltered read so the
-                        // agent still gets usable data.
-                        const useWhere = Boolean(spec.where) && bound.length > 0;
+                        const bound = (spec.params || []).map(key => args?.[key] ?? null);
+                        // An unfiltered call should list everything, not match
+                        // nothing — `topic = NULL` is never true in SQL. Apply
+                        // the WHERE only once a declared param was supplied.
+                        const useWhere = Boolean(spec.where) && bound.some(v => v !== null);
                         const rows = state.readTable(spec.table, {
                             where: useWhere ? spec.where : '',
                             params: useWhere ? bound : [],

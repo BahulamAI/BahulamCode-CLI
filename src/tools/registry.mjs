@@ -111,7 +111,13 @@ export function createToolRegistry({
         if (!pluginName) return null;
         if (pluginStateHandles.has(pluginName)) return pluginStateHandles.get(pluginName);
         const { makePluginState } = await import('../plugins/state.mjs');
-        const state = makePluginState(pluginName, { emit: stateEmit });
+        // Pass the plugin's declared tables through, otherwise this path
+        // opens the shared handle without them — and `applyDeclaredSchema`
+        // treats an empty list as "this plugin declares nothing", which
+        // would *un-apply* a schema the executor path had already applied.
+        const plugin = pluginRegistry?.get?.(pluginName) || null;
+        const tables = plugin?.config?.state?.tables || [];
+        const state = makePluginState(pluginName, { emit: stateEmit, tables });
         pluginStateHandles.set(pluginName, state);
         return state;
     }

@@ -317,10 +317,12 @@ function normalizeState(value) {
       ? rawTool.parameters
       : { type: 'object', properties: {} };
     // Bind order for a positional `where` clause. Defaults to the declared
-    // property order so the simple case needs no extra YAML.
+    // property order so the simple case needs no extra YAML — minus
+    // `limit`, which the CLI consumes itself and must never be bound into
+    // the WHERE clause.
     const declaredParams = Array.isArray(rawTool.params)
       ? rawTool.params.map(p => String(p || '').trim()).filter(p => SAFE_IDENT_RE.test(p))
-      : Object.keys(parameters.properties || {});
+      : Object.keys(parameters.properties || {}).filter(p => p !== 'limit');
     const limit = Number(rawTool.limit);
     contextTools.push({
       name,
