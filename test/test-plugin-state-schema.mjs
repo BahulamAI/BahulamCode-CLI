@@ -26,6 +26,7 @@ import { parsePluginManifest, validatePluginManifest } from '../src/plugins/mani
 import { expandStateContextTools } from '../src/plugins/state-tools.mjs';
 import { PluginRegistry } from '../src/plugins/registry.mjs';
 import { createToolRegistry } from '../src/tools/registry.mjs';
+import { preflightPlugin } from '../src/plugins/preflight.mjs';
 let passed = 0;
 let failed = 0;
 let skipped = 0;
@@ -481,6 +482,44 @@ export async function call(args = {}, options = {}) {
   assert.strictEqual(result.success, true, `expected success, got ${JSON.stringify(result)}`);
   assert.strictEqual(result.output.length, 1, 'readTable reached the declared table');
   assert.strictEqual(result.output[0].topic, 'algebra');
+});
+
+await test('preflight accepts an agent that references its own generated state tool', async (tmp) => {
+  // Regression: preflight resolved agent tool refs against config.tools only,
+  // so an agent allowlisting a tool synthesized from config.state.context_tools
+  // was rejected as "not defined by this plugin" — which made every plugin
+  // using the generated-tool tier un-installable.
+  const pluginDir = path.join(tmp, 'plugins', 'teach-me');
+  fs.mkdirSync(path.join(pluginDir, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), `
+apiVersion: bahulam.plugin/1
+metadata: { name: teach-me }
+config:
+  state:
+    tables:
+      - name: questions
+        columns: [{ name: id, type: INTEGER }, { name: topic, type: TEXT }]
+    context_tools:
+      - name: list_questions
+        table: questions
+        where: "topic = ?"
+        params: [topic]
+  workspace: ./config/workspace.yaml
+`, 'utf-8');
+  fs.writeFileSync(path.join(pluginDir, 'config', 'workspace.yaml'), `
+apiVersion: agent.framework/v1
+kind: SingleAgent
+metadata:
+  slug: teach-me
+  name: Teach Me
+agent:
+  system_prompt: You teach, one question at a time.
+tools:
+  - list_questions
+`, 'utf-8');
+
+  const { ok, errors } = await preflightPlugin(pluginDir, { existingPluginNames: () => [] });
+  assert.strictEqual(ok, true, `expected preflight to pass, got: ${JSON.stringify(errors)}`);
 });
 
 console.log(`\n${passed}/${passed + failed} passed${skipped ? `, ${skipped} skipped` : ''}`);
