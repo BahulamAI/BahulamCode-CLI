@@ -206,17 +206,18 @@ function pluginDataDir(pluginName) {
   return dir;
 }
 
-function openDb(pluginName) {
-  if (_handles.has(pluginName)) return _handles.get(pluginName);
-  const dir = pluginDataDir(pluginName);
-  const dbPath = path.join(dir, 'state.db');
-  const db = DatabaseSync ? new DatabaseSync(dbPath) : new JsonStateDb(dbPath);
-  // WAL: multiple readers, one writer; robust against concurrent view+agent.
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA synchronous = NORMAL');
-  db.exec('PRAGMA foreign_keys = ON');
-  // Bootstrap schema — idempotent so evolving plugins never crash on start.
-  db.exec(`
+function openDb(pluginName, { tables = [] } = {}) {
+  let handle = _handles.get(pluginName);
+  if (!handle) {
+    const dir = pluginDataDir(pluginName);
+    const dbPath = path.join(dir, 'state.db');
+    const db = DatabaseSync ? new DatabaseSync(dbPath) : new JsonStateDb(dbPath);
+    // WAL: multiple readers, one writer; robust against concurrent view+agent.
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
+    db.exec('PRAGMA foreign_keys = ON');
+    // Bootstrap schema — idempotent so evolving plugins never crash on start.
+    db.exec(`
     CREATE TABLE IF NOT EXISTS kv (
       key        TEXT PRIMARY KEY,
       value      TEXT NOT NULL,
@@ -231,9 +232,97 @@ function openDb(pluginName) {
     CREATE INDEX IF NOT EXISTS records_stream_idx
       ON records(stream, id DESC);
   `);
-  const handle = { db, dir, path: dbPath };
-  _handles.set(pluginName, handle);
+    handle = { db, dir, path: dbPath, schemaSig: null, declaredTables: new Set() };
+    _handles.set(pluginName, handle);
+  }
+  // Declared tables are applied on every open call, not just the first —
+  // a plugin installed mid-session (or a version bump that adds columns)
+  // must still converge the DB. The signature check makes the repeat
+  // calls free once the schema already matches.
+  applyDeclaredSchema(handle, tables);
   return handle;
+}
+
+function quoteIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+/** Render one normalized column as the DDL fragment it contributes. */
+function columnToSql(col) {
+  const parts = [quoteIdent(col.name), col.type];
+  if (col.primary) parts.push('PRIMARY KEY');
+  if (col.autoincrement) parts.push('AUTOINCREMENT');
+  if (col.not_null) parts.push('NOT NULL');
+  // `default` is author-supplied SQL text (e.g. "'medium'", "0"), which is
+  // why normalizeState stringifies it and why it is never parameterized.
+  if (col.default != null) parts.push(`DEFAULT ${col.default}`);
+  if (col.references) parts.push(`REFERENCES ${col.references}`);
+  return parts.join(' ');
+}
+
+/**
+ * Create/evolve the tables a plugin declared in `config.state.tables`.
+ *
+ * Additive by contract: a table that exists is left alone apart from
+ * genuinely new columns, which are appended with ALTER TABLE. Nothing is
+ * ever dropped or retyped, so bumping a plugin version can't cost the
+ * user their data. Re-running with an unchanged declaration is a no-op.
+ *
+ * Silently does nothing on the JSON fallback backend, where arbitrary SQL
+ * isn't available — plugins that need declared tables need node:sqlite.
+ */
+function applyDeclaredSchema(handle, tables) {
+  if (!DatabaseSync) return;
+  if (!Array.isArray(tables) || tables.length === 0) {
+    handle.declaredTables = new Set();
+    handle.schemaSig = null;
+    return;
+  }
+  const sig = JSON.stringify(tables);
+  if (handle.schemaSig === sig) return;
+
+  const { db } = handle;
+  for (const table of tables) {
+    let existing = new Set();
+    try {
+      existing = new Set(db.prepare(`PRAGMA table_info(${quoteIdent(table.name)})`).all().map(r => String(r.name)));
+    } catch { /* table doesn't exist yet — created below */ }
+
+    try {
+      if (existing.size === 0) {
+        const defs = table.columns.map(columnToSql).join(', ');
+        db.exec(`CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${defs});`);
+      } else {
+        for (const col of table.columns) {
+          if (existing.has(col.name)) continue;
+          // SQLite refuses PRIMARY KEY / NOT NULL-without-default on ALTER
+          // TABLE ADD COLUMN. Strip those rather than fail the migration.
+          const addable = {
+            ...col,
+            primary: false,
+            autoincrement: false,
+            not_null: col.not_null && col.default != null,
+          };
+          db.exec(`ALTER TABLE ${quoteIdent(table.name)} ADD COLUMN ${columnToSql(addable)};`);
+        }
+      }
+      for (const index of (table.indexes || [])) {
+        const cols = index.columns.map(quoteIdent).join(', ');
+        const idxName = `${table.name}_${index.columns.join('_')}_idx`;
+        db.exec(
+          `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quoteIdent(idxName)} `
+          + `ON ${quoteIdent(table.name)} (${cols});`,
+        );
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.error(`Failed to apply declared schema for table ${table.name}: ${err.message}`);
+      }
+    }
+  }
+
+  handle.declaredTables = new Set(tables.map(t => t.name));
+  handle.schemaSig = sig;
 }
 
 function now() { return new Date().toISOString(); }
@@ -261,10 +350,15 @@ function deepMerge(base, patch) {
  * @param {(evt: {plugin: string, op: string, kind: 'kv'|'records', target: string, at: string}) => void} [opts.emit]
  *   Called (debounced) after every write commits. The workspace server
  *   turns this into an SSE `plugin_state_changed` event for the browser.
- * @returns proxy with { get, set, patch, append, list, query, delete, close, db, path }
+ * @param {object[]} [opts.tables]
+ *   Tables declared in the plugin manifest's `config.state.tables`. They
+ *   are created (and additively migrated) when the DB opens, so a plugin
+ *   can own real domain tables — questions, documents, answers — without
+ *   shipping its own migration logic.
+ * @returns proxy with { get, set, patch, append, list, query, delete, summary, readTable, close, db, path }
  */
-export function makePluginState(pluginName, { emit = null } = {}) {
-  const { db, path: dbPath } = openDb(pluginName);
+export function makePluginState(pluginName, { emit = null, tables = [] } = {}) {
+  const { db, path: dbPath, declaredTables } = openDb(pluginName, { tables });
 
   // One debounce timer per (kind, target). Fast writes coalesce into
   // exactly one plugin_state_changed event. Pending entry is stored so
@@ -396,6 +490,64 @@ export function makePluginState(pluginName, { emit = null } = {}) {
       // refresh; more specific writes go through set/patch/append.
       fire('query', 'kv', '*');
       return { changes: info.changes, lastInsertRowid: Number(info.lastInsertRowid) };
+    },
+
+    /**
+     * Read the slices a manifest flagged as `context_always` so the agent
+     * can orient itself at session start without spending a tool call.
+     *
+     * Returns `{ kv: { <key>: value }, streams: { <stream>: [rows] } }`.
+     * Anything the declaration doesn't name is deliberately omitted —
+     * this is the "small and high-signal" tier, and its whole value is
+     * that it stays cheap.
+     *
+     * @param {object[]} decl normalized `config.state.context_always`
+     */
+    summary(decl = []) {
+      const out = { kv: {}, streams: {} };
+      for (const item of (Array.isArray(decl) ? decl : [])) {
+        if (!item || typeof item !== 'object') continue;
+        try {
+          if (item.kind === 'records' && item.stream) {
+            out.streams[item.stream] = this.list(item.stream, {
+              limit: item.limit || 5,
+              order: 'desc',
+            });
+          } else if (item.kind === 'kv' && item.key) {
+            out.kv[item.key] = this.get(item.key, null);
+          }
+        } catch { /* one unreadable slice must not blank the whole summary */ }
+      }
+      return out;
+    },
+
+    /**
+     * Read rows from a table the plugin declared in `config.state.tables`.
+     * Backs the auto-generated `context_tools`.
+     *
+     * Only declared tables are reachable, so a manifest typo can't turn a
+     * generated tool into arbitrary table access. `where` is plugin-authored
+     * SQL (same trust model as `query()`); values are always bound.
+     *
+     * @param {string} table
+     * @param {object} [opts]
+     * @param {string} [opts.where]   e.g. "topic = ?"
+     * @param {any[]}  [opts.params]  bound positionally against `where`
+     * @param {number} [opts.limit]
+     * @returns {object[]}
+     */
+    readTable(table, { where = '', params = [], limit = 50 } = {}) {
+      if (!DatabaseSync) {
+        throw new Error('Declared state tables require the native node:sqlite backend');
+      }
+      const name = String(table || '');
+      if (!declaredTables.has(name)) {
+        throw new Error(`unknown declared state table: ${name || '(none)'}`);
+      }
+      const args = Array.isArray(params) ? params : [params];
+      const cap = Math.max(1, Math.min(1000, Math.floor(limit) || 50));
+      const clause = where ? ` WHERE ${where}` : '';
+      return db.prepare(`SELECT * FROM ${quoteIdent(name)}${clause} LIMIT ?`).all(...args, cap);
     },
 
     /** Direct DatabaseSync handle for callers that know what they need. */

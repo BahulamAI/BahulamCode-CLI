@@ -31,6 +31,7 @@ import { backgroundTasks } from './background-tasks.mjs';
 import { normalizeLintOutput, resolveLintCommand } from './lint-resolver.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadPluginTool } from '../plugins/executor.mjs';
+import { makePluginState } from '../plugins/state.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -632,18 +633,80 @@ export function createToolExecutor({
         return true;
     }
 
-    // Per-plugin state handles are opened lazily on first tool call and
-    // cached process-wide. `makePluginState` itself dedupes on plugin
-    // name, so this Map only exists to avoid re-attaching stateEmit on
-    // every registered tool.
+    // Per-plugin state handles are opened lazily on first call and cached
+    // process-wide. `makePluginState` itself dedupes on plugin name, so
+    // this Map only exists to avoid re-attaching stateEmit on every
+    // registered tool — and to keep the agent-context summary reading the
+    // same connection a plugin tool writes through.
     const _pluginStateHandles = new Map(); // pluginName -> state proxy
-    async function _pluginStateFor(pluginName) {
+
+    /**
+     * The normalized `config.state` block a plugin declared, or null when
+     * it declared none. Declared tables are created and additively
+     * migrated when the DB opens, so this is also the schema the plugin's
+     * own handlers query via `state.query()`.
+     */
+    function pluginStateDecl(pluginName) {
+        if (!pluginName || typeof pluginRegistry?.list !== 'function') return null;
+        const plugin = pluginRegistry.list().find(p => p.metadata?.name === pluginName);
+        return plugin?.config?.state || null;
+    }
+
+    function _pluginStateFor(pluginName) {
         if (!pluginName) return null;
         if (_pluginStateHandles.has(pluginName)) return _pluginStateHandles.get(pluginName);
-        const { makePluginState } = await import('../plugins/state.mjs');
-        const state = makePluginState(pluginName, { emit: stateEmit });
+        const decl = pluginStateDecl(pluginName);
+        const state = makePluginState(pluginName, {
+            emit: stateEmit,
+            tables: decl?.tables || [],
+        });
         _pluginStateHandles.set(pluginName, state);
         return state;
+    }
+
+    // ── Declared plugin state → agent context ────────────────────
+    // Tier 1 of the state-visibility contract. Plugins that declare
+    // `config.state.context_always` get exactly those keys and streams
+    // injected into the agent context each turn, so a fresh session opens
+    // already knowing what the previous one left behind — instead of
+    // spending a tool call to rediscover it, or silently redoing work.
+    //
+    // Opt-in by construction: a plugin that declares nothing contributes
+    // nothing, and an opted-in plugin that has recorded nothing yet is
+    // skipped rather than shipping an empty block.
+    //
+    // Reads are keyed on the state DB's size+mtime so the payload stays
+    // byte-identical between turns when nothing wrote. Same reasoning as
+    // the memory digest above: a context block that churns on every turn
+    // invalidates the backend's prompt cache on every ExecuteRequest.
+    const _pluginStateCache = new Map(); // pluginName -> { key, entry }
+
+    function pluginStateContext() {
+        if (typeof pluginRegistry?.list !== 'function') return [];
+        const out = [];
+        for (const plugin of pluginRegistry.list()) {
+            const name = plugin.metadata?.name;
+            const decl = plugin.config?.state;
+            if (!name || !decl?.context_always?.length) continue;
+            try {
+                const state = _pluginStateFor(name);
+                const stat = fs.existsSync(state.path) ? fs.statSync(state.path) : null;
+                const key = stat ? `${stat.size}:${Math.round(stat.mtimeMs)}` : 'missing';
+                const cached = _pluginStateCache.get(name);
+                if (cached && cached.key === key) {
+                    out.push(cached.entry);
+                    continue;
+                }
+                const summary = state.summary(decl.context_always);
+                const hasContent = Object.keys(summary.kv).length > 0
+                    || Object.values(summary.streams).some(rows => rows.length > 0);
+                if (!hasContent) continue;
+                const entry = { plugin: name, ...summary };
+                _pluginStateCache.set(name, { key, entry });
+                out.push(entry);
+            } catch { /* one broken plugin must never break the session */ }
+        }
+        return out;
     }
 
     /**
@@ -706,6 +769,59 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._state_tool) {
+                // Manifest-declared state query tool (config.state.context_tools).
+                // There is no module to import — the author declared a table
+                // and an optional WHERE clause; the CLI supplies the handler.
+                // `readTable` refuses undeclared tables, so author-supplied
+                // SQL can't be steered into arbitrary table access.
+                const spec = toolDef._state_tool;
+                registerPluginTool(name, async (args) => {
+                    try {
+                        const state = _pluginStateFor(spec.plugin || pluginName);
+                        if (!state) {
+                            return {
+                                success: false,
+                                output: `Plugin state unavailable for '${name}'.`,
+                                _tool: name,
+                                _plugin: pluginName,
+                            };
+                        }
+                        const bound = (spec.params || []).map(key => {
+                            const value = args?.[key];
+                            return value === undefined ? null : value;
+                        });
+                        // A WHERE clause with nothing bound can only match
+                        // nothing; fall back to an unfiltered read so the
+                        // agent still gets usable data.
+                        const useWhere = Boolean(spec.where) && bound.length > 0;
+                        const rows = state.readTable(spec.table, {
+                            where: useWhere ? spec.where : '',
+                            params: useWhere ? bound : [],
+                            limit: args?.limit ?? spec.limit,
+                        });
+                        return {
+                            success: true,
+                            output: rows.length
+                                ? JSON.stringify(rows, null, 2)
+                                : `No rows in ${spec.table}${useWhere ? ' matching those filters' : ''}.`,
+                            rows,
+                            count: rows.length,
+                            _tool: name,
+                            _plugin: pluginName,
+                            _state_tool: true,
+                        };
+                    } catch (err) {
+                        return {
+                            success: false,
+                            output: `Plugin state tool error (${name}): ${err.message}`,
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
+                    }
+                }, { pluginName, source: 'state', stateTool: spec });
+                continue;
+            }
             if (toolDef._composed?.kind === 'pi') {
                 // Composed pi tools resolve at invocation time: look up the
                 // installed pi package's directory, load the specific handler
@@ -2777,6 +2893,7 @@ export function createToolExecutor({
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();
             const mem = _readMemorySnapshot();
+            const pluginState = pluginStateContext();
             return {
                 identity: global.identity,
                 preferences: global.preferences,
@@ -2804,6 +2921,14 @@ export function createToolExecutor({
                     spec: agent.spec,
                 })),
                 sub_agent_observability: agentRegistry.observability(),
+                // Cross-session plugin state. Only plugins that opted in via
+                // config.state.context_always appear here, and only the keys
+                // and streams they named — this is how a plugin's local app
+                // state survives a session boundary without the agent having
+                // to know to go looking for it.
+                ...(pluginState.length ? {
+                    plugin_state: pluginState,
+                } : {}),
                 // Background jobs the model should know about. Stable fields
                 // only (no durations) so the entry — and the prompt cache —
                 // changes on status transitions, not every turn.

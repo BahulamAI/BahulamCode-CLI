@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { expandComposedTools } from './pi-compose.mjs';
+import { expandStateContextTools } from './state-tools.mjs';
 import { bahulamHome } from '../core/paths.mjs';
 
 const DEFAULT_PLUGIN_DIRS = () => [
@@ -164,6 +165,13 @@ export class PluginRegistry {
         plugin.metadata?.name || '',
         plugin._dir,
         plugin.config?.composes || [],
+      ));
+      // Manifest-declared state query tools. Synthesized rather than
+      // imported, so they carry `_state_tool` instead of a module path.
+      tools.push(...expandStateContextTools(
+        plugin.metadata?.name || '',
+        plugin._dir,
+        plugin.config?.state,
       ));
     }
     return tools;

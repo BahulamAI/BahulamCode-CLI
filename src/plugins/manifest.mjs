@@ -156,6 +156,188 @@ function loadAgentPath(agentPath, pluginDir, pluginName, label) {
   }
 }
 
+// Identifiers that are safe to interpolate into DDL. Manifests are
+// plugin-author controlled, but a typo (or a malicious registry entry)
+// must never be able to escape the quoted identifier and inject SQL.
+const SAFE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+// SQLite type affinities. Anything else collapses to TEXT so a bad
+// manifest degrades into a working table instead of a failed CREATE.
+const SQL_TYPES = new Set(['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC']);
+
+function normalizeSqlType(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) return 'TEXT';
+  // Accept the common aliases rather than rejecting an otherwise-fine manifest.
+  if (raw === 'INT' || raw === 'BIGINT') return 'INTEGER';
+  if (raw === 'BOOL' || raw === 'BOOLEAN') return 'INTEGER';
+  if (raw === 'FLOAT' || raw === 'DOUBLE') return 'REAL';
+  if (raw === 'STRING' || raw === 'VARCHAR' || raw === 'DATETIME' || raw === 'TIMESTAMP' || raw === 'JSON') return 'TEXT';
+  return SQL_TYPES.has(raw) ? raw : 'TEXT';
+}
+
+/**
+ * Normalize `config.state` — the manifest-declared state schema plus the
+ * agent-visibility contract for that state.
+ *
+ * Every plugin already gets a SQLite sidecar for free (the `kv` and
+ * `records` tables). This block is how a plugin graduates from "a tool
+ * that remembers a cursor" to "a local app that owns its own domain
+ * tables" (questions + answers + progress for a tutor, documents for a
+ * study aid, and so on).
+ *
+ * Three parts, matching the three visibility tiers:
+ *
+ *   tables          DDL applied idempotently whenever the plugin's state
+ *                   DB is opened. Existing columns are never dropped;
+ *                   new columns are added with ALTER TABLE so a version
+ *                   bump never costs the user their data.
+ *   context_always  Small, high-signal slices injected into the agent
+ *                   context every turn (current lesson, progress).
+ *   context_tools   Read-only tools auto-generated for the agent to call
+ *                   on demand for the larger data (list questions).
+ *
+ * Anything not declared here stays reachable only from the plugin's own
+ * handlers via `state.query()` — the third tier.
+ *
+ * @param {object|null|undefined} value raw `config.state`
+ * @returns {{tables: object[], context_always: object[], context_tools: object[]}}
+ */
+function normalizeState(value) {
+  const empty = { tables: [], context_always: [], context_tools: [] };
+  if (!value || typeof value !== 'object') return empty;
+
+  const tables = [];
+  for (const rawTable of (Array.isArray(value.tables) ? value.tables : [])) {
+    if (!rawTable || typeof rawTable !== 'object') continue;
+    const name = String(rawTable.name || '').trim();
+    if (!SAFE_IDENT_RE.test(name)) {
+      console.warn(`Skipping state table with unsafe or missing name: ${JSON.stringify(rawTable.name)}`);
+      continue;
+    }
+
+    const columns = [];
+    const columnNames = new Set();
+    for (const rawCol of (Array.isArray(rawTable.columns) ? rawTable.columns : [])) {
+      if (!rawCol || typeof rawCol !== 'object') continue;
+      const colName = String(rawCol.name || '').trim();
+      if (!SAFE_IDENT_RE.test(colName)) {
+        console.warn(`Skipping column with unsafe or missing name in table ${name}: ${JSON.stringify(rawCol.name)}`);
+        continue;
+      }
+      if (columnNames.has(colName)) continue;
+      columnNames.add(colName);
+
+      // `references` is free-form in the manifest, so validate the shape
+      // strictly before it reaches a CREATE TABLE string.
+      const references = String(rawCol.references || '').trim();
+      const safeReferences = /^[A-Za-z_][A-Za-z0-9_]{0,63}\s*\(\s*[A-Za-z_][A-Za-z0-9_]{0,63}\s*\)$/.test(references)
+        ? references.replace(/\s+/g, '')
+        : null;
+      if (references && !safeReferences) {
+        console.warn(`Ignoring malformed references "${references}" on ${name}.${colName}`);
+      }
+
+      const primary = rawCol.primary === true || rawCol.primary_key === true || rawCol.primaryKey === true;
+      const type = normalizeSqlType(rawCol.type);
+      columns.push({
+        name: colName,
+        type,
+        primary,
+        // SQLite only allows AUTOINCREMENT on INTEGER PRIMARY KEY.
+        autoincrement: (rawCol.autoincrement === true || rawCol.auto_increment === true)
+          && primary && type === 'INTEGER',
+        not_null: rawCol.not_null === true || rawCol.notNull === true,
+        default: rawCol.default === undefined || rawCol.default === null ? null : String(rawCol.default),
+        references: safeReferences,
+      });
+    }
+    if (!columns.length) {
+      console.warn(`Skipping state table ${name}: no usable columns`);
+      continue;
+    }
+
+    const indexes = [];
+    for (const rawIndex of (Array.isArray(rawTable.indexes) ? rawTable.indexes : [])) {
+      if (!rawIndex || typeof rawIndex !== 'object') continue;
+      const source = Array.isArray(rawIndex.columns) ? rawIndex.columns
+        : (rawIndex.column ? [rawIndex.column] : []);
+      const indexColumns = source
+        .map(c => String(c || '').trim())
+        .filter(c => SAFE_IDENT_RE.test(c) && columnNames.has(c));
+      if (indexColumns.length) {
+        indexes.push({ columns: indexColumns, unique: rawIndex.unique === true });
+      }
+    }
+
+    tables.push({ name, columns, indexes });
+  }
+
+  const tableNames = new Set(tables.map(t => t.name));
+
+  // Tier 1 — injected every turn. Accept a bare string as a kv key so the
+  // common case stays a one-liner in YAML.
+  const contextAlways = [];
+  for (const rawEntry of (Array.isArray(value.context_always) ? value.context_always : [])) {
+    if (typeof rawEntry === 'string') {
+      const key = rawEntry.trim();
+      if (key) contextAlways.push({ kind: 'kv', key });
+      continue;
+    }
+    if (!rawEntry || typeof rawEntry !== 'object') continue;
+    const stream = String(rawEntry.stream || '').trim();
+    if (stream) {
+      const limit = Number(rawEntry.limit);
+      contextAlways.push({
+        kind: 'records',
+        stream,
+        limit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.trunc(limit), 50) : 5,
+      });
+      continue;
+    }
+    const key = String(rawEntry.kv_key || rawEntry.key || '').trim();
+    if (key) contextAlways.push({ kind: 'kv', key });
+  }
+
+  // Tier 2 — auto-generated read-only tools.
+  const contextTools = [];
+  for (const rawTool of (Array.isArray(value.context_tools) ? value.context_tools : [])) {
+    if (!rawTool || typeof rawTool !== 'object') continue;
+    const name = String(rawTool.name || '').trim();
+    if (!SAFE_IDENT_RE.test(name)) {
+      console.warn(`Skipping context tool with unsafe or missing name: ${JSON.stringify(rawTool.name)}`);
+      continue;
+    }
+    const table = String(rawTool.table || '').trim();
+    if (!tableNames.has(table)) {
+      console.warn(`Skipping context tool ${name}: table "${table}" is not declared in config.state.tables`);
+      continue;
+    }
+    const parameters = rawTool.parameters && typeof rawTool.parameters === 'object'
+      ? rawTool.parameters
+      : { type: 'object', properties: {} };
+    // Bind order for a positional `where` clause. Defaults to the declared
+    // property order so the simple case needs no extra YAML.
+    const declaredParams = Array.isArray(rawTool.params)
+      ? rawTool.params.map(p => String(p || '').trim()).filter(p => SAFE_IDENT_RE.test(p))
+      : Object.keys(parameters.properties || {});
+    const limit = Number(rawTool.limit);
+    contextTools.push({
+      name,
+      table,
+      description: String(rawTool.description || `List rows from ${table}`),
+      parameters,
+      // Plugin-authored SQL, same trust model as state.query(): the author
+      // owns the clause, the CLI binds the values.
+      where: String(rawTool.where || '').trim(),
+      params: declaredParams,
+      limit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.trunc(limit), 500) : 50,
+    });
+  }
+
+  return { tables, context_always: contextAlways, context_tools: contextTools };
+}
+
 /**
  * Parse a plugin manifest from YAML text.
  * @param {string} yamlText - Raw YAML content
@@ -308,6 +490,7 @@ export function normalizeManifest(raw, source = '') {
   // config for the local plugin without editing mcp.json.
   const mcpServers = _readMcpServers(config.mcpServers, source);
   const composes = normalizeComposes(config.composes);
+  const state = normalizeState(config.state);
 
   return {
     apiVersion,
@@ -327,6 +510,7 @@ export function normalizeManifest(raw, source = '') {
       views,
       mcpServers,
       composes,
+      state,
     },
     source,
     _dir: source ? path.dirname(source) : '',
@@ -407,6 +591,19 @@ export function validatePluginManifest(manifest) {
     }
     for (const agent of (manifest.config.agents || [])) {
       if (!agent.slug && !agent.name) errors.push('Agent missing slug or name');
+    }
+
+    // State declarations that silently vanished during normalization are
+    // exactly the kind of thing an author wants to hear about at validate
+    // time rather than discover at runtime.
+    const state = manifest.config.state;
+    if (state) {
+      const declaredTables = new Set((state.tables || []).map(t => t.name));
+      for (const tool of (state.context_tools || [])) {
+        if (!declaredTables.has(tool.table)) {
+          errors.push(`State context tool "${tool.name}" references undeclared table "${tool.table}"`);
+        }
+      }
     }
   }
 
