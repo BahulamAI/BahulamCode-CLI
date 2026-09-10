@@ -532,6 +532,55 @@ await test('read_file reuses unchanged repeated reads and read_batch reads line 
     }
 });
 
+await test('read-only cache invalidation is scoped after writes', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-scoped-cache-'));
+    const aFile = path.join(root, 'a.txt');
+    const bFile = path.join(root, 'b.txt');
+    const cFile = path.join(root, 'c.txt');
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"scoped-cache"}\n');
+    fs.writeFileSync(aFile, 'alpha\n');
+    fs.writeFileSync(bFile, 'bravo\n');
+
+    try {
+        const cacheExecutor = createToolExecutor();
+        const registered = await cacheExecutor.execute('get_project_overview', { path: root });
+        assert.strictEqual(registered.success, true);
+
+        const firstRead = await cacheExecutor.execute('read_file', { path: bFile, start_line: 1, end_line: 1 });
+        const secondRead = await cacheExecutor.execute('read_file', { path: bFile, start_line: 1, end_line: 1 });
+        assert.strictEqual(firstRead.success, true);
+        assert.strictEqual(secondRead._cache_reused, true);
+
+        const firstList = await cacheExecutor.execute('list_files', { path: root, pattern: '*.txt' });
+        const secondList = await cacheExecutor.execute('list_files', { path: root, pattern: '*.txt' });
+        assert.strictEqual(firstList.success, true);
+        assert.strictEqual(secondList._cache_reused, true);
+
+        const edited = await cacheExecutor.execute('edit_file', {
+            path: aFile,
+            search: 'alpha',
+            replace: 'alpha updated',
+        });
+        assert.strictEqual(edited.success, true);
+
+        const readAfterUnrelatedWrite = await cacheExecutor.execute('read_file', { path: bFile, start_line: 1, end_line: 1 });
+        assert.strictEqual(readAfterUnrelatedWrite._cache_reused, true);
+
+        const listAfterContentWrite = await cacheExecutor.execute('list_files', { path: root, pattern: '*.txt' });
+        assert.strictEqual(listAfterContentWrite._cache_reused, true);
+
+        const created = await cacheExecutor.execute('write_file', { path: cFile, content: 'charlie\n' });
+        assert.strictEqual(created.success, true);
+
+        const listAfterCreate = await cacheExecutor.execute('list_files', { path: root, pattern: '*.txt' });
+        assert.strictEqual(listAfterCreate.success, true);
+        assert.strictEqual(Boolean(listAfterCreate._cache_reused), false);
+        assert.ok(listAfterCreate.output.includes('c.txt'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Test 3: read_file on missing file returns error
 await test('read_file on missing file returns error', async () => {
     const result = await executor.execute('read_file', { path: 'nonexistent_file_xyz.txt' });

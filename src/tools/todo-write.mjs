@@ -68,6 +68,9 @@ export const TodoWriteTool = {
         let syncLine = '';
         try {
             const synced = syncTodoWriteToTaskFiles({ cwd: options.cwd || process.cwd(), todos });
+            if (typeof options.onTaskFilesWritten === 'function') {
+                options.onTaskFilesWritten(synced.written);
+            }
             syncLine = `\nSynced to .bahulam/tasks: ${synced.counts.active} active, ${synced.counts.backlog} backlog, ${synced.counts.done} done`;
         } catch (err) {
             syncLine = `\nTask markdown sync skipped: ${err.message || String(err)}`;
