@@ -500,6 +500,10 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("if (isInputDockMounted()) redrawDockInput();"));
   assert.ok(replSource.includes("rl.setPrompt(isInputDockMounted() ? '' : userPrompt())"));
   assert.ok(replSource.includes('renderDockInput(userPrompt(), displayLine,'));
+  assert.ok(replSource.includes('function _probeTaskSummary(cwd)'));
+  assert.ok(replSource.includes('taskCounts(board)'));
+  assert.ok(replSource.includes('taskSummary'));
+  assert.ok(replSource.includes("_dockTaskCache.at = 0"));
   assert.ok(replSource.includes('function isDeniedStatusMessage'));
   assert.ok(replSource.includes('isDeniedStatusMessage(msg)'));
   assert.ok(replSource.includes("case 'file_diff':"));
@@ -515,6 +519,9 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
   assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
+  assert.ok(replSource.includes("command: '/model refresh'"));
+  assert.ok(replSource.includes("command: '/model status'"));
+  assert.ok(replSource.includes("const partial = text.startsWith('/model ') ? text"));
   assert.ok(replSource.includes("function renderSlashHintNow(line = '', { preserveSelection = false } = {})"));
   assert.ok(replSource.includes("function renderSlashHint(line = '', opts = {})"));
   assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
@@ -522,6 +529,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('function acceptSlashHint()'));
   assert.ok(replSource.includes('function moveSlashHintSelection(delta)'));
   assert.ok(replSource.includes('function selectedSlashCommandFor(line)'));
+  assert.ok(replSource.includes("if (COMMANDS[firstToken] || firstToken === '/help') return input;"));
+  assert.ok(replSource.includes("return parts.length > 1 ? `${item.command} ${parts.slice(1).join(' ')}` : item.command;"));
   assert.ok(replSource.includes("typeof rl._refreshLine === 'function'"));
   assert.ok(replSource.includes('readline.cursorTo(process.stderr, col)'));
   assert.ok(replSource.includes('function writeHintFrame(frame)'));

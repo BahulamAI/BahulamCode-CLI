@@ -28,7 +28,7 @@ import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
 import { backgroundTasks } from './background-tasks.mjs';
-import { resolveLintCommand } from './lint-resolver.mjs';
+import { normalizeLintOutput, resolveLintCommand } from './lint-resolver.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadPluginTool } from '../plugins/executor.mjs';
 import * as fs from 'node:fs';
@@ -137,7 +137,8 @@ export function createToolExecutor({
             });
     }
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
-    let _readOnlyCacheGeneration = 0;
+    let _structureCacheGeneration = 0;
+    let _searchCacheGeneration = 0;
     const readOnlyResultCache = new Map();
 
     function resolvePath(p, args = {}, options = {}) {
@@ -339,11 +340,12 @@ export function createToolExecutor({
         );
     }
 
-    function updateProjectIndex(filePath) {
+    function updateProjectIndex(filePath, { contentChanged = true, structureChanged = false } = {}) {
         try {
             projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
         } catch { /* best effort */ }
-        _readOnlyCacheGeneration++;
+        if (contentChanged) _searchCacheGeneration++;
+        if (structureChanged) _structureCacheGeneration++;
     }
 
     function readTextIfExists(filePath) {
@@ -390,7 +392,6 @@ export function createToolExecutor({
             kind,
             args,
             fingerprint,
-            generation: _readOnlyCacheGeneration,
         }));
     }
 
@@ -498,9 +499,11 @@ export function createToolExecutor({
                 maxBuffer: 1_000_000,
                 env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
             }, (err, stdout = '', stderr = '') => {
-                const output = err
-                    ? stripAnsi(stderr || stdout || '').trim()
-                    : stripAnsi(stdout || stderr || '').trim();
+                const output = normalizeLintOutput(lint, {
+                    stdout: stripAnsi(stdout),
+                    stderr: stripAnsi(stderr),
+                    errored: Boolean(err),
+                });
                 resolve(output || null);
             });
         });
@@ -918,6 +921,28 @@ export function createToolExecutor({
                 output: `User answered: ${res.answer}${res.source === 'free_text' ? ' (typed answer, not one of the offered options)' : ''}`,
                 _tool: 'ask_user',
             };
+        },
+
+        TodoWrite: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const result = await occRegistry.call('TodoWrite', args || {}, {
+                ...options,
+                cwd: process.cwd(),
+                onTaskFilesWritten: (files) => {
+                    for (const file of Array.isArray(files) ? files : []) {
+                        updateProjectIndex(file, { contentChanged: true, structureChanged: true });
+                    }
+                },
+            });
+            return {
+                success: !/^Validation error:/i.test(String(result || '')),
+                output: String(result || ''),
+                _tool: 'TodoWrite',
+            };
+        },
+
+        todo_write: async (args, options = {}) => {
+            return toolMap.TodoWrite(args, options);
         },
 
         // Reserved meta-tool adapter. Cloud backends may implement Delegate
@@ -1421,6 +1446,7 @@ export function createToolExecutor({
                 return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
             }
             const filePath = await resolvePath(rawPath, args, { allowMissing: true });
+            const existedBefore = fs.existsSync(filePath);
             const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.content, projectRootFor(filePath));
             if (!writeCheck.safe) {
@@ -1443,7 +1469,10 @@ export function createToolExecutor({
             const wrapped = wrapResult(result, 'write_file');
             const after = readTextIfExists(filePath);
             attachFileDiff(wrapped, filePath, before, after);
-            updateProjectIndex(filePath);
+            updateProjectIndex(filePath, {
+                contentChanged: before !== after,
+                structureChanged: !existedBefore && fs.existsSync(filePath),
+            });
 
             // Auto-lint the written file
             const lintOutput = await autoLint(filePath);
@@ -1489,6 +1518,7 @@ export function createToolExecutor({
                     // Ensure parent directory exists
                     const dir = path.dirname(filePath);
                     fs.mkdirSync(dir, { recursive: true });
+                    const existedBefore = fs.existsSync(filePath);
                     const before = readTextIfExists(filePath);
 
                     // Read first if exists (OCC Write requirement)
@@ -1501,7 +1531,10 @@ export function createToolExecutor({
                     await occRegistry.call('write_file', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
                     diffs.push(buildResultFileDiff(filePath, before, after));
-                    updateProjectIndex(filePath);
+                    updateProjectIndex(filePath, {
+                        contentChanged: before !== after,
+                        structureChanged: !existedBefore && fs.existsSync(filePath),
+                    });
                     results.push(rawPath);
                 } catch (err) {
                     errors.push(`${rawPath}: ${err.message}`);
@@ -1615,7 +1648,7 @@ export function createToolExecutor({
                 };
             }
             attachFileDiff(wrapped, filePath, before, after);
-            updateProjectIndex(filePath);
+            updateProjectIndex(filePath, { contentChanged: before !== after, structureChanged: false });
             _hasEdited = true;
 
             // Auto-lint the edited file
@@ -1643,7 +1676,7 @@ export function createToolExecutor({
                     format: args.format || (args.tree === true ? 'tree' : 'glob'),
                     max_depth: args.max_depth ?? args.maxDepth ?? null,
                 },
-                { generation: _readOnlyCacheGeneration },
+                { structureGeneration: _structureCacheGeneration },
                 async () => {
                     if (args.format === 'tree' || args.tree === true) {
                         const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
@@ -1764,7 +1797,7 @@ export function createToolExecutor({
                 return await withReadOnlyCache(
                     'search_files',
                     { query, path: searchPath, mode: 'glob' },
-                    { generation: _readOnlyCacheGeneration },
+                    { structureGeneration: _structureCacheGeneration },
                     async () => {
                         const result = await occRegistry.call('list_files', {
                             pattern: query,
@@ -1785,7 +1818,7 @@ export function createToolExecutor({
             return await withReadOnlyCache(
                 'search_files',
                 { query, path: searchPath, mode: 'grep' },
-                { generation: _readOnlyCacheGeneration },
+                { searchGeneration: _searchCacheGeneration },
                 async () => {
                     const result = await occRegistry.call('search_code', {
                         pattern: query,
@@ -1889,8 +1922,9 @@ export function createToolExecutor({
                 if (checkpoints) {
                     try { checkpoints.save(filePath); } catch { /* best effort */ }
                 }
+                const existedBefore = fs.existsSync(filePath);
                 fs.unlinkSync(filePath);
-                updateProjectIndex(filePath);
+                updateProjectIndex(filePath, { contentChanged: existedBefore, structureChanged: existedBefore });
                 return { success: true, message: `Deleted ${args.path}`, _tool: 'delete_file' };
             } catch (err) {
                 return { success: false, output: `Error: ${err.message}`, _tool: 'delete_file' };

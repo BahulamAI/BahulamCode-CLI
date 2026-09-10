@@ -412,7 +412,33 @@ const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
 let _modelCatalogCache = null;
 let _modelCatalogError = null;
 let _modelCatalogSource = null;   // 'snapshot' | 'backend'
+let _modelCatalogFetchedAt = null;
 let _backendRefreshInFlight = null;
+
+function modelCatalogSummary(catalog = _modelCatalogCache) {
+  const rows = Array.isArray(catalog) ? catalog : [];
+  const curated = rows.filter(m => m?.harness_validated).length;
+  return { total: rows.length, curated };
+}
+
+function formatCatalogSource(source = _modelCatalogSource) {
+  if (source === 'backend') return 'backend';
+  if (source === 'snapshot') return 'shipped snapshot';
+  return 'unloaded';
+}
+
+function formatCatalogFetchedAt(value = _modelCatalogFetchedAt) {
+  if (!value) return 'not refreshed this session';
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(value);
+  } catch {
+    return value.toISOString();
+  }
+}
 
 async function fetchModelCatalog(ctx) {
   // Seed from the shipped snapshot so /model list, /model form and the
@@ -423,6 +449,7 @@ async function fetchModelCatalog(ctx) {
     if (shipped && shipped.length) {
       _modelCatalogCache = shipped;
       _modelCatalogSource = 'snapshot';
+      _modelCatalogFetchedAt = new Date();
       _modelCatalogError = null;
     }
   }
@@ -467,6 +494,7 @@ async function refreshCatalogFromBackend(ctx) {
     if (models && models.length) {
       _modelCatalogCache = models;
       _modelCatalogSource = 'backend';
+      _modelCatalogFetchedAt = new Date();
       _modelCatalogError = null;
     } else if (!_modelCatalogCache) {
       _modelCatalogError = models ? 'catalog is empty' : 'unexpected response shape';
@@ -565,6 +593,8 @@ async function printModelCatalog(ctx, filterCategory = null) {
   if (rest > 0) {
     process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
   }
+  const summary = modelCatalogSummary(catalog);
+  process.stderr.write(`  ${c.dim(`source: ${formatCatalogSource()} · ${summary.total} models · ${summary.curated} curated · refreshed ${formatCatalogFetchedAt()}`)}\n`);
   process.stderr.write('\n');
 }
 
@@ -611,13 +641,24 @@ function applyLaunchModelArgs(cliArgs, ctx) {
   return Promise.all(pending);
 }
 
-function printModelStatus() {
+async function printModelStatus(ctx = null) {
   process.stderr.write(`\n  ${c.bold('Models')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   process.stderr.write(`  ${c.gray('Active coding')} ${session.model || 'backend default'}\n`);
   process.stderr.write(`  ${c.gray('Route        ')} ${session.routePreference || (session.isByok ? 'byok' : 'platform')}\n`);
   if (session.modelMode) {
     process.stderr.write(`  ${c.gray('Mode         ')} ${session.modelMode}\n`);
+  }
+
+  const catalog = await fetchModelCatalog(ctx);
+  const summary = modelCatalogSummary(catalog);
+  process.stderr.write(`\n  ${c.bold('Catalog')}\n`);
+  if (catalog) {
+    process.stderr.write(`  ${c.gray('Source       ')} ${formatCatalogSource()}\n`);
+    process.stderr.write(`  ${c.gray('Models       ')} ${summary.total} total · ${summary.curated} curated\n`);
+    process.stderr.write(`  ${c.gray('Refreshed    ')} ${formatCatalogFetchedAt()}\n`);
+  } else {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(_modelCatalogError || 'unavailable')}\n`);
   }
 
   const limits = session.modelLimits || {};
@@ -716,13 +757,13 @@ async function handleModelCommand(rest = '', ctx) {
     if (process.stdin.isTTY) {
       await openModelForm(ctx);
     } else {
-      printModelStatus();
+      await printModelStatus(ctx);
     }
     return;
   }
 
   if (parts[0] === 'status') {
-    printModelStatus();
+    await printModelStatus(ctx);
     return;
   }
 
@@ -751,8 +792,9 @@ async function handleModelCommand(rest = '', ctx) {
     _modelCatalogCache = null;
     _modelCatalogError = null;
     _modelCatalogSource = null;
+    _modelCatalogFetchedAt = null;
     _backendRefreshInFlight = null;
-    process.stderr.write(`  ${c.dim('Refreshing model catalog…')}\n`);
+    process.stderr.write(`  ${c.dim('Refreshing model catalog from backend…')}\n`);
     await refreshCatalogFromBackend(ctx);
     if (_modelCatalogSource !== 'backend') {
       // Backend fetch failed — restore the shipped snapshot so subsequent
@@ -761,8 +803,12 @@ async function handleModelCommand(rest = '', ctx) {
       if (shipped && shipped.length) {
         _modelCatalogCache = shipped;
         _modelCatalogSource = 'snapshot';
+        _modelCatalogFetchedAt = new Date();
       }
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Backend refresh failed — ${_modelCatalogError || 'unknown error'}. Showing shipped snapshot.`)}\n`);
+    } else {
+      const summary = modelCatalogSummary();
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Refreshed ${summary.total} models from backend · ${summary.curated} curated · ${formatCatalogFetchedAt()}`)}\n`);
     }
     await printModelCatalog(ctx);
     return;
@@ -1247,9 +1293,32 @@ async function handleSkillsCommand(rest = '', ctx) {
   printSkillsUsage();
 }
 
+const MODEL_COMMAND_COMPLETIONS = [
+  { command: '/model', description: 'Open interactive model overrides' },
+  { command: '/model status', description: 'Show model overrides and catalog source' },
+  { command: '/model refresh', description: 'Refresh model catalog from backend' },
+  { command: '/model list', description: 'List curated platform models' },
+  { command: '/model list text', description: 'List text models' },
+  { command: '/model list image', description: 'List image models' },
+  { command: '/model clear', description: 'Clear model overrides' },
+];
+
+function slashCompletionDescription(command) {
+  const modelHint = MODEL_COMMAND_COMPLETIONS.find(item => item.command === command);
+  if (modelHint) return modelHint.description;
+  return COMMANDS[command] || (command === '/quit' ? 'Exit CLI' : '');
+}
+
 function commandCompletions(line) {
-  if (line.startsWith('/help ')) {
-    const topic = line.slice('/help '.length).toLowerCase();
+  const text = String(line || '').trimStart();
+  if (text === '/model' || text.startsWith('/model ')) {
+    const modelCompletions = MODEL_COMMAND_COMPLETIONS
+      .map(item => item.command)
+      .filter(cmd => cmd.startsWith(text));
+    if (modelCompletions.length) return modelCompletions;
+  }
+  if (text.startsWith('/help ')) {
+    const topic = text.slice('/help '.length).toLowerCase();
     const categories = ['all', ...HELP_GROUPS.map(g => g.key)];
     const hits = categories.map(c => `/help ${c}`).filter(cmd => cmd.startsWith(`/help ${topic}`));
     return hits.length ? hits : categories.map(c => `/help ${c}`);
@@ -1260,19 +1329,19 @@ function commandCompletions(line) {
   // No fallback-to-all: a non-matching prefix ("/Users/...", a pasted
   // path) must yield NOTHING so the hint overlay hides, not the full
   // catalog. Bare "/" still matches every command via startsWith.
-  return all.filter(cmd => cmd.startsWith(line));
+  return all.filter(cmd => cmd.startsWith(text));
 }
 
 function slashCommandSuggestions(line, limit = 5) {
   const text = String(line || '').trimStart();
   if (!text.startsWith('/')) return [];
-  const partial = text.split(/\s+/)[0] || '/';
+  const partial = text.startsWith('/model ') ? text : (text.split(/\s+/)[0] || '/');
   return commandCompletions(partial)
     .filter(cmd => cmd.startsWith('/'))
     .slice(0, limit)
     .map(cmd => ({
       command: cmd,
-      description: COMMANDS[cmd] || (cmd === '/quit' ? 'Exit CLI' : ''),
+      description: slashCompletionDescription(cmd),
     }));
 }
 
@@ -1399,12 +1468,13 @@ function buildContextStrip() {
   return parts.join(c.dim(' · '));
 }
 
-// ── Dock meta line (cwd ⎇ branch · turn N) ─────────────────────────────
+// ── Dock meta line (cwd ⎇ branch · turn N · task …) ────────────────────
 //
-// The dock's meta row shows durable session context. Git branch is cached
-// so we don't shell out on every keystroke; refreshed at most every 5s.
+// The dock's meta row shows durable session context. Git branch and task
+// state are cached so we don't hit disk/shell on every keystroke.
 
 const _dockGitCache = { branch: null, at: 0, cwd: null };
+const _dockTaskCache = { summary: '', at: 0, cwd: null };
 
 function activeDockModel() {
   return session.modelOverrides?.reasoning
@@ -1438,6 +1508,36 @@ function _probeGitBranch(cwd) {
   return branch;
 }
 
+function compactTaskText(text, max = 36) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return value.slice(0, Math.max(0, max - 1)) + '…';
+}
+
+function _probeTaskSummary(cwd) {
+  const now = Date.now();
+  if (_dockTaskCache.cwd === cwd && (now - _dockTaskCache.at) < 1500) {
+    return _dockTaskCache.summary;
+  }
+  let summary = '';
+  try {
+    const board = loadTaskBoard({ cwd });
+    const counts = taskCounts(board);
+    const active = board.lists.active?.tasks?.find(task => !task.checked) || board.lists.active?.tasks?.[0];
+    if (active?.text) {
+      summary = `task ${compactTaskText(active.text)}`;
+    } else if (counts.blocked > 0 || counts.backlog > 0) {
+      summary = `tasks ${counts.active} active, ${counts.blocked} blocked, ${counts.backlog} backlog`;
+    }
+  } catch {
+    summary = '';
+  }
+  _dockTaskCache.cwd = cwd;
+  _dockTaskCache.at = now;
+  _dockTaskCache.summary = summary;
+  return summary;
+}
+
 function buildDockMeta() {
   const parts = [];
 
@@ -1445,6 +1545,9 @@ function buildDockMeta() {
   const projectName = path.basename(cwd);
   const branch = _probeGitBranch(cwd);
   parts.push(branch ? `${projectName} ⎇ ${branch}` : projectName);
+
+  const taskSummary = _probeTaskSummary(cwd);
+  if (taskSummary) parts.push(taskSummary);
 
   if (session.turns > 0) {
     parts.push(`turn ${session.turns}`);
@@ -2236,6 +2339,9 @@ function renderEvent(event) {
     case 'tool_result':
     case 'tool_done': {
       const eventData = normalizeSubAgentRunData(data);
+      if (String(eventData?.tool || '').toLowerCase() === 'todowrite' || String(eventData?._tool || '').toLowerCase() === 'todowrite') {
+        _dockTaskCache.at = 0;
+      }
       if (watchState.active) {
         const success = eventData?.success !== false;
         watchState.addEntry('done', { label: eventData?.tool, detail: success ? '✓' : '✗' });
@@ -3062,6 +3168,7 @@ function refreshTaskContext(ctx) {
     const previous = ctx.latestProjectContext || null;
     ctx.latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous });
     ctx.latestEnvelope = null;
+    _dockTaskCache.at = 0;
   } catch { /* best effort */ }
 }
 
@@ -5236,10 +5343,12 @@ export async function startTerminalRepl() {
   function selectedSlashCommandFor(line) {
     const input = String(line || '').trim();
     if (!input.startsWith('/')) return null;
-    if (COMMANDS[input] || input.startsWith('/help ')) return input;
+    const parts = input.split(/\s+/);
+    const firstToken = parts[0] || '';
+    if (COMMANDS[firstToken] || firstToken === '/help') return input;
     const item = slashHintItems[slashHintSelected];
     if (!item) return input;
-    return item.command;
+    return parts.length > 1 ? `${item.command} ${parts.slice(1).join(' ')}` : item.command;
   }
 
   function reservePromptBottomPadding() {

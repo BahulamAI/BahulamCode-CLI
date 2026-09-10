@@ -16,6 +16,9 @@ const DEFAULT_CONTENT = Object.freeze({
   'done.md': '# Done\n\n',
 });
 
+const MANAGED_START = '<!-- bahulam:todo-write:start -->';
+const MANAGED_END = '<!-- bahulam:todo-write:end -->';
+
 export function ensureTaskFiles({ cwd = process.cwd() } = {}) {
   const dir = path.join(cwd, '.bahulam', 'tasks');
   fs.mkdirSync(dir, { recursive: true });
@@ -125,6 +128,38 @@ export function taskCounts(board) {
   );
 }
 
+export function syncTodoWriteToTaskFiles({ cwd = process.cwd(), todos = [] } = {}) {
+  ensureTaskFiles({ cwd });
+  const grouped = { active: [], backlog: [], blocked: [], done: [] };
+  for (const todo of Array.isArray(todos) ? todos : []) {
+    const text = String(todo?.content || '').trim();
+    if (!text) continue;
+    const status = String(todo?.status || 'pending').toLowerCase();
+    const list = status === 'completed'
+      ? 'done'
+      : status === 'in_progress'
+        ? 'active'
+        : 'backlog';
+    grouped[list].push({ text, checked: list === 'done' });
+  }
+
+  const written = [];
+  for (const [list, fileName] of Object.entries(TASK_FILES)) {
+    const filePath = path.join(cwd, '.bahulam', 'tasks', fileName);
+    const existing = readText(filePath) || DEFAULT_CONTENT[fileName] || `# ${list}\n\n`;
+    const managed = grouped[list]
+      .map(task => taskLine(task.text, list, task.checked))
+      .join('\n');
+    const block = `${MANAGED_START}\n${managed}${managed ? '\n' : ''}${MANAGED_END}`;
+    const next = replaceManagedBlock(existing, block);
+    if (next !== existing) {
+      fs.writeFileSync(filePath, next);
+      written.push(filePath);
+    }
+  }
+  return { written, counts: Object.fromEntries(Object.entries(grouped).map(([list, items]) => [list, items.length])) };
+}
+
 export function normalizeList(value) {
   const key = String(value || '').toLowerCase();
   if (key === 'todo' || key === 'pending') return 'backlog';
@@ -147,6 +182,18 @@ function taskFilePath(cwd, list) {
 function taskLine(text, list, checked = false) {
   const mark = checked || list === 'done' ? 'x' : ' ';
   return `- [${mark}] ${text}`;
+}
+
+function replaceManagedBlock(content, block) {
+  const value = String(content || '');
+  const pattern = new RegExp(`${escapeRegExp(MANAGED_START)}[\\s\\S]*?${escapeRegExp(MANAGED_END)}`);
+  if (pattern.test(value)) return value.replace(pattern, block);
+  const trimmed = value.replace(/\s*$/, '');
+  return `${trimmed}\n\n${block}\n`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function readText(filePath) {
