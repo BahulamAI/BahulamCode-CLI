@@ -16,6 +16,7 @@ export class StreamableHttpTransport {
         this.timeout = options.timeout || 30000;
         this.sessionId = options.sessionId || null;
         this.connected = false;
+        this.requestId = 0;
     }
 
     async connect() {
@@ -42,7 +43,7 @@ export class StreamableHttpTransport {
      * Collects all events and returns the final result.
      */
     async request(method, params) {
-        const id = Date.now();
+        const id = ++this.requestId;
         const body = { jsonrpc: '2.0', id, method, params };
 
         const headers = {

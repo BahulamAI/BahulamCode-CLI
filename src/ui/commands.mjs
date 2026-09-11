@@ -350,9 +350,11 @@ export const COMMANDS = {
             if (!state._mcpClients || state._mcpClients.length === 0) {
                 return 'No MCP servers connected.';
             }
-            const lines = state._mcpClients.map((c, i) =>
-                `  ${i + 1}. ${c.config?.command || 'unknown'} — ${c.connected ? 'connected' : 'disconnected'}`
-            );
+            const lines = state._mcpClients.map((c, i) => {
+                const name = c.name || c.config?.command || 'unknown';
+                const endpoint = c.config?.url || c.config?.command || 'unknown';
+                return `  ${i + 1}. ${name} (${endpoint}) — ${c.connected ? 'connected' : 'disconnected'}`;
+            });
             return `MCP servers:\n${lines.join('\n')}`;
         },
     },
