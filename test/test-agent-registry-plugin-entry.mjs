@@ -34,6 +34,7 @@ function pluginRegistry() {
         {
           slug: 'architecture-cartographer',
           name: 'Architecture Cartographer',
+          aliases: ['arch-cartographer'],
           role: 'specialist',
           description: 'Helper agent',
           tools: ['get_architecture'],
@@ -80,6 +81,18 @@ await test('main channel admits non-entry plugin agents when allowlisted', async
   const slugs = registry.listRunnables().map(agent => agent.slug);
   assert.ok(slugs.includes('excalidraw-spec'));
   assert.ok(slugs.includes('architecture-cartographer'));
+});
+
+await test('findAgent resolves plugin agent aliases', async () => {
+  const registry = createAgentRegistry({
+    cwd: process.cwd(),
+    pluginRegistry: pluginRegistry(),
+    channel: 'main',
+    settingsLoader: settingsLoader(['architecture-cartographer']),
+  });
+
+  const agent = registry.findAgent('arch-cartographer');
+  assert.strictEqual(agent.slug, 'architecture-cartographer');
 });
 
 await test('workspace channel admits all plugin agents', async () => {

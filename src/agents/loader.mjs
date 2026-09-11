@@ -93,6 +93,7 @@ export class AgentLoader {
             slug,
             normalizeKey(agent.name),
             normalizeKey(agent.id),
+            ...(Array.isArray(agent.aliases) ? agent.aliases.map(normalizeKey) : []),
         ].filter(Boolean);
 
         // Earlier search paths have higher precedence: project beats global,

@@ -81,6 +81,91 @@ function truncate(s, n) {
   return str.slice(0, n - 1) + '…';
 }
 
+function renderStandardRequirements(requirements) {
+  const lines = ['  requirements:'];
+  const bins = requirements?.system_binaries || [];
+  lines.push('    system:');
+  if (bins.length) {
+    for (const b of bins) {
+      lines.push(`      - name: ${yamlString(b.name)}`);
+      lines.push(`        reason: Required by composed pi tool runtime.`);
+      if (b.install_hints) {
+        lines.push('        install_hints:');
+        if (b.install_hints.darwin) lines.push(`          darwin: ${yamlString(b.install_hints.darwin)}`);
+        if (b.install_hints.linux) lines.push(`          linux: ${yamlString(b.install_hints.linux)}`);
+      }
+    }
+  } else {
+    lines.push('      []');
+  }
+
+  const envVars = requirements?.env_vars || [];
+  lines.push('    env:');
+  if (envVars.length) {
+    for (const v of envVars) {
+      lines.push(`      - name: ${yamlString(v.name)}`);
+      lines.push(`        credential: ${v.credential ? 'true' : 'false'}`);
+      lines.push(`        optional: true`);
+      lines.push(`        reason: Read by composed pi package when that feature is used.`);
+    }
+  } else {
+    lines.push('      []');
+  }
+
+  lines.push('    filesystem:');
+  lines.push('      - path: .bahulam/plugin-state');
+  lines.push('        access: read_write');
+  lines.push('        reason: Stores durable notebook records and reports for this generated pack.');
+  return lines;
+}
+
+function renderStandardState(slug) {
+  return [
+    '  state:',
+    '    tables:',
+    '      - name: items',
+    '        columns:',
+    '          - { name: id, type: INTEGER, primary: true, autoincrement: true }',
+    '          - { name: title, type: TEXT, not_null: true }',
+    '          - { name: source, type: TEXT, not_null: true, default: "\'\'" }',
+    '          - { name: notes, type: TEXT, not_null: true, default: "\'\'" }',
+    '          - { name: topic, type: TEXT, not_null: true, default: "\'\'" }',
+    '          - { name: created_at, type: TEXT, not_null: true }',
+    '          - { name: updated_at, type: TEXT, not_null: true }',
+    '        indexes:',
+    '          - { columns: [topic] }',
+    '',
+    '      - name: reports',
+    '        columns:',
+    '          - { name: id, type: INTEGER, primary: true, autoincrement: true }',
+    '          - { name: title, type: TEXT, not_null: true }',
+    '          - { name: summary, type: TEXT, not_null: true }',
+    '          - { name: item_count, type: INTEGER, not_null: true, default: "0" }',
+    '          - { name: created_at, type: TEXT, not_null: true }',
+    '',
+    '    context_always:',
+    `      - { stream: ${slug}_activity, limit: 5 }`,
+    '',
+    '    context_tools:',
+    '      - name: list_saved_items',
+    '        table: items',
+    '        description: List durable notebook items saved by this plugin.',
+    '        parameters:',
+    '          type: object',
+    '          properties:',
+    '            limit: { type: integer, description: "Max rows to return." }',
+    '',
+    '      - name: list_saved_reports',
+    '        table: reports',
+    '        description: List generated outcome reports.',
+    '        parameters:',
+    '          type: object',
+    '          properties:',
+    '            limit: { type: integer, description: "Max rows to return." }',
+    '',
+  ];
+}
+
 /**
  * Compose the "Requirements & constraints" block from the analyzer's
  * findings. Injected into the generated agent's system prompt so the
@@ -185,7 +270,7 @@ function generatePrompt(packageName, namespace, toolNames, hasState, requirement
  * (quoted keys, over-escaping); a small emitter here yields a diff-
  * friendly manifest the user can edit.
  */
-function renderManifest({ slug, packageName, versionRange, namespace, exposeTools, hasState, hasWorkspace }) {
+function renderManifest({ slug, packageName, versionRange, namespace, exposeTools, hasState, hasWorkspace, requirements }) {
   const versionSpec = versionRange ? `${packageName}@${versionRange}` : packageName;
   const tools = hasState ? [
     '  tools:',
@@ -223,6 +308,17 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
     '          id: { type: integer, description: "Item id (from list_items)" }',
     '        required: [id]',
     '',
+    '    - name: build_report',
+    '      description: Build a durable outcome report from saved notebook items.',
+    `      tool: ./tools/build-report.mjs`,
+    '      parameters:',
+    '        type: object',
+    '        properties:',
+    '          title: { type: string, description: "Report title." }',
+    '          topic: { type: string, description: "Optional topic filter." }',
+    '          summary: { type: string, description: "Optional agent-authored summary." }',
+    '        required: [title]',
+    '',
   ] : ['  tools: []', ''];
 
   const composesBlock = [
@@ -254,17 +350,22 @@ function renderManifest({ slug, packageName, versionRange, namespace, exposeTool
     `    Edit tools/, workspace/, and this manifest to customize.`,
     '',
     'config:',
+    ...renderStandardRequirements(requirements),
+    '',
+    ...(hasState ? renderStandardState(slug) : []),
     ...tools,
     ...composesBlock,
     '  workspace: ./config/workspace.yaml',
+    '  agents_from: ./config/agents/',
     '',
     ...workspaceBlock,
   ].join('\n');
 }
 
-function renderAgentFile({ namespace, exposeTools, agentSlug, agentDescription, hasState, systemPrompt }) {
+function renderAgentFile({ namespace, exposeTools, agentSlug, agentAliases = [], agentDescription, hasState, systemPrompt }) {
   const agentToolRefs = [
     ...(hasState ? ['save_item', 'list_items', 'drop_item'] : []),
+    ...(hasState ? ['build_report'] : []),
     ...exposeTools.map(t => `${namespace}${COMPOSED_TOOL_SEPARATOR}${t}`),
   ];
 
@@ -276,6 +377,7 @@ function renderAgentFile({ namespace, exposeTools, agentSlug, agentDescription, 
     'metadata:',
     `  slug: ${agentSlug}`,
     `  name: ${yamlString(agentSlug.replace(/-/g, ' '))}`,
+    ...(agentAliases.length ? ['  aliases:', ...agentAliases.map(alias => `    - ${yamlString(alias)}`)] : []),
     '  role: specialist',
     '  description: >',
     `    ${agentDescription}`,
@@ -284,6 +386,29 @@ function renderAgentFile({ namespace, exposeTools, agentSlug, agentDescription, 
     `  system_prompt: ${yamlBlock(systemPrompt, 4)}`,
     'tools:',
     ...agentToolRefs.map(t => `  - ${t}`),
+    '',
+  ].join('\n');
+}
+
+function renderReviewerAgent({ slug, hasState }) {
+  const tools = hasState ? ['list_items', 'build_report'] : [];
+  return [
+    'apiVersion: agent.framework/v1',
+    'kind: SubAgent',
+    'metadata:',
+    '  slug: outcome-reviewer',
+    '  name: Outcome Reviewer',
+    '  role: reviewer',
+    '  description: >',
+    `    Reviews ${slug} outputs, checks whether saved evidence is enough, and prepares a concise handoff report.`,
+    'agent:',
+    '  can_be_delegated_to: true',
+    '  system_prompt: |',
+    `    You are the Outcome Reviewer for ${slug}.`,
+    '    Inspect saved items and tool outputs, identify missing evidence, and produce a compact handoff.',
+    '    If state tools are available, call list_items first and build_report when the outcome is ready.',
+    'tools:',
+    ...tools.map(t => `  - ${t}`),
     '',
   ].join('\n');
 }
@@ -307,6 +432,17 @@ export async function call(args = {}, options = {}) {
     topic: String(args.topic || '').trim(),
     at: new Date().toISOString(),
   };
+  if (typeof state.query === 'function') {
+    const info = state.query('INSERT INTO items (title, source, notes, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
+      item.title, item.source, item.notes, item.topic, item.at, item.at,
+    ]);
+    if (typeof state.append === 'function') state.append('items', item);
+    return {
+      success: true,
+      output: \`Saved item #\${info?.lastInsertRowid || ''}: \${title}\`,
+      item: { ...item, id: info?.lastInsertRowid },
+    };
+  }
   const record = state.append('items', item);
   return {
     success: true,
@@ -325,6 +461,17 @@ export async function call(args = {}, options = {}) {
 
   const topic = String(args.topic || '').trim().toLowerCase();
   const limit = Math.max(1, Math.min(500, Number(args.limit) || 50));
+  if (typeof state.query === 'function') {
+    const rows = topic
+      ? state.query('SELECT * FROM items WHERE lower(topic) = ? ORDER BY id DESC LIMIT ?', [topic, limit])
+      : state.query('SELECT * FROM items ORDER BY id DESC LIMIT ?', [limit]);
+    const summary = rows.map(r => \`#\${r.id} · \${r.title || ''}\${r.topic ? ' (' + r.topic + ')' : ''}\`).join('\\n');
+    return {
+      success: true,
+      output: rows.length ? summary : (topic ? \`No items for topic '\${topic}'\` : 'No items yet'),
+      items: rows,
+    };
+  }
   const rows = state.list('items', { limit, order: 'desc' }) || [];
   const filtered = topic
     ? rows.filter(r => String(r.payload?.topic || '').toLowerCase() === topic)
@@ -349,10 +496,61 @@ export async function call(args = {}, options = {}) {
   const state = options.state ? await options.state : null;
   if (!state) return { success: false, output: 'Shared blackboard unavailable' };
 
-  const info = state.db.prepare('DELETE FROM records WHERE stream = ? AND id = ?').run('items', id);
+  let info = null;
+  if (typeof state.query === 'function') {
+    info = state.query('DELETE FROM items WHERE id = ?', [id]);
+  } else if (state.db?.prepare) {
+    info = state.db.prepare('DELETE FROM records WHERE stream = ? AND id = ?').run('items', id);
+  } else {
+    return { success: false, output: 'delete is unavailable in this state adapter' };
+  }
   return {
     success: info.changes > 0,
     output: info.changes > 0 ? \`Dropped item #\${id}\` : \`No item with id \${id}\`,
+  };
+}
+`;
+
+const BUILD_REPORT_TOOL = `/**
+ * build_report — create a concise durable report from saved notebook items.
+ */
+export async function call(args = {}, options = {}) {
+  const title = String(args.title || '').trim();
+  if (!title) return { success: false, output: 'title is required' };
+  const topic = String(args.topic || '').trim().toLowerCase();
+  const state = options.state ? await options.state : null;
+  if (!state) return { success: false, output: 'Shared blackboard unavailable' };
+
+  let items = [];
+  if (typeof state.query === 'function') {
+    items = topic
+      ? state.query('SELECT * FROM items WHERE lower(topic) = ? ORDER BY id DESC LIMIT 100', [topic])
+      : state.query('SELECT * FROM items ORDER BY id DESC LIMIT 100');
+  } else {
+    const rows = state.list('items', { limit: 100, order: 'desc' }) || [];
+    items = rows.map(r => ({ id: r.id, ...(r.payload || {}), created_at: r.created_at }))
+      .filter(r => !topic || String(r.topic || '').toLowerCase() === topic);
+  }
+  const summary = String(args.summary || '').trim() || (
+    items.length
+      ? \`Report from \${items.length} saved item\${items.length === 1 ? '' : 's'}.\`
+      : 'No saved items available yet.'
+  );
+  const createdAt = new Date().toISOString();
+  let reportId = null;
+  if (typeof state.query === 'function') {
+    const info = state.query('INSERT INTO reports (title, summary, item_count, created_at) VALUES (?, ?, ?, ?)', [
+      title, summary, items.length, createdAt,
+    ]);
+    reportId = info?.lastInsertRowid || null;
+  }
+  if (typeof state.append === 'function') {
+    const record = state.append('reports', { title, summary, item_count: items.length, topic, created_at: createdAt });
+    reportId ||= record?.id || null;
+  }
+  return {
+    success: true,
+    output: { id: reportId, title, summary, item_count: items.length, topic: topic || null, items },
   };
 }
 `;
@@ -523,7 +721,8 @@ export function scaffoldPiPack({
   }
   fs.mkdirSync(dest, { recursive: true });
 
-  const agentSlug = `${namespace}-specialist`;
+  const agentSlug = slug;
+  const agentAliases = [`${namespace}-specialist`].filter(alias => alias !== agentSlug);
   const agentDescription = truncate(
     `Specialist agent for ${packageName}. Composes ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'} exposed as ${namespace}${COMPOSED_TOOL_SEPARATOR}*.`,
     240,
@@ -547,19 +746,24 @@ export function scaffoldPiPack({
     exposeTools: toolNames,
     hasState: state,
     hasWorkspace: workspace,
+    requirements,
   });
   fs.writeFileSync(path.join(dest, 'plugin.yaml'), manifest);
 
   const configDir = path.join(dest, 'config');
   fs.mkdirSync(configDir, { recursive: true });
+  const agentsDir = path.join(configDir, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'workspace.yaml'), renderAgentFile({
     namespace,
     exposeTools: toolNames,
     agentSlug,
+    agentAliases,
     agentDescription,
     hasState: state,
     systemPrompt,
   }));
+  fs.writeFileSync(path.join(agentsDir, 'outcome-reviewer.yaml'), renderReviewerAgent({ slug, hasState: state }));
 
   if (state) {
     const toolsDir = path.join(dest, 'tools');
@@ -567,6 +771,7 @@ export function scaffoldPiPack({
     fs.writeFileSync(path.join(toolsDir, 'save-item.mjs'), SAVE_ITEM_TOOL);
     fs.writeFileSync(path.join(toolsDir, 'list-items.mjs'), LIST_ITEMS_TOOL);
     fs.writeFileSync(path.join(toolsDir, 'drop-item.mjs'), DROP_ITEM_TOOL);
+    fs.writeFileSync(path.join(toolsDir, 'build-report.mjs'), BUILD_REPORT_TOOL);
   }
 
   if (workspace) {

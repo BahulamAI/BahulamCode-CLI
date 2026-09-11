@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { load as yamlLoad } from 'js-yaml';
 
 export const REQUIREMENTS_FILE = '.bahulam-requirements.json';
 
@@ -168,6 +169,7 @@ function analyzeFile(text, rel, findings) {
     if (!name) continue;
     // Ignore Node.js / OS-level env vars users don't set for a plugin.
     if (['NODE_ENV', 'PATH', 'HOME', 'USER', 'PWD', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'TMP', 'TEMP'].includes(name)) continue;
+    if (/_PREFLIGHT$/.test(name)) continue;
     const existing = findings.envVars.get(name) || { name, seen_in: new Set(), credential: false };
     existing.seen_in.add(rel);
     if (CREDENTIAL_SUFFIXES.some(s => name.endsWith(s))) existing.credential = true;
@@ -278,6 +280,70 @@ function extractSkillsFiles(pluginDir) {
   return skills;
 }
 
+function readManifestRequirements(pluginDir) {
+  for (const name of ['plugin.yaml', 'plugin.yml']) {
+    const filePath = path.join(pluginDir, name);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const doc = yamlLoad(fs.readFileSync(filePath, 'utf-8')) || {};
+      const reqs = doc.config?.requirements;
+      return reqs && typeof reqs === 'object' ? reqs : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function normalizeManifestRequirementList(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') return [value];
+  if (typeof value === 'object') return Object.entries(value).map(([name, detail]) => (
+    detail && typeof detail === 'object' ? { name, ...detail } : { name, reason: String(detail || '') }
+  ));
+  return [];
+}
+
+function mergeManifestRequirements(shape, manifestRequirements) {
+  if (!manifestRequirements) return shape;
+
+  const binaries = new Map((shape.system_binaries || []).map(b => [b.name, b]));
+  for (const raw of normalizeManifestRequirementList(manifestRequirements.system)) {
+    const name = typeof raw === 'string' ? raw : raw?.name;
+    const clean = String(name || '').trim();
+    if (!clean) continue;
+    const existing = binaries.get(clean) || { name: clean, install_hints: INSTALL_HINTS[clean] || null, seen_in: [] };
+    existing.install_hints = raw.install_hints || raw.installHints || existing.install_hints || INSTALL_HINTS[clean] || null;
+    existing.version = raw.version || existing.version || null;
+    existing.reason = raw.reason || existing.reason || 'Declared by plugin manifest.';
+    existing.optional = raw.optional === true || existing.optional === true;
+    existing.seen_in = [...new Set([...(existing.seen_in || []), 'plugin.yaml:config.requirements.system'])].slice(0, 5);
+    binaries.set(clean, existing);
+  }
+  shape.system_binaries = [...binaries.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  const envVars = new Map((shape.env_vars || []).map(v => [v.name, v]));
+  for (const raw of normalizeManifestRequirementList(manifestRequirements.env)) {
+    const name = typeof raw === 'string' ? raw : raw?.name;
+    const clean = String(name || '').trim();
+    if (!clean) continue;
+    const existing = envVars.get(clean) || { name: clean, seen_in: [], credential: false };
+    existing.credential = raw.credential === true || existing.credential || CREDENTIAL_SUFFIXES.some(s => clean.endsWith(s));
+    existing.optional = raw.optional === true || existing.optional === true;
+    existing.reason = raw.reason || existing.reason || 'Declared by plugin manifest.';
+    existing.seen_in = [...new Set([...(existing.seen_in || []), 'plugin.yaml:config.requirements.env'])].slice(0, 5);
+    envVars.set(clean, existing);
+  }
+  shape.env_vars = [...envVars.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  const files = normalizeManifestRequirementList(manifestRequirements.filesystem);
+  if (files.length) {
+    shape.filesystem = files.map(item => typeof item === 'string' ? { path: item } : item).filter(Boolean);
+  }
+  return shape;
+}
+
 function extractToolConstraints(discoveredTools) {
   const out = {};
   for (const tool of discoveredTools || []) {
@@ -377,6 +443,7 @@ export function analyzeRequirements(pluginDir, { discoveredTools = null } = {}) 
     skills_available: skills,
     tool_constraints: toolConstraints,
   };
+  mergeManifestRequirements(shape, readManifestRequirements(pluginDir));
 
   try {
     fs.writeFileSync(path.join(pluginDir, REQUIREMENTS_FILE), JSON.stringify(shape, null, 2));
@@ -462,4 +529,3 @@ export function checkRequirementsAgainstHost(reqs) {
 
   return results;
 }
-

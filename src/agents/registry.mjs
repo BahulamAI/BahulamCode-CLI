@@ -30,6 +30,7 @@ export function compactAgentMetadata(agent) {
     tools: Array.isArray(agent.tools) ? agent.tools : [],
     capabilities: Array.isArray(agent.capabilities) ? agent.capabilities : [],
     domains: Array.isArray(agent.domains) ? agent.domains : [],
+    aliases: Array.isArray(agent.aliases) ? agent.aliases : [],
     source_scope: agent.source_scope || 'unknown',
     source: agent.source || '',
     content_hash: agent.content_hash || '',
@@ -81,6 +82,7 @@ export function createAgentRegistry({
       tools: normalizeAgentTools(agentDef.tools || agentDef.agent_tools),
       capabilities: Array.isArray(agentDef.capabilities) ? agentDef.capabilities : [],
       domains: Array.isArray(agentDef.domains) ? agentDef.domains : [],
+      aliases: Array.isArray(agentDef.aliases) ? agentDef.aliases.map(String).filter(Boolean) : [],
       prompt: agentDef.prompt || agentDef.system_prompt || agentDef.systemPrompt || '',
       system_prompt: agentDef.system_prompt || agentDef.systemPrompt || agentDef.prompt || '',
       source_scope: 'plugin',
@@ -190,6 +192,7 @@ export function createAgentRegistry({
       agent.id,
       agent.command,
       agent.name,
+      ...(Array.isArray(agent.aliases) ? agent.aliases : []),
     ].some(value => String(value || '').trim().toLowerCase() === needle)) || null;
   }
 
@@ -212,6 +215,7 @@ export function createAgentRegistry({
           agent.name,
           agent.description,
           agent.role,
+          ...(Array.isArray(agent.aliases) ? agent.aliases : []),
           ...(Array.isArray(agent.capabilities) ? agent.capabilities : []),
           ...(Array.isArray(agent.domains) ? agent.domains : []),
         ].some(value => String(value || '').toLowerCase().includes(query));

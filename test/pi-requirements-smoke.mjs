@@ -84,6 +84,25 @@ fs.writeFileSync(path.join(piDir, 'README.md'), `
 npm install pi-fake-media
 `);
 
+fs.writeFileSync(path.join(piDir, 'plugin.yaml'), `
+apiVersion: bahulam.plugin/1
+kind: Plugin
+metadata:
+  name: fake-media
+  version: 0.1.0
+config:
+  requirements:
+    system:
+      - name: manim
+        version: ">=0.18"
+        reason: Declared render substrate.
+    env:
+      - name: MANIFEST_ONLY_API_KEY
+        credential: true
+        optional: true
+        reason: Declared credential.
+`);
+
 fs.writeFileSync(path.join(piDir, 'index.mjs'), `
 import def from './extensions/tool.ts';
 export default def;
@@ -118,8 +137,10 @@ const reqs = analyzeRequirements(piDir, { discoveredTools: fakeTools });
 
 ok('sidecar written to disk',       fs.existsSync(path.join(piDir, REQUIREMENTS_FILE)));
 ok('detects ffmpeg binary',         reqs.system_binaries.some(b => b.name === 'ffmpeg'));
+ok('detects manifest manim binary', reqs.system_binaries.some(b => b.name === 'manim' && b.seen_in.includes('plugin.yaml:config.requirements.system')));
 ok('ffmpeg has install hints',      reqs.system_binaries.find(b => b.name === 'ffmpeg')?.install_hints?.darwin?.includes('brew'));
 ok('detects FAKE_MEDIA_API_KEY',    reqs.env_vars.some(v => v.name === 'FAKE_MEDIA_API_KEY'));
+ok('detects manifest env var',      reqs.env_vars.some(v => v.name === 'MANIFEST_ONLY_API_KEY' && v.credential === true));
 ok('flags API_KEY as credential',   reqs.env_vars.find(v => v.name === 'FAKE_MEDIA_API_KEY')?.credential === true);
 ok('detects PI_FAKE_FFMPEG_BINARY', reqs.env_vars.some(v => v.name === 'PI_FAKE_FFMPEG_BINARY'));
 ok('binary NOT flagged as cred',    reqs.env_vars.find(v => v.name === 'PI_FAKE_FFMPEG_BINARY')?.credential === false);

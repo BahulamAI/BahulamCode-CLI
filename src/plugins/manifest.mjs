@@ -35,6 +35,12 @@ function normalizePathList(value) {
   return [];
 }
 
+function normalizeStringList(value) {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean);
+  return [];
+}
+
 function addAgent(agents, seen, agent) {
   if (!agent?.slug) return;
   const key = String(agent.slug).trim().toLowerCase();
@@ -119,6 +125,7 @@ function normalizeAgentDef(agentDef, pluginName, pluginDir) {
       || ''
     ),
     tools: inlineTools.length ? inlineTools : normalizeToolNames(fileTools),
+    aliases: normalizeStringList(agentDef.aliases || metadata.aliases || fileConfig.aliases || agent.aliases),
     model: agentDef.model || agent.model || fileConfig.model || null,
     models: agentDef.models || agent.models || fileConfig.models || undefined,
     max_tokens: agentDef.max_tokens || agent.max_tokens || fileConfig.max_tokens || undefined,
