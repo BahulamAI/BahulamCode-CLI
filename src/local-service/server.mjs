@@ -640,10 +640,7 @@ function scanPlugins(session) {
   const dirs = new Map();
   try {
     const registry = new PluginRegistry({
-      pluginDirs: [
-        path.join(session.root_path || process.cwd(), '.bahulam', 'plugins'),
-        path.join(os.homedir(), '.bahulam', 'plugins'),
-      ],
+      pluginDirs: [path.join(os.homedir(), '.bahulam', 'plugins')],
     }).scan();
     for (const manifest of registry.list()) {
       const pluginName = manifest.metadata?.name || '';

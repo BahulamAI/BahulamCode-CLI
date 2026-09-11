@@ -7,8 +7,9 @@
  *   yet; if a bare name is given to `install`, we look it up in the
  *   awesome-bahulam-plugins index (a plain JSON manifest hosted in the
  *   community repo).
- * - Install target: `~/.bahulam/plugins/` by default, `.bahulam/plugins/`
- *   with --project. Never global npm, never modifies the user's PATH.
+ * - Install target: `~/.bahulam/plugins/`. Always. Plugins have no project
+ *   scope (skills have one, separately). Never global npm, never modifies
+ *   the user's PATH.
  * - Disable: rename directory to `<name>.disabled`. The plugin registry
  *   only scans directories with a valid manifest, so this hides the plugin
  *   without deleting it. `enable` reverses the rename.
@@ -24,7 +25,7 @@ import { spawn } from 'node:child_process';
 import { parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
 import { parsePiSource } from '../plugins/pi-compose.mjs';
-import { bahulamHome } from '../core/paths.mjs';
+import { bahulamHome, pluginDirs, pluginInstallDir } from '../core/paths.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -36,17 +37,20 @@ const RED = '\x1b[31m';
 
 const INSTALL_STAMP = '.bahulam-plugin.json';
 
-function searchDirs(cwd) {
-  return [
-    { scope: 'project', dir: path.join(cwd, '.bahulam', 'plugins') },
-    { scope: 'global', dir: path.join(bahulamHome(), 'plugins') },
-  ];
+function searchDirs(_cwd) {
+  // One scope. `_cwd` is accepted but ignored so callers don't churn, and so
+  // nobody is tempted to reintroduce cwd-dependence here.
+  return pluginDirs().map(dir => ({ scope: 'global', dir }));
 }
 
-export function pluginTargetDir({ global, cwd }) {
-  return global
-    ? path.join(bahulamHome(), 'plugins')
-    : path.join(cwd, '.bahulam', 'plugins');
+/**
+ * Where a plugin install lands: always the global root.
+ *
+ * The old `{global, cwd}` options are accepted and ignored — `global: false`
+ * no longer selects a project directory, because there isn't one.
+ */
+export function pluginTargetDir() {
+  return pluginInstallDir();
 }
 
 function readManifest(dir) {
@@ -73,8 +77,12 @@ function scanInstalled(cwd) {
       // else in the plugins/ dir is stray (readManifest returns null).
       if (!parsed && !disabled) continue;
       const stamp = readStamp(pluginDir);
-      const agentSlugs = (parsed?.manifest?.config?.agents || [])
-        .map(a => a.slug || a.name).filter(Boolean);
+      const agents = parsed?.manifest?.config?.agents || [];
+      const agentSlugs = agents.map(a => a.slug || a.name).filter(Boolean);
+      const entryAgentSlugs = agents
+        .filter(a => a.entry_agent === true)
+        .map(a => a.slug || a.name)
+        .filter(Boolean);
       found.push({
         scope,
         directory: pluginDir,
@@ -87,6 +95,7 @@ function scanInstalled(cwd) {
         views: parsed?.manifest?.config?.views?.length || 0,
         composes: parsed?.manifest?.config?.composes?.length || 0,
         agentSlugs,
+        entryAgentSlugs,
         disabled,
         origin: stamp?.origin || null,
         installed_at: stamp?.installed_at || null,
@@ -433,11 +442,12 @@ async function cmdList(args, cwd) {
   const plugins = scanInstalled(cwd);
   const pi = scanPiIngredients();
   const allowlist = new Set(await readAgentAllowlist(cwd));
-  // A pack is "enabled" for this session when at least one of its
-  // agents is in plugins.agent_allowlist (PRD-102 §6.2.1). Packs with
-  // no agents (tools-only packs) always count as enabled — the
-  // allowlist gate only exists for agents.
-  const enabled = (p) => p.agentSlugs.length === 0 || p.agentSlugs.some(s => allowlist.has(s));
+  // A pack is "enabled" for this session when it has no agents, exposes an
+  // entry agent, or has at least one agent explicitly allowlisted. Helpers
+  // without entry_agent stay workspace-scoped until allowlisted.
+  const enabled = (p) => p.agentSlugs.length === 0
+    || (p.entryAgentSlugs || []).length > 0
+    || p.agentSlugs.some(s => allowlist.has(s));
   const composerFor = (piName) => plugins.filter(p =>
     (p.composes > 0) && Boolean(p) // composes is a count; details need re-read
   );
@@ -460,6 +470,7 @@ async function cmdList(args, cwd) {
       ...p,
       enabled: enabled(p),
       allowlisted_agents: p.agentSlugs.filter(s => allowlist.has(s)),
+      entry_agents: p.entryAgentSlugs || [],
     }));
     process.stdout.write(JSON.stringify({
       ok: true,
@@ -497,7 +508,7 @@ async function cmdList(args, cwd) {
     const notEnabled = plugins.filter(p => !p.disabled && !enabled(p));
     if (notEnabled.length) {
       process.stderr.write(`\n${YELLOW}!${RESET} ${notEnabled.length} pack${notEnabled.length === 1 ? '' : 's'} installed but NOT enabled in this session.\n`);
-      process.stderr.write(`  Their plugin agents won't appear in the model's toolset until allowlisted.\n`);
+      process.stderr.write(`  Their plugin agents won't appear in the model's toolset until allowlisted or declared as entry_agent.\n`);
       process.stderr.write(`  Add to ${CYAN}.bahulam/settings.json${RESET}:\n`);
       const slugs = notEnabled.flatMap(p => p.agentSlugs);
       process.stderr.write(`  ${DIM}{ "plugins": { "agent_allowlist": ${JSON.stringify(slugs)} } }${RESET}\n`);

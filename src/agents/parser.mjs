@@ -189,6 +189,7 @@ function normalizeAgent(data) {
         model: data.model || agent.model || null,
         models: data.models && typeof data.models === 'object' ? data.models : {},
         tools: Array.isArray(data.tools) ? data.tools : Array.isArray(config?.tools) ? config.tools : [],
+        aliases: Array.isArray(data.aliases) ? data.aliases : Array.isArray(metadata.aliases) ? metadata.aliases : [],
         capabilities: Array.isArray(data.capabilities) ? data.capabilities : Array.isArray(metadata.capabilities) ? metadata.capabilities : [],
         domains: Array.isArray(data.domains) ? data.domains : Array.isArray(metadata.domains) ? metadata.domains : [],
         hooks: data.hooks || {},

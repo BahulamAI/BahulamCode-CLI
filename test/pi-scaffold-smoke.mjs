@@ -82,7 +82,9 @@ ok('workspace agent yaml written', fs.existsSync(path.join(result.dest, 'config/
 ok('save-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/save-item.mjs')));
 ok('list-items.mjs written',       fs.existsSync(path.join(result.dest, 'tools/list-items.mjs')));
 ok('drop-item.mjs written',        fs.existsSync(path.join(result.dest, 'tools/drop-item.mjs')));
+ok('build-report.mjs written',     fs.existsSync(path.join(result.dest, 'tools/build-report.mjs')));
 ok('workspace panel.html written', fs.existsSync(path.join(result.dest, 'workspace/panel.html')));
+ok('reviewer agent yaml written',  fs.existsSync(path.join(result.dest, 'config/agents/outcome-reviewer.yaml')));
 eq('slug derived',                 result.slug, 'pi-web-access');
 eq('namespace derived',            result.namespace, 'web');
 eq('expose list matches tools',    result.exposeTools.sort(), ['fetch_content', 'web_search']);
@@ -94,13 +96,21 @@ ok('manifest declares pi source',   /source:\s+pi:pi-web-access@\^0\.27\.0/.test
 ok('manifest namespace is web',     /as:\s+web/.test(manifestText));
 ok('manifest exposes web_search',      /-\s+web_search/.test(manifestText));
 ok('manifest points to workspace agent', /workspace:\s+\.\/config\/workspace\.yaml/.test(manifestText));
+ok('manifest points to agents_from', /agents_from:\s+\.\/config\/agents\//.test(manifestText));
 ok('manifest has no inline agents',    !/^\s+agents:/m.test(manifestText));
+ok('manifest declares requirements',   /^\s+requirements:/m.test(manifestText));
+ok('manifest declares durable state',  /^\s+state:/m.test(manifestText));
+ok('manifest declares item table',     /name:\s+items/.test(manifestText));
+ok('manifest declares report table',   /name:\s+reports/.test(manifestText));
+ok('manifest avoids context/native list collision', /name:\s+list_saved_items/.test(manifestText) && !/name:\s+list_items\s*\n\s*table:/m.test(manifestText));
 ok('agent is framework yaml',          /apiVersion:\s+agent\.framework\/v1/.test(agentText));
-ok('agent has metadata slug',          /metadata:\n\s+slug:\s+web-specialist/.test(agentText));
+ok('agent has plugin slug',            /metadata:\n\s+slug:\s+pi-web-access/.test(agentText));
+ok('agent keeps specialist alias',     /aliases:\n\s+-\s+web-specialist/.test(agentText));
 ok('agent prompt is under agent block', /agent:\n(?:.*\n)*?\s+system_prompt:/m.test(agentText));
 ok('agent grants web__web_search',     /-\s+web__web_search/.test(agentText));
 ok('agent does not use dot separator', !/-\s+web\.web_search/.test(agentText));
 ok('agent grants native save_item',    /-\s+save_item/.test(agentText));
+ok('agent grants native build_report', /-\s+build_report/.test(agentText));
 
 // ── Pure-composition variant (no state, no workspace) ──
 const thinResult = scaffoldPiPack({
@@ -120,6 +130,7 @@ const thinManifest = fs.readFileSync(path.join(thinResult.dest, 'plugin.yaml'), 
 ok('thin pack: empty tools block',  /tools:\s*\[\]/.test(thinManifest));
 ok('thin pack: still composes',     /source:\s+pi:pi-web-access@\^0\.27\.0/.test(thinManifest));
 ok('thin pack: points to workspace agent', /workspace:\s+\.\/config\/workspace\.yaml/.test(thinManifest));
+ok('thin pack: still has agents_from', /agents_from:\s+\.\/config\/agents\//.test(thinManifest));
 
 // ── Preflight the generated packs (this is the acceptance gate that
 // `bahulam install` will run against every generated pack). ──

@@ -9,24 +9,20 @@ import fs from 'fs';
 import path from 'path';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { expandComposedTools } from './pi-compose.mjs';
-import { bahulamHome } from '../core/paths.mjs';
-
-const DEFAULT_PLUGIN_DIRS = () => [
-  path.join(process.cwd(), '.bahulam', 'plugins'),
-  path.join(bahulamHome(), 'plugins'),
-];
+import { expandStateContextTools } from './state-tools.mjs';
+import { pluginDirs as defaultPluginDirs } from '../core/paths.mjs';
 
 export class PluginRegistry {
   /**
    * @param {Object} [options]
-   * @param {string[]} [options.pluginDirs] - Directories to scan (default: project .bahulam/plugins + ~/.bahulam/plugins)
+   * @param {string[]} [options.pluginDirs] - Directories to scan (default: ~/.bahulam/plugins)
    * @param {string[]} [options.disabled] - Plugin names to skip
    * @param {string[]} [options.enabled] - If provided, only these plugin names are loaded
    * @param {string[]} [options.active] - Alias for enabled
    * @param {string} [options.pluginDir] - Legacy single plugin dir (mapped to pluginDirs[0])
    */
   constructor({ pluginDirs, disabled = [], enabled = null, active = null, pluginDir } = {}) {
-    this.pluginDirs = pluginDirs || (pluginDir ? [pluginDir] : DEFAULT_PLUGIN_DIRS());
+    this.pluginDirs = pluginDirs || (pluginDir ? [pluginDir] : defaultPluginDirs());
     this.disabled = new Set(
       (Array.isArray(disabled) ? disabled : [])
         .map(s => String(s).trim().toLowerCase())
@@ -113,7 +109,7 @@ export class PluginRegistry {
       return false;
     }
 
-    // Check for existing (first wins — project overrides global)
+    // Duplicates are skipped — the first manifest scanned wins.
     if (this.plugins.has(lowerName)) {
       return false; // silently skip duplicates
     }
@@ -164,6 +160,13 @@ export class PluginRegistry {
         plugin.metadata?.name || '',
         plugin._dir,
         plugin.config?.composes || [],
+      ));
+      // Manifest-declared state query tools. Synthesized rather than
+      // imported, so they carry `_state_tool` instead of a module path.
+      tools.push(...expandStateContextTools(
+        plugin.metadata?.name || '',
+        plugin._dir,
+        plugin.config?.state,
       ));
     }
     return tools;

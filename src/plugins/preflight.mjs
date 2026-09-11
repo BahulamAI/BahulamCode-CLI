@@ -22,7 +22,8 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { composedToolName, validateCompose } from './pi-compose.mjs';
-import { bahulamHome } from '../core/paths.mjs';
+import { expandStateContextTools } from './state-tools.mjs';
+import { pluginDirs } from '../core/paths.mjs';
 
 const TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const AGENT_SLUG_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -182,6 +183,25 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     }
   }
 
+  // 4b. Generated state tools. A plugin that declares config.state.context_tools
+  // gets read-only tools synthesized at load time (state-tools.mjs), so an
+  // agent may legitimately allowlist them. Without this, a plugin referencing
+  // its own generated tool fails preflight as "not defined by this plugin".
+  const stateToolNames = new Set();
+  for (const generated of expandStateContextTools(name, pluginDir, manifest.config?.state)) {
+    const gname = generated.name;
+    if (!gname) continue;
+    if (toolNames.has(gname) || composedToolNames.has(gname)) {
+      errors.push(`Generated state tool "${gname}" collides with an existing tool of the same name`);
+      continue;
+    }
+    if (RESERVED_TOOL_NAMES.has(gname)) {
+      errors.push(`Generated state tool "${gname}" shadows a built-in tool — rename it in config.state.context_tools`);
+      continue;
+    }
+    stateToolNames.add(gname);
+  }
+
   // 5. Sub-agent checks
   const agentSlugs = new Set();
   for (const [i, agent] of agents.entries()) {
@@ -207,7 +227,8 @@ export async function preflightPlugin(pluginDir, opts = {}) {
         }
         continue;
       }
-      if (!toolNames.has(toolRef) && !composedToolNames.has(toolRef) && !RESERVED_TOOL_NAMES.has(toolRef)) {
+      if (!toolNames.has(toolRef) && !stateToolNames.has(toolRef)
+          && !composedToolNames.has(toolRef) && !RESERVED_TOOL_NAMES.has(toolRef)) {
         errors.push(`Agent "${slug}": tool "${toolRef}" is not defined by this plugin and is not a built-in`);
       }
     }
@@ -245,12 +266,12 @@ export async function preflightPlugin(pluginDir, opts = {}) {
  * Convenience — collect installed plugin names from both search paths.
  * Used by the installer to detect collisions.
  */
-export function existingInstalledNames(cwd = process.cwd()) {
+export function existingInstalledNames(_cwd = process.cwd()) {
   const names = [];
-  for (const dir of [
-    path.join(cwd, '.bahulam', 'plugins'),
-    path.join(bahulamHome(), 'plugins'),
-  ]) {
+  // Plugins live in one global root. `cwd` is kept only so existing call
+  // sites keep working; it must never influence discovery, since that
+  // cwd-dependence is the thing this removed.
+  for (const dir of pluginDirs()) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.endsWith('.disabled')) continue;
