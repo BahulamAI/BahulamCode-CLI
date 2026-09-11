@@ -160,7 +160,7 @@ export function createAgentRegistry({
     const allowlist = new Set(pluginAgentAllowlist());
     for (const agent of listPluginAgents()) {
       if (!agent.slug || bySlug.has(agent.slug)) continue;
-      if (channel === 'workspace' || allowlist.has(agent.slug)) {
+      if (channel === 'workspace' || allowlist.has(agent.slug) || agent.entry_agent === true) {
         bySlug.set(agent.slug, { ...agent, runnable: true });
       }
     }

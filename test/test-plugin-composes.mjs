@@ -87,7 +87,7 @@ config:
   assert.deepStrictEqual(manifest.config.composes[0].expose, ['add_transitions', 'add_captions']);
 });
 
-await test('legacy top-level spec does not populate plugin config', async () => {
+await test('legacy top-level spec populates plugin config', async () => {
   const manifest = parsePluginManifest(`
 apiVersion: bahulam.plugin/1
 metadata:
@@ -102,8 +102,9 @@ spec:
       expose: [add_captions]
       verified: true
 `);
-  assert.deepStrictEqual(manifest.config.tools, []);
-  assert.deepStrictEqual(manifest.config.composes, []);
+  assert.deepStrictEqual(manifest.config.tools.map(tool => tool.name), ['legacy_tool']);
+  assert.strictEqual(manifest.config.composes.length, 1);
+  assert.strictEqual(manifest.config.composes[0].package_name, '@ffmpeg/transitions');
 });
 
 await test('preflight accepts agent references to namespaced composed tools', async () => {

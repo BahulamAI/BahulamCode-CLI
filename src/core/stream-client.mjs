@@ -203,12 +203,45 @@ export class BahulamStreamClient {
     }
 
     /**
-     * Plugin tools are intentionally not advertised as primary client_tools.
-     * They are executable by the local callback handler, but the primary model
-     * should reach them by delegating to an agent that declares them.
+     * Plugin tool schemas for tools that have NO owning agent.
+     * These are advertised as direct client_tools so the primary model can
+     * call them without going through delegate(). Tools already claimed by
+     * a plugin agent stay in client_agent_tools and are not duplicated.
      */
-    _getPluginToolSchemas() {
-        return [];
+    _getUnclaimedPluginToolSchemas(context = {}, clientAgents = []) {
+        if (!this.pluginRegistry) return [];
+        const pluginTools = this._getPluginToolMap();
+        if (!pluginTools.size) return [];
+
+        // Collect tool names declared by plugin agents that are actually
+        // advertised. Tools owned only by hidden/workspace-scoped helpers still
+        // need to be exposed as direct client_tools.
+        const clientAgentSlugs = new Set(this._getPluginAgentSchemas().map(a => a.slug));
+        const agentToolNames = new Set();
+        for (const agent of (this.pluginRegistry.listAgents?.() || [])) {
+            const slug = agent.slug || agent.name || '';
+            if (!clientAgentSlugs.has(slug)) continue;
+            for (const t of (agent.tools || [])) {
+                if (t) agentToolNames.add(String(t).trim());
+            }
+        }
+        for (const name of this._collectAgentScopedToolRefs(context, clientAgents).keys()) {
+            agentToolNames.add(name);
+        }
+
+        // Return schemas for tools NOT claimed by any agent
+        const schemas = [];
+        for (const [name, tool] of pluginTools) {
+            if (agentToolNames.has(name)) continue; // already in client_agent_tools
+            schemas.push({
+                name,
+                description: tool.description || '',
+                input_schema: tool.input_schema || { type: 'object', properties: {} },
+                source_scope: 'plugin',
+                plugin_name: tool._plugin_name || tool.plugin_name || null,
+            });
+        }
+        return schemas;
     }
 
     _collectAgentScopedToolRefs(context = {}, clientAgents = []) {
@@ -263,11 +296,11 @@ export class BahulamStreamClient {
      */
     _getPluginAgentSchemas() {
         if (!this.pluginRegistry) return [];
-        // Only plugin agents admitted to the main-loop registry (settings
-        // plugins.agent_allowlist, or the session plugin in workspace-channel
-        // executors) are advertised. Workspace-scoped plugin agents stay out
-        // of the main-turn payload; without an executor registry, fall back
-        // to advertising everything (legacy behavior).
+        // Only plugin agents admitted to the runtime registry are advertised:
+        // entry agents, settings plugins.agent_allowlist, or all plugin agents
+        // in workspace-channel executors. Other helpers stay out of the
+        // main-turn payload; without an executor registry, fall back to
+        // advertising everything (legacy behavior).
         const runnables = this.toolExecutor?.listRunnables?.();
         const admitted = Array.isArray(runnables)
             ? new Set(runnables.filter(a => a.source_scope === 'plugin').map(a => a.slug))
@@ -365,10 +398,13 @@ export class BahulamStreamClient {
         const body = { instruction, context };
         if (messages && messages.length > 0) body.messages = messages;
         if (this.sessionId) body.session_id = this.sessionId;
-        const clientTools = this._getPluginToolSchemas();
-        if (clientTools.length > 0) body.client_tools = clientTools;
+        // Plugin tools with no owning agent are advertised as direct client_tools
+        // so the primary model can call them. Agent-scoped tools stay in
+        // client_agent_tools — _getUnclaimedPluginToolSchemas excludes those.
         const clientAgents = this._getPluginAgentSchemas();
         if (clientAgents.length > 0) body.client_agents = clientAgents;
+        const clientTools = this._getUnclaimedPluginToolSchemas(context, clientAgents);
+        if (clientTools.length > 0) body.client_tools = clientTools;
         const clientAgentTools = this._getClientAgentToolSchemas(context, clientAgents);
         if (clientAgentTools.length > 0) body.client_agent_tools = clientAgentTools;
         const requestId = `cli-${_uuidLike()}`;

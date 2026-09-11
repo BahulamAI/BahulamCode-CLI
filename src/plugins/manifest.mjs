@@ -398,7 +398,7 @@ export function normalizeManifest(raw, source = '') {
   }
 
   const meta = raw.metadata || raw.meta || {};
-  const config = raw.config || raw.plugin || {};
+  const config = raw.config || raw.plugin || raw.spec || {};
   const name = meta.name || config.name || '';
   if (!name) {
     if (process.env.DEBUG) {

@@ -61,9 +61,9 @@ export function createToolExecutor({
     // no reactive pulse.
     stateEmit = null,
     delegateRunner = null,
-    // Execution channel. 'main' (REPL/headless/CLI): plugin agents are
-    // workspace-scoped and excluded from listings and the agent-context
-    // envelope unless allowlisted in settings plugins.agent_allowlist.
+    // Execution channel. 'main' (REPL/headless/CLI): plugin entry agents and
+    // allowlisted plugin agents are listed in the agent-context envelope.
+    // Other plugin helpers stay workspace-scoped.
     // 'workspace' (plugin workspace sessions via agent-relay): the
     // session plugin's agents are fully available.
     channel = 'main',
@@ -2394,7 +2394,7 @@ export function createToolExecutor({
             const agents = filterLocalAgents(args).map(compactAgentMetadata);
             const payload = { agents, count: agents.length };
             if (agents.some(agent => agent.runnable === false)) {
-                payload.note = 'Agents with runnable:false are workspace-scoped plugin agents; add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
+                payload.note = 'Agents with runnable:false are workspace-scoped plugin helpers; declare an entry_agent or add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
             }
             return {
                 success: true,

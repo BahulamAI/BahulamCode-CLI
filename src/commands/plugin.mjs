@@ -31,13 +31,10 @@ const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 
 /**
- * Standard directories to search for plugins.
+ * The one and only directory to search for plugins.
  */
-function pluginSearchDirs(cwd = process.cwd()) {
-  return [
-    path.join(cwd, '.bahulam', 'plugins'),
-    path.join(bahulamHome(), 'plugins'),
-  ];
+function pluginSearchDirs() {
+  return [path.join(bahulamHome(), 'plugins')];
 }
 
 /**
