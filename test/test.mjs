@@ -23,6 +23,7 @@ import { SkillRunner } from '../src/skills/runner.mjs';
 import { COMMANDS, executeCommand, getCompletions } from '../src/ui/commands.mjs';
 import { Spinner, highlightCode, renderToolProgress, renderStatusBar, renderError } from '../src/ui/ink-app.mjs';
 import { loadSettings, SETTINGS_SCHEMA } from '../src/config/settings.mjs';
+import { DEFAULT_FAST_MODEL, DEFAULT_PLANNING_MODEL, DEFAULT_REASONING_MODEL, readShippedModelDefaults } from '../src/config/model-defaults.mjs';
 import { readEnv, getEnv, listEnvVars, ENV_SCHEMA } from '../src/config/env.mjs';
 import { parseArgs } from '../src/config/cli-args.mjs';
 import * as telemetry from '../src/telemetry/index.mjs';
@@ -750,7 +751,7 @@ assertIncludes(doctorResult, 'Node.js', 'Doctor shows node version');
 
 // /fast
 const fastResult = COMMANDS['/fast'].handler('', cmdState);
-assertIncludes(fastResult, 'haiku', 'Fast mode uses haiku');
+assertIncludes(fastResult, DEFAULT_FAST_MODEL, 'Fast mode uses shipped fast default');
 
 // /status
 const statusResult = COMMANDS['/status'].handler('', cmdState);
@@ -845,7 +846,11 @@ assertIncludes(errorMsg, 'test error', 'Error message content');
 
 section('Settings');
 
-assert(SETTINGS_SCHEMA.model === 'claude-sonnet-4-6', 'Default model in schema');
+assertEqual(DEFAULT_REASONING_MODEL, 'deepseek/deepseek-v4-flash', 'Shipped default reasoning model');
+assertEqual(DEFAULT_FAST_MODEL, 'deepseek/deepseek-v4-flash', 'Shipped default fast model');
+assertEqual(DEFAULT_PLANNING_MODEL, 'deepseek/deepseek-v4-pro', 'Shipped default planning model');
+assertEqual(readShippedModelDefaults().reasoning, DEFAULT_REASONING_MODEL, 'Reads shipped model defaults');
+assert(SETTINGS_SCHEMA.model === DEFAULT_REASONING_MODEL, 'Default model in schema');
 assert(SETTINGS_SCHEMA.maxContextTokens === 180000, 'Default max context');
 assert(SETTINGS_SCHEMA.stream === true, 'Default streaming on');
 assert(typeof SETTINGS_SCHEMA.permissions === 'object', 'Permissions in schema');

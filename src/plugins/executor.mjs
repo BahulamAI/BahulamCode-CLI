@@ -68,7 +68,7 @@ export async function loadPluginTool(pluginDir, handlerPath) {
  */
 export async function createPluginToolExecutor(manifest, opts = {}) {
   const pluginDir = manifest._dir || '';
-  const tools = manifest.spec?.tools || [];
+  const tools = manifest.config?.tools || [];
   const handlers = new Map(); // name → { handler, toolDef }
   const pluginName = manifest.metadata?.name || '';
 

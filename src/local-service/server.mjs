@@ -538,7 +538,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
   }
 
   // Plugin workspace views (PRD-101 §4.6): panels declared under
-  // spec.workspace.views in plugin.yaml, rendered as sandboxed iframes.
+  // config.views in plugin.yaml, rendered as sandboxed iframes.
   // Generic infra — ANY installed plugin (project-local or ~/.bahulam)
   // contributes tabs; its whole directory is served statically so views
   // can ship css/js/assets with relative paths.
@@ -640,17 +640,14 @@ function scanPlugins(session) {
   const dirs = new Map();
   try {
     const registry = new PluginRegistry({
-      pluginDirs: [
-        path.join(session.root_path || process.cwd(), '.bahulam', 'plugins'),
-        path.join(os.homedir(), '.bahulam', 'plugins'),
-      ],
+      pluginDirs: [path.join(os.homedir(), '.bahulam', 'plugins')],
     }).scan();
     for (const manifest of registry.list()) {
       const pluginName = manifest.metadata?.name || '';
       if (!pluginName || !manifest._dir) continue;
       if (scope !== '__all__' && pluginName.toLowerCase() !== scope) continue;
       dirs.set(pluginName, manifest._dir);
-      (manifest.spec?.workspace?.views || []).forEach((view) => {
+      (manifest.config?.views || []).forEach((view) => {
         const source = String(view?.source || '').trim().replace(/^\.\//, '');
         if (!source) return;
         views.push({

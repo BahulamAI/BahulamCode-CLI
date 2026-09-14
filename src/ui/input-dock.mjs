@@ -242,7 +242,7 @@ function overlayRowsForWrapped(wrappedLength, requestedMaxRows = DEFAULT_OVERLAY
 // takes over inside drawInputLines so at most inputRowsMax rows render.
 function computeInputRowsForBuffer(prefix, value) {
   const budget = inputTextBudget();
-  const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget);
+  const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget, { preserveTrailingWhitespace: true });
   const wanted = Math.max(MIN_INPUT_ROWS, wrapped.length);
   return Math.min(inputRowsMax, wanted);
 }
@@ -485,7 +485,7 @@ export function clearDockArea({ restore = true, geometry = null } = {}) {
 function layoutInput(prefix, value) {
   const budget = inputTextBudget();
   const combined = `${prefix || ''}${value || ''}`;
-  const wrapped = wrapToLines(combined, budget);
+  const wrapped = wrapToLines(combined, budget, { preserveTrailingWhitespace: true });
   const tail = tailWithEllipsis(wrapped, inputRows);
   return {
     lines: tail.visible,
@@ -704,11 +704,12 @@ export function clearInputPrompt() {
 export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null, fixedRows = null } = {}) {
   if (!mounted) return false;
   contentTrackingActive = false;
+  lastFrame = { ...lastFrame, context, tips, meta, prefix, value, cursor, overlayLines: null };
   const requestedRows = fixedRows == null
     ? computeInputRowsForBuffer(prefix, value)
     : Math.max(MIN_INPUT_ROWS, Math.min(inputRowsMax, Math.floor(Number(fixedRows) || MIN_INPUT_ROWS)));
   setInputRowsTo(requestedRows);
-  renderFrame({ context, tips, meta, prefix, value, cursor, overlayLines: null });
+  renderFrame(lastFrame);
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
   focusDockInput(prefix, value, cursor);

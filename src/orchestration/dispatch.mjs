@@ -70,7 +70,7 @@ function resolveAgentBySlug(slug, ctx) {
 
 /**
  * Bare-name resolution order (uniform across surfaces, preserves today's
- * /run behavior): project agent → global agent → builtin → allowlisted
+ * /run behavior): project agent → global agent → platform → allowlisted
  * plugin agent → local workflow → synced server workflow fallback.
  * listRunnables() already returns agents deduped in that precedence.
  */

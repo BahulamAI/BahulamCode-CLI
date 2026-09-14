@@ -1,7 +1,7 @@
 /**
  * Interactive per-role model form for /model (PRD-076 W7).
  *
- * ↑↓ picks a role row, ←→ cycles through [backend default] + the curated
+ * ↑↓ picks a role row, ←→ cycles through [backend default] + the available
  * platform catalog for that role, Enter applies to session overrides,
  * c resets every row to default, Esc cancels. Same raw-stdin overlay
  * pattern as the resume picker (repl-resume.mjs): pause readline, raw
@@ -35,19 +35,19 @@ function formatTokenLimit(value, label) {
   return `${Math.round(n)} ${label}`;
 }
 
-function optionRowsForRole(catalog, row) {
-  const curated = (catalog || []).filter(m => m?.harness_validated && m?.id);
+export function optionRowsForRole(catalog, row) {
+  const available = (catalog || []).filter(m => m?.id);
   const group = String(row?.optionGroup || 'text').toLowerCase();
   if (group === 'image_analysis') {
-    return curated.filter(m => (
+    return available.filter(m => (
       ['image', 'multimodal'].includes(modelCategory(m))
       && !isImageGenerationModel(m)
     ));
   }
   if (group === 'image_generation') {
-    return curated.filter(m => modelCategory(m) === 'image' && isImageGenerationModel(m));
+    return available.filter(m => modelCategory(m) === 'image' && isImageGenerationModel(m));
   }
-  return curated.filter(m => ['text', 'chat'].includes(modelCategory(m)));
+  return available.filter(m => ['text', 'chat', 'multimodal'].includes(modelCategory(m)));
 }
 
 /**
@@ -63,11 +63,11 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
   if (!process.stdin.isTTY) return null;
   if (rl) rl.pause();
 
-  const catalogRows = (catalog || []).filter(m => m?.harness_validated && m?.id);
+  const catalogRows = (catalog || []).filter(m => m?.id);
   const usingFallback = catalogRows.length === 0;
   const byId = new Map(catalogRows.map(m => [m.id, m]));
 
-  // Per-row option list; a current override that isn't in the curated list
+  // Per-row option list; a current override that isn't in the catalog list
   // is appended so it stays visible and selectable.
   const rows = roles.map(r => {
     const optionIds = usingFallback
@@ -99,9 +99,7 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       }
       const meta = byId.get(value);
       const badge = meta ? creditBadge(meta) : '';
-      // Only flag uncurated picks when a curated catalog actually loaded —
-      // in fallback mode every option is a known backend model, not a stray.
-      const flag = meta || usingFallback ? '' : c.yellow(' (uncurated)');
+      const flag = meta && meta.harness_validated === false ? c.yellow(' (uncurated)') : '';
       return `${c.brand(value)}${badge ? ` ${c.dim(badge)}` : ''}${flag}`;
     };
 

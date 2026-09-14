@@ -9,6 +9,7 @@ import { SessionManager } from '../core/session.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { readEnv, listEnvVars } from '../config/env.mjs';
 import * as telemetry from '../telemetry/index.mjs';
+import { DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 
 const checkpoints = new CheckpointManager();
 let sessionManager = null;
@@ -134,12 +135,14 @@ export const COMMANDS = {
     '/fast': {
         description: 'Toggle fast mode (uses faster, cheaper model)',
         handler(args, state) {
-            if (state.model?.includes('haiku')) {
-                state.model = 'claude-sonnet-4-6';
-                return 'Fast mode OFF — using claude-sonnet-4-6';
+            if (state.fastMode) {
+                state.fastMode = false;
+                state.model = DEFAULT_REASONING_MODEL;
+                return `Fast mode OFF — using ${DEFAULT_REASONING_MODEL}`;
             }
-            state.model = 'claude-haiku-4-5';
-            return 'Fast mode ON — using claude-haiku-4-5';
+            state.fastMode = true;
+            state.model = DEFAULT_FAST_MODEL;
+            return `Fast mode ON — using ${DEFAULT_FAST_MODEL}`;
         },
     },
 
@@ -342,15 +345,40 @@ export const COMMANDS = {
     },
 
     '/mcp': {
-        description: 'Show MCP server status',
-        handler(args, state) {
-            if (!state._mcpClients || state._mcpClients.length === 0) {
-                return 'No MCP servers connected.';
+        description: 'Manage MCP servers (add, remove, list, test, status)',
+        async handler(args, state) {
+            const sub = (args || '').trim().split(/\s+/)[0]?.toLowerCase();
+
+            // No subcommand → show status (default)
+            if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test'].includes(sub)) {
+                if (!state._mcpClients || state._mcpClients.length === 0) {
+                    return 'No MCP servers connected. Use: /mcp add <name> --command <cmd> | --url <url>';
+                }
+                const lines = state._mcpClients.map((c, i) => {
+                    const name = c.name || c.config?.command || 'unknown';
+                    const endpoint = c.config?.url || c.config?.command || 'unknown';
+                    return `  ${i + 1}. ${name} (${endpoint}) — ${c.connected ? 'connected' : 'disconnected'}`;
+                });
+                return `MCP servers:\n${lines.join('\n')}`;
             }
-            const lines = state._mcpClients.map((c, i) =>
-                `  ${i + 1}. ${c.config?.command || 'unknown'} — ${c.connected ? 'connected' : 'disconnected'}`
-            );
-            return `MCP servers:\n${lines.join('\n')}`;
+
+            // Dispatch to the CLI handler — same code path as `bahulam mcp`
+            try {
+                const { handleMcpCommand } = await import('../commands/mcp.mjs');
+                const mcpArgs = (args || '').trim().split(/\s+/);
+                // Capture stdout/stderr from the handler
+                const origWrite = process.stdout.write.bind(process.stdout);
+                const origErrWrite = process.stderr.write.bind(process.stderr);
+                let captured = '';
+                process.stderr.write = (chunk) => { captured += chunk; return true; };
+                process.stdout.write = (chunk) => { captured += chunk; return true; };
+                await handleMcpCommand(mcpArgs);
+                process.stderr.write = origErrWrite;
+                process.stdout.write = origWrite;
+                return captured.trim() || 'Done.';
+            } catch (err) {
+                return `MCP command failed: ${err.message}`;
+            }
         },
     },
 
@@ -513,7 +541,7 @@ export const COMMANDS = {
  * @param {object} state - agent loop state
  * @returns {{ response: string, exit: boolean }}
  */
-export function executeCommand(input, state) {
+export async function executeCommand(input, state) {
     const parts = input.split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1).join(' ');
@@ -523,7 +551,7 @@ export function executeCommand(input, state) {
         return { response: `Unknown command: ${cmd}. Type /help for available commands.`, exit: false };
     }
 
-    const response = command.handler(args, state);
+    const response = await command.handler(args, state);
     return { response, exit: response === 'EXIT' };
 }
 

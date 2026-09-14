@@ -980,7 +980,7 @@ await test('execute scopes plugin tool schemas to custom agents that reference t
         pluginRegistry,
     });
     const context = {
-        agent_ctx: {
+        agent_context: {
             available_agents: [{
                 slug: 'custom-options-agent',
                 name: 'Custom Options Agent',

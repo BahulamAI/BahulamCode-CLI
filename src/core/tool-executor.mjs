@@ -16,22 +16,22 @@ import { analyzeCode } from '../context/ast-parser.mjs';
 import { ProjectRegistry } from '../tools/project-overview.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
-import { agentToSpec, createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { createAgentFile, listLocalAgents, syncAgentsToBackend } from '../agents/scaffold.mjs';
+import { compactAgentMetadata, createAgentRegistry } from '../agents/registry.mjs';
 import { createWorkflowFile, listLocalWorkflows, WORKFLOW_SYNC_ENDPOINT, slugifyWorkflowName } from '../agents/workflow_scaffold.mjs';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { detectImageFile } from './attachments.mjs';
 import { streamResponse } from './streaming.mjs';
 import { sendApprovalDecision, sendCallback } from './callback-client.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
-import { loadBahulamSettings } from '../config/settings-loader.mjs';
-import { BUILTIN_AGENTS } from '../terminal/agents.mjs';
 import { buildFileDiff } from './file-diff.mjs';
 import { buildWorkScope } from './work-scope.mjs';
 import { loadDiskMemory, ensureBahulamDir, globalMemoryPath, projectMemoryPath } from './memory-disk.mjs';
 import { backgroundTasks } from './background-tasks.mjs';
-import { resolveLintCommand } from './lint-resolver.mjs';
+import { normalizeLintOutput, resolveLintCommand } from './lint-resolver.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadPluginTool } from '../plugins/executor.mjs';
+import { makePluginState } from '../plugins/state.mjs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -60,9 +60,10 @@ export function createToolExecutor({
     // REPL/headless callers leave this null — state still works, just
     // no reactive pulse.
     stateEmit = null,
-    // Execution channel. 'main' (REPL/headless/CLI): plugin agents are
-    // workspace-scoped and excluded from listings and the agent-context
-    // envelope unless allowlisted in settings plugins.agent_allowlist.
+    delegateRunner = null,
+    // Execution channel. 'main' (REPL/headless/CLI): plugin entry agents and
+    // allowlisted plugin agents are listed in the agent-context envelope.
+    // Other plugin helpers stay workspace-scoped.
     // 'workspace' (plugin workspace sessions via agent-relay): the
     // session plugin's agents are fully available.
     channel = 'main',
@@ -81,6 +82,12 @@ export function createToolExecutor({
     // guards it, but doing it here means the first read is a plain fs stat
     // rather than a mkdir round-trip.
     try { ensureBahulamDir('global'); } catch { /* ignore */ }
+    let activeDelegateRunner = delegateRunner;
+    const agentRegistry = createAgentRegistry({
+        cwd: () => process.cwd(),
+        pluginRegistry,
+        channel,
+    });
     let _memoryCache = null; // { key: string, facts: Fact[], digest: string }
     function _readMemorySnapshot() {
         const gPath = globalMemoryPath();
@@ -131,7 +138,8 @@ export function createToolExecutor({
             });
     }
     let _searchCodeUsed = false; // tracks if search_code was called (for read_file nudge)
-    let _readOnlyCacheGeneration = 0;
+    let _structureCacheGeneration = 0;
+    let _searchCacheGeneration = 0;
     const readOnlyResultCache = new Map();
 
     function resolvePath(p, args = {}, options = {}) {
@@ -232,169 +240,16 @@ export function createToolExecutor({
         return ['read_file', 'search_code', 'list_files'];
     }
 
-    function agentMatches(agent, query) {
-        const needle = String(query || '').trim().toLowerCase();
-        if (!needle) return true;
-        return [
-            agent.slug,
-            agent.name,
-            agent.description,
-            agent.role,
-            agent.model,
-            ...(Array.isArray(agent.tools) ? agent.tools : []),
-            ...(Array.isArray(agent.capabilities) ? agent.capabilities : []),
-            ...(Array.isArray(agent.domains) ? agent.domains : []),
-        ].some(value => String(value || '').toLowerCase().includes(needle));
-    }
-
-    function compactAgentMetadata(agent) {
-        return {
-            slug: agent.slug,
-            name: agent.name,
-            description: agent.description || '',
-            role: agent.role || 'specialist',
-            model: agent.model || null,
-            models: agent.models && Object.keys(agent.models).length ? agent.models : undefined,
-            tools: Array.isArray(agent.tools) ? agent.tools : [],
-            capabilities: Array.isArray(agent.capabilities) ? agent.capabilities : [],
-            domains: Array.isArray(agent.domains) ? agent.domains : [],
-            source_scope: agent.source_scope || 'unknown',
-            source: agent.source || '',
-            content_hash: agent.content_hash || '',
-            runnable: agent.runnable !== false,
-        };
-    }
-
-    function pluginAgentToLocalShape(agentDef) {
-        const pluginName = agentDef._plugin_name
-            || String(agentDef.source || '').replace(/^plugin:/, '')
-            || 'unknown';
-        const source = `plugin:${pluginName}`;
-        const base = {
-            ...agentDef,
-            slug: agentDef.slug || agentDef.name || '',
-            name: agentDef.name || agentDef.slug || '',
-            description: agentDef.description || '',
-            role: agentDef.role || 'specialist',
-            model: agentDef.model || null,
-            models: agentDef.models || undefined,
-            tools: Array.isArray(agentDef.tools)
-                ? agentDef.tools
-                : (Array.isArray(agentDef.agent_tools) ? agentDef.agent_tools : []),
-            capabilities: Array.isArray(agentDef.capabilities) ? agentDef.capabilities : [],
-            domains: Array.isArray(agentDef.domains) ? agentDef.domains : [],
-            system_prompt: agentDef.system_prompt || agentDef.prompt || agentDef.instructions || '',
-            prompt: agentDef.prompt || agentDef.system_prompt || agentDef.instructions || '',
-            source_scope: 'plugin',
-            source,
-        };
-        const spec = {
-            ...agentToSpec(base),
-            source,
-            source_scope: 'plugin',
-            plugin_name: pluginName,
-        };
-        if (spec.config?.metadata && typeof spec.config.metadata === 'object') {
-            spec.config.metadata.source = source;
-            spec.config.metadata.source_scope = 'plugin';
-        }
-        const content = JSON.stringify(spec);
-        return {
-            ...base,
-            slug: spec.slug,
-            spec,
-            source,
-            source_scope: 'plugin',
-            content_hash: crypto.createHash('sha256').update(content).digest('hex'),
-        };
-    }
-
-    function listPluginAgents() {
-        if (!pluginRegistry) return [];
-        return pluginRegistry.listAgents()
-            .map(pluginAgentToLocalShape)
-            .filter(agent => agent.slug);
-    }
-
-    // Plugin agents are workspace-scoped entities. They enter the
-    // main-loop registry only via an explicit settings allowlist.
-    function pluginAgentAllowlist() {
-        try {
-            const { settings } = loadBahulamSettings({ cwd: process.cwd() });
-            const list = settings?.plugins?.agent_allowlist;
-            return Array.isArray(list) ? list.map(item => String(item)) : [];
-        } catch {
-            return [];
-        }
-    }
-
-    const BUILTIN_RUNNABLES = BUILTIN_AGENTS.map(def => ({
-        slug: def.command,
-        name: def.name,
-        description: def.description || '',
-        role: 'builtin',
-        model: null,
-        models: undefined,
-        tools: [],
-        capabilities: [],
-        domains: [],
-        source_scope: 'builtin',
-        source: 'builtin',
-        content_hash: '',
-        read_only: Boolean(def.readOnly),
-        runnable: true,
-    }));
-
-    // The deterministic sub-agent registry. Resolution precedence:
-    // project agent → global agent → builtin → allowlisted plugin agent.
-    // In workspace-channel executors the session plugin's agents are
-    // runnable without an allowlist entry.
     function listRunnables() {
-        const bySlug = new Map();
-        for (const agent of listLocalAgents(process.cwd())) {
-            if (agent.slug && !bySlug.has(agent.slug)) {
-                bySlug.set(agent.slug, { ...agent, runnable: true });
-            }
-        }
-        for (const builtin of BUILTIN_RUNNABLES) {
-            if (!bySlug.has(builtin.slug)) bySlug.set(builtin.slug, builtin);
-        }
-        const allowlist = new Set(pluginAgentAllowlist());
-        for (const agent of listPluginAgents()) {
-            if (!agent.slug || bySlug.has(agent.slug)) continue;
-            if (channel === 'workspace' || allowlist.has(agent.slug)) {
-                bySlug.set(agent.slug, { ...agent, runnable: true });
-            }
-        }
-        return [...bySlug.values()];
+        return agentRegistry.listRunnables();
     }
 
-    // Installed plugin agents NOT admitted to the main-loop registry —
-    // still discoverable (scope:'plugin') but flagged not runnable.
-    function listWorkspaceScopedPluginAgents() {
-        const runnableSlugs = new Set(listRunnables().map(agent => agent.slug));
-        return listPluginAgents()
-            .filter(agent => agent.slug && !runnableSlugs.has(agent.slug))
-            .map(agent => ({ ...agent, runnable: false }));
-    }
-
-    // Agent-context envelope population: the runnable registry minus
-    // builtins (the backend has its own delegation vocabulary for those;
-    // adding them to available_agents would change wire behavior).
     function listAvailableAgents() {
-        return listRunnables().filter(agent => agent.source_scope !== 'builtin');
+        return agentRegistry.listAvailableAgents();
     }
 
     function filterLocalAgents(args = {}) {
-        const scope = String(args.scope || '').trim();
-        if (scope && !['project', 'global', 'plugin', 'builtin'].includes(scope)) {
-            throw new Error('scope must be "project", "global", "plugin", or "builtin"');
-        }
-        const pool = scope === 'plugin'
-            ? [...listRunnables(), ...listWorkspaceScopedPluginAgents()]
-            : listRunnables();
-        const combined = pool.filter(agent => !scope || agent.source_scope === scope);
-        return combined.filter(agent => agentMatches(agent, args.query || args.name || ''));
+        return agentRegistry.filterAgents(args);
     }
 
     function selectAgentsForSync(args = {}) {
@@ -486,11 +341,12 @@ export function createToolExecutor({
         );
     }
 
-    function updateProjectIndex(filePath) {
+    function updateProjectIndex(filePath, { contentChanged = true, structureChanged = false } = {}) {
         try {
             projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
         } catch { /* best effort */ }
-        _readOnlyCacheGeneration++;
+        if (contentChanged) _searchCacheGeneration++;
+        if (structureChanged) _structureCacheGeneration++;
     }
 
     function readTextIfExists(filePath) {
@@ -537,7 +393,6 @@ export function createToolExecutor({
             kind,
             args,
             fingerprint,
-            generation: _readOnlyCacheGeneration,
         }));
     }
 
@@ -645,9 +500,11 @@ export function createToolExecutor({
                 maxBuffer: 1_000_000,
                 env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
             }, (err, stdout = '', stderr = '') => {
-                const output = err
-                    ? stripAnsi(stderr || stdout || '').trim()
-                    : stripAnsi(stdout || stderr || '').trim();
+                const output = normalizeLintOutput(lint, {
+                    stdout: stripAnsi(stdout),
+                    stderr: stripAnsi(stderr),
+                    errored: Boolean(err),
+                });
                 resolve(output || null);
             });
         });
@@ -776,18 +633,80 @@ export function createToolExecutor({
         return true;
     }
 
-    // Per-plugin state handles are opened lazily on first tool call and
-    // cached process-wide. `makePluginState` itself dedupes on plugin
-    // name, so this Map only exists to avoid re-attaching stateEmit on
-    // every registered tool.
+    // Per-plugin state handles are opened lazily on first call and cached
+    // process-wide. `makePluginState` itself dedupes on plugin name, so
+    // this Map only exists to avoid re-attaching stateEmit on every
+    // registered tool — and to keep the agent-context summary reading the
+    // same connection a plugin tool writes through.
     const _pluginStateHandles = new Map(); // pluginName -> state proxy
-    async function _pluginStateFor(pluginName) {
+
+    /**
+     * The normalized `config.state` block a plugin declared, or null when
+     * it declared none. Declared tables are created and additively
+     * migrated when the DB opens, so this is also the schema the plugin's
+     * own handlers query via `state.query()`.
+     */
+    function pluginStateDecl(pluginName) {
+        if (!pluginName || typeof pluginRegistry?.list !== 'function') return null;
+        const plugin = pluginRegistry.list().find(p => p.metadata?.name === pluginName);
+        return plugin?.config?.state || null;
+    }
+
+    function _pluginStateFor(pluginName) {
         if (!pluginName) return null;
         if (_pluginStateHandles.has(pluginName)) return _pluginStateHandles.get(pluginName);
-        const { makePluginState } = await import('../plugins/state.mjs');
-        const state = makePluginState(pluginName, { emit: stateEmit });
+        const decl = pluginStateDecl(pluginName);
+        const state = makePluginState(pluginName, {
+            emit: stateEmit,
+            tables: decl?.tables || [],
+        });
         _pluginStateHandles.set(pluginName, state);
         return state;
+    }
+
+    // ── Declared plugin state → agent context ────────────────────
+    // Tier 1 of the state-visibility contract. Plugins that declare
+    // `config.state.context_always` get exactly those keys and streams
+    // injected into the agent context each turn, so a fresh session opens
+    // already knowing what the previous one left behind — instead of
+    // spending a tool call to rediscover it, or silently redoing work.
+    //
+    // Opt-in by construction: a plugin that declares nothing contributes
+    // nothing, and an opted-in plugin that has recorded nothing yet is
+    // skipped rather than shipping an empty block.
+    //
+    // Reads are keyed on the state DB's size+mtime so the payload stays
+    // byte-identical between turns when nothing wrote. Same reasoning as
+    // the memory digest above: a context block that churns on every turn
+    // invalidates the backend's prompt cache on every ExecuteRequest.
+    const _pluginStateCache = new Map(); // pluginName -> { key, entry }
+
+    function pluginStateContext() {
+        if (typeof pluginRegistry?.list !== 'function') return [];
+        const out = [];
+        for (const plugin of pluginRegistry.list()) {
+            const name = plugin.metadata?.name;
+            const decl = plugin.config?.state;
+            if (!name || !decl?.context_always?.length) continue;
+            try {
+                const state = _pluginStateFor(name);
+                const stat = fs.existsSync(state.path) ? fs.statSync(state.path) : null;
+                const key = stat ? `${stat.size}:${Math.round(stat.mtimeMs)}` : 'missing';
+                const cached = _pluginStateCache.get(name);
+                if (cached && cached.key === key) {
+                    out.push(cached.entry);
+                    continue;
+                }
+                const summary = state.summary(decl.context_always);
+                const hasContent = Object.keys(summary.kv).length > 0
+                    || Object.values(summary.streams).some(rows => rows.length > 0);
+                if (!hasContent) continue;
+                const entry = { plugin: name, ...summary };
+                _pluginStateCache.set(name, { key, entry });
+                out.push(entry);
+            } catch { /* one broken plugin must never break the session */ }
+        }
+        return out;
     }
 
     /**
@@ -850,6 +769,56 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._state_tool) {
+                // Manifest-declared state query tool (config.state.context_tools).
+                // There is no module to import — the author declared a table
+                // and an optional WHERE clause; the CLI supplies the handler.
+                // `readTable` refuses undeclared tables, so author-supplied
+                // SQL can't be steered into arbitrary table access.
+                const spec = toolDef._state_tool;
+                registerPluginTool(name, async (args) => {
+                    try {
+                        const state = _pluginStateFor(spec.plugin || pluginName);
+                        if (!state) {
+                            return {
+                                success: false,
+                                output: `Plugin state unavailable for '${name}'.`,
+                                _tool: name,
+                                _plugin: pluginName,
+                            };
+                        }
+                        const bound = (spec.params || []).map(key => args?.[key] ?? null);
+                        // An unfiltered call should list everything, not match
+                        // nothing — `topic = NULL` is never true in SQL. Apply
+                        // the WHERE only once a declared param was supplied.
+                        const useWhere = Boolean(spec.where) && bound.some(v => v !== null);
+                        const rows = state.readTable(spec.table, {
+                            where: useWhere ? spec.where : '',
+                            params: useWhere ? bound : [],
+                            limit: args?.limit ?? spec.limit,
+                        });
+                        return {
+                            success: true,
+                            output: rows.length
+                                ? JSON.stringify(rows, null, 2)
+                                : `No rows in ${spec.table}${useWhere ? ' matching those filters' : ''}.`,
+                            rows,
+                            count: rows.length,
+                            _tool: name,
+                            _plugin: pluginName,
+                            _state_tool: true,
+                        };
+                    } catch (err) {
+                        return {
+                            success: false,
+                            output: `Plugin state tool error (${name}): ${err.message}`,
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
+                    }
+                }, { pluginName, source: 'state', stateTool: spec });
+                continue;
+            }
             if (toolDef._composed?.kind === 'pi') {
                 // Composed pi tools resolve at invocation time: look up the
                 // installed pi package's directory, load the specific handler
@@ -1064,6 +1033,79 @@ export function createToolExecutor({
                 success: true,
                 output: `User answered: ${res.answer}${res.source === 'free_text' ? ' (typed answer, not one of the offered options)' : ''}`,
                 _tool: 'ask_user',
+            };
+        },
+
+        TodoWrite: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const result = await occRegistry.call('TodoWrite', args || {}, {
+                ...options,
+                cwd: process.cwd(),
+                onTaskFilesWritten: (files) => {
+                    for (const file of Array.isArray(files) ? files : []) {
+                        updateProjectIndex(file, { contentChanged: true, structureChanged: true });
+                    }
+                },
+            });
+            return {
+                success: !/^Validation error:/i.test(String(result || '')),
+                output: String(result || ''),
+                _tool: 'TodoWrite',
+            };
+        },
+
+        todo_write: async (args, options = {}) => {
+            return toolMap.TodoWrite(args, options);
+        },
+
+        // Reserved meta-tool adapter. Cloud backends may implement Delegate
+        // natively; local callbacks use this to route through the exact same
+        // registry + dispatch funnel as /run and workflows.
+        delegate: async (args = {}, options = {}) => {
+            throwIfAborted(options.signal);
+            const target = String(args.agent || args.name || args.slug || args.sub_agent || '').trim();
+            const instruction = String(args.instruction || args.task || args.prompt || args.request || '').trim();
+            if (!target) {
+                return { success: false, output: 'delegate requires an agent slug or name.', _tool: 'delegate' };
+            }
+            if (!instruction) {
+                return { success: false, output: 'delegate requires an instruction.', _tool: 'delegate' };
+            }
+            const agent = agentRegistry.findAgent(target);
+            if (!agent) {
+                return {
+                    success: false,
+                    output: `Unknown delegate target '${target}'. Available agents: ${listRunnables().map(item => item.slug).join(', ') || '(none)'}`,
+                    _tool: 'delegate',
+                };
+            }
+            if (typeof activeDelegateRunner !== 'function') {
+                return {
+                    success: false,
+                    output: 'Local delegate execution is not wired for this surface. Use /run <agent> "<task>" or delegate from a cloud execute session.',
+                    _tool: 'delegate',
+                    agent: compactAgentMetadata(agent),
+                };
+            }
+            const delegated = await activeDelegateRunner({
+                agent,
+                slug: agent.slug,
+                instruction,
+                context: args.context && typeof args.context === 'object' ? args.context : {},
+                options,
+            });
+            const payload = delegated?.result || delegated || {};
+            const output = payload.output
+                || payload.final_response
+                || payload.result
+                || (typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2));
+            return {
+                success: delegated?.dispatched === false ? false : payload.success !== false,
+                output: String(output || ''),
+                agent: compactAgentMetadata(agent),
+                run_id: payload.run_id || payload.graph_run_id || null,
+                node_results: payload.node_results || undefined,
+                _tool: 'delegate',
             };
         },
 
@@ -1517,6 +1559,7 @@ export function createToolExecutor({
                 return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
             }
             const filePath = await resolvePath(rawPath, args, { allowMissing: true });
+            const existedBefore = fs.existsSync(filePath);
             const before = readTextIfExists(filePath);
             const writeCheck = validateWrite(filePath, args.content, projectRootFor(filePath));
             if (!writeCheck.safe) {
@@ -1539,7 +1582,10 @@ export function createToolExecutor({
             const wrapped = wrapResult(result, 'write_file');
             const after = readTextIfExists(filePath);
             attachFileDiff(wrapped, filePath, before, after);
-            updateProjectIndex(filePath);
+            updateProjectIndex(filePath, {
+                contentChanged: before !== after,
+                structureChanged: !existedBefore && fs.existsSync(filePath),
+            });
 
             // Auto-lint the written file
             const lintOutput = await autoLint(filePath);
@@ -1585,6 +1631,7 @@ export function createToolExecutor({
                     // Ensure parent directory exists
                     const dir = path.dirname(filePath);
                     fs.mkdirSync(dir, { recursive: true });
+                    const existedBefore = fs.existsSync(filePath);
                     const before = readTextIfExists(filePath);
 
                     // Read first if exists (OCC Write requirement)
@@ -1597,7 +1644,10 @@ export function createToolExecutor({
                     await occRegistry.call('write_file', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
                     diffs.push(buildResultFileDiff(filePath, before, after));
-                    updateProjectIndex(filePath);
+                    updateProjectIndex(filePath, {
+                        contentChanged: before !== after,
+                        structureChanged: !existedBefore && fs.existsSync(filePath),
+                    });
                     results.push(rawPath);
                 } catch (err) {
                     errors.push(`${rawPath}: ${err.message}`);
@@ -1711,7 +1761,7 @@ export function createToolExecutor({
                 };
             }
             attachFileDiff(wrapped, filePath, before, after);
-            updateProjectIndex(filePath);
+            updateProjectIndex(filePath, { contentChanged: before !== after, structureChanged: false });
             _hasEdited = true;
 
             // Auto-lint the edited file
@@ -1739,7 +1789,7 @@ export function createToolExecutor({
                     format: args.format || (args.tree === true ? 'tree' : 'glob'),
                     max_depth: args.max_depth ?? args.maxDepth ?? null,
                 },
-                { generation: _readOnlyCacheGeneration },
+                { structureGeneration: _structureCacheGeneration },
                 async () => {
                     if (args.format === 'tree' || args.tree === true) {
                         const requestedDepth = Number(args.max_depth ?? args.maxDepth ?? 2);
@@ -1860,7 +1910,7 @@ export function createToolExecutor({
                 return await withReadOnlyCache(
                     'search_files',
                     { query, path: searchPath, mode: 'glob' },
-                    { generation: _readOnlyCacheGeneration },
+                    { structureGeneration: _structureCacheGeneration },
                     async () => {
                         const result = await occRegistry.call('list_files', {
                             pattern: query,
@@ -1881,7 +1931,7 @@ export function createToolExecutor({
             return await withReadOnlyCache(
                 'search_files',
                 { query, path: searchPath, mode: 'grep' },
-                { generation: _readOnlyCacheGeneration },
+                { searchGeneration: _searchCacheGeneration },
                 async () => {
                     const result = await occRegistry.call('search_code', {
                         pattern: query,
@@ -1985,8 +2035,9 @@ export function createToolExecutor({
                 if (checkpoints) {
                     try { checkpoints.save(filePath); } catch { /* best effort */ }
                 }
+                const existedBefore = fs.existsSync(filePath);
                 fs.unlinkSync(filePath);
-                updateProjectIndex(filePath);
+                updateProjectIndex(filePath, { contentChanged: existedBefore, structureChanged: existedBefore });
                 return { success: true, message: `Deleted ${args.path}`, _tool: 'delete_file' };
             } catch (err) {
                 return { success: false, output: `Error: ${err.message}`, _tool: 'delete_file' };
@@ -2343,7 +2394,7 @@ export function createToolExecutor({
             const agents = filterLocalAgents(args).map(compactAgentMetadata);
             const payload = { agents, count: agents.length };
             if (agents.some(agent => agent.runnable === false)) {
-                payload.note = 'Agents with runnable:false are workspace-scoped plugin agents; add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
+                payload.note = 'Agents with runnable:false are workspace-scoped plugin helpers; declare an entry_agent or add their slug to settings plugins.agent_allowlist to invoke them from the main loop.';
             }
             return {
                 success: true,
@@ -2807,6 +2858,22 @@ export function createToolExecutor({
 
         listRunnables,
 
+        findAgent(target) {
+            return agentRegistry.findAgent(target);
+        },
+
+        filterAgents(args = {}) {
+            return agentRegistry.filterAgents(args);
+        },
+
+        getSubAgentObservability() {
+            return agentRegistry.observability();
+        },
+
+        setDelegateRunner(fn) {
+            activeDelegateRunner = typeof fn === 'function' ? fn : null;
+        },
+
         // Plugin tool schemas (name/description/input_schema) for callers
         // that compose model-facing tool lists — e.g. the graph engine's
         // direct substrate giving a plugin agent its declared tools.
@@ -2823,6 +2890,7 @@ export function createToolExecutor({
         getAgentContext() {
             const global = projectRegistry.getGlobalContext();
             const mem = _readMemorySnapshot();
+            const pluginState = pluginStateContext();
             return {
                 identity: global.identity,
                 preferences: global.preferences,
@@ -2849,6 +2917,15 @@ export function createToolExecutor({
                     source: agent.source,
                     spec: agent.spec,
                 })),
+                sub_agent_observability: agentRegistry.observability(),
+                // Cross-session plugin state. Only plugins that opted in via
+                // config.state.context_always appear here, and only the keys
+                // and streams they named — this is how a plugin's local app
+                // state survives a session boundary without the agent having
+                // to know to go looking for it.
+                ...(pluginState.length ? {
+                    plugin_state: pluginState,
+                } : {}),
                 // Background jobs the model should know about. Stable fields
                 // only (no durations) so the entry — and the prompt cache —
                 // changes on status transitions, not every turn.

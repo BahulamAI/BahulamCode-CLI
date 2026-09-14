@@ -19,11 +19,14 @@ import { strip as stripAnsi, width as visibleWidth } from './palette.mjs';
  *
  * @param {string} text
  * @param {number} maxWidth
+ * @param {{ preserveTrailingWhitespace?: boolean }} [options]
  * @returns {string[]}
  */
-export function wrapToLines(text, maxWidth) {
+export function wrapToLines(text, maxWidth, options = {}) {
   const width = Math.max(1, Math.floor(maxWidth));
   const source = String(text ?? '');
+  const preserveTrailingWhitespace = Boolean(options?.preserveTrailingWhitespace);
+  const finishLine = (line) => preserveTrailingWhitespace ? line : line.replace(/\s+$/, '');
   if (!source) return [''];
 
   const out = [];
@@ -38,8 +41,8 @@ export function wrapToLines(text, maxWidth) {
       const isSpace = /^\s+$/.test(stripAnsi(token));
       const candidate = current + token;
       if (visibleWidth(candidate) <= width) { current = candidate; continue; }
-      if (current) { out.push(current.replace(/\s+$/, '')); current = ''; }
-      if (isSpace) continue; // don't start a new line with pure whitespace
+      if (current) { out.push(finishLine(current)); current = ''; }
+      if (isSpace && !preserveTrailingWhitespace) continue; // don't start a new line with pure whitespace
       // Token alone still too wide — chunk it.
       if (visibleWidth(token) > width) {
         for (const chunk of chunkByVisibleWidth(token, width)) out.push(chunk);
@@ -47,7 +50,7 @@ export function wrapToLines(text, maxWidth) {
         current = token;
       }
     }
-    if (current) out.push(current.replace(/\s+$/, ''));
+    if (current) out.push(finishLine(current));
   }
   return out.length ? out : [''];
 }

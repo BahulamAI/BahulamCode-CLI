@@ -77,11 +77,22 @@ function migratePeersForPi(pkgPath) {
   let pkg = {};
   try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')); } catch { return {}; }
   const peers = pkg.peerDependencies || {};
-  if (!Object.keys(peers).length) return pkg;
   const merged = { ...(pkg.dependencies || {}) };
+  let changed = false;
   for (const [name, range] of Object.entries(peers)) {
-    if (!merged[name]) merged[name] = range === '*' ? 'latest' : range;
+    if (!merged[name]) {
+      merged[name] = range === '*' ? 'latest' : range;
+      changed = true;
+    }
   }
+  // Some current pi packages import the Pi server runtime transitively
+  // through @earendil-works/pi-coding-agent without declaring it. Materialize
+  // it here so discovery can import the extension and capture tools.
+  if (merged['@earendil-works/pi-coding-agent'] && !merged['@earendil-works/pi-server']) {
+    merged['@earendil-works/pi-server'] = 'latest';
+    changed = true;
+  }
+  if (!changed && !Object.keys(peers).length) return pkg;
   const rewritten = { ...pkg, dependencies: merged };
   delete rewritten.peerDependencies;
   fs.writeFileSync(pkgPath, JSON.stringify(rewritten, null, 2));

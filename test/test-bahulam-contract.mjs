@@ -6,7 +6,7 @@ import { scaffoldKeplerProject } from '../src/terminal/init.mjs';
 import { loadEffectivePolicy } from '../src/core/policy-resolver.mjs';
 import { contextToPromptBlock, loadProjectContext } from '../src/core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../src/core/context-envelope.mjs';
-import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, parseTaskMarkdown, removeTask, taskCounts, updateTask } from '../src/core/tasks.mjs';
+import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, parseTaskMarkdown, removeTask, syncTodoWriteToTaskFiles, taskCounts, updateTask } from '../src/core/tasks.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../src/core/compact-history.mjs';
 import { HookRunner } from '../src/config/hook-runner.mjs';
 import { ApprovalManager } from '../src/core/approval.mjs';
@@ -121,6 +121,31 @@ await test('task board edits, moves, and removes project task markdown', async (
   assert.strictEqual(counts.active, 0);
   assert.strictEqual(counts.done, 1);
   assert.strictEqual(board.lists.done.tasks[0].checked, true);
+});
+
+await test('TodoWrite sync updates managed task sections without removing manual tasks', async () => {
+  const cwd = tempProject();
+  ensureTaskFiles({ cwd });
+  appendTask({ cwd, list: 'active', text: 'Manual active task' });
+
+  const synced = syncTodoWriteToTaskFiles({
+    cwd,
+    todos: [
+      { content: 'Implement live task dock', status: 'in_progress' },
+      { content: 'Write task tests', status: 'pending' },
+      { content: 'Publish release notes', status: 'completed' },
+    ],
+  });
+  assert.strictEqual(synced.counts.active, 1);
+  assert.strictEqual(synced.counts.backlog, 1);
+  assert.strictEqual(synced.counts.done, 1);
+
+  const board = loadTaskBoard({ cwd });
+  assert.ok(board.lists.active.content.includes('Manual active task'));
+  assert.ok(board.lists.active.content.includes('<!-- bahulam:todo-write:start -->'));
+  assert.ok(board.lists.active.tasks.some(task => task.text === 'Implement live task dock'));
+  assert.ok(board.lists.backlog.tasks.some(task => task.text === 'Write task tests'));
+  assert.ok(board.lists.done.tasks.some(task => task.text === 'Publish release notes' && task.checked));
 });
 
 await test('task parser supports checkboxes and plain bullets', async () => {

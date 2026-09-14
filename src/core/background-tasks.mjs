@@ -14,9 +14,24 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const KILL_ESCALATION_MS = 5000;
 const MAX_TAIL_BYTES = 64 * 1024;
 
+function trimShellBackgroundOperator(command) {
+  const raw = String(command || '');
+  let i = raw.length - 1;
+  while (i >= 0 && /\s/.test(raw[i])) i -= 1;
+  if (raw[i] !== '&') return raw;
+  if (raw[i - 1] === '&' || raw[i - 1] === '\\') return raw;
+  return raw.slice(0, i).trimEnd();
+}
+
 function stripAnsi(str) {
   // eslint-disable-next-line no-control-regex
   return String(str || '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+function setChildStdioRef(proc, ref) {
+  for (const stream of [proc?.stdout, proc?.stderr]) {
+    try { stream?.[ref ? 'ref' : 'unref']?.(); } catch { /* best effort */ }
+  }
 }
 
 class BackgroundTasks {
@@ -35,12 +50,15 @@ class BackgroundTasks {
   start({ command, cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, name = '', on_complete = null }) {
     this._installExitHook();
     const id = `job-${++this._seq}-${Date.now().toString(36)}`;
+    const originalCommand = String(command || '');
+    const managedCommand = trimShellBackgroundOperator(originalCommand);
     const logDir = path.join(cwd, '.bahulam', 'tmp', 'jobs');
     fs.mkdirSync(logDir, { recursive: true });
     const logPath = path.join(logDir, `${id}.log`);
     const logStream = fs.createWriteStream(logPath);
+    try { logStream.unref?.(); } catch { /* best effort */ }
 
-    const proc = spawn('bash', ['-c', command], {
+    const proc = spawn('bash', ['-c', managedCommand], {
       cwd,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -49,8 +67,9 @@ class BackgroundTasks {
 
     const job = {
       id,
-      name: name || command.slice(0, 60),
-      command,
+      name: name || managedCommand.slice(0, 60),
+      command: managedCommand,
+      original_command: originalCommand !== managedCommand ? originalCommand : null,
       cwd,
       pid: proc.pid,
       status: 'running',
@@ -62,6 +81,7 @@ class BackgroundTasks {
       timed_out: false,
       on_complete,
       _proc: proc,
+      _logStream: logStream,
       _done: null,
     };
 
@@ -106,6 +126,7 @@ class BackgroundTasks {
     });
 
     proc.unref();
+    setChildStdioRef(proc, false);
     this.jobs.set(id, job);
     return this.describe(id);
   }
@@ -120,8 +141,12 @@ class BackgroundTasks {
     // process so fast commands still get their close event before Node decides
     // the top-level await is unsettled.
     try { job._proc?.ref?.(); } catch { /* best effort */ }
+    try { job._logStream?.ref?.(); } catch { /* best effort */ }
+    setChildStdioRef(job._proc, true);
     return job._done.finally(() => {
       try { job._proc?.unref?.(); } catch { /* best effort */ }
+      try { job._logStream?.unref?.(); } catch { /* best effort */ }
+      setChildStdioRef(job._proc, false);
     });
   }
 
@@ -132,6 +157,7 @@ class BackgroundTasks {
       id: job.id,
       name: job.name,
       command: job.command,
+      original_command: job.original_command,
       pid: job.pid,
       status: job.status,
       exit_code: job.exit_code,

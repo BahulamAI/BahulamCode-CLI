@@ -7,6 +7,9 @@
  *     history.jsonl            — prompt history
  *     hooks.json               — global hooks
  *     conversations/           — conversation JSONL files
+ *     plugins/                 — installed plugins (THE plugin root)
+ *     plugins-pi/              — pi ingredients (composed, not run directly)
+ *     data/{plugin}/           — per-plugin state (state.db)
  *     projects/
  *       {hash}/                — per-project data (hash of project path)
  *         index/               — BM25 search index
@@ -55,6 +58,27 @@ export function projectHash(projectDir) {
 /** Root ~/.bahulam/ directory. */
 export function bahulamHome() {
     return resolveHome();
+}
+
+/**
+ * The one and only plugin root: `~/.bahulam/plugins`.
+ *
+ * Deliberately takes no `cwd`. There used to be a project-scoped second root
+ * (`<cwd>/.bahulam/plugins`), which meant the set of installed plugins
+ * depended on the directory you happened to launch from — the same command
+ * saw different plugins in different terminals. Plugins are global; only
+ * skills keep a project scope.
+ */
+export function pluginInstallDir() {
+    return path.join(bahulamHome(), 'plugins');
+}
+
+/**
+ * Directories the plugin registry scans. Exactly one entry, forever.
+ * @returns {string[]}
+ */
+export function pluginDirs() {
+    return [pluginInstallDir()];
 }
 
 /** ~/.bahulam/projects/{hash}/ for a given project path. */

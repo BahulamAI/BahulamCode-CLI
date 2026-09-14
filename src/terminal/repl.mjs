@@ -59,7 +59,7 @@ import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
-import { BUILTIN_AGENTS, findBuiltinAgent, localAgentMatches, runAgent, runAgentDefinition } from './agents.mjs';
+import { BUILTIN_AGENTS, runAgentDefinition } from './agents.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
 import { SkillsLoader } from '../skills/loader.mjs';
 import { openSkillsPicker, formatSkillsList } from './skills-picker.mjs';
@@ -412,7 +412,33 @@ const NAMED_MODEL_MODES = new Set(NAMED_MODEL_MODES_LIST);
 let _modelCatalogCache = null;
 let _modelCatalogError = null;
 let _modelCatalogSource = null;   // 'snapshot' | 'backend'
+let _modelCatalogFetchedAt = null;
 let _backendRefreshInFlight = null;
+
+function modelCatalogSummary(catalog = _modelCatalogCache) {
+  const rows = Array.isArray(catalog) ? catalog : [];
+  const curated = rows.filter(m => m?.harness_validated).length;
+  return { total: rows.length, curated };
+}
+
+function formatCatalogSource(source = _modelCatalogSource) {
+  if (source === 'backend') return 'backend';
+  if (source === 'snapshot') return 'shipped snapshot';
+  return 'unloaded';
+}
+
+function formatCatalogFetchedAt(value = _modelCatalogFetchedAt) {
+  if (!value) return 'not refreshed this session';
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(value);
+  } catch {
+    return value.toISOString();
+  }
+}
 
 async function fetchModelCatalog(ctx) {
   // Seed from the shipped snapshot so /model list, /model form and the
@@ -423,6 +449,7 @@ async function fetchModelCatalog(ctx) {
     if (shipped && shipped.length) {
       _modelCatalogCache = shipped;
       _modelCatalogSource = 'snapshot';
+      _modelCatalogFetchedAt = new Date();
       _modelCatalogError = null;
     }
   }
@@ -467,6 +494,7 @@ async function refreshCatalogFromBackend(ctx) {
     if (models && models.length) {
       _modelCatalogCache = models;
       _modelCatalogSource = 'backend';
+      _modelCatalogFetchedAt = new Date();
       _modelCatalogError = null;
     } else if (!_modelCatalogCache) {
       _modelCatalogError = models ? 'catalog is empty' : 'unexpected response shape';
@@ -565,6 +593,8 @@ async function printModelCatalog(ctx, filterCategory = null) {
   if (rest > 0) {
     process.stderr.write(`  ${c.dim(`+${rest} more models available on the BYOK route (--route byok, own API key)`)}\n`);
   }
+  const summary = modelCatalogSummary(catalog);
+  process.stderr.write(`  ${c.dim(`source: ${formatCatalogSource()} · ${summary.total} models · ${summary.curated} curated · refreshed ${formatCatalogFetchedAt()}`)}\n`);
   process.stderr.write('\n');
 }
 
@@ -611,13 +641,24 @@ function applyLaunchModelArgs(cliArgs, ctx) {
   return Promise.all(pending);
 }
 
-function printModelStatus() {
+async function printModelStatus(ctx = null) {
   process.stderr.write(`\n  ${c.bold('Models')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
   process.stderr.write(`  ${c.gray('Active coding')} ${session.model || 'backend default'}\n`);
   process.stderr.write(`  ${c.gray('Route        ')} ${session.routePreference || (session.isByok ? 'byok' : 'platform')}\n`);
   if (session.modelMode) {
     process.stderr.write(`  ${c.gray('Mode         ')} ${session.modelMode}\n`);
+  }
+
+  const catalog = await fetchModelCatalog(ctx);
+  const summary = modelCatalogSummary(catalog);
+  process.stderr.write(`\n  ${c.bold('Catalog')}\n`);
+  if (catalog) {
+    process.stderr.write(`  ${c.gray('Source       ')} ${formatCatalogSource()}\n`);
+    process.stderr.write(`  ${c.gray('Models       ')} ${summary.total} total · ${summary.curated} curated\n`);
+    process.stderr.write(`  ${c.gray('Refreshed    ')} ${formatCatalogFetchedAt()}\n`);
+  } else {
+    process.stderr.write(`  ${c.yellow('!')} ${c.dim(_modelCatalogError || 'unavailable')}\n`);
   }
 
   const limits = session.modelLimits || {};
@@ -716,13 +757,13 @@ async function handleModelCommand(rest = '', ctx) {
     if (process.stdin.isTTY) {
       await openModelForm(ctx);
     } else {
-      printModelStatus();
+      await printModelStatus(ctx);
     }
     return;
   }
 
   if (parts[0] === 'status') {
-    printModelStatus();
+    await printModelStatus(ctx);
     return;
   }
 
@@ -751,8 +792,9 @@ async function handleModelCommand(rest = '', ctx) {
     _modelCatalogCache = null;
     _modelCatalogError = null;
     _modelCatalogSource = null;
+    _modelCatalogFetchedAt = null;
     _backendRefreshInFlight = null;
-    process.stderr.write(`  ${c.dim('Refreshing model catalog…')}\n`);
+    process.stderr.write(`  ${c.dim('Refreshing model catalog from backend…')}\n`);
     await refreshCatalogFromBackend(ctx);
     if (_modelCatalogSource !== 'backend') {
       // Backend fetch failed — restore the shipped snapshot so subsequent
@@ -761,8 +803,12 @@ async function handleModelCommand(rest = '', ctx) {
       if (shipped && shipped.length) {
         _modelCatalogCache = shipped;
         _modelCatalogSource = 'snapshot';
+        _modelCatalogFetchedAt = new Date();
       }
       process.stderr.write(`  ${c.yellow('!')} ${c.dim(`Backend refresh failed — ${_modelCatalogError || 'unknown error'}. Showing shipped snapshot.`)}\n`);
+    } else {
+      const summary = modelCatalogSummary();
+      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Refreshed ${summary.total} models from backend · ${summary.curated} curated · ${formatCatalogFetchedAt()}`)}\n`);
     }
     await printModelCatalog(ctx);
     return;
@@ -921,23 +967,35 @@ function printAgentsUsage() {
   process.stderr.write(`         /agents sync [name]\n`);
 }
 
-function printAgentsList() {
-  const local = listLocalAgents(safeCwd());
-  process.stderr.write(`\n  ${c.bold('Built-in Agents')}\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-  for (const agent of BUILTIN_AGENTS) {
-    process.stderr.write(`  ${c.brand(('/' + agent.command).padEnd(14))} ${agent.description}\n`);
+function printAgentsList(ctx = {}) {
+  const agents = ctx.toolExecutor?.filterAgents?.({}) || [
+    ...listLocalAgents(safeCwd()),
+    ...BUILTIN_AGENTS.map(agent => ({
+      slug: agent.command,
+      name: agent.name,
+      description: agent.description,
+      source_scope: 'platform',
+    })),
+  ];
+  const groups = new Map();
+  for (const agent of agents) {
+    const scope = agent.source_scope || 'unknown';
+    if (!groups.has(scope)) groups.set(scope, []);
+    groups.get(scope).push(agent);
   }
 
-  process.stderr.write(`\n  ${c.bold('Local Agents')} ${c.dim('.bahulam/agents + ~/.bahulam/agents')}\n`);
+  process.stderr.write(`\n  ${c.bold('Agents')} ${c.dim('platform + project + global + admitted plugin')}\n`);
   process.stderr.write(`  ${c.gray('─'.repeat(44))}\n`);
-  if (!local.length) {
+  if (!agents.length) {
     process.stderr.write(`  ${c.dim('(none)')}\n`);
   } else {
-    for (const agent of local) {
-      const scope = agent.source_scope === 'project' ? c.green('project') : c.dim(agent.source_scope);
-      const model = agent.model ? c.dim(` · ${agent.model}`) : '';
-      process.stderr.write(`  ${c.brand(agent.slug.padEnd(18))} ${scope} ${agent.description || ''}${model}\n`);
+    for (const [scope, items] of groups) {
+      process.stderr.write(`  ${c.dim(scope)}\n`);
+      for (const agent of items) {
+        const model = agent.model ? c.dim(` · ${agent.model}`) : '';
+        const desc = agent.description ? ` ${agent.description}` : '';
+        process.stderr.write(`    ${c.brand(String(agent.slug || agent.command || agent.name).padEnd(18))}${desc}${model}\n`);
+      }
     }
   }
   process.stderr.write('\n');
@@ -949,7 +1007,7 @@ async function handleAgentsCommand(rest = '', ctx) {
   const action = (parts.shift() || 'list').toLowerCase();
 
   if (action === 'list' || action === 'ls') {
-    printAgentsList();
+    printAgentsList(ctx);
     return;
   }
 
@@ -1235,9 +1293,32 @@ async function handleSkillsCommand(rest = '', ctx) {
   printSkillsUsage();
 }
 
+const MODEL_COMMAND_COMPLETIONS = [
+  { command: '/model', description: 'Open interactive model overrides' },
+  { command: '/model status', description: 'Show model overrides and catalog source' },
+  { command: '/model refresh', description: 'Refresh model catalog from backend' },
+  { command: '/model list', description: 'List curated platform models' },
+  { command: '/model list text', description: 'List text models' },
+  { command: '/model list image', description: 'List image models' },
+  { command: '/model clear', description: 'Clear model overrides' },
+];
+
+function slashCompletionDescription(command) {
+  const modelHint = MODEL_COMMAND_COMPLETIONS.find(item => item.command === command);
+  if (modelHint) return modelHint.description;
+  return COMMANDS[command] || (command === '/quit' ? 'Exit CLI' : '');
+}
+
 function commandCompletions(line) {
-  if (line.startsWith('/help ')) {
-    const topic = line.slice('/help '.length).toLowerCase();
+  const text = String(line || '').trimStart();
+  if (text === '/model' || text.startsWith('/model ')) {
+    const modelCompletions = MODEL_COMMAND_COMPLETIONS
+      .map(item => item.command)
+      .filter(cmd => cmd.startsWith(text));
+    if (modelCompletions.length) return modelCompletions;
+  }
+  if (text.startsWith('/help ')) {
+    const topic = text.slice('/help '.length).toLowerCase();
     const categories = ['all', ...HELP_GROUPS.map(g => g.key)];
     const hits = categories.map(c => `/help ${c}`).filter(cmd => cmd.startsWith(`/help ${topic}`));
     return hits.length ? hits : categories.map(c => `/help ${c}`);
@@ -1248,19 +1329,19 @@ function commandCompletions(line) {
   // No fallback-to-all: a non-matching prefix ("/Users/...", a pasted
   // path) must yield NOTHING so the hint overlay hides, not the full
   // catalog. Bare "/" still matches every command via startsWith.
-  return all.filter(cmd => cmd.startsWith(line));
+  return all.filter(cmd => cmd.startsWith(text));
 }
 
 function slashCommandSuggestions(line, limit = 5) {
   const text = String(line || '').trimStart();
   if (!text.startsWith('/')) return [];
-  const partial = text.split(/\s+/)[0] || '/';
+  const partial = text.startsWith('/model ') ? text : (text.split(/\s+/)[0] || '/');
   return commandCompletions(partial)
     .filter(cmd => cmd.startsWith('/'))
     .slice(0, limit)
     .map(cmd => ({
       command: cmd,
-      description: COMMANDS[cmd] || (cmd === '/quit' ? 'Exit CLI' : ''),
+      description: slashCompletionDescription(cmd),
     }));
 }
 
@@ -1323,8 +1404,8 @@ async function _checkForUpgradeAndAnnounce() {
   const [x, y, z] = asTuple(current);
   const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
   if (!newer) return;
-  process.stderr.write(`  ${c.brand('◆')} ${c.dim('New version available:')} ${c.bold(c.green(latest))} ${c.dim(`(current ${current})`)}\n`);
-  process.stderr.write(`  ${c.dim('  Upgrade:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(`${pkgName}@${latest}`))} ${c.dim(`(installed ${current})`)}\n`);
+  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -1373,6 +1454,8 @@ function buildContextStrip() {
   // volume + elapsed. Historical rate calc was double-counting the cache tokens
   // vs OpenRouter's convention (see computeCacheTotals) which was misleading.
   const parts = [];
+  const model = compactDockModel(activeDockModel());
+  if (model) parts.push(c.dim(`model ${model}`));
   // ctx: last turn's cumulative input tokens — approximates the CURRENT
   // prompt size. Only shown once we've completed at least one turn (so
   // the initial banner doesn't read '0 ctx'). This is the number the
@@ -1385,12 +1468,27 @@ function buildContextStrip() {
   return parts.join(c.dim(' · '));
 }
 
-// ── Dock meta line (model · cwd ⎇ branch · turn N) ─────────────────────
+// ── Dock meta line (cwd ⎇ branch · turn N · task …) ────────────────────
 //
-// The dock's meta row shows durable session context. Git branch is cached
-// so we don't shell out on every keystroke; refreshed at most every 5s.
+// The dock's meta row shows durable session context. Git branch and task
+// state are cached so we don't hit disk/shell on every keystroke.
 
 const _dockGitCache = { branch: null, at: 0, cwd: null };
+const _dockTaskCache = { summary: '', at: 0, cwd: null };
+
+function activeDockModel() {
+  return session.modelOverrides?.reasoning
+    || session.model
+    || session.modelLimits?.coder?.model
+    || session.user?.default_reasoning_model
+    || null;
+}
+
+function compactDockModel(model) {
+  const value = String(model || '').trim();
+  if (!value) return '';
+  return value.replace(/^(anthropic|openai|google|deepseek|xai|meta)\//, '');
+}
 
 function _probeGitBranch(cwd) {
   const now = Date.now();
@@ -1410,6 +1508,36 @@ function _probeGitBranch(cwd) {
   return branch;
 }
 
+function compactTaskText(text, max = 36) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return value.slice(0, Math.max(0, max - 1)) + '…';
+}
+
+function _probeTaskSummary(cwd) {
+  const now = Date.now();
+  if (_dockTaskCache.cwd === cwd && (now - _dockTaskCache.at) < 1500) {
+    return _dockTaskCache.summary;
+  }
+  let summary = '';
+  try {
+    const board = loadTaskBoard({ cwd });
+    const counts = taskCounts(board);
+    const active = board.lists.active?.tasks?.find(task => !task.checked) || board.lists.active?.tasks?.[0];
+    if (active?.text) {
+      summary = `task ${compactTaskText(active.text)}`;
+    } else if (counts.blocked > 0 || counts.backlog > 0) {
+      summary = `tasks ${counts.active} active, ${counts.blocked} blocked, ${counts.backlog} backlog`;
+    }
+  } catch {
+    summary = '';
+  }
+  _dockTaskCache.cwd = cwd;
+  _dockTaskCache.at = now;
+  _dockTaskCache.summary = summary;
+  return summary;
+}
+
 function buildDockMeta() {
   const parts = [];
 
@@ -1418,13 +1546,11 @@ function buildDockMeta() {
   const branch = _probeGitBranch(cwd);
   parts.push(branch ? `${projectName} ⎇ ${branch}` : projectName);
 
+  const taskSummary = _probeTaskSummary(cwd);
+  if (taskSummary) parts.push(taskSummary);
+
   if (session.turns > 0) {
     parts.push(`turn ${session.turns}`);
-  }
-
-  const totalTokens = session.inputTokens + session.outputTokens;
-  if (totalTokens > 0) {
-    parts.push(`${formatTokens(totalTokens)} tok`);
   }
 
   return parts.join(' · ');
@@ -2213,6 +2339,9 @@ function renderEvent(event) {
     case 'tool_result':
     case 'tool_done': {
       const eventData = normalizeSubAgentRunData(data);
+      if (String(eventData?.tool || '').toLowerCase() === 'todowrite' || String(eventData?._tool || '').toLowerCase() === 'todowrite') {
+        _dockTaskCache.at = 0;
+      }
       if (watchState.active) {
         const success = eventData?.success !== false;
         watchState.addEntry('done', { label: eventData?.tool, detail: success ? '✓' : '✗' });
@@ -3039,6 +3168,7 @@ function refreshTaskContext(ctx) {
     const previous = ctx.latestProjectContext || null;
     ctx.latestProjectContext = loadProjectContext({ cwd: safeCwd(), previous });
     ctx.latestEnvelope = null;
+    _dockTaskCache.at = 0;
   } catch { /* best effort */ }
 }
 
@@ -3186,6 +3316,23 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
   return execContext;
 }
 
+function makeDispatchContext(ctx) {
+  const creds = ctx.auth?.loadCredentials?.() || {};
+  return {
+    toolExecutor: ctx.toolExecutor,
+    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
+    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
+    renderEvent,
+    sessionSubstrate: makeSessionSubstrate(ctx),
+    auth: { token: creds.token || null },
+    credentials: {
+      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+    },
+    cwd: safeCwd(),
+  };
+}
+
 function stripWrappingQuotes(value = '') {
   const text = String(value || '').trim();
   if (text.length >= 2) {
@@ -3215,10 +3362,7 @@ function printRunUsage(ctx) {
   process.stderr.write(`  ${c.gray('Example: /run docker-analyzer Analyze all running Docker containers')}\n`);
 
   const targets = new Map();
-  for (const agent of listLocalAgents(safeCwd())) addRunTarget(targets, agent);
-  for (const agent of BUILTIN_AGENTS) addRunTarget(targets, agent);
   for (const agent of ctx.toolExecutor?.listRunnables?.() || []) addRunTarget(targets, agent);
-  for (const agent of pluginRegistry?.listAgents?.() || []) addRunTarget(targets, agent);
 
   const agents = [...targets.values()].filter(item => item.kind === 'agent').slice(0, 12);
   if (agents.length) {
@@ -3251,28 +3395,8 @@ async function handleRunCommand(rest = '', ctx) {
     return;
   }
 
-  const localAgent = listLocalAgents(safeCwd()).find(agent => localAgentMatches(agent, target));
-  const builtinAgent = findBuiltinAgent(target);
-  const registeredAgent = ctx.toolExecutor?.listRunnables?.()
-    ?.find(agent => localAgentMatches(agent, target));
-  const pluginAgent = pluginRegistry?.listAgents?.()
-    ?.find(agent => localAgentMatches(agent, target));
-  const runnableAgent = localAgent || builtinAgent || registeredAgent || pluginAgent;
-
-  const creds = ctx.auth?.loadCredentials?.() || {};
-  const dispatchCtx = {
-    toolExecutor: ctx.toolExecutor,
-    listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
-    listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
-    renderEvent,
-    sessionSubstrate: makeSessionSubstrate(ctx),
-    auth: { token: creds.token || null },
-    credentials: {
-      apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
-      openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
-    },
-    cwd: safeCwd(),
-  };
+  const runnableAgent = ctx.toolExecutor?.findAgent?.(target) || null;
+  const dispatchCtx = makeDispatchContext(ctx);
 
   try {
     if (!runnableAgent) process.stderr.write(`  ${c.dim(`Running workflow '${target}'...`)}\n`);
@@ -4254,7 +4378,7 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.gray(`Example: ${cmd} ${cmd === '/explore' ? 'how does authentication work?' : cmd === '/review' ? 'check src/core/ for bugs' : 'design a caching layer'}`)}\n`);
         return;
       }
-      return await runAgent(cmd.slice(1), rest, ctx, session, renderEvent);
+      return await handleRunCommand(`${cmd.slice(1)} ${rest}`, ctx);
     }
 
     case '/logout': {
@@ -4274,8 +4398,48 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.brand('Goodbye!')}\n\n`);
       process.exit(0);
 
+    case '/mcp': {
+      await handleMcpSlashCommand(rest, ctx);
+      return;
+    }
+
     default:
       process.stderr.write(`  ${c.gray(`Unknown: ${cmd}. Type /help.`)}\n`);
+  }
+}
+
+/**
+ * /mcp slash command — dispatches to the CLI's handleMcpCommand.
+ * Supports: /mcp (status), /mcp add, /mcp remove, /mcp list, /mcp test.
+ */
+async function handleMcpSlashCommand(rest, ctx) {
+  const sub = String(rest || '').trim().split(/\s+/)[0]?.toLowerCase();
+  if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test'].includes(sub)) {
+    // No subcommand → show connected server status from session state
+    const mcpClients = ctx?.toolExecutor?._mcpClients || [];
+    if (mcpClients.length === 0) {
+      process.stderr.write(`  ${c.dim('No MCP servers connected. Use:')} ${c.brand('/mcp add <name> --command <cmd> | --url <url>')}\n`);
+      return;
+    }
+    process.stderr.write(`\n  ${c.bold('MCP Servers')} (${mcpClients.length}):\n`);
+    for (let i = 0; i < mcpClients.length; i++) {
+      const cl = mcpClients[i];
+      const name = cl.name || cl.config?.command || 'unknown';
+      const endpoint = cl.config?.url || cl.config?.command || 'unknown';
+      const status = cl.connected ? c.green('connected') : c.yellow('disconnected');
+      process.stderr.write(`  ${c.brand(String(i + 1).padStart(2))}. ${c.brand(name.padEnd(20))} ${status} ${c.dim(endpoint)}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  // Dispatch to the CLI handler — same code path as `bahulam mcp`
+  try {
+    const { handleMcpCommand } = await import('../commands/mcp.mjs');
+    const mcpArgs = String(rest || '').trim().split(/\s+/);
+    await handleMcpCommand(mcpArgs);
+  } catch (err) {
+    process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message)}\n`);
   }
 }
 
@@ -4335,6 +4499,18 @@ export async function startTerminalRepl() {
     return res;
   };
 
+  async function runDelegateFromTool({ agent, slug, instruction, context = {}, options = {} }) {
+    const dispatchCtx = makeDispatchContext(ctx);
+    return await dispatch({
+      type: 'invoke',
+      source: 'tool:delegate',
+      target: { kind: 'agent', slug: slug || agent?.slug, agent },
+      params: { instruction, context },
+      channel: 'local',
+      signal: options.signal,
+    }, dispatchCtx);
+  }
+
   function makeToolExecutor({ showIndexStatus = false } = {}) {
     const shouldShowIndexStatus = showIndexStatus && process.stderr.isTTY && !term().plain;
     let stopIndexSpinner = null;
@@ -4342,6 +4518,7 @@ export async function startTerminalRepl() {
       checkpoints,
       hookRunner,
       pluginRegistry,
+      delegateRunner: runDelegateFromTool,
       interactionHandler: askUserInteraction,
       onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
         const name = path.basename(root || safeCwd()) || root || 'project';
@@ -4378,20 +4555,7 @@ export async function startTerminalRepl() {
   // agent through the trigger funnel when they exit. The ctx builder runs
   // lazily at fire time so it sees the live tool executor.
   registerJobCompletionDispatch(() => {
-    const creds = ctx.auth?.loadCredentials?.() || {};
-    return {
-      toolExecutor: ctx.toolExecutor,
-      listRunnables: () => ctx.toolExecutor?.listRunnables?.() || [],
-      listLocalWorkflows: () => listLocalWorkflows(safeCwd()),
-      renderEvent,
-      sessionSubstrate: makeSessionSubstrate(ctx),
-      auth: { token: creds.token || null },
-      credentials: {
-        apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
-        openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
-      },
-      cwd: safeCwd(),
-    };
+    return makeDispatchContext(ctx);
   });
 
   let startupOutputRow = 1;
@@ -5219,10 +5383,12 @@ export async function startTerminalRepl() {
   function selectedSlashCommandFor(line) {
     const input = String(line || '').trim();
     if (!input.startsWith('/')) return null;
-    if (COMMANDS[input] || input.startsWith('/help ')) return input;
+    const parts = input.split(/\s+/);
+    const firstToken = parts[0] || '';
+    if (COMMANDS[firstToken] || firstToken === '/help') return input;
     const item = slashHintItems[slashHintSelected];
     if (!item) return input;
-    return item.command;
+    return parts.length > 1 ? `${item.command} ${parts.slice(1).join(' ')}` : item.command;
   }
 
   function reservePromptBottomPadding() {

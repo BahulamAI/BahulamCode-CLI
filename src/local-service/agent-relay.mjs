@@ -19,6 +19,8 @@ import {
 import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
+import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
+import { dispatch } from '../orchestration/dispatch.mjs';
 import { BrowserApprovalManager } from './approval-bridge.mjs';
 
 const __require = createRequire(import.meta.url);
@@ -617,7 +619,31 @@ export class LocalAgentRelay {
       try { this.emit('plugin_state_changed', evt); }
       catch { /* never let SSE failure break a tool call */ }
     };
-    const toolExecutor = createToolExecutor({ pluginRegistry, stateEmit, channel: 'workspace' });
+    let toolExecutor = null;
+    const runDelegateFromTool = async ({ agent, slug, instruction, options = {} }) => {
+      const turnId = `delegate_${Date.now().toString(36)}`;
+      return await dispatch({
+        type: 'invoke',
+        source: 'tool:delegate',
+        target: { kind: 'agent', slug: slug || agent?.slug, agent },
+        params: { instruction: instruction || '' },
+        channel: 'local',
+        signal: options.signal,
+      }, {
+        toolExecutor,
+        listRunnables: () => toolExecutor?.listRunnables?.() || [],
+        listLocalWorkflows: () => listLocalWorkflows(this.session.root_path),
+        renderEvent: event => this._emitAgentEvent(event, { turnId, contentText: event?.data?.text || event?.data?.content || null }),
+        sessionSubstrate: this._makeWorkspaceSessionSubstrate(pluginRegistry),
+        auth: { token: creds.token || null },
+        credentials: {
+          apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
+          openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
+        },
+        cwd: this.session.root_path,
+      });
+    };
+    toolExecutor = createToolExecutor({ pluginRegistry, stateEmit, channel: 'workspace', delegateRunner: runDelegateFromTool });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
 
@@ -724,6 +750,35 @@ export class LocalAgentRelay {
     if (this.creds.modelMode) execContext.model_mode = this.creds.modelMode;
     if (this.creds.routePreference) execContext.model_route = this.creds.routePreference;
     return execContext;
+  }
+
+  _makeWorkspaceSessionSubstrate(pluginRegistry) {
+    return (agent, node, instruction, { scopedExecutor } = {}) => (async function* (relay) {
+      const execContext = await relay._buildExecContext(instruction);
+      const slug = agent.slug || agent.command || agent.name || node?.agent_slug || node?.id || 'agent';
+      execContext.sub_agent = {
+        slug,
+        name: agent.name || slug,
+        role: agent.role || 'specialist',
+        description: agent.description || '',
+        tools: Array.isArray(agent.tools) ? agent.tools : [],
+        source: agent.source || '',
+      };
+      const systemPrompt = agent.systemPrompt || agent.system_prompt || agent.prompt || `You are ${agent.name || slug}, a Bahulam Code sub-agent.`;
+      const fullInstruction = `${systemPrompt}\n\n---\n\nUser request: ${instruction || 'Run your assigned task now.'}`;
+      const client = new BahulamStreamClient({
+        baseUrl: relay.creds.backendUrl,
+        token: relay.creds.token,
+        toolExecutor: scopedExecutor || relay.toolExecutor,
+        approvalManager: relay.approvalManager,
+        mode: 'remote',
+        pluginRegistry,
+      });
+      if (relay.resumeSessionId) client.sessionId = relay.resumeSessionId;
+      for await (const event of client.execute(fullInstruction, execContext)) {
+        yield event;
+      }
+    })(this);
   }
 
   _buildInstruction(prompt, currentPath, attachments = []) {

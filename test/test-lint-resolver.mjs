@@ -6,7 +6,7 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveLintCommand } from '../src/core/lint-resolver.mjs';
+import { normalizeLintOutput, resolveLintCommand } from '../src/core/lint-resolver.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -200,6 +200,36 @@ test('TypeScript lint uses tsconfig project mode, never file mode tsc', () => {
     }
 });
 
+test('automatic TSX lint prefers project tsc even when ESLint is configured', () => {
+    const root = tempProject('lint-tsx-prefers-tsc');
+    try {
+        write(path.join(root, 'package.json'), JSON.stringify({
+            devDependencies: {
+                eslint: '^9.0.0',
+                typescript: '^5.0.0',
+            },
+        }));
+        write(path.join(root, 'eslint.config.mjs'), 'export default [];\n');
+        write(path.join(root, 'tsconfig.json'), JSON.stringify({
+            compilerOptions: { jsx: 'react-jsx', strict: true },
+            include: ['src/**/*.tsx'],
+        }));
+        write(path.join(root, 'src', 'App.tsx'), 'export function App() { return <main />; }\n');
+
+        const lint = resolveLintCommand(path.join(root, 'src', 'App.tsx'), {
+            projectRoot: root,
+            allowProjectScript: false,
+        });
+
+        assert.match(lint.command, /npx --no-install tsc --noEmit --pretty false -p/);
+        assert.ok(!lint.command.includes('eslint'), lint.command);
+        assert.ok(!lint.command.includes('src/App.tsx'), lint.command);
+        assert.equal(lint.source, 'typescript');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('TypeScript without project config does not invent a file-mode tsc command', () => {
     const root = tempProject('lint-ts-no-config');
     try {
@@ -217,6 +247,27 @@ test('TypeScript without project config does not invent a file-mode tsc command'
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('ESLint fatal banner is summarized with actionable detail', () => {
+    const output = normalizeLintOutput(
+        { source: 'eslint' },
+        {
+            errored: true,
+            stderr: [
+                'Oops! Something went wrong! :(',
+                '',
+                'ESLint: 9.39.1',
+                '',
+                "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@typescript-eslint/parser'",
+            ].join('\n'),
+        },
+    );
+
+    assert.equal(
+        output,
+        "eslint failed: Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@typescript-eslint/parser'",
+    );
 });
 
 test('Python lint falls back to py_compile without Ruff config', () => {

@@ -68,7 +68,12 @@ export function resolveLintCommand(targetPath, {
         return resolvePythonLint(target, { stat, root });
     }
     if (language === 'typescript') {
-        return resolveJavaScriptLint(target, { stat, root, typescript: true });
+        return resolveJavaScriptLint(target, {
+            stat,
+            root,
+            typescript: true,
+            preferTypeCheck: !allowProjectScript,
+        });
     }
     if (language === 'javascript') {
         return resolveJavaScriptLint(target, { stat, root, typescript: false });
@@ -279,7 +284,47 @@ function captured(command) {
     return `${command} 2>&1 || true`;
 }
 
-function resolveJavaScriptLint(target, { stat, root, typescript }) {
+function resolveTypeScriptProjectCheck(target, { stat, root }) {
+    const baseDir = stat?.isDirectory() ? target : path.dirname(target);
+    const tsconfig = findUpFile(baseDir, root, ['tsconfig.json']);
+    if (!tsconfig) return null;
+    const cwd = path.dirname(tsconfig);
+    const hasTypescript = hasNodeTool(baseDir, root, 'tsc', ['typescript']);
+    if (!hasTypescript) return null;
+    return {
+        command: captured(`npx --no-install tsc --noEmit --pretty false -p ${shellPathArg(tsconfig, cwd)}`),
+        cwd,
+        language: 'typescript',
+        target,
+        scope: 'project',
+        source: 'typescript',
+        reason: 'tsconfig project check',
+    };
+}
+
+export function normalizeLintOutput(lint, { stdout = '', stderr = '', errored = false } = {}) {
+    const output = String(errored ? (stderr || stdout || '') : (stdout || stderr || '')).trim();
+    if (!output) return null;
+    if (lint?.source !== 'eslint' || !/Oops!\s+Something went wrong!/i.test(output)) {
+        return output;
+    }
+    const lines = output.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const detail = lines.find(line => (
+        !/^Oops!/i.test(line) &&
+        !/^ESLint:/i.test(line) &&
+        !/^If you still have problems/i.test(line) &&
+        !/^Please include/i.test(line)
+    ));
+    const suffix = detail ? ` ${detail}` : ' Check the project ESLint config, parser, and plugins.';
+    return `eslint failed:${suffix}`;
+}
+
+function resolveJavaScriptLint(target, { stat, root, typescript, preferTypeCheck = false }) {
+    if (typescript && preferTypeCheck) {
+        const typecheck = resolveTypeScriptProjectCheck(target, { stat, root });
+        if (typecheck) return typecheck;
+    }
+
     const baseDir = stat?.isDirectory() ? target : path.dirname(target);
     const eslintReady = hasConfig(baseDir, root, ESLINT_CONFIGS) ||
         hasNodeTool(baseDir, root, 'eslint', ['eslint']);
@@ -312,20 +357,7 @@ function resolveJavaScriptLint(target, { stat, root, typescript }) {
     }
 
     if (typescript) {
-        const tsconfig = findUpFile(baseDir, root, ['tsconfig.json']);
-        if (!tsconfig) return null;
-        const cwd = path.dirname(tsconfig);
-        const hasTypescript = hasNodeTool(baseDir, root, 'tsc', ['typescript']);
-        if (!hasTypescript) return null;
-        return {
-            command: captured(`npx --no-install tsc --noEmit --pretty false -p ${shellPathArg(tsconfig, cwd)}`),
-            cwd,
-            language: 'typescript',
-            target,
-            scope: 'project',
-            source: 'typescript',
-            reason: 'tsconfig project check',
-        };
+        return resolveTypeScriptProjectCheck(target, { stat, root });
     }
 
     const ext = path.extname(target).toLowerCase();

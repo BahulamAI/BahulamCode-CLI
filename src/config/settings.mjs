@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL } from './model-defaults.mjs';
 
 /**
  * Full settings schema with defaults.
@@ -30,9 +31,9 @@ export const SETTINGS_SCHEMA = {
         Stop: [],
         SessionStart: [],
     },
-    model: 'claude-sonnet-4-6',
+    model: DEFAULT_REASONING_MODEL,
     subagentModel: null,
-    fastModel: 'claude-haiku-4-5',
+    fastModel: DEFAULT_FAST_MODEL,
     fastMode: false,
     alwaysThinkingEnabled: false,
     autoCompactEnabled: true,

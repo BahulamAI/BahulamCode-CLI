@@ -11,6 +11,7 @@
 import { createAgentLoop } from '../core/agent-loop.mjs';
 import { createToolRegistry } from './registry.mjs';
 import { createPermissionChecker } from '../permissions/checker.mjs';
+import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 
 export const AgentTool = {
     name: 'Agent',
@@ -59,7 +60,7 @@ export const AgentTool = {
     _nextBgId: 0,
 
     async call(input, options = {}) {
-        const model = input.model || process.env.SUBAGENT_MODEL || 'claude-sonnet-4-6';
+        const model = input.model || process.env.SUBAGENT_MODEL || DEFAULT_REASONING_MODEL;
         const tools = createToolRegistry({
             pluginRegistry: options.pluginRegistry || null,
             stateEmit: options.stateEmit || null,
