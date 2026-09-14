@@ -68,6 +68,7 @@ const UNIT_TESTS = [
     'test/test-output-filter.mjs',
     'test/test-risk-tier.mjs',
     'test/test-resume-append.mjs',
+    'test/test-mcp.mjs',
 ];
 
 // ── Integration tests ────────────────────────────────────────────────────────

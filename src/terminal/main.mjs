@@ -291,6 +291,12 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'mcp') {
+    const { handleMcpCommand } = await import('../commands/mcp.mjs');
+    await handleMcpCommand(subcommandArgs);
+    return;
+  }
+
   if (subcommand === 'plugin' || subcommand === 'plugins') {
     // `install`/`pull` moved to top-level. Detect the old form and redirect.
     if (subcommandArgs[0] === 'install' || subcommandArgs[0] === 'pull') {
@@ -338,6 +344,9 @@ async function main() {
     bahulam login                  Sign in via browser
     bahulam logout                 Sign out and clear credentials
     bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
+    bahulam mcp add <name> ...     Register an MCP server
+    bahulam mcp list               List registered MCP servers
+    bahulam mcp test <name>        Test an MCP server connection
     bahulam version                Show version
 
   \x1b[1mDaemon:\x1b[0m

@@ -18,6 +18,8 @@ import { persistProjectArtifacts } from './project-artifacts.mjs';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from './approval.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
+import { loadSettings } from '../config/settings.mjs';
+import { loadMcpServers } from '../mcp/loader.mjs';
 // daemon wiring — headless (and `bahulam daemonize`) also starts the socket
 // server + relay bridge when eventlog is enabled. Without this the daemon
 // is invisible to attach clients and to paired mobile devices.
@@ -98,6 +100,9 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             return outcome;
         };
         toolExecutor = createToolExecutor({ pluginRegistry, delegateRunner: runDelegateFromTool });
+        // Load MCP servers from settings chain (~/.claude/settings.json etc.)
+        const _settings = await loadSettings();
+        const _mcpClients = await loadMcpServers(toolExecutor, _settings);
         const timer = setTimeout(() => {
             emit({ type: 'timeout', duration_s: timeout });
             process.exit(2);
@@ -166,6 +171,10 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         return outcome;
     };
     toolExecutor = createToolExecutor({ pluginRegistry, delegateRunner: runDelegateFromTool });
+
+    // Load MCP servers from settings chain (~/.claude/settings.json etc.)
+    const _settings = await loadSettings();
+    const _mcpClients = await loadMcpServers(toolExecutor, _settings);
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });

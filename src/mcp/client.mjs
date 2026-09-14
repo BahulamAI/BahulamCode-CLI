@@ -13,6 +13,7 @@
 import { spawn } from 'child_process';
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export class McpClient {
     /**
@@ -102,7 +103,9 @@ export class McpClient {
             }
         });
         this.connected = true;
-        return this._initRemote();
+        await this._initRemote();
+        this._notifyRemote('notifications/initialized', {});
+        return this.serverInfo;
     }
 
     async _connectWebSocket() {
@@ -117,6 +120,7 @@ export class McpClient {
             capabilities: {},
             clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
+        this._notifyRemote('notifications/initialized', {});
         return this.serverInfo;
     }
 
@@ -132,6 +136,7 @@ export class McpClient {
             capabilities: {},
             clientInfo: { name: 'bahulam-code', version: '2.0.0' },
         });
+        this._notifyRemote('notifications/initialized', {});
         return this.serverInfo;
     }
 
@@ -145,11 +150,39 @@ export class McpClient {
         return result;
     }
 
+    _notifyRemote(method, params) {
+        if (this.transport?.request) {
+            // WebSocket / sHTTP transports have native request() — use send()
+            // for notifications (no id, no response expected).
+            if (this.transport.send) {
+                this.transport.send({ jsonrpc: '2.0', method, params }).catch(() => {});
+            }
+        } else if (this.transport) {
+            // SSE transport — fire-and-forget via send()
+            this.transport.send({ jsonrpc: '2.0', method, params }).catch(() => {});
+        }
+    }
+
     async _transportRequest(method, params) {
         return new Promise((resolve, reject) => {
             const id = ++this.requestId;
-            this.pending.set(id, { resolve, reject });
-            this.transport.send({ jsonrpc: '2.0', id, method, params });
+            const timeout = setTimeout(() => {
+                if (this.pending.has(id)) {
+                    this.pending.delete(id);
+                    reject(new Error(`MCP request timeout: ${method} (${DEFAULT_REQUEST_TIMEOUT_MS}ms)`));
+                }
+            }, DEFAULT_REQUEST_TIMEOUT_MS);
+            this.pending.set(id, {
+                resolve: (val) => { clearTimeout(timeout); resolve(val); },
+                reject: (err) => { clearTimeout(timeout); reject(err); },
+            });
+            this.transport.send({ jsonrpc: '2.0', id, method, params }).catch(err => {
+                if (this.pending.has(id)) {
+                    this.pending.delete(id);
+                    clearTimeout(timeout);
+                    reject(err);
+                }
+            });
         });
     }
 
@@ -177,7 +210,14 @@ export class McpClient {
             result = await this._request('tools/call', params);
         }
         if (result?.content && Array.isArray(result.content)) {
-            return result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+            const textParts = result.content.filter(c => c.type === 'text').map(c => c.text);
+            const imageParts = result.content.filter(c => c.type === 'image');
+            if (imageParts.length > 0 && textParts.length === 0) {
+                return result;
+            }
+            if (textParts.length > 0) {
+                return textParts.join('\n');
+            }
         }
         return result;
     }
@@ -222,7 +262,16 @@ export class McpClient {
     _request(method, params) {
         return new Promise((resolve, reject) => {
             const id = ++this.requestId;
-            this.pending.set(id, { resolve, reject });
+            const timeout = setTimeout(() => {
+                if (this.pending.has(id)) {
+                    this.pending.delete(id);
+                    reject(new Error(`MCP request timeout: ${method} (${DEFAULT_REQUEST_TIMEOUT_MS}ms)`));
+                }
+            }, DEFAULT_REQUEST_TIMEOUT_MS);
+            this.pending.set(id, {
+                resolve: (val) => { clearTimeout(timeout); resolve(val); },
+                reject: (err) => { clearTimeout(timeout); reject(err); },
+            });
             const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params });
             this.process.stdin.write(msg + '\n');
         });

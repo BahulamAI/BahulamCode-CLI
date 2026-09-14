@@ -4398,8 +4398,48 @@ async function handleCommand(input, ctx) {
       process.stderr.write(`\n  ${c.brand('Goodbye!')}\n\n`);
       process.exit(0);
 
+    case '/mcp': {
+      await handleMcpSlashCommand(rest, ctx);
+      return;
+    }
+
     default:
       process.stderr.write(`  ${c.gray(`Unknown: ${cmd}. Type /help.`)}\n`);
+  }
+}
+
+/**
+ * /mcp slash command — dispatches to the CLI's handleMcpCommand.
+ * Supports: /mcp (status), /mcp add, /mcp remove, /mcp list, /mcp test.
+ */
+async function handleMcpSlashCommand(rest, ctx) {
+  const sub = String(rest || '').trim().split(/\s+/)[0]?.toLowerCase();
+  if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test'].includes(sub)) {
+    // No subcommand → show connected server status from session state
+    const mcpClients = ctx?.toolExecutor?._mcpClients || [];
+    if (mcpClients.length === 0) {
+      process.stderr.write(`  ${c.dim('No MCP servers connected. Use:')} ${c.brand('/mcp add <name> --command <cmd> | --url <url>')}\n`);
+      return;
+    }
+    process.stderr.write(`\n  ${c.bold('MCP Servers')} (${mcpClients.length}):\n`);
+    for (let i = 0; i < mcpClients.length; i++) {
+      const cl = mcpClients[i];
+      const name = cl.name || cl.config?.command || 'unknown';
+      const endpoint = cl.config?.url || cl.config?.command || 'unknown';
+      const status = cl.connected ? c.green('connected') : c.yellow('disconnected');
+      process.stderr.write(`  ${c.brand(String(i + 1).padStart(2))}. ${c.brand(name.padEnd(20))} ${status} ${c.dim(endpoint)}\n`);
+    }
+    process.stderr.write('\n');
+    return;
+  }
+
+  // Dispatch to the CLI handler — same code path as `bahulam mcp`
+  try {
+    const { handleMcpCommand } = await import('../commands/mcp.mjs');
+    const mcpArgs = String(rest || '').trim().split(/\s+/);
+    await handleMcpCommand(mcpArgs);
+  } catch (err) {
+    process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message)}\n`);
   }
 }
 
