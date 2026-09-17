@@ -152,8 +152,13 @@ export function createToolExecutor({
         return project.resource.root;
     }
 
-    async function commandCwd(args = {}) {
-        return await resolvePath(args.cwd || null, args);
+    async function commandCwd(args = {}, { readOnly = false } = {}) {
+        try {
+            return await resolvePath(args.cwd || null, args);
+        } catch (err) {
+            if (readOnly) return args.cwd ? path.resolve(args.cwd) : process.cwd();
+            throw err;
+        }
     }
 
     function shellTargetPath(cwd, target) {
@@ -1390,7 +1395,7 @@ export function createToolExecutor({
                 args._riskReason = classification.reason || shellCheck.reason;
             }
             args._classification = classification.classification; // 'safe' or 'contained'
-            const cwd = await commandCwd(args);
+            const cwd = await commandCwd(args, { readOnly: classification.classification === 'safe' });
 
             // Background execution: start via the BackgroundTasks registry
             // and return immediately. Safety checks above still apply;
