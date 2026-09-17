@@ -10,6 +10,17 @@
  */
 import { spawn } from 'child_process';
 
+/**
+ * Resolve shell binary and args for the current platform.
+ * Windows uses cmd.exe; Linux/macOS use bash.
+ */
+function shellSpawnArgs(command) {
+    if (process.platform === 'win32') {
+        return ['cmd.exe', ['/d', '/s', '/c', command]];
+    }
+    return ['bash', ['-c', command]];
+}
+
 // Strip ANSI escape sequences
 function stripAnsi(str) {
     // eslint-disable-next-line no-control-regex
@@ -73,7 +84,8 @@ export const BashTool = {
             let killTimer = null;
             let settled = false;
 
-            const proc = spawn('bash', ['-c', input.command], {
+            const [shellBin, shellArgs] = shellSpawnArgs(input.command);
+            const proc = spawn(shellBin, shellArgs, {
                 cwd: input.cwd,
                 env: { ...process.env },
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -221,7 +233,8 @@ let bgJobId = 0;
 
 function runBackground(command, cwd) {
     const id = ++bgJobId;
-    const proc = spawn('bash', ['-c', command], {
+    const [shellBin, shellArgs] = shellSpawnArgs(command);
+    const proc = spawn(shellBin, shellArgs, {
         cwd,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
