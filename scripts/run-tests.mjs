@@ -70,6 +70,7 @@ const UNIT_TESTS = [
     'test/test-context-reduction.mjs',
     'test/test-resume-append.mjs',
     'test/test-mcp.mjs',
+    'test/test-followup-promote.mjs',
 ];
 
 // ── Integration tests ────────────────────────────────────────────────────────
