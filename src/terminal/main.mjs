@@ -57,6 +57,10 @@ function parsePluginArgs(argv) {
       case '--global': parsed.global = true; break;
       case '--force': case '-f': parsed.force = true; break;
       case '--ref': case '--tag': case '--branch': parsed.ref = argv[++i]; break;
+      case '--purge': parsed.purge = true; break;
+      case '--keep-data': parsed.keep_data = true; break;
+      case '--no-seed': parsed.no_seed = true; break;
+      case '--reseed': parsed.reseed = true; break;
       default:
         if (!arg.startsWith('-')) positional.push(arg);
         break;

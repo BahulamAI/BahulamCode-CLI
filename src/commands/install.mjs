@@ -32,6 +32,8 @@ import {
   resolveComposeDependencies,
 } from './plugin-manage.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
+import { runMigrations, runSeed, runPostInstall, purgeData } from '../plugins/lifecycle.mjs';
+import { makePluginState } from '../plugins/state.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -68,6 +70,8 @@ function parseArgs(argv) {
       case '--slug': case '--name': parsed.slug = argv[++i]; break;
       case '--no-state': parsed.state = false; break;
       case '--no-workspace': parsed.workspace = false; break;
+      case '--no-seed': parsed.no_seed = true; break;
+      case '--reseed': parsed.reseed = true; break;
       default:
         if (!arg.startsWith('-')) positional.push(arg);
         break;
@@ -171,6 +175,8 @@ export async function handleInstallCommand(argv, { cwd = process.cwd() } = {}) {
     --slug <name>          Override the scaffolded pack slug (pi sources only)
     --no-state             Skip the persistent state layer (pi sources only)
     --no-workspace         Skip the reactive workspace panel (pi sources only)
+    --no-seed              Skip the lifecycle seed hook on install
+    --reseed               Re-run the seed hook even if it already ran
     --project              Install into ./.bahulam/plugins/ instead of ~/.bahulam/plugins/
     --ref <ref>            Git branch/tag/commit (git or registry sources)
     --json                 Machine-readable output
@@ -417,6 +423,11 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
     }
   }
 
+  // Lifecycle — migrations → seed → post_install. Runs after preflight OK.
+  // --force also purges the state dir so a clean reinstall starts from zero;
+  // omit --force to preserve state across reinstalls (common upgrade case).
+  const lifecycleReport = await runLifecycleOnInstall(m, dest, args);
+
   if (args.json) {
     process.stdout.write(JSON.stringify({
       ok: true,
@@ -425,6 +436,7 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
       directory: dest,
       scaffolded: Boolean(meta),
       ...(meta ? { pi_package: meta.packageName, namespace: meta.namespace, composed_tools: meta.exposeTools, agent: meta.agentSlug } : {}),
+      lifecycle: lifecycleReport,
     }, null, 2) + '\n');
     return;
   }
@@ -441,7 +453,61 @@ async function preflightAndReport({ dest, args, cwd, meta = null }) {
     process.stderr.write(`  ${DIM}scaffolded${RESET} from ${CYAN}pi:${meta.packageName}${RESET} (namespace ${CYAN}${meta.namespace}${RESET}, ${meta.exposeTools.length} composed tool${meta.exposeTools.length === 1 ? '' : 's'})\n`);
     process.stderr.write(`  ${DIM}Edit the pack under ${dest} to customize.${RESET}\n`);
   }
+  if (lifecycleReport.migrations?.ran || lifecycleReport.seed?.ran || lifecycleReport.post_install?.ran) {
+    const parts = [];
+    if (lifecycleReport.migrations?.ran) parts.push(`migrations: ${lifecycleReport.migrations.ran} applied`);
+    if (lifecycleReport.seed?.ran) parts.push('seed: ran');
+    if (lifecycleReport.post_install?.ran) parts.push('post_install: ran');
+    process.stderr.write(`  ${DIM}lifecycle${RESET} ${parts.join(', ')}\n`);
+  }
   process.stderr.write(`\n  ${DIM}Open with:${RESET} ${CYAN}bahulam plugin ${m.metadata.name}${RESET}\n\n`);
+}
+
+/**
+ * Run migrations → seed → post_install after a successful preflight.
+ * Callers pass `args.force` to also wipe the state dir first (true clean
+ * reinstall) and `args.no_seed` to skip seeding.
+ *
+ * Any lifecycle failure rolls back the plugin directory so the workspace
+ * is not left in a half-installed state — same policy as preflight
+ * rollback above.
+ */
+async function runLifecycleOnInstall(manifest, dest, args) {
+  const lifecycle = manifest.config?.lifecycle || null;
+  if (!lifecycle) return { skipped: true, reason: 'no config.lifecycle declared' };
+  const pluginName = manifest.metadata?.name;
+  if (!pluginName) return { skipped: true, reason: 'manifest missing name' };
+
+  // --force is a true clean reinstall: wipe both the plugin dir (already
+  // done by the installer's --force path) AND the state dir. Without
+  // --force we keep state across reinstalls so an upgrade doesn't
+  // silently discard user data.
+  if (args.force) {
+    const purged = purgeData(pluginName);
+    if (purged.purged) process.stderr.write(`  ${YELLOW}!${RESET} --force: purged state dir ${purged.dir}\n`);
+  }
+
+  const stateFactory = () => makePluginState(pluginName, { tables: manifest.config?.state?.tables || [] });
+  const report = { migrations: null, seed: null, post_install: null };
+  try {
+    report.migrations = await runMigrations({ pluginName, pluginDir: dest, manifest, stateFactory });
+    if (!args.no_seed) {
+      report.seed = await runSeed({
+        pluginName, pluginDir: dest, manifest,
+        args: { force: Boolean(args.reseed || args.force) },
+        stateFactory,
+      });
+    } else {
+      report.seed = { ran: false, reason: '--no-seed flag' };
+    }
+    report.post_install = await runPostInstall({ pluginName, pluginDir: dest, manifest, args, stateFactory });
+  } catch (err) {
+    // Roll back the plugin dir. State was intentionally not touched by us
+    // during the migration failure (snapshot-rollback took care of it).
+    fs.rmSync(dest, { recursive: true, force: true });
+    throw new Error(`lifecycle failed — rolled back ${dest}: ${err.message}`);
+  }
+  return report;
 }
 
 /**
