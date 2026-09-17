@@ -755,6 +755,13 @@ export class LocalAgentRelay {
   _makeWorkspaceSessionSubstrate(pluginRegistry) {
     return (agent, node, instruction, { scopedExecutor } = {}) => (async function* (relay) {
       const execContext = await relay._buildExecContext(instruction);
+      // Per-agent model override from YAML — same pattern as agents.mjs:330.
+      // If the agent definition declares a `model` field, it wins over
+      // the session default for this sub-agent's turn.
+      if (agent.model) execContext.model_override = agent.model;
+      if (agent.models && typeof agent.models === 'object' && Object.keys(agent.models).length) {
+        execContext.model_overrides = { ...(execContext.model_overrides || {}), ...agent.models };
+      }
       const slug = agent.slug || agent.command || agent.name || node?.agent_slug || node?.id || 'agent';
       execContext.sub_agent = {
         slug,
