@@ -238,6 +238,24 @@ const EXACT_SAFE = new Set([
     'python --version', 'python3 --version',
 ]);
 
+/** Tools commonly invoked with -version/--version to probe the installed version.
+ *  These are pure reads (no file access, no network) and should never require
+ *  project-scoping — they probe the local system's SDK/toolchain. */
+const VERSION_PROBE_TOOLS = new Set([
+    'java', 'javac', 'python', 'python3', 'node', 'ruby', 'go', 'rustc',
+    'deno', 'bun', 'php', 'perl', 'gcc', 'clang', 'make', 'cmake', 'mvn',
+    'gradle', 'pip', 'npm', 'yarn', 'pnpm', 'cargo', 'swift', 'kotlin',
+]);
+
+/** Absolute paths to system probes that are safe to invoke for read-only
+ *  version/path queries. These live outside any project root and should not
+ *  trigger project-scope errors. */
+const SAFE_ABS_PROBE_PATHS = new Set([
+    '/usr/libexec/java_home',
+    '/usr/bin/xcode-select',
+    '/usr/bin/which',
+]);
+
 /**
  * Commands with allowed flags — allowlist approach.
  * Key: command name (or "git diff" for multi-word).
@@ -680,6 +698,23 @@ function classifySingleCommand(command) {
     // ── echo (safe if no expansion) ──
     if (/^echo\s/.test(trimmed) && !containsUnquotedExpansion(trimmed)) {
         return { classification: 'safe', reason: 'Echo without expansion' };
+    }
+
+    // ── Version probe: <tool> -version / --version (pure OS read, no project needed) ──
+    if (VERSION_PROBE_TOOLS.has(baseCmd)) {
+        const token = tokenize(trimmed);
+        const flag = token[1] || '';
+        if (/^--?v(ersion)?$/.test(flag)) {
+            return { classification: 'safe', reason: `Version probe: ${baseCmd}` };
+        }
+    }
+
+    // ── Known system-probe absolute paths (e.g. /usr/libexec/java_home -V) ──
+    if (SAFE_ABS_PROBE_PATHS.has(baseCmd)) {
+        const rest = trimmed.slice(baseCmd.length).trim();
+        if (!rest || /^--?[a-z]/i.test(rest)) {
+            return { classification: 'safe', reason: `System probe: ${baseCmd}` };
+        }
     }
 
     // ── Default: contained (unknown command, not explicitly blocked) ──
