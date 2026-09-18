@@ -6227,6 +6227,15 @@ export async function startTerminalRepl() {
           clearPinnedStatus();
         },
         onResume: () => { execListenerActive = true; },
+        onApprovalPromptStart: ({ tool, args, tier }) => {
+          clearPinnedStatus();
+          renderBlockBoundary('status', { compactSame: true });
+          const summary = toolDisplaySummary(tool, args || {});
+          const label = toolDisplayLabel(tool);
+          const subject = summary ? `${label} ${summary}` : label;
+          process.stderr.write(`  ${c.yellow('?')} ${c.dim(`approval required · ${subject} · ${tier || 'tool'}`)}\n`);
+          runtime.lastRenderedBlock = 'status';
+        },
         onApprovalPromptEnd: () => {
           if (!isInputDockMounted()) return;
           renderDockInput(executionInputPrefix(), executionInputBuffer, {
