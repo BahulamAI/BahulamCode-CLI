@@ -22,6 +22,7 @@
 export function parseArgs(args) {
     const result = {
         prompt: null,
+        runtimeMode: null,
         model: null,
         permissionMode: null,
         outputFormat: null,
@@ -43,6 +44,13 @@ export function parseArgs(args) {
         debug: false,
         showVersion: false,
         showHelp: false,
+    };
+
+    const setRuntimeMode = (mode) => {
+        if (result.runtimeMode && result.runtimeMode !== mode) {
+            throw new Error(`Runtime modes are mutually exclusive: --${result.runtimeMode} and --${mode}`);
+        }
+        result.runtimeMode = mode;
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -128,10 +136,22 @@ export function parseArgs(args) {
                 break;
 
             case '--local':
-                // Force LocalAgent path (bypass backend). Meant for benchmarks
-                // that need to exercise the CLI's own LLM code — cache_control
-                // wiring, prompt-cache stats, etc.
+                // Force CLI-side orchestration. Model calls still use the
+                // shared Bahulam Gateway; this bypasses backend /api/execute.
                 result.local = true;
+                setRuntimeMode('local');
+                break;
+
+            case '--remote':
+                setRuntimeMode('remote');
+                break;
+
+            case '--bundled':
+                setRuntimeMode('bundled');
+                break;
+
+            case '--direct':
+                setRuntimeMode('direct');
                 break;
 
             case '--vision': {

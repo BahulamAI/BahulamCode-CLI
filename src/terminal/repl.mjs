@@ -23,6 +23,7 @@ import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
+import { LocalAgent } from '../core/local-agent.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
@@ -56,7 +57,7 @@ import { persistProjectArtifacts } from '../core/project-artifacts.mjs';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import * as telemetry from '../telemetry/index.mjs';
-import { resolveBackendUrl } from '../core/backend-url.mjs';
+import { resolveBackendUrl, resolveGatewayUrl } from '../core/backend-url.mjs';
 import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 import { BUILTIN_AGENTS, runAgentDefinition } from './agents.mjs';
@@ -82,6 +83,8 @@ import {
   normalizeCatalogCategory,
 } from './model-catalog-display.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
+import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
+import { applyModelSelection, resolveModelSelection } from '../core/model-selection.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
 import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
@@ -3306,14 +3309,14 @@ async function prepareDirectAgentRunContext(ctx, instruction = '') {
       projectResources,
     }),
   };
-  const modelOverrides = Object.fromEntries(sessionModelOverrideEntries());
-  if (Object.keys(modelOverrides).length > 0) {
-    execContext.model_overrides = modelOverrides;
-    if (modelOverrides.reasoning) execContext.model_override = modelOverrides.reasoning;
-  }
-  if (session.modelMode) execContext.model_mode = session.modelMode;
-  if (session.routePreference) execContext.model_route = session.routePreference;
-  return execContext;
+  const modelSelection = resolveModelSelection({
+    explicitModel: null,
+    modelOverrides: session.modelOverrides,
+    modelMode: session.modelMode,
+    modelRoute: session.routePreference,
+    profileModels: { reasoning: session.model },
+  });
+  return applyModelSelection(execContext, modelSelection);
 }
 
 function makeDispatchContext(ctx) {
@@ -3329,6 +3332,11 @@ function makeDispatchContext(ctx) {
       apiKey: process.env.ANTHROPIC_API_KEY || creds.anthropicKey || null,
       openRouterKey: process.env.OPENROUTER_API_KEY || creds.openRouterKey || null,
     },
+    modelTransport: ctx.runtimeMode === 'local' ? 'gateway' : 'direct',
+    gatewayUrl: ctx.runtimeMode === 'local' ? ctx.gatewayUrl : null,
+    gatewayToken: ctx.runtimeMode === 'local' ? creds.token : null,
+    sessionId: session.id || ctx.localSessionId,
+    defaultModel: session.model || cliArgs.model || null,
     cwd: safeCwd(),
   };
 }
@@ -4466,6 +4474,9 @@ export async function startTerminalRepl() {
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
+  const runtimeMode = cliArgs.runtimeMode || 'remote';
+  const gatewayUrl = resolveGatewayUrl();
+  const localSessionId = `local_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
   const auth = new BahulamAuth();
 
   // Projects are registered and indexed on demand through get_project_overview.
@@ -4548,8 +4559,23 @@ export async function startTerminalRepl() {
 
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
+  let activeLocalAgent = null;
 
-  const ctx = { auth, toolExecutor: null, approval, jsonlWriter, sessionMgr, checkpoints, effectivePolicy, latestProjectContext, latestEnvelope, pendingVisionPaths: [] };
+  const ctx = {
+    auth,
+    toolExecutor: null,
+    approval,
+    jsonlWriter,
+    sessionMgr,
+    checkpoints,
+    effectivePolicy,
+    latestProjectContext,
+    latestEnvelope,
+    pendingVisionPaths: [],
+    runtimeMode,
+    gatewayUrl,
+    localSessionId,
+  };
 
   // Wake-on-finish: background jobs with on_complete dispatch their target
   // agent through the trigger funnel when they exit. The ctx builder runs
@@ -5649,27 +5675,81 @@ export async function startTerminalRepl() {
 
     const originalInput = input;
     const creds = auth.loadCredentials();
-    if (!creds.token) {
+    const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
+    const openRouterKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+    if ((runtimeMode === 'remote' || runtimeMode === 'bundled' || runtimeMode === 'local') && !creds.token) {
       process.stderr.write(`  ${c.red('Not logged in. Run /login first.')}\n`);
       showPrompt();
+      return;
+    }
+    if (runtimeMode === 'direct' && !anthKey && !openRouterKey) {
+      process.stderr.write(`  ${c.red('Direct mode requires ANTHROPIC_API_KEY or OPENROUTER_API_KEY.')}\n`);
+      showPrompt();
+      return;
+    }
+
+    // Remote/bundled retain the SSE client contract. Local/direct use the
+    // same tool executor and event stream, but move the agent loop into npm.
+    if (runtimeMode === 'local' || runtimeMode === 'direct') {
+      const pluginSchemas = toolExecutor.listPluginToolSchemas?.() || [];
+      const modelSelection = resolveModelSelection({
+        explicitModel: cliArgs.model,
+        modelOverrides: session.modelOverrides,
+        modelMode: session.modelMode,
+        modelRoute: session.routePreference,
+        profileModels: { reasoning: session.model, local: creds.models?.local },
+        modeModels: { fast: creds.models?.fast },
+        fallbackModel: DEFAULT_REASONING_MODEL,
+      });
+      const model = modelSelection.model;
+      const localAgent = new LocalAgent({
+        apiKey: runtimeMode === 'direct' ? anthKey : null,
+        openRouterKey: runtimeMode === 'direct' ? openRouterKey : null,
+        model,
+        toolExecutor,
+        verbose: Boolean(cliArgs.verbose),
+        cwd: safeCwd(),
+        maxTurns: 50,
+        gatewayUrl: runtimeMode === 'local' ? gatewayUrl : null,
+        gatewayToken: runtimeMode === 'local' ? creds.token : null,
+        sessionId: session.id || localSessionId,
+        approvalManager: approval,
+        extraToolSchemas: pluginSchemas,
+      });
+      activeLocalAgent = localAgent;
+      const client = {
+        execute: (instruction, context, history) => localAgent.execute(instruction, context, history),
+        cancel: () => localAgent.cancel(),
+      };
+      process.stderr.write(`  ${c.dim(`[${runtimeMode}] npm agent loop → ${runtimeMode === 'local' ? 'Bahulam Gateway' : 'provider'}`)}\n`);
+      try {
+        // ── Document and vision preparation continues below ──
+        // The local/direct client uses the same execution call and history.
+        await _executeWithClient(client);
+      } finally {
+        if (activeLocalAgent === localAgent) activeLocalAgent = null;
+      }
       return;
     }
 
     // Create or reuse stream client — sessionId persists across turns.
     // The same client also owns the authenticated vision-analysis preflight.
-    if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token) {
+    if (!streamClient || streamClient.baseUrl !== creds.backendUrl || streamClient.token !== creds.token || streamClient.mode !== runtimeMode) {
       streamClient = new BahulamStreamClient({
         baseUrl: creds.backendUrl,
         token: creds.token,
         toolExecutor,
         approvalManager: approval,
         pluginRegistry,
+        mode: runtimeMode === 'bundled' ? 'bundled' : 'remote',
       });
     }
     const client = streamClient;
-    if (session.id && !client.sessionId) {
-      client.sessionId = session.id;
-    }
+    if (session.id && !client.sessionId) client.sessionId = session.id;
+
+    await _executeWithClient(client);
+
+    async function _executeWithClient(client) {
 
     try {
       // ── Document attachments (client-side, PRD-091 shape 1) ──
@@ -5703,6 +5783,14 @@ export async function startTerminalRepl() {
           type: 'attachments',
           data: { attachments: prepared.attachments.map(publicAttachmentMetadata) },
         });
+        // Vision analysis is a backend capability on the remote/bundled SSE
+        // client. Local/direct still execute the coding turn locally, but do
+        // not silently send an attachment to the backend for preprocessing.
+        if (typeof client.analyzeVision !== 'function') {
+          input = prepared.instruction || originalInput;
+          pending.length = 0;
+          process.stderr.write(`  ${c.dim('Vision analysis is unavailable in this runtime mode; continuing without image analysis.')}\n`);
+        } else {
         const approved = await confirmVisionUpload(ctx, prepared.attachments, { skip: skipPerms });
         pending.length = 0;
         if (!approved) {
@@ -5725,6 +5813,7 @@ export async function startTerminalRepl() {
             },
           });
           input = appendVisionAnalysisToInstruction(prepared.instruction, analysis);
+        }
         }
       } else {
         input = prepared.instruction || originalInput;
@@ -6224,6 +6313,15 @@ export async function startTerminalRepl() {
       }
       if (session.modelMode) execContext.model_mode = session.modelMode;
       if (session.routePreference) execContext.model_route = session.routePreference;
+      const modelSelection = resolveModelSelection({
+        explicitModel: cliArgs.model,
+        modelOverrides: session.modelOverrides,
+        modelMode: session.modelMode,
+        modelRoute: session.routePreference,
+        profileModels: { reasoning: session.model },
+        modeModels: { fast: creds.models?.fast },
+      });
+      Object.assign(execContext, applyModelSelection({}, modelSelection));
       // PRD-071: seed work_scope from CLI so the backend has a byte-stable
       // scope block from turn 1. Uses projectResources already gathered by
       // the envelope above.
@@ -6243,7 +6341,7 @@ export async function startTerminalRepl() {
       // of the local bundled runtime. Session is bootstrapped lazily on
       // first turn and reused across the REPL. Falls through to the
       // existing local-agent path when the flag is unset (default today).
-      const _useGatewayLoop = process.env.BAHULAM_USE_GATEWAY_LOOP === '1';
+      const _useGatewayLoop = runtimeMode === 'remote' && process.env.BAHULAM_USE_GATEWAY_LOOP === '1';
       let _turnIterable;
       if (_useGatewayLoop) {
         if (!session.gatewaySession) {
@@ -6362,6 +6460,8 @@ export async function startTerminalRepl() {
     }
 
     showPrompt();
+  }
+
   }
 
   rl.on('close', async () => {

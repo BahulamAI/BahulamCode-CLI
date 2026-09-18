@@ -29,6 +29,9 @@ import { startHttpDashboard } from '../daemon/http-dashboard.mjs';
 import { resolvePending } from '../daemon/approval-store.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
+import { resolveGatewayUrl } from './backend-url.mjs';
+import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
+import { applyModelSelection, resolveModelSelection } from './model-selection.mjs';
 import { writeSessionMeta } from './event-log.mjs';
 import { daemonSessionDir } from './paths.mjs';
 import { publishSessionDirectory, markSessionClosed } from '../daemon/session-publisher.mjs';
@@ -49,8 +52,10 @@ import {
  * @param {number} [opts.maxCost] - abort if cost exceeds this USD amount
  * @param {boolean} [opts.verbose] - show progress on stderr
  */
-export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, vision = [], agent = null, workflow = null }) {
+export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, mode = null, vision = [], agent = null, workflow = null }) {
     const startTime = Date.now();
+    const runtimeMode = mode || (local ? 'local' : 'remote');
+    const cliLocal = runtimeMode === 'local' || runtimeMode === 'direct';
 
     const log = (msg) => {
         if (verbose) process.stderr.write(`[headless] ${msg}\n`);
@@ -66,9 +71,11 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     const graphTarget = agent || workflow;
     const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
     const orKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+    const gatewayUrl = resolveGatewayUrl();
+    const localSessionId = `local_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
     // Graph runs execute locally and only need a model key; everything
     // else still requires login (the backend runs the agent loop).
-    if (!creds.token && !(graphTarget && (anthKey || orKey))) {
+    if (!creds.token && runtimeMode !== 'direct' && !(graphTarget && (anthKey || orKey))) {
         emit({ type: 'error', error: 'Not logged in. Run: bahulam login' });
         process.exit(1);
     }
@@ -94,6 +101,10 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
                 renderEvent: (event) => emit({ type: event.type, ...event.data }),
                 credentials: { apiKey: anthKey, openRouterKey: orKey },
+                modelTransport: runtimeMode === 'local' ? 'gateway' : 'direct',
+                gatewayUrl: runtimeMode === 'local' ? gatewayUrl : null,
+                gatewayToken: runtimeMode === 'local' ? creds.token : null,
+                sessionId: localSessionId,
                 defaultModel: model || null,
                 cwd: process.cwd(),
             });
@@ -121,6 +132,10 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
             renderEvent: (event) => emit({ type: event.type, ...event.data }),
             credentials: { apiKey: anthKey, openRouterKey: orKey },
+            modelTransport: runtimeMode === 'local' ? 'gateway' : 'direct',
+            gatewayUrl: runtimeMode === 'local' ? gatewayUrl : null,
+            gatewayToken: runtimeMode === 'local' ? creds.token : null,
+            sessionId: localSessionId,
             defaultModel: model || null,
             cwd: process.cwd(),
         });
@@ -165,6 +180,10 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             listLocalWorkflows: () => listLocalWorkflows(process.cwd()),
             renderEvent: (event) => emit({ type: event.type, ...event.data }),
             credentials: { apiKey: anthKey, openRouterKey: orKey },
+            modelTransport: runtimeMode === 'local' ? 'gateway' : 'direct',
+            gatewayUrl: runtimeMode === 'local' ? gatewayUrl : null,
+            gatewayToken: runtimeMode === 'local' ? creds.token : null,
+            sessionId: localSessionId,
             defaultModel: model || null,
             cwd: process.cwd(),
         });
@@ -185,27 +204,70 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     // just added to _callClaude / _callOpenRouter. Model comes from the
     // --model flag (which overrides settings dynamically for benchmarking).
     let client;
-    if (local) {
+    if (runtimeMode === 'local') {
         const { LocalAgent } = await import('./local-agent.mjs');
-        const localModel = model || creds.models?.local || 'anthropic/claude-sonnet-4';
-        const orKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
-        const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
-        if (!orKey && !anthKey) {
-            emit({ type: 'error', error: '--local requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY' });
+        const localSelection = resolveModelSelection({
+            explicitModel: model,
+            modelOverrides: creds.modelConfig,
+            modelMode: creds.modelMode,
+            modelRoute: creds.routePreference,
+            profileModels: creds.models,
+            modeModels: { fast: creds.models?.fast },
+            fallbackModel: DEFAULT_REASONING_MODEL,
+        });
+        const localModel = localSelection.model;
+        const gatewayToken = creds.token;
+        if (!gatewayToken) {
+            emit({ type: 'error', error: '--local requires an authenticated Bahulam session' });
             process.exit(1);
         }
+        const pluginSchemas = toolExecutor.listPluginToolSchemas?.() || [];
         client = {
             execute: (instr, ctx) => new LocalAgent({
-                apiKey: anthKey,
-                openRouterKey: orKey,
                 model: localModel,
                 toolExecutor,
                 verbose,
                 cwd: process.cwd(),
                 maxTurns: 50,
+                gatewayUrl,
+                gatewayToken,
+                sessionId: localSessionId,
+                extraToolSchemas: pluginSchemas,
             }).execute(instr, ctx),
         };
-        log(`Local mode: ${localModel}`);
+        log(`Local mode via Bahulam Gateway: ${localModel}`);
+    } else if (runtimeMode === 'direct') {
+        const { LocalAgent } = await import('./local-agent.mjs');
+        const directSelection = resolveModelSelection({
+            explicitModel: model,
+            modelOverrides: creds.modelConfig,
+            modelMode: creds.modelMode,
+            modelRoute: creds.routePreference,
+            profileModels: creds.models,
+            modeModels: { fast: creds.models?.fast },
+            fallbackModel: DEFAULT_REASONING_MODEL,
+        });
+        const directModel = directSelection.model;
+        const directOpenRouterKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;
+        const directAnthropicKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
+        if (!directOpenRouterKey && !directAnthropicKey) {
+            emit({ type: 'error', error: '--direct requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY' });
+            process.exit(1);
+        }
+        const pluginSchemas = toolExecutor.listPluginToolSchemas?.() || [];
+        client = {
+            execute: (instr, ctx) => new LocalAgent({
+                apiKey: directAnthropicKey,
+                openRouterKey: directOpenRouterKey,
+                model: directModel,
+                toolExecutor,
+                verbose,
+                cwd: process.cwd(),
+                maxTurns: 50,
+                extraToolSchemas: pluginSchemas,
+            }).execute(instr, ctx),
+        };
+        log(`Direct mode: ${directModel}`);
     } else {
         client = new BahulamStreamClient({
             baseUrl: creds.backendUrl,
@@ -213,6 +275,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             toolExecutor,
             approvalManager: approval,
             pluginRegistry,
+            mode: runtimeMode === 'bundled' ? 'bundled' : 'remote',
         });
     }
 
@@ -225,7 +288,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     }, timeoutMs);
 
     // ── Vision analysis preflight ──
-    if (!local) {
+    if (!cliLocal) {
         try {
             const prepared = prepareImageAttachments(instruction, {
                 cwd: process.cwd(),
@@ -280,7 +343,16 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         }),
         agent_context: toolExecutor.getAgentContext(),
     };
-    if (model) execContext.model_override = model;
+    const modelSelection = resolveModelSelection({
+        explicitModel: model,
+        modelOverrides: creds.modelConfig,
+        modelMode: creds.modelMode,
+        modelRoute: creds.routePreference,
+        profileModels: creds.models,
+        modeModels: { fast: creds.models?.fast },
+        fallbackModel: DEFAULT_REASONING_MODEL,
+    });
+    Object.assign(execContext, applyModelSelection({}, modelSelection));
 
     let primaryToolCount = 0;
     let subAgentForwardedToolCount = 0;

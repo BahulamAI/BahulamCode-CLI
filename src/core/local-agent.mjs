@@ -1,6 +1,6 @@
 /**
- * Local Agent — T18: Direct LLM API calls, <100ms startup, offline.
- * Replaces the SSE backend for --local mode.
+ * Local Agent — CLI-side orchestration for --local mode.
+ * Model calls use the shared Bahulam Gateway; tools and the ReAct loop stay local.
  * Yields events matching the same format as BahulamStreamClient.
  */
 
@@ -14,8 +14,69 @@ import {
     withMessageBreakpoint,
     needsExplicitCacheControl,
 } from './cache-control.mjs';
+import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 
 const MAX_ITERATIONS = 50;
+
+function toOpenAITool(tool) {
+    return {
+        type: 'function',
+        function: {
+            name: tool.name,
+            description: tool.description || '',
+            parameters: tool.input_schema || { type: 'object', properties: {} },
+        },
+    };
+}
+
+function toOpenAIMessage(message) {
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+        const text = message.content
+            .filter(block => block.type === 'text')
+            .map(block => block.text || '')
+            .join('');
+        const toolCalls = message.content
+            .filter(block => block.type === 'tool_use')
+            .map(block => ({
+                id: block.id,
+                type: 'function',
+                function: {
+                    name: block.name,
+                    arguments: JSON.stringify(block.input || {}),
+                },
+            }));
+        return {
+            role: 'assistant',
+            content: text || null,
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        };
+    }
+
+    if (message.role === 'user' && Array.isArray(message.content)) {
+        const results = message.content.filter(block => block.type === 'tool_result');
+        if (results.length > 0) {
+            // OpenAI-compatible APIs require one role=tool message per result.
+            // The caller expands this marker in _callGateway below.
+            return results.map(block => ({
+                role: 'tool',
+                tool_call_id: block.tool_use_id,
+                content: String(block.content || ''),
+            }));
+        }
+    }
+
+    return { role: message.role, content: message.content };
+}
+
+function normalizeGatewayUsage(usage) {
+    if (!usage) return null;
+    return {
+        input_tokens: usage.input_tokens ?? usage.prompt_tokens ?? 0,
+        output_tokens: usage.output_tokens ?? usage.completion_tokens ?? 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    };
+}
 
 /** Tool schemas for the LLM — proper parameter definitions. */
 const TOOL_SCHEMAS = [
@@ -201,6 +262,12 @@ export class LocalAgent {
         toolExecutor,
         verbose = false,
         openRouterKey = null,
+        gatewayUrl = null,
+        gatewayToken = null,
+        product = 'bahulam',
+        sessionId = null,
+        executionId = null,
+        approvalManager = null,
         cwd = null,
         systemPromptOverride = null,
         maxTurns = null,
@@ -214,7 +281,13 @@ export class LocalAgent {
     }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
-        this.model = model || 'claude-sonnet-4-20250514';
+        this.gatewayUrl = (gatewayUrl || '').replace(/\/+$/, '');
+        this.gatewayToken = gatewayToken;
+        this.product = product;
+        this.sessionId = sessionId;
+        this.executionId = executionId;
+        this.approvalManager = approvalManager;
+        this.model = model || DEFAULT_REASONING_MODEL;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.cwd = cwd || process.cwd();
@@ -228,7 +301,7 @@ export class LocalAgent {
         this.promptCache = new PromptCache();
     }
 
-    async *execute(instruction, context = {}) {
+    async *execute(instruction, context = {}, priorHistory = []) {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
@@ -249,7 +322,16 @@ export class LocalAgent {
 
         const tools = this._buildToolDefs();
         const systemPrompt = this._buildSystemPrompt(context, retrievedContext);
-        const messages = [{ role: 'user', content: instruction }];
+        // Keep the same turn contract as BahulamStreamClient. The REPL owns
+        // the canonical agent history and passes it here when the npm-owned
+        // local/direct transports are selected.
+        const messages = Array.isArray(priorHistory)
+            ? priorHistory.map(message => ({ ...message }))
+            : [];
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage?.role !== 'user' || lastMessage.content !== instruction) {
+            messages.push({ role: 'user', content: instruction });
+        }
 
         const stagnation = createStagnationTracker({
             enabled: this.stagnationDetection,
@@ -312,7 +394,12 @@ export class LocalAgent {
                     let result;
                     const toolStart = Date.now();
                     try {
-                        result = await this.toolExecutor.execute(name, input || {});
+                        const approval = this.approvalManager
+                            ? await this.approvalManager.check(name, input || {}, false, { source: 'local-agent' })
+                            : { approved: true };
+                        result = approval?.approved
+                            ? await this.toolExecutor.execute(name, input || {})
+                            : { success: false, output: `Tool call not approved: ${approval?.reason || name}` };
                     } catch (err) {
                         result = { success: false, output: `Error: ${err.message}` };
                     }
@@ -386,6 +473,13 @@ export class LocalAgent {
     }
 
     async _callLLM(systemPrompt, messages, tools) {
+        // Local orchestration still uses the shared Bahulam Gateway for model
+        // access. The gateway resolves identity, credits/BYOK, and provider
+        // routing; this process owns the ReAct/tool loop.
+        if (this.gatewayUrl && this.gatewayToken) {
+            return this._callGateway(systemPrompt, messages, tools);
+        }
+
         const isClaude = this.model.startsWith('claude') || this.model.startsWith('anthropic/claude');
 
         // Use Anthropic direct API only for Claude models when we have an Anthropic key
@@ -403,6 +497,60 @@ export class LocalAgent {
         }
 
         throw new Error('No API key configured. Set ANTHROPIC_API_KEY or configure OpenRouter key.');
+    }
+
+    async _callGateway(systemPrompt, messages, tools) {
+        const base = this.gatewayUrl.endsWith('/v1')
+            ? this.gatewayUrl
+            : `${this.gatewayUrl}/v1`;
+        const headers = {
+            Authorization: `Bearer ${this.gatewayToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'X-Product': this.product,
+        };
+        if (this.sessionId) headers['X-Bahulam-Session-ID'] = this.sessionId;
+        if (this.executionId) headers['X-Bahulam-Execution-ID'] = this.executionId;
+
+        const body = {
+            model: this.model,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                ...messages.flatMap(toOpenAIMessage),
+            ],
+            tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
+            stream: false,
+        };
+        const resp = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            throw new Error(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`);
+        }
+
+        const data = await resp.json();
+        const message = data.choices?.[0]?.message || {};
+        const content = [];
+        if (message.content) content.push({ type: 'text', text: message.content });
+        for (const call of message.tool_calls || []) {
+            const fn = call.function || {};
+            let input = {};
+            try { input = fn.arguments ? JSON.parse(fn.arguments) : {}; } catch {}
+            content.push({
+                type: 'tool_use',
+                id: call.id,
+                name: fn.name,
+                input,
+            });
+        }
+        return {
+            content,
+            stopReason: data.choices?.[0]?.finish_reason || null,
+            usage: normalizeGatewayUsage(data.usage),
+        };
     }
 
     async _callClaude(systemPrompt, messages, tools) {
