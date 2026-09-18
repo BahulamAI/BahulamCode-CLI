@@ -343,11 +343,9 @@ export class LocalAgent {
             messages.push({ role: 'user', content: instruction });
         }
 
-        // Local/direct own the loop, so apply the same reduction contract the
-        // backend applies at its pre-turn boundary. Mutate the caller's
-        // history so the REPL's canonical history matches the prompt.
-        const reduction = await this._reduceContext(messages, { systemPrompt, tools });
-        if (reduction) {
+        const applyReduction = async () => {
+            const reduction = await this._reduceContext(messages, { systemPrompt, tools });
+            if (!reduction) return null;
             messages.splice(0, messages.length, ...reduction.messages);
             if (Array.isArray(priorHistory)) {
                 priorHistory.splice(0, priorHistory.length, ...reduction.messages);
@@ -359,8 +357,14 @@ export class LocalAgent {
                 usageTotals.cache_read_tokens += reduction.usage.cache_read_input_tokens || 0;
                 usageTotals.cache_creation_tokens += reduction.usage.cache_creation_input_tokens || 0;
             }
-            yield { type: 'summarize', data: reduction.event };
-        }
+            return reduction;
+        };
+
+        // Check before the first call and again after every completed
+        // tool-call/result cycle. The latter prevents a long ReAct run from
+        // growing past the model budget before its next inference.
+        let reduction = await applyReduction();
+        if (reduction) yield { type: 'summarize', data: reduction.event };
 
         const stagnation = createStagnationTracker({
             enabled: this.stagnationDetection,
@@ -371,6 +375,11 @@ export class LocalAgent {
             if (this._cancelled) {
                 yield { type: 'cancelled', data: { reason: 'User cancelled' } };
                 return;
+            }
+
+            if (i > 0) {
+                reduction = await applyReduction();
+                if (reduction) yield { type: 'summarize', data: reduction.event };
             }
 
             let response;

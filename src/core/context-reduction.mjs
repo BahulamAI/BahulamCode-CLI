@@ -179,10 +179,22 @@ export function distillMessages(messages = [], { preserve = 10, sigma = 1.5, max
 
 export function collapseMessages(messages, summary, preserve = 10) {
   const rows = Array.isArray(messages) ? messages : [];
-  const tail = rows.slice(-Math.max(2, preserve));
+  let start = Math.max(0, rows.length - Math.max(2, preserve));
+  // Never hand the next provider an orphaned tool_result. If the retention
+  // boundary lands on a result-only user message, include the preceding
+  // assistant tool-use message as well.
+  while (start > 0 && isToolResultOnly(rows[start])) start--;
+  const tail = rows.slice(start);
   return [
     { role: 'user', content: summary },
     { role: 'assistant', content: 'Understood — continuing from the summarized context above.' },
     ...tail,
   ];
+}
+
+function isToolResultOnly(message) {
+  return message?.role === 'user'
+    && Array.isArray(message.content)
+    && message.content.length > 0
+    && message.content.every(block => block?.type === 'tool_result');
 }
