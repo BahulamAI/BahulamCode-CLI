@@ -15,6 +15,13 @@ import {
     needsExplicitCacheControl,
 } from './cache-control.mjs';
 import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
+import {
+    SUMMARY_MARKER,
+    contextReductionConfig,
+    collapseMessages,
+    distillMessages,
+    estimateMessagesTokens,
+} from './context-reduction.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -278,6 +285,7 @@ export class LocalAgent {
         // the (scoped) toolExecutor; this only makes the schemas visible
         // to the model.
         extraToolSchemas = [],
+        summarizerModel = null,
     }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
@@ -297,6 +305,7 @@ export class LocalAgent {
         this.stagnationDetection = stagnationDetection;
         this.stagnationThreshold = stagnationThreshold;
         this.extraToolSchemas = Array.isArray(extraToolSchemas) ? extraToolSchemas : [];
+        this.summarizerModel = summarizerModel || process.env.BAHULAM_SUMMARIZE_MODEL || process.env.BAHULAM_CHAT_SUMMARIZER_MODEL || this.model;
         this._cancelled = false;
         this.promptCache = new PromptCache();
     }
@@ -331,6 +340,18 @@ export class LocalAgent {
         const lastMessage = messages[messages.length - 1];
         if (lastMessage?.role !== 'user' || lastMessage.content !== instruction) {
             messages.push({ role: 'user', content: instruction });
+        }
+
+        // Local/direct own the loop, so apply the same reduction contract the
+        // backend applies at its pre-turn boundary. Mutate the caller's
+        // history so the REPL's canonical history matches the prompt.
+        const reduction = await this._reduceContext(messages);
+        if (reduction) {
+            messages.splice(0, messages.length, ...reduction.messages);
+            if (Array.isArray(priorHistory)) {
+                priorHistory.splice(0, priorHistory.length, ...reduction.messages);
+            }
+            yield { type: 'summarize', data: reduction.event };
         }
 
         const stagnation = createStagnationTracker({
@@ -472,34 +493,34 @@ export class LocalAgent {
         };
     }
 
-    async _callLLM(systemPrompt, messages, tools) {
+    async _callLLM(systemPrompt, messages, tools, modelOverride = this.model) {
         // Local orchestration still uses the shared Bahulam Gateway for model
         // access. The gateway resolves identity, credits/BYOK, and provider
         // routing; this process owns the ReAct/tool loop.
         if (this.gatewayUrl && this.gatewayToken) {
-            return this._callGateway(systemPrompt, messages, tools);
+            return this._callGateway(systemPrompt, messages, tools, modelOverride);
         }
 
         const isClaude = this.model.startsWith('claude') || this.model.startsWith('anthropic/claude');
 
         // Use Anthropic direct API only for Claude models when we have an Anthropic key
         if (isClaude && this.apiKey && this.apiKey.startsWith('sk-ant-')) {
-            return this._callClaude(systemPrompt, messages, tools);
+            return this._callClaude(systemPrompt, messages, tools, modelOverride);
         }
 
         // Everything else goes through OpenRouter (DeepSeek, GPT, Gemini, or Claude via OR)
         if (this.openRouterKey) {
-            return this._callOpenRouter(systemPrompt, messages, tools);
+            return this._callOpenRouter(systemPrompt, messages, tools, modelOverride);
         }
 
         if (this.apiKey) {
-            return this._callClaude(systemPrompt, messages, tools);
+            return this._callClaude(systemPrompt, messages, tools, modelOverride);
         }
 
         throw new Error('No API key configured. Set ANTHROPIC_API_KEY or configure OpenRouter key.');
     }
 
-    async _callGateway(systemPrompt, messages, tools) {
+    async _callGateway(systemPrompt, messages, tools, modelOverride = this.model) {
         const base = this.gatewayUrl.endsWith('/v1')
             ? this.gatewayUrl
             : `${this.gatewayUrl}/v1`;
@@ -513,7 +534,7 @@ export class LocalAgent {
         if (this.executionId) headers['X-Bahulam-Execution-ID'] = this.executionId;
 
         const body = {
-            model: this.model,
+            model: modelOverride,
             messages: [
                 { role: 'system', content: systemPrompt },
                 ...messages.flatMap(toOpenAIMessage),
@@ -553,7 +574,7 @@ export class LocalAgent {
         };
     }
 
-    async _callClaude(systemPrompt, messages, tools) {
+    async _callClaude(systemPrompt, messages, tools, modelOverride = this.model) {
         // PRD-071 Phase 2 — cache_control breakpoints for Anthropic direct.
         // Extended 1-hour TTL beta on the persistent prefix (system + tools).
         // Message history breakpoint stays at default 5-min TTL.
@@ -570,7 +591,7 @@ export class LocalAgent {
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
-                model: this.model,
+                model: modelOverride,
                 system: cachedSystem,
                 messages: cachedMessages,
                 tools: cachedTools.length > 0 ? cachedTools : undefined,
@@ -585,9 +606,9 @@ export class LocalAgent {
         return { content: data.content || [], stopReason: data.stop_reason, usage: data.usage || null };
     }
 
-    async _callOpenRouter(systemPrompt, messages, tools) {
+    async _callOpenRouter(systemPrompt, messages, tools, modelOverride = this.model) {
         // OpenRouter requires provider prefix (e.g. anthropic/claude-sonnet-4-20250514)
-        let model = this.model;
+        let model = modelOverride;
         if (model.startsWith('claude') && !model.includes('/')) {
             model = `anthropic/${model}`;
         }
@@ -648,6 +669,70 @@ export class LocalAgent {
             content,
             stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
             usage: _normalizeOpenRouterUsage(data.usage),
+        };
+    }
+
+    async _reduceContext(messages) {
+        const config = contextReductionConfig();
+        const estimated = estimateMessagesTokens(messages);
+        if (!config.enabled || estimated <= config.threshold || messages.length <= config.preserve + 2) {
+            return null;
+        }
+
+        const source = messages.slice(0, -config.preserve);
+        let summary = null;
+        let appliedStrategy = config.strategy;
+        if (config.strategy === 'distillation') {
+            summary = distillMessages(source, config);
+        } else {
+            const prompt = [
+                'You are the Bahulam context summarizer.',
+                'Summarize the earlier conversation for another coding-agent turn.',
+                'Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work.',
+                'Do not invent facts. Return concise plain text only.',
+            ].join(' ');
+            const transcript = source.map(message => ({
+                role: message.role,
+                content: typeof message.content === 'string'
+                    ? message.content
+                    : JSON.stringify(message.content || ''),
+            }));
+            try {
+                const response = await this._callLLM(
+                    prompt,
+                    [{ role: 'user', content: JSON.stringify(transcript) }],
+                    [],
+                    this.summarizerModel,
+                );
+                summary = response.content
+                    ?.filter(block => block.type === 'text')
+                    .map(block => block.text || '')
+                    .join('\n')
+                    .trim() || null;
+            } catch (error) {
+                // Match the backend's fail-open behavior: a failed reduction
+                // must never prevent the actual user turn from running.
+                appliedStrategy = 'summarization_failed';
+                if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
+            }
+        }
+        if (!summary) return null;
+        if (!summary.startsWith(SUMMARY_MARKER) && appliedStrategy === 'summarization') {
+            summary = `${SUMMARY_MARKER}\n${summary}`;
+        }
+        const reduced = collapseMessages(messages, summary, config.preserve);
+        return {
+            messages: reduced,
+            event: {
+                phase: 'pre_turn',
+                strategy: appliedStrategy,
+                collapsed_messages: source.length,
+                kept_recent: config.preserve,
+                before_tokens: estimated,
+                threshold: config.threshold,
+                source: this.gatewayUrl ? 'gateway' : 'provider',
+                summary_preview: summary.replace(/^\[[^\]]+\]\s*/, '').split('\n', 1)[0].slice(0, 120),
+            },
         };
     }
 

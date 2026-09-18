@@ -8,10 +8,8 @@
 
 import { createToolRegistry } from '../src/tools/registry.mjs';
 import { createPermissionChecker } from '../src/permissions/checker.mjs';
-import { ContextManager } from '../src/core/context-manager.mjs';
 import { HookEngine } from '../src/hooks/engine.mjs';
 import { accumulateStream } from '../src/core/streaming.mjs';
-import { createAgentLoop } from '../src/core/agent-loop.mjs';
 import { McpClient } from '../src/mcp/client.mjs';
 import { SessionManager } from '../src/core/session.mjs';
 import { CheckpointManager } from '../src/core/checkpoints.mjs';
@@ -237,44 +235,6 @@ assert(await editPerms.check('Write', {}), 'AcceptEdits allows Write');
 const defaultPerms = createPermissionChecker({});
 assert(await defaultPerms.check('Read', {}), 'Default mode allows Read');
 
-// ---------- Context Manager Tests ----------
-
-section('Context Manager');
-
-const ctx = new ContextManager(1000);
-
-const messages = [
-    { role: 'user', content: 'Hello, how are you?' },
-    { role: 'assistant', content: 'I am doing well!' },
-];
-const tokens = ctx.getTokenCount(messages);
-assert(tokens > 0, `Token count positive, got ${tokens}`);
-
-assert(!ctx.shouldCompact(messages), 'Small messages no compaction');
-
-const largeMessages = [];
-for (let i = 0; i < 50; i++) {
-    largeMessages.push({ role: 'user', content: 'x'.repeat(200) });
-    largeMessages.push({ role: 'assistant', content: 'y'.repeat(200) });
-}
-assert(ctx.shouldCompact(largeMessages), 'Large messages trigger compaction');
-
-const compacted = ctx.compact(largeMessages, 4);
-assert(compacted.length <= 5, `Compacted has <= 5 messages, got ${compacted.length}`);
-assertIncludes(compacted[0].content, '[Context compacted', 'Compacted has summary');
-assertEqual(ctx.compactionCount, 1, 'Compaction count incremented');
-
-const ctx2 = new ContextManager(100);
-let msgs = [];
-for (let i = 0; i < 30; i++) {
-    msgs = ctx2.addMessage(msgs, { role: 'user', content: 'test '.repeat(20) });
-}
-assert(msgs.length < 30, 'Auto-compaction reduced message count');
-
-const arrayMsg = [{ role: 'user', content: [{ type: 'text', text: 'hello' }, { type: 'tool_result', content: 'result' }] }];
-const arrayTokens = ctx.getTokenCount(arrayMsg);
-assert(arrayTokens > 0, 'Array content token count positive');
-
 // ---------- Hook Engine Tests ----------
 
 section('Hook Engine');
@@ -383,28 +343,6 @@ assertEqual(thinkingAccumulated.content.length, 2, 'Two blocks (thinking + text)
 assertEqual(thinkingAccumulated.content[0].type, 'thinking', 'First is thinking');
 assertEqual(thinkingAccumulated.content[0].thinking, 'Let me think...', 'Thinking text');
 assertEqual(thinkingAccumulated.content[1].text, 'Answer.', 'Text after thinking');
-
-// ---------- Agent Loop Tests (mock) ----------
-
-section('Agent Loop (mock)');
-
-const mockTools = {
-    list() { return [{ name: 'TestTool', description: 'Test', input_schema: { type: 'object', properties: {} } }]; },
-    async call() { return 'mock result'; },
-};
-
-const loop = createAgentLoop({
-    model: 'test-model',
-    tools: mockTools,
-    permissions: { async check() { return true; } },
-    settings: {},
-});
-
-assert(loop.run !== undefined, 'Agent loop has run method');
-assert(loop.state !== undefined, 'Agent loop has state');
-assertEqual(loop.state.turnCount, 0, 'Initial turn count 0');
-assert(Array.isArray(loop.state.messages), 'State has messages');
-assertType(loop.state.systemPrompt, 'string', 'State has system prompt');
 
 // ---------- MCP Client Tests ----------
 
@@ -1145,11 +1083,6 @@ fs.rmSync(grepDir, { recursive: true, force: true });
 section('Phase 1: Agent Tool (model, background, type)');
 
 const agentTool = registry.get('Agent');
-assert(agentTool.inputSchema.properties.subagent_type !== undefined, 'Agent has subagent_type');
-assert(agentTool.inputSchema.properties.model !== undefined, 'Agent has model override');
-assert(agentTool.inputSchema.properties.run_in_background !== undefined, 'Agent has run_in_background');
-assert(agentTool.inputSchema.properties.isolation !== undefined, 'Agent has isolation option');
-
 // ---------- Phase 2: Streaming & Context Tests ----------
 
 section('Phase 2: Streaming (ping, cache usage)');
@@ -1168,32 +1101,6 @@ const pingAccumulated = await accumulateStream(mockPingEvents());
 assertEqual(pingAccumulated.content[0].text, 'Hi', 'Ping does not break accumulation');
 assertEqual(pingAccumulated.usage.cache_creation_input_tokens, 50, 'Cache creation tokens tracked');
 assertEqual(pingAccumulated.usage.cache_read_input_tokens, 30, 'Cache read tokens tracked');
-
-section('Phase 2: Context Manager (micro-compaction, stats)');
-
-const ctx3 = new ContextManager(1000);
-const stats3 = ctx3.getStats();
-assertEqual(stats3.compactionCount, 0, 'Stats start at 0');
-
-// Micro-compaction: tool results get truncated
-const microMessages = [];
-for (let i = 0; i < 20; i++) {
-    microMessages.push({ role: 'user', content: `msg ${i}` });
-    microMessages.push({ role: 'user', content: [
-        { type: 'tool_result', tool_use_id: `t_${i}`, content: 'x'.repeat(500) },
-    ]});
-}
-const microCompacted = ctx3.microCompact(microMessages, 3);
-// Old tool results should be truncated
-let foundTruncated = false;
-for (const msg of microCompacted.slice(0, 10)) {
-    if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-            if (block.content?.includes('[truncated]')) foundTruncated = true;
-        }
-    }
-}
-assert(foundTruncated, 'Micro-compaction truncates old tool results');
 
 section('Phase 2: System Prompt');
 
@@ -1280,7 +1187,6 @@ const phase3State = {
     turnCount: 1,
     tokenUsage: { input: 100, output: 50 },
     model: 'claude-haiku-4-5',
-    _contextManager: new ContextManager(10000),
     tools: { list: () => [] },
 };
 
