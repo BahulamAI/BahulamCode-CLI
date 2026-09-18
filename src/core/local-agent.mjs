@@ -17,10 +17,11 @@ import {
 import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 import {
     SUMMARY_MARKER,
+    DISTILLATION_MARKER,
     contextReductionConfig,
     collapseMessages,
-    distillMessages,
     estimateMessagesTokens,
+    resolveContextBudget,
 } from './context-reduction.mjs';
 
 const MAX_ITERATIONS = 50;
@@ -345,7 +346,7 @@ export class LocalAgent {
         // Local/direct own the loop, so apply the same reduction contract the
         // backend applies at its pre-turn boundary. Mutate the caller's
         // history so the REPL's canonical history matches the prompt.
-        const reduction = await this._reduceContext(messages);
+        const reduction = await this._reduceContext(messages, { systemPrompt, tools });
         if (reduction) {
             messages.splice(0, messages.length, ...reduction.messages);
             if (Array.isArray(priorHistory)) {
@@ -672,64 +673,71 @@ export class LocalAgent {
         };
     }
 
-    async _reduceContext(messages) {
-        const config = contextReductionConfig();
+    async _reduceContext(messages, { systemPrompt = '', tools = [] } = {}) {
+        const config = contextReductionConfig(process.env, this.product);
+        const fixedPromptTokens = estimateMessagesTokens([
+            { role: 'system', content: systemPrompt },
+            { role: 'system', content: tools },
+        ]);
+        const budget = resolveContextBudget({
+            product: this.product,
+            model: this.model,
+            fixedPromptTokens,
+            explicitThreshold: config.threshold,
+        });
+        const preserve = config.preserve || budget.preserve;
         const estimated = estimateMessagesTokens(messages);
-        if (!config.enabled || estimated <= config.threshold || messages.length <= config.preserve + 2) {
+        if (!config.enabled || estimated <= budget.threshold || messages.length <= preserve + 2) {
             return null;
         }
 
-        const source = messages.slice(0, -config.preserve);
+        const source = messages.slice(0, -preserve);
         let summary = null;
         let appliedStrategy = config.strategy;
-        if (config.strategy === 'distillation') {
-            summary = distillMessages(source, config);
-        } else {
-            const prompt = [
-                'You are the Bahulam context summarizer.',
-                'Summarize the earlier conversation for another coding-agent turn.',
-                'Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work.',
-                'Do not invent facts. Return concise plain text only.',
-            ].join(' ');
-            const transcript = source.map(message => ({
-                role: message.role,
-                content: typeof message.content === 'string'
-                    ? message.content
-                    : JSON.stringify(message.content || ''),
-            }));
-            try {
-                const response = await this._callLLM(
-                    prompt,
-                    [{ role: 'user', content: JSON.stringify(transcript) }],
-                    [],
-                    this.summarizerModel,
-                );
-                summary = response.content
-                    ?.filter(block => block.type === 'text')
-                    .map(block => block.text || '')
-                    .join('\n')
-                    .trim() || null;
-            } catch (error) {
-                // Match the backend's fail-open behavior: a failed reduction
-                // must never prevent the actual user turn from running.
-                appliedStrategy = 'summarization_failed';
-                if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
-            }
+        const prompt = config.strategy === 'distillation'
+            ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Keep it structured and concise. Do not invent facts.'
+            : 'You are the Bahulam context summarizer. Summarize the earlier conversation for another coding-agent turn. Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work. Do not invent facts. Return concise plain text only.';
+        const transcript = source.map(message => ({
+            role: message.role,
+            content: typeof message.content === 'string'
+                ? message.content
+                : JSON.stringify(message.content || ''),
+        }));
+        try {
+            const response = await this._callLLM(
+                prompt,
+                [{ role: 'user', content: JSON.stringify(transcript) }],
+                [],
+                this.summarizerModel,
+            );
+            summary = response.content
+                ?.filter(block => block.type === 'text')
+                .map(block => block.text || '')
+                .join('\n')
+                .trim() || null;
+        } catch (error) {
+            // Match the backend's fail-open behavior: a failed reduction
+            // must never prevent the actual user turn from running.
+            appliedStrategy = 'summarization_failed';
+            if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
         }
         if (!summary) return null;
-        if (!summary.startsWith(SUMMARY_MARKER) && appliedStrategy === 'summarization') {
-            summary = `${SUMMARY_MARKER}\n${summary}`;
+        if (!summary.startsWith(SUMMARY_MARKER) && !summary.startsWith(DISTILLATION_MARKER)) {
+            summary = `${config.strategy === 'distillation' ? DISTILLATION_MARKER : SUMMARY_MARKER}\n${summary}`;
         }
-        const reduced = collapseMessages(messages, summary, config.preserve);
+        const reduced = collapseMessages(messages, summary, preserve);
         return {
             messages: reduced,
             event: {
                 phase: 'pre_turn',
                 strategy: appliedStrategy,
                 collapsed_messages: source.length,
-                kept_recent: config.preserve,
+                kept_recent: preserve,
                 before_tokens: estimated,
-                threshold: config.threshold,
+                threshold: budget.threshold,
+                budget_source: budget.source,
+                context_length: budget.contextLength || null,
+                target_tokens: budget.targetTokens || null,
                 source: this.gatewayUrl ? 'gateway' : 'provider',
                 summary_preview: summary.replace(/^\[[^\]]+\]\s*/, '').split('\n', 1)[0].slice(0, 120),
             },

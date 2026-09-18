@@ -1,3 +1,5 @@
+import { findShippedModel } from '../config/model-catalog.mjs';
+
 /**
  * Shared client-side context reduction contract.
  *
@@ -9,18 +11,82 @@
 export const SUMMARY_MARKER = '[Context summary — earlier conversation condensed]';
 export const DISTILLATION_MARKER = '[Context distillation — active ingredients preserved]';
 
-export function contextReductionConfig(env = process.env) {
+const PRODUCT_POLICIES = Object.freeze({
+  chat: Object.freeze({ triggerRatio: 0.72, targetRatio: 0.48, preserve: 12, prune: 'aggressive' }),
+  ide: Object.freeze({ triggerRatio: 0.78, targetRatio: 0.52, preserve: 10, prune: 'conservative' }),
+  workspace: Object.freeze({ triggerRatio: 0.70, targetRatio: 0.45, preserve: 14, prune: 'protected' }),
+});
+
+export function contextProduct(product = 'ide') {
+  const value = String(product || '').toLowerCase();
+  if (value.includes('chat')) return 'chat';
+  if (value.includes('workspace')) return 'workspace';
+  return 'ide';
+}
+
+export function contextPolicy(product = 'ide') {
+  return PRODUCT_POLICIES[contextProduct(product)];
+}
+
+export function toolPruningPolicy(product = 'ide') {
+  const profile = contextProduct(product);
+  return {
+    profile,
+    protected: [
+      'write_file', 'edit_file', 'delete_file', 'validate_build',
+      'lint_check', 'remember', 'todo_write', 'ask_user',
+    ],
+    eligible: profile === 'chat'
+      ? ['read_file', 'search_code', 'search_files', 'list_files', 'shell']
+      : profile === 'workspace'
+        ? ['read_file', 'search_code', 'search_files', 'list_files']
+        : ['read_file', 'search_code', 'search_files', 'list_files', 'shell'],
+  };
+}
+
+export function resolveContextBudget({
+  product = 'ide', model = null, contextLength = null, maxOutput = null,
+  fixedPromptTokens = 0, explicitThreshold = null,
+} = {}) {
+  const policy = contextPolicy(product);
+  const catalog = findShippedModel(model);
+  const window = Number(contextLength || catalog?.context_length || 0);
+  const output = Number(maxOutput || catalog?.max_output || 0);
+  const explicit = Number(explicitThreshold || 0);
+  if (explicit > 0) {
+    return { ...policy, threshold: Math.max(20_000, Math.floor(explicit)), source: 'explicit' };
+  }
+  if (!Number.isFinite(window) || window <= 0) {
+    return { ...policy, threshold: 160_000, source: 'fallback' };
+  }
+  const reservedOutput = output > 0 ? output : Math.floor(window * 0.10);
+  const safety = Math.max(1024, Math.floor(window * 0.03));
+  const usable = Math.max(20_000, window - reservedOutput - Math.max(0, fixedPromptTokens) - safety);
+  return {
+    ...policy,
+    threshold: Math.max(20_000, Math.floor(usable * policy.triggerRatio)),
+    targetTokens: Math.max(10_000, Math.floor(usable * policy.targetRatio)),
+    contextLength: window,
+    reservedOutput,
+    fixedPromptTokens: Math.max(0, fixedPromptTokens),
+    source: 'model_catalog',
+  };
+}
+
+export function contextReductionConfig(env = process.env, product = 'ide') {
+  const profileName = contextProduct(product).toUpperCase();
   const strategyRaw = String(
-    env.BAHULAM_CONTEXT_STRATEGY
+    env[`BAHULAM_${profileName}_CONTEXT_STRATEGY`]
+      || env.BAHULAM_CONTEXT_STRATEGY
       || env.BAHULAM_CONTEXT_REDUCTION_STRATEGY
       || 'distillation',
   ).trim().toLowerCase();
   const threshold = Number.parseInt(
-    env.BAHULAM_SUMMARIZE_THRESHOLD || env.BAHULAM_CHAT_SUMMARIZE_THRESHOLD || '160000',
+    env.BAHULAM_SUMMARIZE_THRESHOLD || env.BAHULAM_CHAT_SUMMARIZE_THRESHOLD || '',
     10,
   );
   const preserve = Number.parseInt(
-    env.BAHULAM_SUMMARIZE_PRESERVE_TURNS || env.BAHULAM_CHAT_SUMMARIZE_PRESERVE_TURNS || '10',
+    env.BAHULAM_SUMMARIZE_PRESERVE_TURNS || env.BAHULAM_CHAT_SUMMARIZE_PRESERVE_TURNS || '',
     10,
   );
   const sigma = Number.parseFloat(
@@ -31,8 +97,8 @@ export function contextReductionConfig(env = process.env) {
     strategy: ['summary', 'summarize', 'summarization'].includes(strategyRaw)
       ? 'summarization'
       : 'distillation',
-    threshold: Number.isFinite(threshold) ? Math.max(20_000, threshold) : 160_000,
-    preserve: Number.isFinite(preserve) ? Math.max(2, preserve) : 10,
+    threshold: Number.isFinite(threshold) && threshold > 0 ? Math.max(20_000, threshold) : null,
+    preserve: Number.isFinite(preserve) && preserve > 0 ? Math.max(2, preserve) : null,
     sigma: Number.isFinite(sigma) ? Math.max(0.5, Math.min(4, sigma)) : 1.5,
   };
 }
