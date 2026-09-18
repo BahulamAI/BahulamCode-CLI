@@ -6218,7 +6218,14 @@ export async function startTerminalRepl() {
 
       // Let approval manager pause/resume this listener
       approval.setExecutionHooks({
-        onPause: () => { execListenerActive = false; },
+        onPause: () => {
+          execListenerActive = false;
+          // The tool card/spinner is a transient status surface. Clear it
+          // before ApprovalManager paints its dock overlay, otherwise the
+          // render queue can keep repainting over the approval menu while
+          // the approval key is still being consumed correctly.
+          clearPinnedStatus();
+        },
         onResume: () => { execListenerActive = true; },
         onApprovalPromptEnd: () => {
           if (!isInputDockMounted()) return;
