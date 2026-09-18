@@ -5044,19 +5044,16 @@ export async function startTerminalRepl() {
     initialContentRow: dockCursor.row,
     initialContentCol: dockCursor.col,
   });
-  // 1 Hz live-tick for the elapsed clock in the dock's top strip.
-  // Only fires when the user is idle (inputActive === true) — while the
-  // agent is streaming content, skipping the tick avoids ANSI writes
-  // interleaving with the stream. Cheap: one renderIdleDockInput per
-  // second, only if mounted + idle. `unref()` so the timer never blocks
-  // process exit.
+  // 1 Hz live-tick for the elapsed clock in the dock's top strip. The render
+  // queue serializes dock paints with agent/tool output, so the clock must
+  // continue while the npm-owned local/direct loop is executing too.
+  // `unref()` ensures the timer never blocks process exit.
   let _dockTickTimer = null;
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
     process.on('exit',       unmountInputDock);
     _dockTickTimer = setInterval(() => {
       if (!isInputDockMounted()) return;
-      if (!inputActive) return;
       try { renderIdleDockInput(); } catch { /* one bad tick is not fatal */ }
     }, 1000);
     _dockTickTimer.unref?.();

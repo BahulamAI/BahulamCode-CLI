@@ -23,6 +23,7 @@ import {
     estimateMessagesTokens,
     resolveContextBudget,
 } from './context-reduction.mjs';
+import { normalizeUsage } from './usage-normalization.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -74,16 +75,6 @@ function toOpenAIMessage(message) {
     }
 
     return { role: message.role, content: message.content };
-}
-
-function normalizeGatewayUsage(usage) {
-    if (!usage) return null;
-    return {
-        input_tokens: usage.input_tokens ?? usage.prompt_tokens ?? 0,
-        output_tokens: usage.output_tokens ?? usage.completion_tokens ?? 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-    };
 }
 
 /** Tool schemas for the LLM — proper parameter definitions. */
@@ -587,7 +578,7 @@ export class LocalAgent {
         return {
             content,
             stopReason: data.choices?.[0]?.finish_reason || null,
-            usage: normalizeGatewayUsage(data.usage),
+            usage: normalizeUsage(data.usage),
         };
     }
 
@@ -685,7 +676,7 @@ export class LocalAgent {
         return {
             content,
             stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
-            usage: _normalizeOpenRouterUsage(data.usage),
+            usage: normalizeUsage(data.usage),
         };
     }
 
@@ -820,21 +811,5 @@ function _buildLocalUsageEnvelope(model, totals) {
             cache_read_tokens: totals.cache_read_tokens,
             cache_creation_tokens: totals.cache_creation_tokens,
         }],
-    };
-}
-
-// Normalize OpenRouter usage into Anthropic's field names so downstream
-// consumers (PromptCache, pricing.calculateCost) don't branch on shape.
-// OpenRouter returns OpenAI-style: prompt_tokens, completion_tokens,
-// prompt_tokens_details.cached_tokens. When the underlying model is
-// Anthropic, OpenRouter also relays cache_read_input_tokens verbatim.
-function _normalizeOpenRouterUsage(usage) {
-    if (!usage) return null;
-    const cachedFromOpenAI = usage.prompt_tokens_details?.cached_tokens || 0;
-    return {
-        input_tokens: usage.prompt_tokens || 0,
-        output_tokens: usage.completion_tokens || 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens || cachedFromOpenAI || 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
     };
 }
