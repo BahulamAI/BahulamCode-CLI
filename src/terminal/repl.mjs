@@ -5717,6 +5717,8 @@ export async function startTerminalRepl() {
       const client = {
         execute: (instruction, context, history) => localAgent.execute(instruction, context, history),
         cancel: () => localAgent.cancel(),
+        sendIntervention: (instruction, options) => localAgent.sendIntervention(instruction, options),
+        get currentTaskId() { return null; },
       };
       process.stderr.write(`  ${c.dim(`[${runtimeMode}] npm agent loop → ${runtimeMode === 'local' ? 'Bahulam Gateway' : 'provider'}`)}\n`);
       try {

@@ -301,6 +301,7 @@ export class LocalAgent {
         this.summarizerModel = summarizerModel || process.env.BAHULAM_SUMMARIZE_MODEL || process.env.BAHULAM_CHAT_SUMMARIZER_MODEL || this.model;
         this._cancelled = false;
         this._requestSequence = 0;
+        this._pendingInterventions = [];
         this.promptCache = new PromptCache();
     }
 
@@ -368,6 +369,24 @@ export class LocalAgent {
             if (this._cancelled) {
                 yield { type: 'cancelled', data: { reason: 'User cancelled' } };
                 return;
+            }
+
+            // Match the remote live-steering contract. The REPL may submit a
+            // follow-up while a local model/tool call is in flight; apply it
+            // at the next safe model boundary and retain it in canonical
+            // agent history for the following turn.
+            const interventions = this._pendingInterventions.splice(0);
+            for (const intervention of interventions) {
+                const message = { role: 'user', content: intervention.instruction };
+                messages.push(message);
+                if (Array.isArray(priorHistory)) priorHistory.push({ ...message });
+                yield {
+                    type: 'user_intervention_delivered',
+                    data: {
+                        intervention_id: intervention.interventionId,
+                        delivered_at_tool: null,
+                    },
+                };
             }
 
             if (i > 0) {
@@ -487,7 +506,7 @@ export class LocalAgent {
                 }
             }
 
-            if (!hasToolUse || stopReason === 'end_turn') {
+            if ((!hasToolUse || stopReason === 'end_turn') && this._pendingInterventions.length === 0) {
                 const duration = (Date.now() - startTime) / 1000;
                 yield {
                     type: 'complete',
@@ -825,6 +844,18 @@ export class LocalAgent {
     }
 
     cancel() { this._cancelled = true; }
+
+    /** Queue a live follow-up for the next local model boundary. */
+    sendIntervention(instruction, { idempotencyKey = null } = {}) {
+        const text = String(instruction || '').trim();
+        if (!text) return Promise.resolve({ status: 'error', error: 'instruction is empty' });
+        const interventionId = idempotencyKey || this._nextRequestId();
+        if (this._pendingInterventions.some(item => item.interventionId === interventionId)) {
+            return Promise.resolve({ status: 'duplicate', interventionId });
+        }
+        this._pendingInterventions.push({ instruction: text, interventionId });
+        return Promise.resolve({ status: 'accepted', interventionId });
+    }
 }
 
 // Shape the accumulated per-turn totals into the same envelope the remote
