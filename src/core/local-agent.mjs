@@ -24,6 +24,7 @@ import {
     resolveContextBudget,
 } from './context-reduction.mjs';
 import { normalizeUsage } from './usage-normalization.mjs';
+import { fetchWithRetry, RequestError, requestErrorData } from './request-retry.mjs';
 
 const MAX_ITERATIONS = 50;
 
@@ -299,6 +300,7 @@ export class LocalAgent {
         this.extraToolSchemas = Array.isArray(extraToolSchemas) ? extraToolSchemas : [];
         this.summarizerModel = summarizerModel || process.env.BAHULAM_SUMMARIZE_MODEL || process.env.BAHULAM_CHAT_SUMMARIZER_MODEL || this.model;
         this._cancelled = false;
+        this._requestSequence = 0;
         this.promptCache = new PromptCache();
     }
 
@@ -377,7 +379,18 @@ export class LocalAgent {
             try {
                 response = await this._callLLM(systemPrompt, messages, tools);
             } catch (err) {
-                yield { type: 'error', data: { message: `LLM API error: ${err.message}`, fatal: true } };
+                const errorData = requestErrorData(err, {
+                    phase: this.gatewayUrl ? 'gateway' : 'provider',
+                    provider: this.gatewayUrl ? 'bahulam-gateway' : 'direct-provider',
+                });
+                yield {
+                    type: 'error',
+                    data: {
+                        ...errorData,
+                        message: `LLM API error: ${errorData.message}`,
+                        fatal: true,
+                    },
+                };
                 return;
             }
 
@@ -537,6 +550,7 @@ export class LocalAgent {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'X-Product': this.product,
+            'X-Bahulam-Request-ID': this._nextRequestId(),
         };
         if (this.sessionId) headers['X-Bahulam-Session-ID'] = this.sessionId;
         if (this.executionId) headers['X-Bahulam-Execution-ID'] = this.executionId;
@@ -550,14 +564,18 @@ export class LocalAgent {
             tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
             stream: false,
         };
-        const resp = await fetch(`${base}/chat/completions`, {
+        const resp = await fetchWithRetry(`${base}/chat/completions`, {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new Error(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`);
+            throw new RequestError(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`, {
+                status: resp.status,
+                code: resp.status === 401 || resp.status === 403 ? 'gateway_authentication_error' : `gateway_http_${resp.status}`,
+                retryable: false,
+            });
         }
 
         const data = await resp.json();
@@ -590,7 +608,7 @@ export class LocalAgent {
         const cachedTools = cacheableTools(tools);
         const cachedMessages = withMessageBreakpoint(messages);
 
-        const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'x-api-key': this.apiKey,
@@ -608,7 +626,11 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new Error(`Claude API ${resp.status}: ${text.slice(0, 200)}`);
+            throw new RequestError(`Claude API ${resp.status}: ${text.slice(0, 200)}`, {
+                status: resp.status,
+                code: `anthropic_http_${resp.status}`,
+                retryable: false,
+            });
         }
         const data = await resp.json();
         return { content: data.content || [], stopReason: data.stop_reason, usage: data.usage || null };
@@ -644,11 +666,12 @@ export class LocalAgent {
         const headers = {
             'Authorization': `Bearer ${this.openRouterKey}`,
             'Content-Type': 'application/json',
+            'X-Request-ID': this._nextRequestId(),
         };
         // OpenRouter forwards `anthropic-beta` to Anthropic upstreams.
         if (isAnthropic) headers['anthropic-beta'] = ANTHROPIC_BETA_HEADER;
 
-        const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const resp = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -662,7 +685,11 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new Error(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`);
+            throw new RequestError(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`, {
+                status: resp.status,
+                code: `openrouter_http_${resp.status}`,
+                retryable: false,
+            });
         }
         const data = await resp.json();
         const choice = data.choices?.[0];
@@ -678,6 +705,11 @@ export class LocalAgent {
             stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
             usage: normalizeUsage(data.usage),
         };
+    }
+
+    _nextRequestId() {
+        this._requestSequence += 1;
+        return `npm-${this.sessionId || 'local'}-${Date.now()}-${this._requestSequence}`.slice(0, 256);
     }
 
     async _reduceContext(messages, { systemPrompt = '', tools = [] } = {}) {
