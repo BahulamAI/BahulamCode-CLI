@@ -275,6 +275,15 @@ async function surfacePackRequirements(packDir, displayName = null) {
       process.stderr.write(`  ${icon} ${l.text}\n`);
     }
     if (reqs.system_binaries?.length) {
+      const platformKey = process.platform === 'win32' ? 'win32'
+        : process.platform === 'darwin' ? 'darwin'
+        : 'linux';
+      for (const b of reqs.system_binaries) {
+        const hint = b.install_hints?.[platformKey] || b.install_hints?.darwin || b.install_hints?.linux;
+        if (!hint) continue;
+        const tag = b.optional === true ? ` ${DIM}(optional)${RESET}` : '';
+        process.stderr.write(`    ${DIM}·${RESET} ${BOLD}${b.name}${RESET}${tag} — install: ${CYAN}${hint}${RESET}\n`);
+      }
       const name = displayName || path.basename(packDir);
       process.stderr.write(`  ${DIM}run${RESET}  ${CYAN}bahulam plugin doctor ${name}${RESET} ${DIM}to check your environment${RESET}\n`);
     }
