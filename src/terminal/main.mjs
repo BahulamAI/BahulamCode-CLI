@@ -336,6 +336,10 @@ async function main() {
     bahulam --agent <slug> -p "x"  Run a named agent (local deterministic graph)
     bahulam --workflow <name> -p   Run a named workflow (local deterministic graph)
     bahulam --headless -p "x"      Non-interactive: auto-approve, JSONL output
+    bahulam --remote -p "x"        Remote backend /api/execute orchestration
+    bahulam --bundled -p "x"       Local bundled backend-style orchestration
+    bahulam --local -p "x"         Local npm orchestration via Bahulam Gateway
+    bahulam --direct -p "x"         Local npm orchestration via provider API
     bahulam --headless -p "x" --vision screenshot.png
                               Attach an image via the vision analysis pipeline
     bahulam --resume               Resume last conversation
@@ -525,7 +529,7 @@ async function main() {
   const effectivePrompt = args.prompt || (daemonSpawned && daemonPrompt) || '';
   const hasGraphTarget = Boolean(args.agent || args.workflow);
   if ((effectivePrompt || hasGraphTarget)
-      && (daemonSpawned || process.argv.includes('--headless') || !process.stdin.isTTY || hasGraphTarget)) {
+      && (daemonSpawned || process.argv.includes('--headless') || args.runtimeMode || !process.stdin.isTTY || hasGraphTarget)) {
     const { runHeadless } = await import('../core/headless.mjs');
     await runHeadless({
       instruction: effectivePrompt,
@@ -534,6 +538,7 @@ async function main() {
       verbose: args.verbose,
       cacheReport: args.cacheReport,
       local: args.local,
+      mode: args.runtimeMode || (args.local ? 'local' : 'remote'),
       vision: args.vision,
       agent: args.agent,
       workflow: args.workflow,

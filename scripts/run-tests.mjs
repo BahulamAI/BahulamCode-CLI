@@ -67,6 +67,7 @@ const UNIT_TESTS = [
     'test/test-bm25.mjs',
     'test/test-output-filter.mjs',
     'test/test-risk-tier.mjs',
+    'test/test-context-reduction.mjs',
     'test/test-resume-append.mjs',
     'test/test-mcp.mjs',
 ];

@@ -94,3 +94,12 @@ export function readShippedCatalog() {
   _cache = null;
   return null;
 }
+
+export function findShippedModel(model) {
+  const wanted = String(model || '').trim();
+  if (!wanted) return null;
+  const catalog = readShippedCatalog() || [];
+  return catalog.find(row => row.id === wanted)
+    || catalog.find(row => row.id.endsWith(`/${wanted}`))
+    || null;
+}

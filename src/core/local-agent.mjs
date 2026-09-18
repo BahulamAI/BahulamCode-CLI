@@ -1,6 +1,6 @@
 /**
- * Local Agent — T18: Direct LLM API calls, <100ms startup, offline.
- * Replaces the SSE backend for --local mode.
+ * Local Agent — CLI-side orchestration for --local mode.
+ * Model calls use the shared Bahulam Gateway; tools and the ReAct loop stay local.
  * Yields events matching the same format as BahulamStreamClient.
  */
 
@@ -14,8 +14,69 @@ import {
     withMessageBreakpoint,
     needsExplicitCacheControl,
 } from './cache-control.mjs';
+import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
+import {
+    SUMMARY_MARKER,
+    DISTILLATION_MARKER,
+    contextReductionConfig,
+    collapseMessages,
+    estimateMessagesTokens,
+    resolveContextBudget,
+} from './context-reduction.mjs';
+import { normalizeUsage } from './usage-normalization.mjs';
+import { fetchWithRetry, RequestError, requestErrorData } from './request-retry.mjs';
 
 const MAX_ITERATIONS = 50;
+
+function toOpenAITool(tool) {
+    return {
+        type: 'function',
+        function: {
+            name: tool.name,
+            description: tool.description || '',
+            parameters: tool.input_schema || { type: 'object', properties: {} },
+        },
+    };
+}
+
+function toOpenAIMessage(message) {
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+        const text = message.content
+            .filter(block => block.type === 'text')
+            .map(block => block.text || '')
+            .join('');
+        const toolCalls = message.content
+            .filter(block => block.type === 'tool_use')
+            .map(block => ({
+                id: block.id,
+                type: 'function',
+                function: {
+                    name: block.name,
+                    arguments: JSON.stringify(block.input || {}),
+                },
+            }));
+        return {
+            role: 'assistant',
+            content: text || null,
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        };
+    }
+
+    if (message.role === 'user' && Array.isArray(message.content)) {
+        const results = message.content.filter(block => block.type === 'tool_result');
+        if (results.length > 0) {
+            // OpenAI-compatible APIs require one role=tool message per result.
+            // The caller expands this marker in _callGateway below.
+            return results.map(block => ({
+                role: 'tool',
+                tool_call_id: block.tool_use_id,
+                content: String(block.content || ''),
+            }));
+        }
+    }
+
+    return { role: message.role, content: message.content };
+}
 
 /** Tool schemas for the LLM — proper parameter definitions. */
 const TOOL_SCHEMAS = [
@@ -201,6 +262,12 @@ export class LocalAgent {
         toolExecutor,
         verbose = false,
         openRouterKey = null,
+        gatewayUrl = null,
+        gatewayToken = null,
+        product = 'bahulam',
+        sessionId = null,
+        executionId = null,
+        approvalManager = null,
         cwd = null,
         systemPromptOverride = null,
         maxTurns = null,
@@ -211,10 +278,17 @@ export class LocalAgent {
         // the (scoped) toolExecutor; this only makes the schemas visible
         // to the model.
         extraToolSchemas = [],
+        summarizerModel = null,
     }) {
         this.apiKey = apiKey;
         this.openRouterKey = openRouterKey;
-        this.model = model || 'claude-sonnet-4-20250514';
+        this.gatewayUrl = (gatewayUrl || '').replace(/\/+$/, '');
+        this.gatewayToken = gatewayToken;
+        this.product = product;
+        this.sessionId = sessionId;
+        this.executionId = executionId;
+        this.approvalManager = approvalManager;
+        this.model = model || DEFAULT_REASONING_MODEL;
         this.toolExecutor = toolExecutor;
         this.verbose = verbose;
         this.cwd = cwd || process.cwd();
@@ -224,11 +298,14 @@ export class LocalAgent {
         this.stagnationDetection = stagnationDetection;
         this.stagnationThreshold = stagnationThreshold;
         this.extraToolSchemas = Array.isArray(extraToolSchemas) ? extraToolSchemas : [];
+        this.summarizerModel = summarizerModel || process.env.BAHULAM_SUMMARIZE_MODEL || process.env.BAHULAM_CHAT_SUMMARIZER_MODEL || this.model;
         this._cancelled = false;
+        this._requestSequence = 0;
+        this._pendingInterventions = [];
         this.promptCache = new PromptCache();
     }
 
-    async *execute(instruction, context = {}) {
+    async *execute(instruction, context = {}, priorHistory = []) {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
@@ -249,7 +326,39 @@ export class LocalAgent {
 
         const tools = this._buildToolDefs();
         const systemPrompt = this._buildSystemPrompt(context, retrievedContext);
-        const messages = [{ role: 'user', content: instruction }];
+        // Keep the same turn contract as BahulamStreamClient. The REPL owns
+        // the canonical agent history and passes it here when the npm-owned
+        // local/direct transports are selected.
+        const messages = Array.isArray(priorHistory)
+            ? priorHistory.map(message => ({ ...message }))
+            : [];
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage?.role !== 'user' || lastMessage.content !== instruction) {
+            messages.push({ role: 'user', content: instruction });
+        }
+
+        const applyReduction = async () => {
+            const reduction = await this._reduceContext(messages, { systemPrompt, tools });
+            if (!reduction) return null;
+            messages.splice(0, messages.length, ...reduction.messages);
+            if (Array.isArray(priorHistory)) {
+                priorHistory.splice(0, priorHistory.length, ...reduction.messages);
+            }
+            if (reduction.usage) {
+                this.promptCache.updateStats(reduction.usage);
+                usageTotals.input_tokens += reduction.usage.input_tokens || 0;
+                usageTotals.output_tokens += reduction.usage.output_tokens || 0;
+                usageTotals.cache_read_tokens += reduction.usage.cache_read_input_tokens || 0;
+                usageTotals.cache_creation_tokens += reduction.usage.cache_creation_input_tokens || 0;
+            }
+            return reduction;
+        };
+
+        // Check before the first call and again after every completed
+        // tool-call/result cycle. The latter prevents a long ReAct run from
+        // growing past the model budget before its next inference.
+        let reduction = await applyReduction();
+        if (reduction) yield { type: 'summarize', data: reduction.event };
 
         const stagnation = createStagnationTracker({
             enabled: this.stagnationDetection,
@@ -262,11 +371,45 @@ export class LocalAgent {
                 return;
             }
 
+            // Match the remote live-steering contract. The REPL may submit a
+            // follow-up while a local model/tool call is in flight; apply it
+            // at the next safe model boundary and retain it in canonical
+            // agent history for the following turn.
+            const interventions = this._pendingInterventions.splice(0);
+            for (const intervention of interventions) {
+                const message = { role: 'user', content: intervention.instruction };
+                messages.push(message);
+                if (Array.isArray(priorHistory)) priorHistory.push({ ...message });
+                yield {
+                    type: 'user_intervention_delivered',
+                    data: {
+                        intervention_id: intervention.interventionId,
+                        delivered_at_tool: null,
+                    },
+                };
+            }
+
+            if (i > 0) {
+                reduction = await applyReduction();
+                if (reduction) yield { type: 'summarize', data: reduction.event };
+            }
+
             let response;
             try {
                 response = await this._callLLM(systemPrompt, messages, tools);
             } catch (err) {
-                yield { type: 'error', data: { message: `LLM API error: ${err.message}`, fatal: true } };
+                const errorData = requestErrorData(err, {
+                    phase: this.gatewayUrl ? 'gateway' : 'provider',
+                    provider: this.gatewayUrl ? 'bahulam-gateway' : 'direct-provider',
+                });
+                yield {
+                    type: 'error',
+                    data: {
+                        ...errorData,
+                        message: `LLM API error: ${errorData.message}`,
+                        fatal: true,
+                    },
+                };
                 return;
             }
 
@@ -283,6 +426,7 @@ export class LocalAgent {
             // Process content blocks
             let hasToolUse = false;
             const assistantContent = [];
+            const toolResults = [];
 
             for (const block of content) {
                 if (block.type === 'text') {
@@ -298,11 +442,7 @@ export class LocalAgent {
                         const message = stagnationMessage(name, stagnationResult.count);
                         yield { type: 'stagnation', data: { tool: name, count: stagnationResult.count, message } };
                         assistantContent.push(block);
-                        messages.push({ role: 'assistant', content: assistantContent.slice() });
-                        messages.push({
-                            role: 'user',
-                            content: [{ type: 'tool_result', tool_use_id: id, content: message }],
-                        });
+                        toolResults.push({ tool_use_id: id, content: message });
                         continue;
                     }
 
@@ -312,7 +452,12 @@ export class LocalAgent {
                     let result;
                     const toolStart = Date.now();
                     try {
-                        result = await this.toolExecutor.execute(name, input || {});
+                        const approval = this.approvalManager
+                            ? await this.approvalManager.check(name, input || {}, false, { source: 'local-agent' })
+                            : { approved: true };
+                        result = approval?.approved
+                            ? await this.toolExecutor.execute(name, input || {})
+                            : { success: false, output: `Tool call not approved: ${approval?.reason || name}` };
                     } catch (err) {
                         result = { success: false, output: `Error: ${err.message}` };
                     }
@@ -350,15 +495,27 @@ export class LocalAgent {
                     };
 
                     assistantContent.push(block);
-                    messages.push({ role: 'assistant', content: assistantContent.slice() });
-                    messages.push({
-                        role: 'user',
-                        content: [{ type: 'tool_result', tool_use_id: id, content: result.output || JSON.stringify(result) }],
+                    toolResults.push({
+                        tool_use_id: id,
+                        content: result.output || JSON.stringify(result),
                     });
                 }
             }
 
-            if (!hasToolUse || stopReason === 'end_turn') {
+            // Keep one provider-shaped assistant turn for the complete tool batch.
+            // Appending the cumulative assistant content once per tool duplicates
+            // earlier tool calls and makes the next request grow quadratically.
+            if (hasToolUse) {
+                messages.push({ role: 'assistant', content: assistantContent.slice() });
+                for (const result of toolResults) {
+                    messages.push({
+                        role: 'user',
+                        content: [{ type: 'tool_result', ...result }],
+                    });
+                }
+            }
+
+            if ((!hasToolUse || stopReason === 'end_turn') && this._pendingInterventions.length === 0) {
                 const duration = (Date.now() - startTime) / 1000;
                 yield {
                     type: 'complete',
@@ -385,27 +542,93 @@ export class LocalAgent {
         };
     }
 
-    async _callLLM(systemPrompt, messages, tools) {
+    async _callLLM(systemPrompt, messages, tools, modelOverride = this.model) {
+        // Local orchestration still uses the shared Bahulam Gateway for model
+        // access. The gateway resolves identity, credits/BYOK, and provider
+        // routing; this process owns the ReAct/tool loop.
+        if (this.gatewayUrl && this.gatewayToken) {
+            return this._callGateway(systemPrompt, messages, tools, modelOverride);
+        }
+
         const isClaude = this.model.startsWith('claude') || this.model.startsWith('anthropic/claude');
 
         // Use Anthropic direct API only for Claude models when we have an Anthropic key
         if (isClaude && this.apiKey && this.apiKey.startsWith('sk-ant-')) {
-            return this._callClaude(systemPrompt, messages, tools);
+            return this._callClaude(systemPrompt, messages, tools, modelOverride);
         }
 
         // Everything else goes through OpenRouter (DeepSeek, GPT, Gemini, or Claude via OR)
         if (this.openRouterKey) {
-            return this._callOpenRouter(systemPrompt, messages, tools);
+            return this._callOpenRouter(systemPrompt, messages, tools, modelOverride);
         }
 
         if (this.apiKey) {
-            return this._callClaude(systemPrompt, messages, tools);
+            return this._callClaude(systemPrompt, messages, tools, modelOverride);
         }
 
         throw new Error('No API key configured. Set ANTHROPIC_API_KEY or configure OpenRouter key.');
     }
 
-    async _callClaude(systemPrompt, messages, tools) {
+    async _callGateway(systemPrompt, messages, tools, modelOverride = this.model) {
+        const base = this.gatewayUrl.endsWith('/v1')
+            ? this.gatewayUrl
+            : `${this.gatewayUrl}/v1`;
+        const headers = {
+            Authorization: `Bearer ${this.gatewayToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'X-Product': this.product,
+            'X-Bahulam-Request-ID': this._nextRequestId(),
+        };
+        if (this.sessionId) headers['X-Bahulam-Session-ID'] = this.sessionId;
+        if (this.executionId) headers['X-Bahulam-Execution-ID'] = this.executionId;
+
+        const body = {
+            model: modelOverride,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                ...messages.flatMap(toOpenAIMessage),
+            ],
+            tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
+            stream: false,
+        };
+        const resp = await fetchWithRetry(`${base}/chat/completions`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            throw new RequestError(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`, {
+                status: resp.status,
+                code: resp.status === 401 || resp.status === 403 ? 'gateway_authentication_error' : `gateway_http_${resp.status}`,
+                retryable: false,
+            });
+        }
+
+        const data = await resp.json();
+        const message = data.choices?.[0]?.message || {};
+        const content = [];
+        if (message.content) content.push({ type: 'text', text: message.content });
+        for (const call of message.tool_calls || []) {
+            const fn = call.function || {};
+            let input = {};
+            try { input = fn.arguments ? JSON.parse(fn.arguments) : {}; } catch {}
+            content.push({
+                type: 'tool_use',
+                id: call.id,
+                name: fn.name,
+                input,
+            });
+        }
+        return {
+            content,
+            stopReason: data.choices?.[0]?.finish_reason || null,
+            usage: normalizeUsage(data.usage),
+        };
+    }
+
+    async _callClaude(systemPrompt, messages, tools, modelOverride = this.model) {
         // PRD-071 Phase 2 — cache_control breakpoints for Anthropic direct.
         // Extended 1-hour TTL beta on the persistent prefix (system + tools).
         // Message history breakpoint stays at default 5-min TTL.
@@ -413,7 +636,7 @@ export class LocalAgent {
         const cachedTools = cacheableTools(tools);
         const cachedMessages = withMessageBreakpoint(messages);
 
-        const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'x-api-key': this.apiKey,
@@ -422,7 +645,7 @@ export class LocalAgent {
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
-                model: this.model,
+                model: modelOverride,
                 system: cachedSystem,
                 messages: cachedMessages,
                 tools: cachedTools.length > 0 ? cachedTools : undefined,
@@ -431,15 +654,19 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new Error(`Claude API ${resp.status}: ${text.slice(0, 200)}`);
+            throw new RequestError(`Claude API ${resp.status}: ${text.slice(0, 200)}`, {
+                status: resp.status,
+                code: `anthropic_http_${resp.status}`,
+                retryable: false,
+            });
         }
         const data = await resp.json();
         return { content: data.content || [], stopReason: data.stop_reason, usage: data.usage || null };
     }
 
-    async _callOpenRouter(systemPrompt, messages, tools) {
+    async _callOpenRouter(systemPrompt, messages, tools, modelOverride = this.model) {
         // OpenRouter requires provider prefix (e.g. anthropic/claude-sonnet-4-20250514)
-        let model = this.model;
+        let model = modelOverride;
         if (model.startsWith('claude') && !model.includes('/')) {
             model = `anthropic/${model}`;
         }
@@ -467,11 +694,12 @@ export class LocalAgent {
         const headers = {
             'Authorization': `Bearer ${this.openRouterKey}`,
             'Content-Type': 'application/json',
+            'X-Request-ID': this._nextRequestId(),
         };
         // OpenRouter forwards `anthropic-beta` to Anthropic upstreams.
         if (isAnthropic) headers['anthropic-beta'] = ANTHROPIC_BETA_HEADER;
 
-        const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const resp = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -485,7 +713,11 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new Error(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`);
+            throw new RequestError(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`, {
+                status: resp.status,
+                code: `openrouter_http_${resp.status}`,
+                retryable: false,
+            });
         }
         const data = await resp.json();
         const choice = data.choices?.[0];
@@ -499,7 +731,87 @@ export class LocalAgent {
         return {
             content,
             stopReason: choice?.finish_reason === 'stop' ? 'end_turn' : 'tool_use',
-            usage: _normalizeOpenRouterUsage(data.usage),
+            usage: normalizeUsage(data.usage),
+        };
+    }
+
+    _nextRequestId() {
+        this._requestSequence += 1;
+        return `npm-${this.sessionId || 'local'}-${Date.now()}-${this._requestSequence}`.slice(0, 256);
+    }
+
+    async _reduceContext(messages, { systemPrompt = '', tools = [] } = {}) {
+        const config = contextReductionConfig(process.env, this.product);
+        const fixedPromptTokens = estimateMessagesTokens([
+            { role: 'system', content: systemPrompt },
+            { role: 'system', content: tools },
+        ]);
+        const budget = resolveContextBudget({
+            product: this.product,
+            model: this.model,
+            fixedPromptTokens,
+            explicitThreshold: config.threshold,
+        });
+        const preserve = config.preserve || budget.preserve;
+        const estimated = estimateMessagesTokens(messages);
+        if (!config.enabled || estimated <= budget.threshold || messages.length <= preserve + 2) {
+            return null;
+        }
+
+        const source = messages.slice(0, -preserve);
+        let summary = null;
+        let summaryUsage = null;
+        let appliedStrategy = config.strategy;
+        const prompt = config.strategy === 'distillation'
+            ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Keep it structured and concise. Do not invent facts.'
+            : 'You are the Bahulam context summarizer. Summarize the earlier conversation for another coding-agent turn. Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work. Do not invent facts. Return concise plain text only.';
+        const transcript = source.map(message => ({
+            role: message.role,
+            content: typeof message.content === 'string'
+                ? message.content
+                : JSON.stringify(message.content || ''),
+        }));
+        try {
+            const response = await this._callLLM(
+                prompt,
+                [{ role: 'user', content: JSON.stringify(transcript) }],
+                [],
+                this.summarizerModel,
+            );
+            summaryUsage = response.usage || null;
+            summary = response.content
+                ?.filter(block => block.type === 'text')
+                .map(block => block.text || '')
+                .join('\n')
+                .trim() || null;
+        } catch (error) {
+            // Match the backend's fail-open behavior: a failed reduction
+            // must never prevent the actual user turn from running.
+            appliedStrategy = 'summarization_failed';
+            if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
+        }
+        if (!summary) return null;
+        if (!summary.startsWith(SUMMARY_MARKER) && !summary.startsWith(DISTILLATION_MARKER)) {
+            summary = `${config.strategy === 'distillation' ? DISTILLATION_MARKER : SUMMARY_MARKER}\n${summary}`;
+        }
+        const reduced = collapseMessages(messages, summary, preserve);
+        return {
+            messages: reduced,
+            event: {
+                phase: 'pre_turn',
+                strategy: appliedStrategy,
+                collapsed_messages: source.length,
+                kept_recent: preserve,
+                before_tokens: estimated,
+                threshold: budget.threshold,
+                budget_source: budget.source,
+                context_length: budget.contextLength || null,
+                target_tokens: budget.targetTokens || null,
+                source: this.gatewayUrl ? 'gateway' : 'provider',
+                summary_preview: summary.replace(/^\[[^\]]+\]\s*/, '').split('\n', 1)[0].slice(0, 120),
+                summary_usage: summaryUsage,
+            },
+            usage: summaryUsage,
         };
     }
 
@@ -541,6 +853,18 @@ export class LocalAgent {
     }
 
     cancel() { this._cancelled = true; }
+
+    /** Queue a live follow-up for the next local model boundary. */
+    sendIntervention(instruction, { idempotencyKey = null } = {}) {
+        const text = String(instruction || '').trim();
+        if (!text) return Promise.resolve({ status: 'error', error: 'instruction is empty' });
+        const interventionId = idempotencyKey || this._nextRequestId();
+        if (this._pendingInterventions.some(item => item.interventionId === interventionId)) {
+            return Promise.resolve({ status: 'duplicate', interventionId });
+        }
+        this._pendingInterventions.push({ instruction: text, interventionId });
+        return Promise.resolve({ status: 'accepted', interventionId });
+    }
 }
 
 // Shape the accumulated per-turn totals into the same envelope the remote
@@ -559,21 +883,5 @@ function _buildLocalUsageEnvelope(model, totals) {
             cache_read_tokens: totals.cache_read_tokens,
             cache_creation_tokens: totals.cache_creation_tokens,
         }],
-    };
-}
-
-// Normalize OpenRouter usage into Anthropic's field names so downstream
-// consumers (PromptCache, pricing.calculateCost) don't branch on shape.
-// OpenRouter returns OpenAI-style: prompt_tokens, completion_tokens,
-// prompt_tokens_details.cached_tokens. When the underlying model is
-// Anthropic, OpenRouter also relays cache_read_input_tokens verbatim.
-function _normalizeOpenRouterUsage(usage) {
-    if (!usage) return null;
-    const cachedFromOpenAI = usage.prompt_tokens_details?.cached_tokens || 0;
-    return {
-        input_tokens: usage.prompt_tokens || 0,
-        output_tokens: usage.completion_tokens || 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens || cachedFromOpenAI || 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
     };
 }

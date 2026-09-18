@@ -154,9 +154,10 @@ export class ApprovalManager {
 
     setReadline(rl) { this._rl = rl; }
 
-    setExecutionHooks({ onPause, onResume, onApprovalPromptEnd } = {}) {
+    setExecutionHooks({ onPause, onResume, onApprovalPromptStart, onApprovalPromptEnd } = {}) {
         this._execPause = onPause || null;
         this._execResume = onResume || null;
+        this._approvalPromptStart = onApprovalPromptStart || null;
         this._approvalPromptEnd = onApprovalPromptEnd || null;
     }
 
@@ -278,6 +279,12 @@ export class ApprovalManager {
         let showDetails = false;
 
         const isInteractive = process.stdin.isTTY;
+
+        // Shared lifecycle hook for every runtime. Hosts can leave a
+        // persistent approval marker before the transient dock is painted.
+        try {
+            this._approvalPromptStart?.({ tool: toolName, args, tier, why });
+        } catch { /* rendering must never block approval */ }
 
         // In rich TTY mode approval lives in the fixed input dock, replacing
         // "+ add instruction" until the user decides. Fallback/plain mode

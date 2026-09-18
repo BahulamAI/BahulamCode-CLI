@@ -65,3 +65,19 @@ export function resolveBackendUrl() {
     // 3. Fallback to production
     return BACKEND_URLS.production;
 }
+
+/**
+ * Resolve the Gateway URL used by npm-owned orchestration.
+ *
+ * A local backend token must be validated by a Gateway configured against
+ * that same local backend; sending it to the production Gateway produces a
+ * misleading 401. Keep the explicit override for custom deployments.
+ */
+export function resolveGatewayUrl() {
+    if (process.env.BAHULAM_GATEWAY_URL) {
+        return process.env.BAHULAM_GATEWAY_URL.replace(/\/+$/, '');
+    }
+    const env = (process.env.TARANG_ENV || process.env.NODE_ENV || 'production').toLowerCase();
+    if (env === 'local' || env === 'docker') return 'http://127.0.0.1:8180/v1';
+    return 'https://gateway.bahulam.ai/v1';
+}

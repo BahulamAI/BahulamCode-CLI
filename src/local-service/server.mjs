@@ -288,6 +288,19 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  // Vendor asset: Bahulam plugin design system (CSS/JS shared across views).
+  // Served from assets/bahulam-plugin/ so every plugin workspace view can
+  // import a common design language without inlining or server-side packing.
+  if (req.method === 'GET' && url.pathname.startsWith('/vendor/bahulam-plugin/')) {
+    sendPackageAsset({
+      res,
+      root: fileURLToPath(new URL('../../assets/bahulam-plugin/', import.meta.url)),
+      pathname: url.pathname,
+      prefix: '/vendor/bahulam-plugin/',
+    });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/assets/bahulam-mark.png') {
     sendBrandMark(res);
     return;
