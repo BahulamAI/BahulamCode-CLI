@@ -480,15 +480,31 @@ async function enforceHostRequirements({ piDir, packageName, args }) {
   }
 
   const host = checkRequirementsAgainstHost(reqs);
+  const optionalByName = new Map((reqs.system_binaries || []).map(b => [b.name, b.optional === true]));
   const missing = host.binaries.filter(b => !b.found);
-  if (missing.length === 0) return;
+  const missingRequired = missing.filter(b => !optionalByName.get(b.name));
+  const missingOptional = missing.filter(b => optionalByName.get(b.name));
 
-  const platformKey = process.platform === 'darwin' ? 'darwin' : 'linux';
+  const platformKey = process.platform === 'win32' ? 'win32'
+    : process.platform === 'darwin' ? 'darwin'
+    : 'linux';
+  const hintFor = (b) => b.install_hints?.[platformKey] || b.install_hints?.darwin || b.install_hints?.linux;
+
+  if (missingOptional.length) {
+    process.stderr.write(`${YELLOW}!${RESET} ${packageName} is missing ${missingOptional.length} optional binar${missingOptional.length === 1 ? 'y' : 'ies'} — some features will be disabled:\n`);
+    for (const b of missingOptional) {
+      const hint = hintFor(b);
+      process.stderr.write(`    ${DIM}·${RESET} ${BOLD}${b.name}${RESET}${hint ? ` — install: ${CYAN}${hint}${RESET}` : ''}\n`);
+    }
+  }
+
+  if (missingRequired.length === 0) return;
+
   const lines = [];
-  lines.push(`${packageName} needs ${missing.length} system binar${missing.length === 1 ? 'y' : 'ies'} not found on your PATH:`);
-  for (const b of missing) {
-    const hint = b.install_hints?.[platformKey];
-    lines.push(`  · ${b.name}${hint ? ` — install: ${CYAN}${hint}${RESET}` : ''}`);
+  lines.push(`${packageName} needs ${missingRequired.length} system binar${missingRequired.length === 1 ? 'y' : 'ies'} not found on your PATH:`);
+  for (const b of missingRequired) {
+    const hint = hintFor(b);
+    lines.push(`  · ${BOLD}${b.name}${RESET}${hint ? ` — install: ${CYAN}${hint}${RESET}` : ''}`);
   }
   if (args.force) {
     process.stderr.write(`${YELLOW}!${RESET} ${lines.join('\n')}\n`);
