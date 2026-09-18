@@ -137,5 +137,53 @@ await test('local tool result event carries full output and display preview sepa
     assert.strictEqual(modelToolResult.content.includes(toolResult.output_preview), false);
 });
 
+await test('batches a multi-tool response without duplicating assistant history', async () => {
+    const fakeExecutor = {
+        async execute(name) {
+            return { success: true, output: `${name} complete` };
+        },
+    };
+    const agent = new LocalAgent({
+        apiKey: 'test',
+        toolExecutor: fakeExecutor,
+        maxTurns: 2,
+    });
+
+    let callCount = 0;
+    let nextTurnMessages = [];
+    agent._callLLM = async (_systemPrompt, messages) => {
+        callCount++;
+        if (callCount === 1) {
+            return {
+                content: [
+                    { type: 'tool_use', id: 'call_1', name: 'shell', input: { command: 'one' } },
+                    { type: 'tool_use', id: 'call_2', name: 'shell', input: { command: 'two' } },
+                    { type: 'tool_use', id: 'call_3', name: 'shell', input: { command: 'three' } },
+                ],
+                stopReason: 'tool_use',
+                usage: null,
+            };
+        }
+        nextTurnMessages = messages;
+        return { content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', usage: null };
+    };
+
+    for await (const _event of agent.execute('run three tools')) { /* consume */ }
+
+    const assistantMessages = nextTurnMessages.filter(message => message.role === 'assistant');
+    assert.strictEqual(assistantMessages.length, 1);
+    assert.strictEqual(assistantMessages[0].content.filter(block => block.type === 'tool_use').length, 3);
+
+    const toolResultMessages = nextTurnMessages.filter(message =>
+        message.role === 'user' && Array.isArray(message.content)
+        && message.content.some(block => block.type === 'tool_result')
+    );
+    assert.strictEqual(toolResultMessages.length, 3);
+    assert.deepStrictEqual(
+        toolResultMessages.map(message => message.content[0].tool_use_id),
+        ['call_1', 'call_2', 'call_3'],
+    );
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

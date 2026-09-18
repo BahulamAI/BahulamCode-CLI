@@ -426,6 +426,7 @@ export class LocalAgent {
             // Process content blocks
             let hasToolUse = false;
             const assistantContent = [];
+            const toolResults = [];
 
             for (const block of content) {
                 if (block.type === 'text') {
@@ -441,11 +442,7 @@ export class LocalAgent {
                         const message = stagnationMessage(name, stagnationResult.count);
                         yield { type: 'stagnation', data: { tool: name, count: stagnationResult.count, message } };
                         assistantContent.push(block);
-                        messages.push({ role: 'assistant', content: assistantContent.slice() });
-                        messages.push({
-                            role: 'user',
-                            content: [{ type: 'tool_result', tool_use_id: id, content: message }],
-                        });
+                        toolResults.push({ tool_use_id: id, content: message });
                         continue;
                     }
 
@@ -498,10 +495,22 @@ export class LocalAgent {
                     };
 
                     assistantContent.push(block);
-                    messages.push({ role: 'assistant', content: assistantContent.slice() });
+                    toolResults.push({
+                        tool_use_id: id,
+                        content: result.output || JSON.stringify(result),
+                    });
+                }
+            }
+
+            // Keep one provider-shaped assistant turn for the complete tool batch.
+            // Appending the cumulative assistant content once per tool duplicates
+            // earlier tool calls and makes the next request grow quadratically.
+            if (hasToolUse) {
+                messages.push({ role: 'assistant', content: assistantContent.slice() });
+                for (const result of toolResults) {
                     messages.push({
                         role: 'user',
-                        content: [{ type: 'tool_result', tool_use_id: id, content: result.output || JSON.stringify(result) }],
+                        content: [{ type: 'tool_result', ...result }],
                     });
                 }
             }
