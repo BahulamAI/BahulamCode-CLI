@@ -352,6 +352,13 @@ export class LocalAgent {
             if (Array.isArray(priorHistory)) {
                 priorHistory.splice(0, priorHistory.length, ...reduction.messages);
             }
+            if (reduction.usage) {
+                this.promptCache.updateStats(reduction.usage);
+                usageTotals.input_tokens += reduction.usage.input_tokens || 0;
+                usageTotals.output_tokens += reduction.usage.output_tokens || 0;
+                usageTotals.cache_read_tokens += reduction.usage.cache_read_input_tokens || 0;
+                usageTotals.cache_creation_tokens += reduction.usage.cache_creation_input_tokens || 0;
+            }
             yield { type: 'summarize', data: reduction.event };
         }
 
@@ -693,6 +700,7 @@ export class LocalAgent {
 
         const source = messages.slice(0, -preserve);
         let summary = null;
+        let summaryUsage = null;
         let appliedStrategy = config.strategy;
         const prompt = config.strategy === 'distillation'
             ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Keep it structured and concise. Do not invent facts.'
@@ -710,6 +718,7 @@ export class LocalAgent {
                 [],
                 this.summarizerModel,
             );
+            summaryUsage = response.usage || null;
             summary = response.content
                 ?.filter(block => block.type === 'text')
                 .map(block => block.text || '')
@@ -740,7 +749,9 @@ export class LocalAgent {
                 target_tokens: budget.targetTokens || null,
                 source: this.gatewayUrl ? 'gateway' : 'provider',
                 summary_preview: summary.replace(/^\[[^\]]+\]\s*/, '').split('\n', 1)[0].slice(0, 120),
+                summary_usage: summaryUsage,
             },
+            usage: summaryUsage,
         };
     }
 
