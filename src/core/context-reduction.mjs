@@ -12,9 +12,13 @@ export const SUMMARY_MARKER = '[Context summary — earlier conversation condens
 export const DISTILLATION_MARKER = '[Context distillation — active ingredients preserved]';
 
 const PRODUCT_POLICIES = Object.freeze({
-  chat: Object.freeze({ triggerRatio: 0.72, targetRatio: 0.48, preserve: 12, prune: 'aggressive' }),
-  ide: Object.freeze({ triggerRatio: 0.78, targetRatio: 0.52, preserve: 10, prune: 'conservative' }),
-  workspace: Object.freeze({ triggerRatio: 0.70, targetRatio: 0.45, preserve: 14, prune: 'protected' }),
+  // workingSetRatio is an optimization budget, not a provider hard limit.
+  // It scales with the selected model's usable context window so large
+  // models do not grow to their full capacity before we protect cache reuse
+  // and attention quality.
+  chat: Object.freeze({ triggerRatio: 0.72, targetRatio: 0.48, workingSetRatio: 0.18, preserve: 12, prune: 'aggressive' }),
+  ide: Object.freeze({ triggerRatio: 0.78, targetRatio: 0.52, workingSetRatio: 0.20, preserve: 10, prune: 'conservative' }),
+  workspace: Object.freeze({ triggerRatio: 0.70, targetRatio: 0.45, workingSetRatio: 0.16, preserve: 14, prune: 'protected' }),
 });
 
 export function contextProduct(product = 'ide') {
@@ -62,12 +66,15 @@ export function resolveContextBudget({
   const reservedOutput = output > 0 ? output : Math.floor(window * 0.10);
   const safety = Math.max(1024, Math.floor(window * 0.03));
   const usable = Math.max(20_000, window - reservedOutput - Math.max(0, fixedPromptTokens) - safety);
+  const workingSet = Math.max(20_000, Math.floor(usable * policy.workingSetRatio));
   return {
     ...policy,
-    threshold: Math.max(20_000, Math.floor(usable * policy.triggerRatio)),
-    targetTokens: Math.max(10_000, Math.floor(usable * policy.targetRatio)),
+    threshold: Math.max(20_000, Math.floor(workingSet * policy.triggerRatio)),
+    targetTokens: Math.max(10_000, Math.floor(workingSet * policy.targetRatio)),
     contextLength: window,
     reservedOutput,
+    usableTokens: usable,
+    workingSetTokens: workingSet,
     fixedPromptTokens: Math.max(0, fixedPromptTokens),
     source: 'model_catalog',
   };

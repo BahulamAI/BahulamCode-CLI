@@ -34,6 +34,16 @@ assert.equal(budget.source, 'model_catalog');
 assert.ok(budget.threshold > 0 && budget.threshold < 128_000);
 assert.equal(contextPolicy('workspace').preserve, 14);
 
+const flashBudget = resolveContextBudget({
+  product: 'ide',
+  model: 'deepseek/deepseek-v4-flash-0731',
+  fixedPromptTokens: 30_000,
+});
+assert.ok(flashBudget.contextLength > 1_000_000);
+assert.ok(flashBudget.threshold < 231_642,
+  `optimization trigger ${flashBudget.threshold} should precede a 231k-token turn`);
+assert.ok(flashBudget.threshold < flashBudget.usableTokens);
+
 const system = cacheableSystem('stable system prompt');
 const tools = cacheableTools([{ type: 'function', function: { name: 'read_file' } }]);
 const marked = withMessageBreakpoint([
