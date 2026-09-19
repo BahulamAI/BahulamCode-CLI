@@ -4475,7 +4475,7 @@ export async function startTerminalRepl() {
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
-  const runtimeMode = cliArgs.runtimeMode || 'local';
+  const runtimeMode = cliArgs.runtimeMode || 'remote';
   const gatewayUrl = resolveGatewayUrl();
   const localSessionId = `local_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
   const auth = new BahulamAuth();
