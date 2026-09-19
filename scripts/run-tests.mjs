@@ -71,6 +71,7 @@ const UNIT_TESTS = [
     'test/test-resume-append.mjs',
     'test/test-mcp.mjs',
     'test/test-followup-promote.mjs',
+    'test/test-plugin-lifecycle.mjs',
     'test/test-tool-error.mjs',
     'test/test-agent-trace.mjs',
 ];

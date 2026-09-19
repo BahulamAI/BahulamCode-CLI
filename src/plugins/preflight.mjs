@@ -249,6 +249,43 @@ export async function preflightPlugin(pluginDir, opts = {}) {
     else if (!/\.(html?|htm)$/i.test(source)) warnings.push(`View "${label}": source should be an .html file`);
   }
 
+  // 6b. Lifecycle hooks + migrations
+  const lifecycle = manifest.config?.lifecycle || null;
+  if (lifecycle) {
+    const checkHook = (ref, label) => {
+      if (!ref) return;
+      const abs = path.resolve(pluginDir, ref);
+      const inside = abs === pluginDir || abs.startsWith(pluginDir + path.sep);
+      if (!inside) errors.push(`Lifecycle ${label}: path escapes the plugin directory: ${ref}`);
+      else if (!fs.existsSync(abs)) errors.push(`Lifecycle ${label} hook not found: ${ref}`);
+      else if (!fs.statSync(abs).isFile()) errors.push(`Lifecycle ${label} hook is not a file: ${ref}`);
+      else if (!/\.(mjs|js|cjs)$/.test(ref)) warnings.push(`Lifecycle ${label} hook should be .mjs/.js/.cjs: ${ref}`);
+    };
+    checkHook(lifecycle.seed, 'seed');
+    checkHook(lifecycle.post_install, 'post_install');
+    checkHook(lifecycle.pre_uninstall, 'pre_uninstall');
+
+    const seenVersions = new Set();
+    for (const [i, m] of (lifecycle.migrations || []).entries()) {
+      const tag = `migration #${i + 1}${m.version ? ` (${m.version})` : ''}`;
+      if (!m.version) { errors.push(`${tag}: missing version`); continue; }
+      if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][\w.-]+)?$/.test(m.version)) {
+        warnings.push(`${tag}: version "${m.version}" is not semver — sort order may be unpredictable`);
+      }
+      if (seenVersions.has(m.version)) errors.push(`${tag}: duplicate version`);
+      seenVersions.add(m.version);
+      if (!m.sql && !m.run) errors.push(`${tag}: needs one of sql or run`);
+      if (m.sql && m.run) errors.push(`${tag}: only one of sql or run allowed`);
+      const target = m.sql || m.run;
+      if (target) {
+        const abs = path.resolve(pluginDir, target);
+        const inside = abs === pluginDir || abs.startsWith(pluginDir + path.sep);
+        if (!inside) errors.push(`${tag}: path escapes the plugin directory: ${target}`);
+        else if (!fs.existsSync(abs)) errors.push(`${tag}: file not found: ${target}`);
+      }
+    }
+  }
+
   // 7. Install collision
   const existing = new Set(
     Array.from(opts.existingPluginNames?.() || [])

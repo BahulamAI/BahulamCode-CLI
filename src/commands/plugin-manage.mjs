@@ -26,6 +26,8 @@ import { parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
 import { parsePiSource } from '../plugins/pi-compose.mjs';
 import { bahulamHome, pluginDirs, pluginInstallDir } from '../core/paths.mjs';
+import { runPreUninstall, runMigrations, runPostInstall, runSeed, purgeData, readLifecycleRecord } from '../plugins/lifecycle.mjs';
+import { makePluginState } from '../plugins/state.mjs';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -549,16 +551,116 @@ async function cmdList(args, cwd) {
 
 // ── remove ──────────────────────────────────────────────────────────
 
-function cmdRemove(args, cwd) {
+async function cmdRemove(args, cwd) {
   if (!args.pluginName) throw new Error('remove requires a plugin name');
   const found = findByName(args.pluginName, cwd);
   if (!found) throw new Error(`plugin not found: ${args.pluginName}`);
+
+  // Load the manifest first — if the plugin has a pre_uninstall hook, we
+  // must run it BEFORE deleting the plugin dir (hook code lives there).
+  const scan = readManifest(found.directory);
+  const manifest = scan?.manifest || null;
+  const pluginName = manifest?.metadata?.name || found.name;
+  const stateFactory = manifest ? () => makePluginState(pluginName, { tables: manifest.config?.state?.tables || [] }) : null;
+
+  let preHookResult = { keepData: null, warnings: [] };
+  if (manifest?.config?.lifecycle?.pre_uninstall) {
+    try {
+      const r = await runPreUninstall({ pluginName, pluginDir: found.directory, manifest, args, stateFactory });
+      preHookResult = r.result || {};
+      if (Array.isArray(preHookResult.warnings)) {
+        for (const w of preHookResult.warnings) process.stderr.write(`  ${YELLOW}!${RESET} ${w}\n`);
+      }
+    } catch (err) {
+      // The hook explicitly failed — that is often intentional
+      // ("cannot remove: there is unsaved work"). Do not proceed.
+      throw new Error(`pre_uninstall hook failed: ${err.message}. Uninstall aborted; nothing was removed.`);
+    }
+  }
+
+  // Decide the data-cleanup behavior. Precedence:
+  //   1. Explicit CLI flag: --purge → wipe; --keep-data → keep.
+  //   2. pre_uninstall hook result.keepData (bool).
+  //   3. TTY → interactive prompt (default keep).
+  //   4. Non-TTY (piped/CI) → keep, and print the exact --purge command.
+  const dataDir = path.join(bahulamHome(), 'data', pluginName);
+  const hasDataDir = fs.existsSync(dataDir);
+  let purgeChoice = null; // true = purge, false = keep
+  const reasons = [];
+  if (args.purge) { purgeChoice = true; reasons.push('--purge'); }
+  else if (args.keep_data) { purgeChoice = false; reasons.push('--keep-data'); }
+  else if (preHookResult && typeof preHookResult.keepData === 'boolean') {
+    purgeChoice = !preHookResult.keepData;
+    reasons.push(`pre_uninstall.keepData=${preHookResult.keepData}`);
+  } else if (hasDataDir && process.stdin.isTTY && process.stdout.isTTY) {
+    purgeChoice = await promptYesNo(
+      `Also delete state at ${dataDir}? [y/N] `,
+      false,
+    );
+    reasons.push(`prompt=${purgeChoice ? 'y' : 'n'}`);
+  } else {
+    purgeChoice = false;
+    if (hasDataDir) reasons.push('non-TTY default: keep-data');
+  }
+
+  // Remove the plugin directory.
   rmrf(found.directory);
+
+  // Purge or keep the data dir.
+  let purged = { purged: false, dir: dataDir };
+  if (purgeChoice && hasDataDir) {
+    purged = purgeData(pluginName);
+  }
+
   if (args.json) {
-    process.stdout.write(JSON.stringify({ ok: true, removed: found.name, directory: found.directory }) + '\n');
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      removed: found.name,
+      directory: found.directory,
+      data: {
+        kept: !purgeChoice,
+        purged: purged.purged,
+        directory: dataDir,
+        reason: reasons.join(' '),
+      },
+      pre_uninstall_ran: Boolean(manifest?.config?.lifecycle?.pre_uninstall),
+    }) + '\n');
     return;
   }
+
   process.stderr.write(`${GREEN}✓${RESET} Removed ${BOLD}${found.name}${RESET} (${found.directory})\n`);
+  if (purged.purged) {
+    process.stderr.write(`  ${DIM}data${RESET}      purged ${dataDir}\n`);
+  } else if (hasDataDir) {
+    process.stderr.write(
+      `  ${DIM}data${RESET}      kept ${dataDir}${reasons.length ? ` ${DIM}(${reasons.join(' ')})${RESET}` : ''}\n` +
+      `  ${DIM}To purge later:${RESET} ${CYAN}bahulam plugin remove ${found.name} --purge${RESET}` +
+      ` ${DIM}(plugin dir is gone; this variant only purges the data dir).${RESET}\n`,
+    );
+  }
+}
+
+/**
+ * Minimal yes/no prompt — no external deps. Reads a single line from
+ * stdin; empty answer takes the default.
+ */
+function promptYesNo(prompt, defaultAnswer) {
+  return new Promise((resolve) => {
+    try { process.stdout.write(prompt); } catch { /* ok */ }
+    let input = '';
+    const onData = (chunk) => {
+      input += chunk.toString();
+      const nl = input.indexOf('\n');
+      if (nl < 0) return;
+      process.stdin.removeListener('data', onData);
+      try { process.stdin.pause(); } catch { /* ok */ }
+      const answer = input.slice(0, nl).trim().toLowerCase();
+      if (!answer) return resolve(defaultAnswer);
+      resolve(answer === 'y' || answer === 'yes');
+    };
+    try { process.stdin.resume(); } catch { /* ok */ }
+    process.stdin.on('data', onData);
+  });
 }
 
 // ── enable / disable ────────────────────────────────────────────────
@@ -629,7 +731,15 @@ async function cmdUpdate(args, cwd) {
   const ref = args.ref || found.origin.ref;
   const subdir = found.origin.subdir;
   process.stderr.write(`${DIM}Updating ${found.name} from ${found.origin.url}${ref ? ` @ ${ref}` : ''}${subdir ? ` (subdir ${subdir})` : ''}...${RESET}\n`);
-  if (subdir) {
+
+  // --force wipes the plugin dir before the fetch so a stale local edit or
+  // corrupt install doesn't block the reset. Data dir is preserved.
+  if (args.force && !subdir) {
+    rmrf(found.directory);
+    fs.mkdirSync(found.directory, { recursive: true });
+    // Fresh clone into the empty dir.
+    await run('git', ['clone', '--depth', '1', ...(ref ? ['--branch', ref] : []), found.origin.url, found.directory]);
+  } else if (subdir) {
     // Monorepo: no .git in place, so re-fetch subdir contents into tmp
     // and rsync them over the install dir (preserves .bahulam-plugin.json).
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-plugin-'));
@@ -649,7 +759,29 @@ async function cmdUpdate(args, cwd) {
   }
   writeStamp(found.directory, { origin: { ...found.origin, ref: ref || found.origin.ref } });
   const scan = readManifest(found.directory);
-  process.stderr.write(`${GREEN}✓${RESET} Updated ${BOLD}${found.name}${RESET}${scan?.manifest?.metadata?.version ? ` to v${scan.manifest.metadata.version}` : ''}\n`);
+  const manifest = scan?.manifest;
+  process.stderr.write(`${GREEN}✓${RESET} Updated ${BOLD}${found.name}${RESET}${manifest?.metadata?.version ? ` to v${manifest.metadata.version}` : ''}\n`);
+
+  // Lifecycle: run pending migrations, then post_install. Seed does NOT
+  // re-run on update (it's a one-shot). If the update failed at
+  // migration time, the state DB is auto-restored via snapshot.
+  if (manifest) {
+    const pluginName = manifest.metadata?.name || found.name;
+    const stateFactory = () => makePluginState(pluginName, { tables: manifest.config?.state?.tables || [] });
+    try {
+      const migReport = await runMigrations({ pluginName, pluginDir: found.directory, manifest, stateFactory });
+      if (migReport.ran) process.stderr.write(`  ${DIM}migrations${RESET} ${migReport.ran} applied\n`);
+      const postReport = await runPostInstall({ pluginName, pluginDir: found.directory, manifest, args, stateFactory });
+      if (postReport.ran) process.stderr.write(`  ${DIM}post_install${RESET} ran\n`);
+      // Stamp last_upgrade_at
+      const rec = readLifecycleRecord(pluginName);
+      rec.last_upgrade_at = new Date().toISOString();
+      rec.installed_version = manifest.metadata?.version || rec.installed_version;
+      fs.writeFileSync(path.join(bahulamHome(), 'data', pluginName, '_bahulam_lifecycle.json'), JSON.stringify(rec, null, 2), 'utf-8');
+    } catch (err) {
+      throw new Error(`update completed but lifecycle failed: ${err.message}`);
+    }
+  }
 }
 
 // ── dispatcher ──────────────────────────────────────────────────────
@@ -832,7 +964,7 @@ export async function handlePluginManagementCommand(args, { cwd = process.cwd(),
     switch (args.action) {
       case 'validate': case 'check': case 'lint': await cmdValidate(args, cwd); return;
       case 'list': case 'ls': await cmdList(args, cwd); return;
-      case 'remove': case 'rm': case 'uninstall': cmdRemove(args, cwd); return;
+      case 'remove': case 'rm': case 'uninstall': await cmdRemove(args, cwd); return;
       case 'enable': toggle(args, cwd, true); return;
       case 'disable': toggle(args, cwd, false); return;
       case 'info': cmdInfo(args, cwd); return;
