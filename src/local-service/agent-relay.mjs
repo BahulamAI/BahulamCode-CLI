@@ -110,6 +110,9 @@ export class LocalAgentRelay {
     this.flushingFollowups = false;
     this.cancellationRequested = false;
     this.cancellationEventEmitted = false;
+    // Background-job nudge bookkeeping. See _onBackgroundJobFinished.
+    this._bgUnsubscribe = null;
+    this._bgNotifiedJobIds = new Set();
   }
 
   async listHistorySessions() {
@@ -471,10 +474,41 @@ export class LocalAgentRelay {
       err.code = 'BAD_REQUEST';
       throw err;
     }
+    // Promote-on-idle: if no turn is currently running, treat the
+    // follow-up as a fresh instruction and start a new turn. Fixes the
+    // "cancelled + typed continue → task ended, task wont resume" gap
+    // where the last turn was cancelled (or the last tool call was a
+    // fire-and-forget background job) and the client still routes input
+    // through the follow-up channel.
     if (!this.running || !this.client) {
-      const err = new Error('No running agent turn to follow up');
-      err.code = 'CONFLICT';
-      throw err;
+      const promotedId = `promoted-followup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      // Best-effort acknowledgement so panels can show "picked up where
+      // you left off" instead of a silent restart.
+      try {
+        this.emit('agent_followup_promoted', {
+          intervention_id: promotedId,
+          instruction: text.slice(0, 500),
+          reason: this.running ? 'client-not-initialized' : 'no-running-turn',
+        });
+      } catch { /* SSE failure must never block promotion */ }
+      // Fire and await runTurn; caller's HTTP handler expects a JSON
+      // reply, and we want to signal the promoted status regardless of
+      // how long the new turn takes to spin up.
+      const started = this.runTurn({ prompt: text }).catch((err) => {
+        try {
+          this.emit('agent_error', { turn_id: null, message: `promoted follow-up failed: ${err.message || String(err)}` });
+        } catch { /* ok */ }
+      });
+      // Do not block: return acknowledgement synchronously so the
+      // client can render immediately; the new turn's events stream
+      // over SSE as they normally do.
+      void started;
+      return {
+        ok: true,
+        status: 'promoted_to_new_turn',
+        intervention_id: promotedId,
+        task_id: null,
+      };
     }
 
     const item = {
@@ -530,6 +564,83 @@ export class LocalAgentRelay {
         priority: item.priority || 'high',
       });
     }
+  }
+
+  /**
+   * Background-task nudge — called by backgroundTasks.onExit when any
+   * shell-spawned job finishes. Filters:
+   *
+   *   - Skips jobs that declared an explicit `on_complete` target
+   *     (the caller opted into a specific trigger; nudging would be a
+   *     double dispatch).
+   *   - Skips user-killed jobs (killing signals "I'm done with it").
+   *   - Skips jobs whose cwd is outside this workspace (defensive —
+   *     lets the singleton be shared across processes without cross-talk).
+   *   - Idempotent: each job id nudges at most once.
+   *
+   * Routing:
+   *   - If a turn is running: append to pendingFollowups so the current
+   *     agent turn picks it up naturally at the next event tick.
+   *   - If idle: promote to a fresh runTurn — same path as the
+   *     followup-promote branch, so client behavior is uniform.
+   */
+  _onBackgroundJobFinished(jobDesc) {
+    if (!jobDesc || !jobDesc.id) return;
+    if (this._bgNotifiedJobIds.has(jobDesc.id)) return;
+    if (jobDesc.on_complete) return;
+    if (jobDesc.status === 'killed') return;
+    const ownRoot = this.session?.root_path || '';
+    const jobCwd = jobDesc.cwd || '';
+    if (ownRoot && jobCwd && !jobCwd.startsWith(ownRoot)) return;
+    this._bgNotifiedJobIds.add(jobDesc.id);
+
+    const instruction = this._buildBackgroundJobNudge(jobDesc);
+
+    try {
+      this.emit('agent_background_job_finished', {
+        job_id: jobDesc.id,
+        status: jobDesc.status,
+        exit_code: jobDesc.exit_code,
+        duration_s: jobDesc.duration_s,
+        command: (jobDesc.command || '').slice(0, 240),
+        will_nudge: true,
+      });
+    } catch { /* SSE failure must never block the nudge */ }
+
+    const idempotencyKey = `bg-nudge-${jobDesc.id}`;
+    if (this.running && this.client) {
+      this.pendingFollowups.push({
+        instruction,
+        role: 'user',
+        messageType: 'background_job_nudge',
+        priority: 'normal',
+        idempotencyKey,
+      });
+      // If the runtime is already draining events, flush now; else the
+      // next tool_result cycle will do it.
+      this._flushQueuedFollowups().catch(() => { /* best-effort */ });
+      return;
+    }
+    // Idle — promote a fresh turn.
+    this.runTurn({ prompt: instruction }).catch((err) => {
+      try { this.emit('agent_error', { turn_id: null, message: `bg nudge turn failed: ${err.message || String(err)}` }); }
+      catch { /* ok */ }
+    });
+  }
+
+  _buildBackgroundJobNudge(job) {
+    const tailLines = String(job.tail || '').split('\n').slice(-20).join('\n');
+    const parts = [
+      `Background job \`${job.id}\` finished (status=${job.status}, exit=${job.exit_code}, duration ${job.duration_s}s).`,
+      `Command: ${job.command}`,
+    ];
+    if (tailLines) {
+      parts.push('Recent output:\n```\n' + tailLines + '\n```');
+    } else {
+      parts.push('(no output captured)');
+    }
+    parts.push('Continue from here.');
+    return parts.join('\n\n');
   }
 
   async _sendFollowupNow(item) {
@@ -598,6 +709,21 @@ export class LocalAgentRelay {
     // same as a terminal launched from that workspace.
     if (this.session.root_path && process.cwd() !== this.session.root_path) {
       process.chdir(this.session.root_path);
+    }
+
+    // Background-task nudge: subscribe once so a `shell {run_in_background:true}`
+    // that finishes AFTER the user cancelled the turn (or after the turn
+    // that started it completed) doesn't die in silence. See
+    // _onBackgroundJobFinished for the routing rules.
+    if (!this._bgUnsubscribe) {
+      const { backgroundTasks } = await import('../core/background-tasks.mjs');
+      this._bgUnsubscribe = backgroundTasks.onExit((jobDesc) => {
+        try { this._onBackgroundJobFinished(jobDesc); }
+        catch (err) {
+          try { this.emit('agent_error', { turn_id: null, message: `bg nudge handler failed: ${err.message || String(err)}` }); }
+          catch { /* ok */ }
+        }
+      });
     }
 
     const { PluginRegistry } = await import('../plugins/registry.mjs');
