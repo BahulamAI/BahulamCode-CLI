@@ -325,6 +325,30 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  // Trace export — one JSONL line per tool call with FULL args / output /
+  // error / stack (no eliding). Pass ?turns=1 to also stream user +
+  // assistant messages (as separate lines with role="turn") for
+  // correlation.
+  if (req.method === 'GET' && url.pathname === '/api/trace/export') {
+    const relay = getAgentRelay(session);
+    const includeTurns = url.searchParams.get('turns') === '1' || url.searchParams.get('turns') === 'true';
+    const data = relay.fullTrace({ includeTurns });
+    const filename = `trace-${session.id || 'session'}-${Date.now()}.jsonl`;
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'no-store',
+    });
+    if (includeTurns) {
+      for (const t of data.turns || []) res.write(JSON.stringify({ role: 'turn', ...t }) + '\n');
+      for (const e of data.trace || []) res.write(JSON.stringify({ role: 'tool', ...e }) + '\n');
+    } else {
+      for (const e of data || []) res.write(JSON.stringify(e) + '\n');
+    }
+    res.end();
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/chat/sessions') {
     const relay = getAgentRelay(session);
     const historySessions = await relay.listHistorySessions();

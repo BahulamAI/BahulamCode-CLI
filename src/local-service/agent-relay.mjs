@@ -113,6 +113,10 @@ export class LocalAgentRelay {
     // Background-job nudge bookkeeping. See _onBackgroundJobFinished.
     this._bgUnsubscribe = null;
     this._bgNotifiedJobIds = new Set();
+    // Trace: per-call_id start-time cache for computing duration on tool_result.
+    // Keyed by call_id | request_id. Cleaned up on tool_result.
+    this._pendingToolCalls = new Map();
+    this._traceSeq = 0;
   }
 
   async listHistorySessions() {
@@ -129,6 +133,24 @@ export class LocalAgentRelay {
     return this._historySnapshot();
   }
 
+  /**
+   * Return full trace entries (unelided args/output/errors) for
+   * /api/trace/export. One entry per tool call. Pass includeTurns=true
+   * to also include user/assistant turns so exports can be correlated.
+   */
+  fullTrace({ includeTurns = false } = {}) {
+    const trace = fullTraceEntries(this.displayHistory);
+    if (!includeTurns) return trace;
+    const turns = this.displayHistory
+      .filter(e => e?.role === 'user' || e?.role === 'assistant')
+      .map(e => ({
+        role: e.role,
+        timestamp: e.timestamp || null,
+        content: typeof e.content === 'string' ? e.content : JSON.stringify(e.content ?? ''),
+      }));
+    return { turns, trace };
+  }
+
   async startNewHistory() {
     if (this.running) {
       const err = new Error('A local agent turn is already running for this workspace');
@@ -140,6 +162,8 @@ export class LocalAgentRelay {
     this.turnCount = 0;
     this.displayHistory = [];
     this.agentHistory = [];
+    this._pendingToolCalls.clear();
+    this._traceSeq = 0;
     this.jsonlWriter = null;
     if (this.client) {
       this.client.sessionId = null;
@@ -291,6 +315,7 @@ export class LocalAgentRelay {
           const data = event.data || {};
           turnHistory.addToolUse(data);
           writer.accumulateToolCall(data.call_id || data.request_id, data.tool || data.name, data.args || data.input);
+          this._traceRecordCall(data);
         }
 
         if (event.type === 'tool_done' || event.type === 'tool_result') {
@@ -302,6 +327,7 @@ export class LocalAgentRelay {
             data.success === false || data.is_error,
             data,
           );
+          this._traceRecordResult(data);
         }
 
         if (event.type === 'complete') {
@@ -952,6 +978,68 @@ export class LocalAgentRelay {
     return lines.join('\n');
   }
 
+  // ── Trace ────────────────────────────────────────────────────────
+  // Two entry points fire for every tool: _traceRecordCall on
+  // tool_call / tool_request, _traceRecordResult on tool_result /
+  // tool_done. Together they populate displayHistory with role:'tool'
+  // rows carrying { id, ts, tool, plugin, args, status, output, error?,
+  // duration_ms, sub_agent?, call_id, parent_id?, kind }. The compact
+  // view is derived from these; the full data is written verbatim to
+  // the transcript writer for /api/trace/export.
+
+  _traceRecordCall(data) {
+    const callId = data.call_id || data.request_id || data.tool_id || `call_${++this._traceSeq}`;
+    const startTs = Date.now();
+    this._pendingToolCalls.set(callId, {
+      startTs,
+      tool: data.tool || data.name || '',
+      plugin: data.plugin || data._plugin || null,
+      args: data.args || data.input || {},
+      sub_agent: data.sub_agent || null,
+      parent_id: data.parent_id || data.parent_call_id || null,
+    });
+  }
+
+  _traceRecordResult(data) {
+    const callId = data.call_id || data._callId || data.request_id || data.id || data.tool_use_id;
+    const pending = callId ? this._pendingToolCalls.get(callId) : null;
+    if (callId) this._pendingToolCalls.delete(callId);
+
+    const startTs = pending?.startTs || Date.now();
+    const endTs = Date.now();
+    const durationMs = data.duration_ms || (endTs - startTs);
+    const isError = data.success === false || data.is_error === true || Boolean(data.error);
+
+    // Prefer the structured error envelope from normalizeToolResult if present.
+    const errEnvelope = data.error && typeof data.error === 'object' && data.error.code
+      ? {
+          code: String(data.error.code || 'UNKNOWN'),
+          message: String(data.error.message || data.output || ''),
+          ...(data.error.hint ? { hint: String(data.error.hint) } : {}),
+          ...(process.env.DEBUG && data.error.stack ? { stack: String(data.error.stack) } : {}),
+        }
+      : (isError
+          ? { code: 'UNKNOWN', message: typeof data.output === 'string' ? data.output : (data.message || 'Tool call failed.') }
+          : null);
+
+    this.displayHistory.push({
+      role: 'tool',
+      kind: isError ? 'error' : 'result',
+      tool: pending?.tool || data.tool || data.name || '',
+      plugin: pending?.plugin || data.plugin || data._plugin || null,
+      call_id: callId || null,
+      parent_id: pending?.parent_id || null,
+      sub_agent: pending?.sub_agent || data.sub_agent || null,
+      args: pending?.args || data.args || {},
+      output: data.output ?? data.result ?? data.message ?? '',
+      error: errEnvelope,
+      status: isError ? 'error' : 'ok',
+      duration_ms: durationMs,
+      timestamp: new Date(endTs).toISOString(),
+      order: this.displayHistory.length,
+    });
+  }
+
   _historySnapshot() {
     return {
       ok: true,
@@ -1166,15 +1254,73 @@ function browserMessages(history = []) {
     }));
 }
 
-function browserTraceItems(history = []) {
+// Compact trace summary for the panel — full data lives on the
+// history entry itself (available via /api/trace/export).
+//
+// Handles two entry shapes:
+//   1. Live entries pushed by _traceRecordResult (single row per round-trip,
+//      with kind: 'result'|'error', args, output, error, duration_ms).
+//   2. Resume entries built by local-store.buildResumeHistory (separate
+//      rows per tool_call and tool_result, with kind: 'call'|'result',
+//      only `content` populated).
+//
+// The `type` field preserves the historical `history_tool_<kind>` shape
+// so consumers can distinguish call vs. result vs. error rows without
+// knowing which pipeline produced them.
+export function browserTraceItems(history = []) {
+  return history
+    .filter((entry) => entry?.role === 'tool')
+    .map((entry) => {
+      const kind = entry.kind || (entry.status === 'error' ? 'error' : 'result');
+      const isLive = entry.call_id != null || entry.args !== undefined || entry.error !== undefined;
+      const base = {
+        type: `history_tool_${kind}`,
+        timestamp: entry.timestamp || null,
+        tool: entry.tool || null,
+        kind,
+      };
+      if (!isLive) {
+        // Resume entry — surface content as-is for backward compat.
+        return { ...base, content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || '') };
+      }
+      return {
+        ...base,
+        id: entry.call_id || null,
+        parent_id: entry.parent_id || null,
+        plugin: entry.plugin || null,
+        status: entry.status || (kind === 'error' ? 'error' : 'ok'),
+        duration_ms: entry.duration_ms ?? null,
+        args_summary: elide(typeof entry.args === 'string' ? entry.args : JSON.stringify(entry.args ?? {}), 320),
+        output_summary: elide(typeof entry.output === 'string' ? entry.output : JSON.stringify(entry.output ?? ''), 320),
+        error: entry.error
+          ? { code: entry.error.code, message: elide(entry.error.message, 220), hint: entry.error.hint || null }
+          : null,
+        sub_agent: entry.sub_agent || null,
+      };
+    });
+}
+
+function elide(text, max = 320) {
+  const s = typeof text === 'string' ? text : JSON.stringify(text ?? '');
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+// Full trace entries (unelided) for /api/trace/export.
+export function fullTraceEntries(history = []) {
   return history
     .filter((entry) => entry?.role === 'tool')
     .map((entry) => ({
-      type: `history_tool_${entry.kind || 'event'}`,
+      id: entry.call_id || null,
+      parent_id: entry.parent_id || null,
       timestamp: entry.timestamp || null,
       tool: entry.tool || null,
-      kind: entry.kind || null,
-      content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || ''),
+      plugin: entry.plugin || null,
+      status: entry.status || (entry.kind === 'error' ? 'error' : 'ok'),
+      duration_ms: entry.duration_ms ?? null,
+      args: entry.args ?? null,
+      output: entry.output ?? null,
+      error: entry.error || null,
+      sub_agent: entry.sub_agent || null,
     }));
 }
 
