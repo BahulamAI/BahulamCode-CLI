@@ -1,12 +1,13 @@
 /**
  * Mode Selector
  *
- * remote (default): All requests go to Bahulam backend.
+ * local (default): CLI-side orchestration via Bahulam Gateway.
+ *   The npm process runs the ReAct loop and tool execution; model
+ *   calls route through the gateway. Requires `bahulam login`.
+ *
+ * remote: All requests go to Bahulam backend.
  *   Backend handles orchestration, model selection, tool routing.
  *   User's provider and models configured via web Settings page.
- *
- * local: For local LLMs (Ollama, LM Studio, etc.)
- *   Direct API call, no backend. Only when user explicitly opts in.
  */
 
 let _probeCache = { available: null, timestamp: 0 };
