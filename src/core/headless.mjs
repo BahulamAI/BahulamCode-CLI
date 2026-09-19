@@ -54,7 +54,7 @@ import {
  */
 export async function runHeadless({ instruction, model, timeout = 300, maxCost, verbose = false, cacheReport = null, local = false, mode = null, vision = [], agent = null, workflow = null }) {
     const startTime = Date.now();
-    const runtimeMode = mode || (local ? 'local' : 'remote');
+    const runtimeMode = mode || 'local';
     const cliLocal = runtimeMode === 'local' || runtimeMode === 'direct';
 
     const log = (msg) => {
