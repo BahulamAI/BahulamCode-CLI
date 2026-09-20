@@ -41,6 +41,7 @@ export class AgentHistoryTurnBuilder {
         this.assistantBlocks = [];
         this.toolUseIds = new Set();
         this.toolResultIds = new Set();
+        this.pendingUserMessages = [];
     }
 
     addAssistantText(text) {
@@ -90,7 +91,20 @@ export class AgentHistoryTurnBuilder {
             }],
         });
         this.toolResultIds.add(id);
+        this.flushUserMessages();
         return true;
+    }
+
+    addUserMessage(text) {
+        this.pendingUserMessages.push({ role: 'user', content: asString(text) });
+        this.flushUserMessages();
+    }
+
+    flushUserMessages() {
+        if ([...this.toolUseIds].some(id => !this.toolResultIds.has(id))) return;
+        if (!this.pendingUserMessages.length) return;
+        this.flushAssistant();
+        this.messages.push(...this.pendingUserMessages.splice(0));
     }
 
     flushAssistant() {
@@ -106,6 +120,7 @@ export class AgentHistoryTurnBuilder {
 
     finish() {
         this.flushAssistant();
+        this.flushUserMessages();
         return this.messages;
     }
 }

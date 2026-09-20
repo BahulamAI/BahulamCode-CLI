@@ -236,7 +236,9 @@ try {
     assert.match(html, /Bahulam/);
     assert.match(html, /Cloud IDE/);
     assert.match(html, /src="\/assets\/bahulam-mark\.png"/);
-    assert.match(html, /Subscriptions/);
+    assert.match(html, /Local workspace/);
+    assert.match(html, /aria-label="Search workspace files"/);
+    assert.match(html, /--ws-primary:#303BA0/);
     assert.match(html, /CLI login needed/);
     assert.match(html, /id="approvalAuto"/);
     assert.match(html, /Auto off/);

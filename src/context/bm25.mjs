@@ -36,7 +36,13 @@ export class BM25Index {
     buildIndex(documents) {
         this.docs = [];
         this.df = new Map();
-        for (const doc of documents) {
+        // Keep the index stable when callers discover files in a different order.
+        const orderedDocuments = [...documents].sort((a, b) => {
+            const aId = String(a.id);
+            const bId = String(b.id);
+            return aId < bId ? -1 : aId > bId ? 1 : 0;
+        });
+        for (const doc of orderedDocuments) {
             this.addDocument(doc.id, doc.text);
         }
     }
@@ -44,7 +50,8 @@ export class BM25Index {
     /** Search for query, return top-K results sorted by BM25 score. */
     search(query, topK = 10) {
         const queryTokens = BM25Index.tokenize(query);
-        if (queryTokens.length === 0) return [];
+        const limit = Number.isFinite(Number(topK)) ? Math.max(0, Math.floor(Number(topK))) : 10;
+        if (queryTokens.length === 0 || limit === 0 || this.N === 0 || this.avgDl <= 0) return [];
 
         const scores = [];
 
@@ -61,7 +68,12 @@ export class BM25Index {
             if (score > 0) scores.push({ id: doc.id, score });
         }
 
-        return scores.sort((a, b) => b.score - a.score).slice(0, topK);
+        return scores.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            const aId = String(a.id);
+            const bId = String(b.id);
+            return aId < bId ? -1 : aId > bId ? 1 : 0;
+        }).slice(0, limit);
     }
 
     /** Serialize index to JSON. */
@@ -69,7 +81,7 @@ export class BM25Index {
         return {
             k1: this.k1, b: this.b, N: this.N, avgDl: this.avgDl,
             docs: this.docs.map(d => ({ id: d.id, tf: Object.fromEntries(d.tf), length: d.length })),
-            df: Object.fromEntries(this.df),
+            df: Object.fromEntries([...this.df.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
         };
     }
 
@@ -78,8 +90,12 @@ export class BM25Index {
         const idx = new BM25Index(data.k1, data.b);
         idx.N = data.N;
         idx.avgDl = data.avgDl;
-        idx.df = new Map(Object.entries(data.df));
-        idx.docs = data.docs.map(d => ({ id: d.id, tf: new Map(Object.entries(d.tf)), length: d.length }));
+        idx.df = new Map(Object.entries(data.df).map(([term, count]) => [term, Number(count)]));
+        idx.docs = data.docs.map(d => ({
+            id: d.id,
+            tf: new Map(Object.entries(d.tf).map(([term, count]) => [term, Number(count)])),
+            length: d.length,
+        }));
         return idx;
     }
 }

@@ -24,12 +24,12 @@
 import { paint, width as visibleWidth } from './palette.mjs';
 import { toolFamily } from './icons.mjs';
 import { term } from './term.mjs';
+import { wrapCode } from './code-layout.mjs';
+import { renderFileDiffs } from './diff.mjs';
+import { renderCommandHead, renderCommandResult, toolSource } from './command-card.mjs';
 import {
   toolDisplayLabel,
   toolDisplaySummary,
-  formatShellCommand,
-  shellCommandDisplay,
-  shellCommandProfile,
 } from '../terminal/tool-display.mjs';
 
 // ── Family → label colorizer ─────────────────────────────────────────────
@@ -50,26 +50,8 @@ function paintLabel(tool, label) {
 function formatArgs(tool, args, cwd) {
   const summary = toolDisplaySummary(tool, args || {}, { cwd });
   if (!summary) return '';
-  if (tool === 'shell') {
-    const profile = shellCommandProfile(summary, { cwd });
-    if (profile.compact) return compactShellProfile(profile);
-    const display = shellCommandDisplay(summary, { cwd });
-    const command = `${paint.text.dim('$')} ${formatShellCommand(display.command, paintShellAdapter)}`;
-    return display.cwdLabel
-      ? `${command} ${paint.text.dim('in')} ${paint.brand.data(display.cwdLabel)}`
-      : command;
-  }
   return paint.text.muted(summary);
 }
-
-// Adapter so formatShellCommand (from legacy tool-display.mjs) keeps working
-// against the new palette. It expects an object with .red/.blue/.yellow/.white.
-const paintShellAdapter = {
-  red:    (s) => paint.state.danger(s),
-  blue:   (s) => paint.brand.data(s),
-  yellow: (s) => paint.state.warn(s),
-  white:  (s) => paint.text.primary(s),
-};
 
 // ── Result → outcome summary ─────────────────────────────────────────────
 
@@ -244,183 +226,8 @@ function summarizeJsonOutput(value) {
   };
 }
 
-export function formatCompactFileDiff(result, {
-  indent = '  ',
-  maxLines = Infinity,
-  maxFiles = Infinity,
-  columns = term().columns || 120,
-  showFileHeader = false,
-} = {}) {
-  const diffs = fileDiffs(result)
-    .map(normalizeFileDiff)
-    .filter(diff => diff && (diff.redacted || diff?.hunks?.length));
-  if (!diffs.length) return '';
-
-  const out = [];
-  let shown = 0;
-  let truncated = false;
-  const lineLimit = Number.isFinite(maxLines) ? Math.max(0, Math.floor(maxLines)) : Infinity;
-  const fileLimit = Number.isFinite(maxFiles) ? Math.max(0, Math.floor(maxFiles)) : diffs.length;
-  const lineBudget = Math.max(40, columns - visibleWidth(indent) - 4);
-
-  for (const diff of diffs.slice(0, fileLimit)) {
-    if (showFileHeader || diffs.length > 1) {
-      if (shown >= lineLimit) { truncated = true; break; }
-      out.push(`${indent}${paint.brand.primary(diff.relative_path || diff.path || 'file')} ${paint.text.dim(diffDelta(diff))}`);
-      shown++;
-    }
-
-    if (diff.redacted) {
-      if (shown >= lineLimit) { truncated = true; break; }
-      const subject = (showFileHeader || diffs.length > 1)
-        ? ''
-        : `${[diff.relative_path || diff.path || 'file', diffDelta(diff)].filter(Boolean).join(' ')} · `;
-      out.push(`${indent}${paint.text.dim(`${subject}diff redacted for sensitive config`)}`);
-      shown++;
-      continue;
-    }
-
-    for (const hunk of diff.hunks || []) {
-      if (shown >= lineLimit) { truncated = true; break; }
-      out.push(`${indent}${paint.text.dim(`@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`)}`);
-      shown++;
-
-      for (const line of hunk.lines || []) {
-        if (shown >= lineLimit) { truncated = true; break; }
-        out.push(`${indent}${paintDiffLine(line, lineBudget)}`);
-        shown++;
-      }
-      if (truncated) break;
-    }
-    if (truncated) break;
-  }
-
-  if (diffs.length > fileLimit) truncated = true;
-  if (truncated) out.push(`${indent}${paint.text.dim('… diff preview truncated; use /last to expand')}`);
-  return out.join('\n');
-}
-
-function fileDiffs(result) {
-  if (!result) return [];
-  if (Array.isArray(result.file_diffs)) return result.file_diffs;
-  if (result.file_diff) return [result.file_diff];
-  if (result.type === 'file_diff' || result.hunks || result.unified) return [result];
-  return [];
-}
-
-function normalizeFileDiff(diff) {
-  if (!diff) return null;
-  return {
-    ...diff,
-    hunks: normalizeHunks(diff),
-  };
-}
-
-function normalizeHunks(diff) {
-  if (Array.isArray(diff?.hunks) && diff.hunks.length) {
-    return diff.hunks.map(normalizeHunk).filter(hunk => hunk.lines.length);
-  }
-  if (diff?.unified) return parseUnifiedHunks(diff.unified);
-  return [];
-}
-
-function normalizeHunk(hunk = {}) {
-  const lines = Array.isArray(hunk.lines)
-    ? hunk.lines.map(normalizeDiffLine).filter(Boolean)
-    : typeof hunk.body === 'string'
-      ? parseDiffBody(hunk.body)
-      : [];
-  const oldCount = hunk.old_count ?? hunk.old_lines ?? hunk.oldCount ?? countDiffLines(lines, 'old');
-  const newCount = hunk.new_count ?? hunk.new_lines ?? hunk.newCount ?? countDiffLines(lines, 'new');
-  return {
-    ...hunk,
-    old_start: hunk.old_start ?? hunk.oldStart ?? 1,
-    old_count: oldCount,
-    new_start: hunk.new_start ?? hunk.newStart ?? 1,
-    new_count: newCount,
-    lines,
-  };
-}
-
-function normalizeDiffLine(line) {
-  if (typeof line === 'string') return parseUnifiedLine(line);
-  if (!line || typeof line !== 'object') return null;
-  const rawType = String(line.type || line.kind || '').toLowerCase();
-  const text = String(line.text ?? line.content ?? line.value ?? '');
-  if (rawType === 'add' || rawType === 'added' || rawType === '+') return { ...line, type: 'add', text };
-  if (rawType === 'remove' || rawType === 'removed' || rawType === 'delete' || rawType === '-') return { ...line, type: 'remove', text };
-  if (rawType === 'context' || rawType === 'same' || rawType === ' ') return { ...line, type: 'context', text };
-  return parseUnifiedLine(text);
-}
-
-function parseDiffBody(body) {
-  return String(body || '')
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .filter(line => line && !line.startsWith('@@'))
-    .map(parseUnifiedLine)
-    .filter(Boolean);
-}
-
-function parseUnifiedHunks(unified) {
-  const hunks = [];
-  let current = null;
-  for (const raw of String(unified || '').replace(/\r\n?/g, '\n').split('\n')) {
-    if (raw.startsWith('--- ') || raw.startsWith('+++ ')) continue;
-    const header = raw.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
-    if (header) {
-      current = {
-        old_start: Number(header[1]) || 1,
-        old_count: Number(header[2] || 1),
-        new_start: Number(header[3]) || 1,
-        new_count: Number(header[4] || 1),
-        lines: [],
-      };
-      hunks.push(current);
-      continue;
-    }
-    if (!current) {
-      if (!raw || (!raw.startsWith('+') && !raw.startsWith('-') && !raw.startsWith(' '))) continue;
-      current = { old_start: 1, old_count: 0, new_start: 1, new_count: 0, lines: [] };
-      hunks.push(current);
-    }
-    const line = parseUnifiedLine(raw);
-    if (line) current.lines.push(line);
-  }
-  for (const hunk of hunks) {
-    if (!hunk.old_count) hunk.old_count = countDiffLines(hunk.lines, 'old');
-    if (!hunk.new_count) hunk.new_count = countDiffLines(hunk.lines, 'new');
-  }
-  return hunks.filter(hunk => hunk.lines.length);
-}
-
-function parseUnifiedLine(raw) {
-  const line = String(raw ?? '');
-  if (!line && raw !== '') return null;
-  if (line.startsWith('+') && !line.startsWith('+++')) return { type: 'add', text: line.slice(1) };
-  if (line.startsWith('-') && !line.startsWith('---')) return { type: 'remove', text: line.slice(1) };
-  if (line.startsWith(' ')) return { type: 'context', text: line.slice(1) };
-  return { type: 'context', text: line };
-}
-
-function countDiffLines(lines, side) {
-  return lines.filter(line => {
-    if (side === 'old') return line.type !== 'add';
-    return line.type !== 'remove';
-  }).length;
-}
-
-function paintDiffLine(line, maxWidth) {
-  const text = truncatePlain(String(line?.text ?? ''), Math.max(20, maxWidth - 2));
-  if (line?.type === 'add') return paint.state.success(`+ ${text}`);
-  if (line?.type === 'remove') return paint.state.danger(`- ${text}`);
-  return paint.text.dim(`  ${text}`);
-}
-
-function truncatePlain(text, max) {
-  if (text.length <= max) return text;
-  if (max <= 1) return '';
-  return text.slice(0, max - 1) + '…';
+export function formatCompactFileDiff(result, options = {}) {
+  return renderFileDiffs(result, { showFileHeader: false, ...options });
 }
 
 function firstOutputLine(data) {
@@ -570,6 +377,7 @@ function tone(text, t) {
  * Width-aware: truncates args from the left when the line would overflow.
  */
 export function formatCardHead(tool, args, opts = {}) {
+  if (tool === 'shell') return renderCommandHead(args, { ...opts, indent: opts.indent ?? '  ' });
   const cwd = opts.cwd || safeCwd();
   const cols = opts.columns || term().columns || 120;
   const indent = opts.indent ?? (tool === 'shell' ? '' : '  ');
@@ -581,59 +389,16 @@ export function formatCardHead(tool, args, opts = {}) {
   const leadVisible = visibleWidth(`${indent}${leadText}`);
   const budget = Math.max(20, cols - leadVisible - 4);
 
-  if (tool === 'shell') {
-    const profile = shellCommandProfile(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
-    if (profile.compact) {
-      const head = `${indent}${leadText}`;
-      if (profile.preview) {
-        const fullArgs = compactShellProfile(profile);
-        if (visibleWidth(fullArgs) <= budget) return `${head} ${fullArgs}`;
-        const previewTail = `${paint.text.dim(' · preview:')} ${paint.text.primary(profile.preview)}`;
-        const baseArgs = compactShellProfile(profile, { includePreview: false, includeDetails: false });
-        const baseBudget = budget - visibleWidth(previewTail);
-        if (baseBudget >= 12) {
-          const baseTruncated = truncateEndVisible(baseArgs, baseBudget);
-          return `${head} ${baseTruncated}${previewTail}`;
-        }
-      }
-      const argsTruncated = truncateMiddle(argsText, budget);
-      return argsTruncated ? `${head} ${argsTruncated}` : head;
-    }
-  }
-
-  if (tool === 'shell' && visibleWidth(argsText) > budget) {
-    const wrapWidth = Math.max(32, cols - visibleWidth(indent) - 4);
-    const display = shellCommandDisplay(toolDisplaySummary(tool, args || {}, { cwd }), { cwd });
-    const commandLines = wrapCommand(display.command, wrapWidth)
-      .map((line, index) => `${indent}${paint.text.dim(index === 0 ? '$ ' : '> ')}${formatShellCommand(line, paintShellAdapter)}`);
-    const head = `${indent}${leadText}`;
-    const cwdLine = display.cwdLabel
-      ? `\n${indent}${paint.text.dim('  in ')}${paint.brand.data(display.cwdLabel)}`
-      : '';
-    return `${head}\n${commandLines.join('\n')}${cwdLine}`;
-  }
-
   const argsTruncated = truncateMiddle(argsText, budget);
 
   const head = `${indent}${leadText}`;
-  return argsTruncated ? `${head} ${argsTruncated}` : head;
+  const body = argsTruncated ? `${head} ${argsTruncated}` : head;
+  return opts.source ? body + '\n' + wrapCode('Source: ' + opts.source, paint.text.muted, { columns: cols, indent }) : body;
 }
 
 function formatHeadLead(tool, label) {
   if (tool !== 'shell') return paintLabel(tool, label);
   return `${paint.text.dim('• shell ·')} ${paintLabel(tool, label)}`;
-}
-
-function compactShellProfile(profile, { includePreview = true, includeDetails = true } = {}) {
-  const previewSuffix = profile.preview ? ` · preview: ${profile.preview}` : '';
-  const summary = previewSuffix && profile.summary.endsWith(previewSuffix)
-    ? profile.summary.slice(0, -previewSuffix.length)
-    : profile.summary;
-  const parts = [`${paint.text.dim('$')} ${paint.text.primary(summary)}`];
-  if (profile.cwdLabel) parts.push(`${paint.text.dim('in')} ${paint.brand.data(profile.cwdLabel)}`);
-  if (includeDetails) parts.push(paint.text.dim(profile.detailHint || 'details: F2 or /last'));
-  if (includePreview && profile.preview) parts.push(`${paint.text.dim('preview:')} ${paint.text.primary(profile.preview)}`);
-  return parts.join(' · ');
 }
 
 /**
@@ -646,7 +411,8 @@ function compactShellProfile(profile, { includePreview = true, includeDetails = 
  */
 export function formatCard({ tool, args, result, durationMs, indent, columns, cwd } = {}) {
   const cols = columns || term().columns || 120;
-  const head = formatCardHead(tool, args, { indent, columns: cols, cwd });
+  const head = formatCardHead(tool, args, { indent, columns: cols, cwd, source: toolSource(result) });
+  if (tool === 'shell') return head + '\n' + renderCommandResult(result, { args, columns: cols, indent: (indent ?? '  ') + '  ', durationMs, summary: summarizeResult(tool, result, args) });
 
   const summary = summarizeResult(tool, result, args);
   const duration = formatDuration(durationMs ?? result?.duration_ms ?? (result?.duration_s != null ? result.duration_s * 1000 : null));
@@ -722,41 +488,6 @@ function truncateEndVisible(text, max) {
   return paint.text.muted(`${plain.slice(0, limit - 1)}…`);
 }
 
-function wrapCommand(command, width) {
-  const text = String(command || '');
-  if (!text) return ['(empty command)'];
-  const lines = [];
-  for (const physicalLine of text.replace(/\r\n?/g, '\n').split('\n')) {
-    let line = '';
-    for (const token of physicalLine.match(/\S+\s*/g) || [physicalLine]) {
-      const next = line + token;
-      if (line && visibleWidth(next.trimEnd()) > width) {
-        lines.push(line.trimEnd());
-        line = token;
-        continue;
-      }
-      if (!line && visibleWidth(token.trimEnd()) > width) {
-        lines.push(...chunkLongToken(token.trimEnd(), width));
-        line = '';
-        continue;
-      }
-      line = next;
-    }
-    if (line.trimEnd()) lines.push(line.trimEnd());
-    else if (!physicalLine.trim()) lines.push('');
-  }
-  return lines.length ? lines : ['(empty command)'];
-}
-
-function chunkLongToken(token, width) {
-  const chunks = [];
-  const size = Math.max(8, width);
-  for (let i = 0; i < token.length; i += size) {
-    chunks.push(token.slice(i, i + size));
-  }
-  return chunks;
-}
-
 function formatDuration(ms) {
   if (ms == null || !Number.isFinite(ms)) return '';
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -776,14 +507,19 @@ const _cards = [];
  * Record a card by its call_id (or generated id). Returns the stored entry.
  * The entry is updated in place when the matching result arrives.
  */
-export function recordCard({ id, tool, args, head, result, durationMs, startedAt }) {
-  const entry = { id, tool, args, head, result: result || null, durationMs: durationMs ?? null, startedAt: startedAt ?? null };
+export function recordCard({ id, tool, args, head, result, durationMs, startedAt, source, cwd }) {
+  // Result events often omit invocation fields. Missing values must not
+  // erase the original command, context, source or start time.
+  const entry = Object.fromEntries(Object.entries({ id, tool, args, head, result, durationMs, startedAt, source, cwd }).filter(([, value]) => value !== undefined));
   // Replace if same id already exists (e.g. tool_call followed by tool_result)
   const existing = _cards.findIndex(c => c.id != null && c.id === id);
   if (existing >= 0) {
     _cards[existing] = { ..._cards[existing], ...entry };
     return _cards[existing];
   }
+  entry.result ??= null;
+  entry.durationMs ??= null;
+  entry.startedAt ??= null;
   _cards.push(entry);
   if (_cards.length > MAX_CARDS) _cards.shift();
   return entry;

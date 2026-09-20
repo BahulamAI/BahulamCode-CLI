@@ -51,6 +51,7 @@ export function createToolExecutor({
     checkpoints = null,
     hookRunner = null,
     interactionHandler = null,
+    deferProjectIndex = false,
     onAutoRegisterStart = null,
     onAutoRegisterDone = null,
     pluginRegistry = null,
@@ -127,7 +128,7 @@ export function createToolExecutor({
     if (process.env.BAHULAM_SKIP_AUTO_REGISTER !== 'true') {
         const autoRegisterRoot = process.cwd();
         try { onAutoRegisterStart?.(autoRegisterRoot); } catch { /* status hooks are best-effort */ }
-        autoRegisterPromise = projectRegistry.register(autoRegisterRoot, { bypassProjectMarkers: true })
+        autoRegisterPromise = projectRegistry.register(autoRegisterRoot, { bypassProjectMarkers: true, deferIndex: deferProjectIndex })
             .then((result) => {
                 try { onAutoRegisterDone?.(null, result); } catch { /* status hooks are best-effort */ }
                 return result;
@@ -348,7 +349,8 @@ export function createToolExecutor({
 
     function updateProjectIndex(filePath, { contentChanged = true, structureChanged = false } = {}) {
         try {
-            projectRegistry.projectForPath(filePath)?.retriever.updateFile(filePath);
+            const project = projectRegistry.projectForPath(filePath);
+            if (project?.resource.index_status !== 'deferred') project?.retriever.updateFile(filePath);
         } catch { /* best effort */ }
         if (contentChanged) _searchCacheGeneration++;
         if (structureChanged) _structureCacheGeneration++;
@@ -1061,6 +1063,21 @@ export function createToolExecutor({
 
         todo_write: async (args, options = {}) => {
             return toolMap.TodoWrite(args, options);
+        },
+
+        // Backend memory requests must pass through this bridge, not just
+        // appear in the built-in registry. Keep validation failures in the
+        // structured result format expected by the stream callback.
+        remember: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const result = await occRegistry.call('remember', args || {}, options);
+            if (typeof result === 'string') {
+                return { success: false, output: result, _tool: 'remember' };
+            }
+            // Do not rely on filesystem timestamp precision for an immediate
+            // read-after-write in the same session.
+            if (result.success) _memoryCache = null;
+            return result;
         },
 
         // Reserved meta-tool adapter. Cloud backends may implement Delegate
@@ -1851,6 +1868,10 @@ export function createToolExecutor({
                     output: 'search_code requires project_id when multiple or no projects are registered',
                     _tool: 'search_code',
                 };
+            }
+            if (project?.resource.index_status === 'deferred') {
+                await projectRegistry.register(project.resource.root, { bypassProjectMarkers: true });
+                project = projectRegistry.get(project.resource.project_id);
             }
             const searchPath = args.path ? await resolvePath(args.path, args) : project.resource.root;
             const parts = [];
@@ -2838,7 +2859,7 @@ export function createToolExecutor({
             return autoRegisterPromise;
         },
 
-        async registerProjectRoots(roots, { forceRefresh = false } = {}) {
+        async registerProjectRoots(roots, { forceRefresh = false, deferIndex = deferProjectIndex, bypassProjectMarkers = true } = {}) {
             const results = [];
             const seen = new Set();
             for (const root of Array.isArray(roots) ? roots : []) {
@@ -2851,7 +2872,8 @@ export function createToolExecutor({
                     // from calling get_project_overview on non-project paths.
                     const result = await projectRegistry.register(root, {
                         forceRefresh,
-                        bypassProjectMarkers: true,
+                        deferIndex,
+                        bypassProjectMarkers: bypassProjectMarkers || root === process.cwd(),
                     });
                     results.push({ success: true, root: result.resource.root, ...result });
                 } catch (err) {

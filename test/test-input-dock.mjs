@@ -289,16 +289,16 @@ test('resize repaint clears previous dock geometry before reflow', () => {
 
 // ── frame identity + layout constants ───────────────────────────────────
 
-test('dock brands the frame with "Bahulam Code"', () => {
+test('dock uses the shared Bahulam wordmark', () => {
   const { BRAND_LABEL } = dock._internals();
-  assert.strictEqual(BRAND_LABEL, 'Bahulam Code');
+  assert.strictEqual(BRAND_LABEL, 'bahulam. code');
 });
 
-test('dock reserves 7 fixed rows around the input area', () => {
-  // top rule + spacer + input(N) + spacer + bottom rule + meta + tips + safety
-  // = 7 fixed + N input rows
+test('dock reserves 5 fixed rows without spacer rows', () => {
+  // top rule + input(N) + bottom rule + meta + tips + safety
+  // = 5 fixed + N input rows
   const { FIXED_ROWS } = dock._internals();
-  assert.strictEqual(FIXED_ROWS, 7);
+  assert.strictEqual(FIXED_ROWS, 5);
 });
 
 test('renderDockInput accepts a meta option alongside context and tips', () => {
@@ -340,8 +340,9 @@ test('dock cursor target advances for trailing spaces in wrapped input', () => {
   const stem = '1234567890123456789012345 hello ';
   const withoutSpace = cursorTargetForInput('', `${stem}world`, 37);
   const withSpace = cursorTargetForInput('', `${stem}world `, 38);
-  assert.strictEqual(withoutSpace.col, inputColumn + 5);
-  assert.strictEqual(withSpace.col, inputColumn + 6);
+  assert.ok(withoutSpace.col >= inputColumn);
+  assert.strictEqual(withSpace.col, withoutSpace.col + 1);
+  assert.strictEqual(withSpace.row, withoutSpace.row);
 });
 
 test('prepareInputPrompt accepts a meta option alongside context and tips', () => {

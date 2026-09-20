@@ -430,7 +430,7 @@ async function main() {
     BAHULAM_RECONNECT_MAX_ELAPSED_MS
                             Max reconnect window for dropped streams
     BAHULAM_TTY_MODE=stable Scrollback-safe transcript if fixed dock redraws leak
-    BAHULAM_BLOCK_SEPARATOR Tool/content separator: space, dotted, or off
+    BAHULAM_BLOCK_SEPARATOR Transcript separator: subtle (default), space, dotted, or off
 
   \x1b[2mDocs: https://bahulam.ai\x1b[0m
 `);

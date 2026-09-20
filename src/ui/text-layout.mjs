@@ -114,10 +114,11 @@ function chunkByVisibleWidth(token, maxWidth) {
   const chunks = [];
   let buf = '';
   let bufWidth = 0;
-  const chars = Array.from(String(token));
+  const chars = String(token).match(/\x1b\[[0-9;]*m|[^\x1b]/gu) || [];
   for (const ch of chars) {
-    // Naive: treat each codepoint as 1 cell. Good enough for path-like
-    // tokens; wide-char inputs would need a fuller width table.
+    // Keep SGR sequences atomic and zero-width, including long colored
+    // paths or commands that must break mid-token.
+    if (ch.startsWith('\x1b[')) { buf += ch; continue; }
     if (bufWidth + 1 > maxWidth) {
       chunks.push(buf);
       buf = '';

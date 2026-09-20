@@ -8,7 +8,9 @@
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
 
-import { paint, strip } from './palette.mjs';
+import { paint, width } from './palette.mjs';
+import { icons } from './icons.mjs';
+import { wrapToLines } from './text-layout.mjs';
 import { term } from './term.mjs';
 
 const out = process.stderr;
@@ -19,44 +21,44 @@ const write = (s) => { try { out.write(s); } catch {} };
 function abundanceGlyph() {
   const loop = term().unicode ? '∞' : 'o';
   return [
-    `  ${loop}${loop}   ${loop}${loop}  `,
-    `${loop}   ${loop} ${loop}   ${loop}`,
-    `${loop}    ${loop}    ${loop}`,
-    `${loop}   ${loop} ${loop}   ${loop}`,
-    `  ${loop}${loop}   ${loop}${loop}  `,
+    '  ' + loop + loop + '   ' + loop + loop + '  ',
+    loop + '   ' + loop + ' ' + loop + '   ' + loop,
+    loop + '    ' + loop + '    ' + loop,
+    loop + '   ' + loop + ' ' + loop + '   ' + loop,
+    '  ' + loop + loop + '   ' + loop + loop + '  ',
   ];
 }
 
 function wordmarkLines() {
-  return [
+  const lines = [
     '████   ███  █   █ █   █ █      ███  █   █',
     '█   █ █   █ █   █ █   █ █     █   █ ██ ██',
     '████  █████ █████ █   █ █     █████ █ █ █',
     '█   █ █   █ █   █ █   █ █     █   █ █   █',
     '████  █   █ █   █  ███  █████ █   █ █   █',
   ];
+  return term().unicode ? lines : lines.map(line => line.replaceAll('█', '#'));
 }
 
-/**
- * Render the branded startup banner.
- */
+/** Keep the original logo intact; narrow terminals use the motif + text name. */
 export function renderBanner(version = '') {
-  const dim = paint.text.dim;
+  const t = term();
+  const separator = t.unicode ? ' · ' : ' / ';
   const mark = abundanceGlyph();
   const wordmark = wordmarkLines();
-  const code = paint.brand.data('code');
-  const vTag = version ? `${dim(' · v' + version)}` : '';
-  const markWidth = 11;
-  const wordmarkIndent = ' '.repeat(2 + markWidth + 2);
-  const lines = [''];
-
-  for (let i = 0; i < wordmark.length; i++) {
-    lines.push(`  ${paint.text.muted(mark[i].padEnd(markWidth))}  ${paint.bold(paint.brand.primary(wordmark[i]))}`);
+  const fullWidth = 2 + 11 + 2 + Math.max(...wordmark.map(line => line.length));
+  const wide = t.columns > fullWidth;
+  const rows = [''];
+  for (let i = 0; i < mark.length; i++) {
+    const row = '  ' + paint.text.muted(mark[i].padEnd(11));
+    rows.push(wide ? row + '  ' + paint.bold(paint.brand.primary(wordmark[i])) : row);
   }
-
-  lines.push(`${wordmarkIndent}${code} ${dim('· abundance in your terminal')}${vTag}`);
-  lines.push('');
-  return lines.join('\n');
+  if (!wide) rows.push('  ' + paint.bold(paint.brand.primary('bahulam.')) + ' code');
+  const descriptor = (wide ? 'code' + separator : '') + 'abundance in your terminal' + (version ? separator + 'v' + version : '');
+  const indent = wide ? ' '.repeat(15) : '  ';
+  rows.push(...wrapToLines(paint.text.muted(descriptor), Math.max(1, t.columns - indent.length - 1)).map(line => indent + line));
+  rows.push('');
+  return rows.join('\n') + '\n';
 }
 
 /**
@@ -68,28 +70,22 @@ export function printBanner(version = '') {
 
 // ── Project info bar ─────────────────────────────────────────────────────
 
-const BAR_WIDTH = 60;
-
-/**
- * Print project info bar with version, project name, and git info.
- */
+/** Print a width-aware project summary without oversized chrome. */
 export function printProjectInfo(version) {
-  const cwd = process.cwd();
-  const projectName = path.basename(cwd);
-  const gitInfo = getGitInfo(cwd);
-
-  const sep = paint.text.dim(' │ ');
-  let info = `  ${paint.text.dim('v' + version)}${sep}${paint.bold(projectName)}`;
-  if (gitInfo) {
-    info += `${sep}${paint.state.warn(gitInfo)}`;
+  const t = term();
+  const projectName = path.basename(process.cwd());
+  const gitInfo = getGitInfo(process.cwd());
+  const separator = paint.text.dim(t.unicode ? ' · ' : ' / ');
+  const info = [paint.bold(projectName), gitInfo && paint.text.muted(gitInfo), version && paint.text.dim('v' + version)]
+    .filter(Boolean).join(separator);
+  const barWidth = Math.max(4, Math.min(78, t.columns - 2));
+  const edge = t.unicode ? ['┌', '─', '┐', '│', '└', '┘'] : ['+', '-', '+', '|', '+', '+'];
+  const border = paint.text.dim;
+  write(border(edge[0] + edge[1].repeat(barWidth) + edge[2]) + '\n');
+  for (const line of wrapToLines(info, barWidth - 2)) {
+    write(border(edge[3]) + ' ' + line + ' '.repeat(Math.max(1, barWidth - width(line) - 1)) + border(edge[3]) + '\n');
   }
-
-  const padCount = Math.max(0, BAR_WIDTH - strip(info).length - 1);
-  const border = paint.brand.primary;
-
-  write(`${border('┌' + '─'.repeat(BAR_WIDTH) + '┐')}\n`);
-  write(`${border('│')} ${info}${' '.repeat(padCount)}${border('│')}\n`);
-  write(`${border('└' + '─'.repeat(BAR_WIDTH) + '┘')}\n`);
+  write(border(edge[4] + edge[1].repeat(barWidth) + edge[5]) + '\n');
 }
 
 // ── Hints ────────────────────────────────────────────────────────────────
@@ -165,68 +161,56 @@ function getGitInfo(cwd) {
     }).trim();
     const changes = status ? status.split('\n').filter(Boolean).length : 0;
 
-    return changes > 0 ? `⎇ ${branch} (${changes} changed)` : `⎇ ${branch}`;
+    const mark = term().unicode ? '⎇ ' : '';
+    return changes > 0 ? `${mark}${branch} (${changes} changed)` : `${mark}${branch}`;
   } catch {
     return null;
   }
 }
 
-// ── OAuth success page (unchanged from prior version) ────────────────────
+// ── OAuth success page ────────────────────────────────────────────────────
 
 export function getLoginSuccessHTML() {
   return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>Bahulam Code - Login Successful</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0d1117;
-            color: #c9d1d9;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-        }
-        .container {
-            text-align: center;
-            padding: 40px;
-        }
-        .logo {
-            font-size: 48px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-        .dev { color: #3fb950; }
-        .bahulam { color: #58a6ff; }
-        .bahulam { color: #06b6d4; letter-spacing: 4px; }
-        .check {
-            font-size: 64px;
-            color: #3fb950;
-            margin: 24px 0;
-        }
-        h1 {
-            color: #f0f6fc;
-            font-size: 24px;
-            margin: 16px 0 8px;
-        }
-        p {
-            color: #8b949e;
-            font-size: 16px;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Bahulam Code - Login Successful</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; min-height: 100svh; display: grid; place-items: center; padding: 24px;
+      background: #FAF9F6; color: #202331; font: 15px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    main { width: min(100%, 440px); }
+    .brand { display: flex; align-items: baseline; gap: 10px; margin-bottom: 24px; }
+    .wordmark { font-size: 24px; font-weight: 650; letter-spacing: -.06em; }
+    .product, .eyebrow { color: #606472; font: 11px/1.5 ui-monospace, SFMono-Regular, monospace; text-transform: uppercase; letter-spacing: .1em; }
+    .card { padding: 32px; background: #FFFFFF; border: 1px solid #DEDFE5; border-radius: 10px; }
+    .check { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 24px;
+      border-radius: 50%; background: #EDF5F0; color: #28684F; font-size: 22px; }
+    h1 { font-size: 24px; font-weight: 600; line-height: 1.25; letter-spacing: -.035em; margin: 10px 0 12px; }
+    p { margin: 0; color: #606472; }
+    .next { margin-top: 24px; border-top: 1px solid #DEDFE5; padding-top: 20px; }
+    .next strong { display: block; font-size: 13px; color: #202331; margin-bottom: 4px; font-weight: 600; }
+    .footer { margin-top: 20px; font-size: 12px; }
+    a { color: #303BA0; text-underline-offset: 3px; }
+    a:focus-visible { outline: 2px solid #555BB0; outline-offset: 4px; border-radius: 2px; }
+    @media (max-width: 400px) { body { padding: 20px; } .card { padding: 24px; } }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="logo">
-            <span class="bahulam">BAHULAM CODE</span>
-        </div>
-        <div class="check">&#10003;</div>
-        <h1>Login Successful!</h1>
-        <p>You can close this tab and return to your terminal.</p>
-    </div>
+  <main>
+    <div class="brand"><span class="wordmark">bahulam.</span><span class="product">Code / CLI</span></div>
+    <section class="card" aria-labelledby="title">
+      <div class="check" aria-hidden="true">&#10003;</div>
+      <div class="eyebrow">Connection complete</div>
+      <h1 id="title">You're ready to build.</h1>
+      <p>Login successful. Return to your terminal to continue with Bahulam Code.</p>
+      <div class="next"><strong>Your next step</strong><p>You can close this tab. Your terminal will pick up from here.</p></div>
+    </section>
+    <p class="footer">Need a hand? <a href="https://bahulam.ai/docs">Read the documentation</a></p>
+  </main>
 </body>
 </html>`;
 }

@@ -81,6 +81,27 @@ test('topK limits results', () => {
     assert.strictEqual(results.length, 5);
 });
 
+test('ties use stable id ordering', () => {
+    const idx = new BM25Index();
+    idx.buildIndex([
+        { id: 'z.js', text: 'same term' },
+        { id: 'a.js', text: 'same term' },
+    ]);
+    assert.deepStrictEqual(idx.search('same').map(result => result.id), ['a.js', 'z.js']);
+});
+
+test('build and serialization are stable across document order', () => {
+    const documents = [
+        { id: 'z.js', text: 'same term z' },
+        { id: 'a.js', text: 'same term a' },
+    ];
+    const first = new BM25Index();
+    first.buildIndex(documents);
+    const second = new BM25Index();
+    second.buildIndex([...documents].reverse());
+    assert.deepStrictEqual(first.toJSON(), second.toJSON());
+});
+
 test('toJSON and fromJSON round-trip', () => {
     const idx = new BM25Index();
     idx.buildIndex([
