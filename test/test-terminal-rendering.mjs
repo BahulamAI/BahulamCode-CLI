@@ -578,14 +578,15 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('if (isInputDockMounted()) moveToContent();'));
   // PRD-081 Phase 3: active-run follow-ups now go through the dedicated
   // /api/intervention/{task_id} path (client.sendIntervention), not /resume.
-  assert.ok(replSource.includes('client.sendIntervention(instruction)'));
+  assert.ok(replSource.includes('client.sendIntervention(instruction, options)'));
+  assert.ok(replSource.includes('followups.submit(instruction)'));
   // Local slash commands that are useful during a running turn should not be
   // delivered as follow-up instructions.
   assert.ok(replSource.includes('function isExecutionSlashCommand(instruction)'));
   assert.ok(replSource.includes("command === '/watch'"));
   assert.ok(replSource.includes("command === '/auto'"));
   assert.ok(replSource.includes('await handleCommand(instruction, ctx);'));
-  assert.ok(replSource.includes("type: 'user_intervention'"));
+  assert.ok(replSource.includes('jsonlWriter.persistFollowup(item, options)'));
   assert.ok(fs.readFileSync(new URL('../src/ui/chrome.mjs', import.meta.url), 'utf8').includes('F2 details'));
   assert.ok(replSource.includes("key.name === 'f2'"));
   assert.ok(replSource.includes('isF2Sequence(text2)'));

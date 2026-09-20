@@ -23,6 +23,10 @@ export const TOKENS = Object.freeze({
   'syntax.keyword': { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
   'syntax.string':  { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
   'syntax.literal': { rgb: [231, 196, 148], ansi256: 222, ansi16: 'yellow' },
+  'diffSyntax.keyword': { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'diffSyntax.string':  { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'diffSyntax.literal': { rgb: [231, 196, 148], ansi256: 222, ansi16: 'yellow' },
+  'diffSyntax.comment': { rgb: [193, 200, 216], ansi256: 251, ansi16: 'gray' },
   'state.success': { rgb: [154, 214, 184], ansi256: 151, ansi16: 'green' },
   'state.warn':    { rgb: [242, 203, 137], ansi256: 222, ansi16: 'yellow' },
   'state.danger':  { rgb: [255, 176, 182], ansi256: 217, ansi16: 'red' },
@@ -38,6 +42,12 @@ export const LIGHT_TOKENS = Object.freeze({
   'syntax.keyword': { rgb: [113, 76, 145], ansi256: 97, ansi16: 'magenta' },
   'syntax.string':  { rgb: [38, 105, 120], ansi256: 23, ansi16: 'cyan' },
   'syntax.literal': { rgb: [135, 88, 32], ansi256: 94, ansi16: 'yellow' },
+  // The same hues with deeper ink keep code readable on tinted diff surfaces,
+  // including the more saturated changed-word backgrounds.
+  'diffSyntax.keyword': { rgb: [96, 59, 125], ansi256: 54, ansi16: 'magenta' },
+  'diffSyntax.string':  { rgb: [29, 80, 92], ansi256: 23, ansi16: 'cyan' },
+  'diffSyntax.literal': { rgb: [109, 65, 21], ansi256: 52, ansi16: 'yellow' },
+  'diffSyntax.comment': { rgb: [75, 79, 91], ansi256: 239, ansi16: 'gray' },
   'state.success': { rgb: [40, 104, 79], ansi256: 23, ansi16: 'green' },
   'state.warn':    { rgb: [138, 91, 21], ansi256: 94, ansi16: 'yellow' },
   'state.danger':  { rgb: [173, 54, 63], ansi256: 131, ansi16: 'red' },
@@ -51,7 +61,7 @@ export const LIGHT_TOKENS = Object.freeze({
 export const DIFF_BACKGROUNDS = Object.freeze({
   dark: Object.freeze({
     // The 256-color cube has no muted near-black green/red. Neutral
-    // surfaces plus the existing colored foreground are the calmer fallback.
+    // surfaces plus colored +/- markers are the calmer fallback.
     'diff.addLine':    { rgb: [34, 61, 49], ansi256: 236 },
     'diff.removeLine': { rgb: [68, 39, 48], ansi256: 237 },
     'diff.addWord':    { rgb: [43, 88, 62], ansi256: 238 },

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { term, _setForTesting } from '../src/ui/term.mjs';
-import { paint, DIFF_BACKGROUNDS, strip } from '../src/ui/palette.mjs';
+import { paint, TOKENS, LIGHT_TOKENS, DIFF_BACKGROUNDS, strip } from '../src/ui/palette.mjs';
 import { cellWidth } from '../src/ui/render-queue.mjs';
 import { buildFileDiff } from '../src/core/file-diff.mjs';
 import { renderFileDiffs } from '../src/ui/diff.mjs';
@@ -23,8 +23,8 @@ const artifacts = process.env.BROWSER_ARTIFACT_DIR || fs.mkdtempSync(path.join(o
 const original = { ...term() };
 const fileDiff = buildFileDiff({
   filePath: 'src/auth.ts',
-  before: 'export function authorize(token) {\n  const session = verify(token, "read");\n  return session.user;\n}\n',
-  after: 'export function authorize(token, scope) {\n  const session = verify(token, scope);\n  return session.user;\n}\n',
+  before: 'export function authorize(token) {\n  const session = verify(token, "read", 1);\n  return session.user;\n}\n',
+  after: 'export function authorize(token, scope) {\n  const session = verify(token, "write", 2);\n  return session.user;\n}\n',
 });
 let count = 0;
 const browser = await chromium.launch({ headless: true, timeout: 20000,
@@ -68,6 +68,7 @@ try {
               const cell = line?.getCell(col);
               return !cell || cell.isBgDefault() ? null : cell.getBgColor();
             }),
+            foregrounds: Array.from({ length: columns }, (_, col) => line?.getCell(col)?.getFgColor()),
           };
         });
       }, { columns, rows, text, appearance });
@@ -76,6 +77,8 @@ try {
       const bgValue = key => colorLevel === 'truecolor' ? tokens[key].rgb.reduce((n, part) => n * 256 + part, 0) : tokens[key].ansi256;
       const sourceRows = text.split('\n');
       const seenWords = new Set();
+      const seenSyntax = new Set();
+      const inkTokens = appearance === 'light' ? LIGHT_TOKENS : TOKENS;
       for (const [index, row] of screen.entries()) {
         const source = sourceRows[index] || '';
         const side = source.includes(paint.token('diff.addLine').open) ? 'add'
@@ -92,8 +95,14 @@ try {
         assert.equal(row.backgrounds.at(-2), lineBg, 'word backgrounds reset to row background');
         assert.ok(row.backgrounds.slice(inset, -1).every(bg => bg === lineBg || bg === wordBg), 'entire wrapped row has the correct background');
         if (row.backgrounds.includes(wordBg)) seenWords.add(side);
+        for (const role of ['keyword', 'string', 'literal']) {
+          const token = inkTokens['diffSyntax.' + role];
+          const ink = colorLevel === 'truecolor' ? token.rgb.reduce((n, part) => n * 256 + part, 0) : token.ansi256;
+          if (row.foregrounds.some((fg, col) => fg === ink && row.backgrounds[col] != null)) seenSyntax.add(role);
+        }
       }
       assert.deepEqual([...seenWords].sort(), ['add', 'remove'], 'both changed-word backgrounds reach actual terminal cells');
+      assert.deepEqual([...seenSyntax].sort(), ['keyword', 'literal', 'string'], 'syntax palette reaches terminal cells on diff backgrounds');
       const visible = screen.map(line => line.text).join('\n');
       if (name === 'changes') {
         assert.match(visible, /src\/auth\.ts/);

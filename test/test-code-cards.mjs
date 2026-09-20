@@ -50,6 +50,8 @@ try {
     const shaded = ['truecolor', 'ansi256'].includes(colorLevel);
     assert.equal(surfaceOutput.includes('\x1b[48;'), shaded);
     if (shaded) {
+      for (const role of ['keyword', 'string']) assert.ok(surfaceOutput.includes(paint.token('diffSyntax.' + role).open), 'syntax ink survives row and word backgrounds');
+      assert.ok(!surfaceOutput.includes(paint.token('state.success').open + 'const'), 'addition does not repaint the code green');
       for (const key of ['addLine', 'removeLine', 'addWord', 'removeWord']) assert.ok(surfaceOutput.includes(paint.token('diff.' + key).open));
       const gitResult = renderCommandResult({ success: true, output: surfaceDiff }, { args: { command: 'git diff' }, full: true });
       const gitDetails = detailFor({ tool: 'shell', args: { command: 'git diff' }, result: { success: true, output: surfaceDiff } });
@@ -67,6 +69,14 @@ try {
       const context = surfaceOutput.split('\n').find(row => strip(row).includes('context();'));
       assert.ok(!context.includes('\x1b[48;'), 'context stays unshaded');
     }
+  }
+  for (const appearance of ['light', 'dark']) {
+    _setForTesting({ appearance, color: true, colorLevel: 'truecolor', columns: 120 });
+    const output = renderUnifiedDiff('--- a/demo.mjs\n+++ b/demo.mjs\n@@ -1,2 +1,2 @@\n-const text = "old return"; // old const\n+const text = "new return"; // new const\n-const count = 41;\n+const count = 42;');
+    assert.ok(output.includes(paint.diffSyntax.string(paint.bold(paint.underline('new')))), 'changed substring keeps the whole string token color');
+    assert.ok(output.includes(paint.diffSyntax.comment(paint.bold(paint.underline('new')))), 'changed comment keeps comment ink');
+    assert.ok(output.includes(paint.diffSyntax.literal(paint.bold(paint.underline('42')))), 'changed number keeps amber ink');
+    assert.ok(!output.includes(paint.diffSyntax.keyword('return')), 'keywords inside strings are not re-lexed as code');
   }
   _setForTesting({ columns: 80, color: true, colorLevel: 'ansi16' });
 

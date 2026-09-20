@@ -80,6 +80,7 @@ const UNIT_TESTS = [
     'test/test-resume-append.mjs',
     'test/test-mcp.mjs',
     'test/test-followup-promote.mjs',
+    'test/test-followup-queue.mjs',
     'test/test-plugin-lifecycle.mjs',
     'test/test-tool-error.mjs',
     'test/test-agent-trace.mjs',
@@ -89,6 +90,7 @@ const UNIT_TESTS = [
 // Spawn real processes, bind sockets, or test multi-process coordination.
 // Require no external services but do require a working OS environment.
 const INTEGRATION_TESTS = [
+    'test/test-followup-repl.mjs',
     'test/test-socket-server.mjs',
     'test/test-session-attach.mjs',
     'test/test-session-event-tap.mjs',

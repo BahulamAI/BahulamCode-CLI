@@ -1175,6 +1175,7 @@ export class BahulamStreamClient {
                         message_type: 'user_intervention',
                         priority: opts.priority || 'high',
                     }),
+                    signal: AbortSignal.timeout(opts.timeoutMs || 5000),
                 },
             );
             if (!response.ok) {
@@ -1189,7 +1190,7 @@ export class BahulamStreamClient {
             }
             const body = await response.json().catch(() => ({}));
             const backendStatus = body.status || 'accepted';
-            const status = body.duplicate ? 'duplicate' : backendStatus;
+            const status = body.duplicate && backendStatus === 'accepted' ? 'duplicate' : backendStatus;
             return {
                 status,
                 interventionId: body.intervention_id || interventionId,

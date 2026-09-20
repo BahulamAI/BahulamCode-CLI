@@ -7,6 +7,7 @@ import { term } from './term.mjs';
 import { glyph } from './chrome.mjs';
 import { cellWidth, stripSequences } from './render-queue.mjs';
 import { wrapRuns, wrapCode } from './code-layout.mjs';
+import { codeRuns } from './code-syntax.mjs';
 import { isSensitiveConfigPath } from '../core/safety.mjs';
 
 const hunkRE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
@@ -132,6 +133,35 @@ function highlightedLines(lines) {
   return words;
 }
 
+function languageForPath(path) {
+  const extension = path.split('.').at(-1).toLowerCase();
+  return ({ mjs: 'js', cjs: 'js', mts: 'ts', cts: 'ts' })[extension] || extension;
+}
+
+// Lex whole lines first: word-diff boundaries must not turn part of a string
+// or comment into a keyword. Then intersect the two sets of spans.
+function syntaxDiffRuns(text, language, words, surface, shaded) {
+  const syntax = codeRuns(text, language, { diffSurface: Boolean(shaded) });
+  if (!words) return syntax;
+  const runs = [];
+  let wordIndex = 0, wordOffset = 0;
+  for (const token of syntax) {
+    let offset = 0;
+    while (offset < token.text.length) {
+      const word = words[wordIndex];
+      const length = Math.min(token.text.length - offset, word ? word.text.length - wordOffset : Infinity);
+      runs.push({ text: token.text.slice(offset, offset + length), paint: word?.changed ? value => {
+        const ink = token.paint(paint.bold(paint.underline(value)));
+        return shaded ? paint.diff[surface + 'Word'](ink) : ink;
+      } : token.paint });
+      offset += length;
+      wordOffset += length;
+      if (word && wordOffset === word.text.length) { wordIndex++; wordOffset = 0; }
+    }
+  }
+  return runs;
+}
+
 export function renderFileDiffs(value, {
   columns = term().columns || 80, indent = '  ', numbers = true,
   showFileHeader = true, maxLines = Infinity, maxFiles = Infinity,
@@ -165,16 +195,13 @@ export function renderFileDiffs(value, {
         const surface = line.type === 'add' ? 'add' : line.type === 'remove' ? 'remove' : null;
         const shaded = surface && Boolean(paint.token('diff.' + surface + 'Line').open);
         const neutralSurface = term().colorLevel === 'ansi256' && term().appearance !== 'light';
-        const base = shaded && !neutralSurface ? paint.text.primary : line.type === 'add' ? paint.state.success : line.type === 'remove' ? paint.state.danger : paint.text.primary;
+        const markerPaint = shaded && !neutralSurface ? paint.text.primary : line.type === 'add' ? paint.state.success : line.type === 'remove' ? paint.state.danger : paint.text.primary;
         const gutterPaint = shaded ? paint.text.primary : paint.text.muted;
         const gutter = numbers ? oldNumber.padStart(gutterWidth) + ' ' + newNumber.padStart(gutterWidth) + ' ' : '';
-        const prefix = gutterPaint(gutter) + base(marker + ' ');
-        const changed = text => {
-          const emphasis = base(paint.bold(paint.underline(text)));
-          return shaded ? paint.diff[surface + 'Word'](emphasis) : emphasis;
-        };
-        const runs = (highlights.get(index) || [{ text: line.type === 'meta' ? line.text.replace(/^\\\s?/, '') : line.text }])
-          .map(word => ({ text: word.text, paint: word.changed ? changed : base }));
+        const prefix = gutterPaint(gutter) + markerPaint(marker + ' ');
+        const runs = line.type === 'meta'
+          ? [{ text: line.text.replace(/^\\\s?/, ''), paint: paint.text.muted }]
+          : syntaxDiffRuns(line.text, languageForPath(path), highlights.get(index), surface, shaded);
         const rows = wrapRuns(runs, {
           columns, indent, first: prefix,
           rest: gutterPaint(' '.repeat(cellWidth(gutter)) + glyph('↳ ', '> ')),

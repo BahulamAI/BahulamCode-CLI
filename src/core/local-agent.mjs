@@ -302,10 +302,18 @@ export class LocalAgent {
         this._cancelled = false;
         this._requestSequence = 0;
         this._pendingInterventions = [];
+        this._deliveredInterventionIds = new Set();
+        this._executing = false;
         this.promptCache = new PromptCache();
     }
 
     async *execute(instruction, context = {}, priorHistory = []) {
+        this._executing = true;
+        try { yield* this._executeTurn(instruction, context, priorHistory); }
+        finally { this._executing = false; }
+    }
+
+    async *_executeTurn(instruction, context, priorHistory) {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
@@ -379,7 +387,7 @@ export class LocalAgent {
             for (const intervention of interventions) {
                 const message = { role: 'user', content: intervention.instruction };
                 messages.push(message);
-                if (Array.isArray(priorHistory)) priorHistory.push({ ...message });
+                this._deliveredInterventionIds.add(intervention.interventionId);
                 yield {
                     type: 'user_intervention_delivered',
                     data: {
@@ -505,8 +513,10 @@ export class LocalAgent {
             // Keep one provider-shaped assistant turn for the complete tool batch.
             // Appending the cumulative assistant content once per tool duplicates
             // earlier tool calls and makes the next request grow quadratically.
-            if (hasToolUse) {
+            if (assistantContent.length) {
                 messages.push({ role: 'assistant', content: assistantContent.slice() });
+            }
+            if (hasToolUse) {
                 for (const result of toolResults) {
                     messages.push({
                         role: 'user',
@@ -516,6 +526,7 @@ export class LocalAgent {
             }
 
             if ((!hasToolUse || stopReason === 'end_turn') && this._pendingInterventions.length === 0) {
+                this._executing = false; // A submission during the complete yield belongs to the next turn.
                 const duration = (Date.now() - startTime) / 1000;
                 yield {
                     type: 'complete',
@@ -530,6 +541,7 @@ export class LocalAgent {
             }
         }
 
+        this._executing = false;
         yield { type: 'error', data: { message: `Max turns (${this.maxTurns}) reached.` } };
         yield {
             type: 'complete',
@@ -859,6 +871,8 @@ export class LocalAgent {
         const text = String(instruction || '').trim();
         if (!text) return Promise.resolve({ status: 'error', error: 'instruction is empty' });
         const interventionId = idempotencyKey || this._nextRequestId();
+        if (this._deliveredInterventionIds.has(interventionId)) return Promise.resolve({ status: 'delivered', interventionId });
+        if (!this._executing || this._cancelled) return Promise.resolve({ status: 'queued_next_turn', interventionId });
         if (this._pendingInterventions.some(item => item.interventionId === interventionId)) {
             return Promise.resolve({ status: 'duplicate', interventionId });
         }

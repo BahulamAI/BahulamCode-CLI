@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { bahulamHome } from './paths.mjs';
+import { followupsFromTranscript } from './followups.mjs';
 
 const BAHULAM_DIR = bahulamHome();
 const PROJECTS_DIR = path.join(BAHULAM_DIR, 'projects');
@@ -530,6 +531,7 @@ export async function getSessionDetail(sessionId, options = {}) {
       content: normalizeMessageContent(message.content),
       uuid: obj.uuid || null,
       parentUuid: obj.parentUuid || null,
+      interventionId: obj.intervention_id || null,
     });
   }
 
@@ -564,6 +566,14 @@ export function buildResumeHistory(detail, mode = 'compact') {
   }
 
   const displayHistory = [];
+  const followups = followupsFromTranscript(detail);
+  const followupById = new Map(followups.map(item => [item.id, item]));
+  const entries = [...(detail.entries || []), ...followups.filter(item => !item.hasMessage).map(item => ({
+    role: 'user', content: item.instruction, order: item.order, timestamp: item.timestamp, interventionId: item.id,
+  }))].map(entry => {
+    const executionOrder = followupById.get(entry.interventionId)?.executionOrder;
+    return executionOrder == null ? entry : { ...entry, order: executionOrder };
+  }).sort((a, b) => a.order - b.order);
   const fullAgentHistory = [];
   const userPrompts = [];
   const assistantTexts = [];
@@ -572,10 +582,14 @@ export function buildResumeHistory(detail, mode = 'compact') {
   let toolCalls = 0;
   let toolResults = 0;
 
-  for (const entry of detail.entries || []) {
+  for (const entry of entries) {
     if (entry.role === 'user' && typeof entry.content === 'string') {
       const content = entry.content;
-      displayHistory.push({ role: 'user', content, timestamp: entry.timestamp, order: entry.order });
+      const followup = followupById.get(entry.interventionId);
+      displayHistory.push({ role: 'user', content, timestamp: entry.timestamp, order: entry.order,
+        ...(followup ? { interventionId: followup.id, followupStatus: followup.status } : {}) });
+      // Pending instructions become their own next turn, not hidden prior context.
+      if (followup?.durable && !['delivered', 'started', 'completed'].includes(followup.status)) continue;
       fullAgentHistory.push({ role: 'user', content });
       userPrompts.push(content);
       continue;
@@ -742,6 +756,8 @@ export function buildResumeHistory(detail, mode = 'compact') {
   return {
     displayHistory,
     agentHistory,
+    pendingFollowups: followups.filter(item => item.durable && ['pending', 'queued'].includes(item.status)),
+    interruptedFollowups: followups.filter(item => item.durable && ['started', 'held', 'sending', 'accepted'].includes(item.status)),
     sourceMessages,
     summaryMessageIndex,
     summary: activeSummary,

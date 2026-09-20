@@ -46,6 +46,7 @@ import { readShippedCatalog } from '../config/model-catalog.mjs';
 import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { createSessionAuthSync, refreshStartupChecks } from './startup.mjs';
+import { TurnFollowups, createInstructionQueue } from '../core/followups.mjs';
 import { wrapCode } from '../ui/code-layout.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -4519,6 +4520,7 @@ export async function startTerminalRepl() {
     localSessionId,
   };
   ctx.refreshAuth = createSessionAuthSync({ auth, session });
+  let recoveredFollowups = [];
 
   // Wake-on-finish: background jobs with on_complete dispatch their target
   // agent through the trigger funnel when they exit. The ctx builder runs
@@ -4528,6 +4530,7 @@ export async function startTerminalRepl() {
   });
 
   async function startNewSession({ announce = true } = {}) {
+    recoveredFollowups = [];
     stopSpinner();
     flushContent();
     flushPendingHead();
@@ -4773,6 +4776,13 @@ export async function startTerminalRepl() {
     onProgress('preparing replay', 92);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
+    recoveredFollowups = richHistory.pendingFollowups || [];
+    if (recoveredFollowups.length) {
+      process.stderr.write(`  ${c.dim(`${recoveredFollowups.length} saved follow-up(s) recovered; continuing as separate turns.`)}\n`);
+    }
+    if (richHistory.interruptedFollowups?.length) {
+      process.stderr.write(`  ${c.yellow('Some follow-ups have uncertain or interrupted delivery. Review /history before retrying; they will not run automatically.')}\n`);
+    }
     session.id = sessionId;
     session.turns = displayHistory.filter(m => m.role === 'user').length;
     session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
@@ -5391,8 +5401,13 @@ export async function startTerminalRepl() {
   //      see the ESC[201~ end marker — reliable regardless of paste latency.
   //   2. Otherwise we fall back to a short timer that merges bursts arriving
   //      within BAHULAM_PASTE_FLUSH_MS.
-  let _lineInFlight = false;
-  const _queuedLines = [];
+  const queueOrRunLine = createInstructionQueue(async line => {
+    await _handleLine(line);
+    enqueueRecoveredFollowups();
+  }, error => {
+    process.stderr.write(`  ${c.red('Instruction failed: ' + error.message)}\n`);
+    showPrompt();
+  });
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
@@ -5401,22 +5416,13 @@ export async function startTerminalRepl() {
     return Number.isFinite(raw) && raw >= 0 ? Math.min(250, raw) : 35;
   }
 
-  function queueOrRunLine(line) {
-    if (_lineInFlight) {
-      if (line && line.trim()) _queuedLines.push(line);
-      return;
+  function enqueueRecoveredFollowups() {
+    for (const item of recoveredFollowups.splice(0)) {
+      queueOrRunLine({ instruction: item.instruction, followupId: item.id });
     }
-    _lineInFlight = true;
-    Promise.resolve()
-      .then(() => _handleLine(line))
-      .finally(() => {
-        _lineInFlight = false;
-        if (_queuedLines.length) {
-          const next = _queuedLines.shift();
-          setImmediate(() => queueOrRunLine(next));
-        }
-      });
   }
+  // Wait until the REPL has registered input/close listeners before recovering work.
+  setImmediate(enqueueRecoveredFollowups);
 
   function flushPastedLines() {
     if (_pasteFlushTimer) {
@@ -5497,8 +5503,10 @@ export async function startTerminalRepl() {
   });
 
   async function _handleLine(line) {
+    const followupId = typeof line === 'object' ? line.followupId : null;
+    if (typeof line === 'object') line = line.instruction;
     let input = line.trim();
-    const selectedSlashCommand = selectedSlashCommandFor(input);
+    const selectedSlashCommand = followupId ? null : selectedSlashCommandFor(input);
     inputActive = false;
     _pastedInputValue = '';
     _pastedInputLabel = '';
@@ -5526,7 +5534,7 @@ export async function startTerminalRepl() {
     session.inputHistory.push(input);
 
     // Slash commands
-    if (input.startsWith('/')) {
+    if (!followupId && input.startsWith('/')) {
       await handleCommand(input, ctx);
       showPrompt();
       return;
@@ -5701,7 +5709,7 @@ export async function startTerminalRepl() {
 
     // Regular prompt
     const userMessage = { role: 'user', content: input };
-    session.history.push(userMessage);
+    if (!followupId) session.history.push(userMessage);
     session.agentHistory.push(userMessage);
     session.turns++;
     // Fire first_prompt on user's first turn
@@ -5732,21 +5740,39 @@ export async function startTerminalRepl() {
     let userTurnWritten = false;
     const writeCurrentUserTurn = () => {
       if (userTurnWritten) return;
-      jsonlWriter.writeUserTurn(input);
+      if (!followupId) jsonlWriter.writeUserTurn(input);
       jsonlWriter.writeHistory(input);
       userTurnWritten = true;
     };
-    if (session.id) writeCurrentUserTurn();
+    // Own a stable local session ID before network work so early follow-ups
+    // and local-mode prompts have a durable transcript to attach to.
+    jsonlWriter.ensureSessionId();
+    if (!session.id) session.id = jsonlWriter.sessionId;
+    if (!client.sessionId) client.sessionId = session.id;
+    writeCurrentUserTurn();
+    if (followupId) await jsonlWriter.persistFollowup({ id: followupId, instruction: input, status: 'started' });
 
     let assistantContent = '';
     const agentTurnHistory = new AgentHistoryTurnBuilder();
+    let turnCompleted = false;
+    let turnCancelled = false;
+    let turnFailed = false;
+    const followups = new TurnFollowups({
+      persist: async (item, options) => {
+        await jsonlWriter.persistFollowup(item, options);
+        if (options?.initial) session.history.push({ role: 'user', content: item.instruction, interventionId: item.id });
+      },
+      send: (instruction, options) => client.sendIntervention(instruction, options),
+      onDelivered: item => agentTurnHistory.addUserMessage(item.instruction),
+    });
 
     // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
     let executionPaused = false;
     let keypressCleanup = null;
     let execListenerActive = false;
     let lastCtrlCAt = 0; // PRD-055 §8.4: first Ctrl+C cancels, second exits
-    let executionInputBuffer = '';
+    let executionInputBuffer = String(rl.line || '');
+    if (executionInputBuffer) replaceReadlineLine('');
     let executionInputVisible = false;
 
     function executionInputPrefix() {
@@ -5853,41 +5879,22 @@ export async function startTerminalRepl() {
       // /api/intervention/{task_id} path, not /resume. The stream client
       // returns a status object so we render the true backend decision
       // (accepted vs queued-for-next-turn vs duplicate) instead of guessing.
-      const result = await client.sendIntervention(instruction);
-      const taskId = client.currentTaskId || null;
-      const status = result && result.status;
-      const interventionId = result && result.interventionId;
-
-      // Persist the local record regardless of outcome so the transcript
-      // reflects what the user typed. Delivered/queued follow-ups will
-      // get their SSE ack events written separately by the event handler.
-      jsonlWriter.writeBahulamEvent({
-        type: 'user_intervention',
-        data: {
-          instruction,
-          task_id: taskId,
-          intervention_id: interventionId || null,
-          status: status || 'unknown',
-        },
-      });
+      let result;
+      try { result = await followups.submit(instruction); }
+      catch (error) {
+        executionInputBuffer = [instruction, executionInputBuffer].filter(Boolean).join('\n');
+        process.stderr.write(`  ${c.red('Follow-up could not be saved; kept in your input: ' + error.message)}\n`);
+        return;
+      }
+      const status = result?.status;
 
       if (status === 'accepted') {
         renderBlockBoundary('status', { compactSame: true });
-        process.stderr.write(`  ${c.green('↳')} ${c.dim('sent to running agent')}\n`);
+        process.stderr.write(`  ${c.dim('↳ saved · waiting for agent delivery')}\n`);
         runtime.lastRenderedBlock = 'status';
-      } else if (status === 'duplicate') {
-        renderBlockBoundary('status', { compactSame: true });
-        process.stderr.write(`  ${c.dim('↳ already sent (idempotent)')}\n`);
-        runtime.lastRenderedBlock = 'status';
-      } else if (status === 'queued_next_turn') {
-        _queuedLines.push(instruction);
-        renderBlockBoundary('status', { compactSame: true });
-        process.stderr.write(`  ${c.yellow('↳')} ${c.dim('task ended — queued for next turn')}\n`);
-        runtime.lastRenderedBlock = 'status';
-      } else {
+      } else if (status !== 'delivered') {
         // no_task, error, or unknown — fall back to next-turn queue so the
         // user's text is never silently lost.
-        _queuedLines.push(instruction);
         const errBits = result && result.error ? ` ${c.dim(`(${String(result.error).slice(0, 80)})`)}` : '';
         renderBlockBoundary('status', { compactSame: true });
         process.stderr.write(`  ${c.yellow('↳')} ${c.dim('queued for next turn')}${errBits}\n`);
@@ -6014,6 +6021,7 @@ export async function startTerminalRepl() {
           // wakes up immediately and the prompt returns. No more "stuck"
           // Cancelling… message.
           client.cancel();
+          turnCancelled = true;
           return;
         }
 
@@ -6074,6 +6082,7 @@ export async function startTerminalRepl() {
           }
           process.stderr.write(`\n  ${c.yellow('⏹')} ${c.dim('Cancelled. Press Ctrl+C again within 2s to exit.')}\n`);
           try { client.cancel(); } catch {}
+          turnCancelled = true;
           return;
         }
 
@@ -6258,6 +6267,10 @@ export async function startTerminalRepl() {
       }
       for await (const event of _turnIterable) {
         jsonlWriter.writeBahulamEvent(event);
+        await followups.observe(event);
+        if (event.type === 'complete') turnCompleted = true;
+        if (event.type === 'cancelled') turnCancelled = true;
+        if (event.type === 'error' || event.type === 'reconnect_failed') turnFailed = true;
         // . daemon event log. Env-var gated (off by default) —
         // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
@@ -6325,6 +6338,7 @@ export async function startTerminalRepl() {
 
       flushContent();
     } catch (err) {
+      turnFailed = true;
       inPlace('');
       flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
@@ -6332,6 +6346,19 @@ export async function startTerminalRepl() {
       // Clean up execution keypress listener
       runtime.afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
+    }
+
+    const completedNormally = turnCompleted && !turnCancelled && !turnFailed;
+    const nextFollowups = await followups.finish({ continueAutomatically: completedNormally });
+    const heldFollowups = completedNormally ? [] : queueOrRunLine.remove(item => Boolean(item?.followupId));
+    for (const item of heldFollowups) {
+      await jsonlWriter.persistFollowup({ id: item.followupId, instruction: item.instruction, status: 'held' });
+    }
+    if (!completedNormally && (heldFollowups.length || [...followups.items.values()].some(item => item.status !== 'delivered'))) {
+      process.stderr.write(`  ${c.yellow('Follow-ups saved, not restarted after interruption. Review /history before resubmitting.')}\n`);
+    }
+    if (followupId && completedNormally) {
+      await jsonlWriter.persistFollowup({ id: followupId, instruction: input, status: 'completed' });
     }
 
     if (assistantContent) {
@@ -6346,6 +6373,11 @@ export async function startTerminalRepl() {
     }
 
     showPrompt();
+    if (executionInputBuffer) {
+      replaceReadlineLine(executionInputBuffer);
+      renderIdleDockInput();
+    }
+    for (const followup of nextFollowups) queueOrRunLine(followup);
   }
 
   }

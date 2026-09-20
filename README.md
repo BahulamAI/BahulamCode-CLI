@@ -57,6 +57,14 @@ elsewhere. An explicit `B0_TOKEN` overrides the saved login; a different
 `BAHULAM_HOME` intentionally uses a separate credential store. Keep the backend
 environment consistent between terminals as well.
 
+Follow-ups typed while the agent is running are saved locally before sending.
+An accepted instruction is shown as waiting for delivery; only a delivery
+acknowledgement marks it delivered. After normal completion, undelivered
+instructions run as separate turns in submission order. They remain separate
+user messages, not text appended to a tool result. `/resume` recovers safely
+queued work. After cancellation, disconnection, or uncertain delivery, review
+`/history` before resubmitting; the CLI does not automatically retry that work.
+
 ### Change and command cards
 
 Quiet dividers separate user messages, assistant replies, and tool activity.
@@ -72,10 +80,12 @@ colors in real terminals, with and without the fixed input dock.
 
 Live file changes, expanded details, and Markdown diffs share old/new line-number
 gutters, subtle theme-aware green/red row backgrounds, and stronger shading on
-changed words. Truecolor and 256-color terminals use shaded rows; basic 16-color
-terminals retain green/red text, and plain/`NO_COLOR` output keeps `+`/`-` markers.
+changed words. Code keeps its syntax palette on top of those backgrounds:
+lavender keywords, teal strings, amber literals, and neutral identifiers.
+Truecolor and 256-color terminals use shaded rows; basic 16-color terminals
+retain syntax colors and green/red markers, and plain/`NO_COLOR` output keeps `+`/`-` markers.
 Light/dark appearance follows `BAHULAM_THEME` and the terminal's advertised theme.
-Dark 256-color terminals use neutral shading with green/red text because that
+Dark 256-color terminals use neutral shading with green/red markers because that
 palette cannot reproduce the muted truecolor surfaces. Long lines wrap without
 clipping; F2 or `/last` displays all available diff and command content.
 A source-side truncation is labelled rather than presented as a complete diff.
