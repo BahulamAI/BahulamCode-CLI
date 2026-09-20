@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { term, _setForTesting } from '../src/ui/term.mjs';
-import { strip } from '../src/ui/palette.mjs';
+import { paint, strip } from '../src/ui/palette.mjs';
 import { cellWidth } from '../src/ui/render-queue.mjs';
 import { wrapCode } from '../src/ui/code-layout.mjs';
 import { renderUnifiedDiff, renderFileDiffs, parseUnifiedDiff, changedWords } from '../src/ui/diff.mjs';
@@ -41,6 +41,34 @@ try {
   const [removed, added] = changedWords('return verify(token);', 'return verify(token, scope);');
   assert.equal(removed.map(w => w.text).join(''), 'return verify(token);');
   assert.equal(added.filter(w => w.changed).map(w => w.text).join(''), ', scope');
+
+  const surfaceDiff = '--- a/layout.js\n+++ b/layout.js\n@@ -1,3 +1,3 @@\n-const label = "old";\n+const label = "new";\n-\n+\t' + '語'.repeat(70) + '\n context();\n';
+  for (const appearance of ['light', 'dark']) for (const colorLevel of ['truecolor', 'ansi256', 'ansi16', 'none']) {
+    _setForTesting({ appearance, colorLevel, color: colorLevel !== 'none', columns: 40 });
+    const surfaceOutput = renderUnifiedDiff(surfaceDiff, { indent: '    ' });
+    checkWidth(surfaceOutput, 40);
+    const shaded = ['truecolor', 'ansi256'].includes(colorLevel);
+    assert.equal(surfaceOutput.includes('\x1b[48;'), shaded);
+    if (shaded) {
+      for (const key of ['addLine', 'removeLine', 'addWord', 'removeWord']) assert.ok(surfaceOutput.includes(paint.token('diff.' + key).open));
+      const gitResult = renderCommandResult({ success: true, output: surfaceDiff }, { args: { command: 'git diff' }, full: true });
+      const gitDetails = detailFor({ tool: 'shell', args: { command: 'git diff' }, result: { success: true, output: surfaceDiff } });
+      for (const output of [gitResult, gitDetails]) {
+        assert.ok(output.includes(paint.token('diff.addLine').open), 'git diff command output uses the shared surfaces');
+        checkWidth(output, 40);
+      }
+      const rows = surfaceOutput.split('\n').filter(row => row.includes('\x1b[48;'));
+      assert.ok(rows.length > 4, 'wrapped continuations retain their surface');
+      for (const row of rows) {
+        assert.ok(row.startsWith('    \x1b[48;'), 'indent stays outside the background');
+        assert.equal(cellWidth(row), 39, 'row shading ends one cell before terminal autowrap');
+        assert.ok(row.endsWith('\x1b[49m'), 'row background is reset');
+      }
+      const context = surfaceOutput.split('\n').find(row => strip(row).includes('context();'));
+      assert.ok(!context.includes('\x1b[48;'), 'context stays unshaded');
+    }
+  }
+  _setForTesting({ columns: 80, color: true, colorLevel: 'ansi16' });
 
   const large = buildFileDiff({ filePath: 'src/many.js', before: '', after: Array.from({ length: 450 }, (_, i) => 'line_' + i).join('\n') });
   const detail = strip(detailFor({ tool: 'write_file', args: { file_path: 'src/many.js' }, result: { file_diff: large } }));

@@ -162,15 +162,30 @@ export function renderFileDiffs(value, {
         const newNumber = ['context', 'add'].includes(line.type) ? String(next++) : '';
         if (emitted++ >= maxLines) { omitted++; return; }
         const marker = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : line.type === 'meta' ? '\\' : ' ';
-        const base = line.type === 'add' ? paint.state.success : line.type === 'remove' ? paint.state.danger : paint.text.primary;
+        const surface = line.type === 'add' ? 'add' : line.type === 'remove' ? 'remove' : null;
+        const shaded = surface && Boolean(paint.token('diff.' + surface + 'Line').open);
+        const neutralSurface = term().colorLevel === 'ansi256' && term().appearance !== 'light';
+        const base = shaded && !neutralSurface ? paint.text.primary : line.type === 'add' ? paint.state.success : line.type === 'remove' ? paint.state.danger : paint.text.primary;
+        const gutterPaint = shaded ? paint.text.primary : paint.text.muted;
         const gutter = numbers ? oldNumber.padStart(gutterWidth) + ' ' + newNumber.padStart(gutterWidth) + ' ' : '';
-        const prefix = paint.text.muted(gutter) + base(marker + ' ');
+        const prefix = gutterPaint(gutter) + base(marker + ' ');
+        const changed = text => {
+          const emphasis = base(paint.bold(paint.underline(text)));
+          return shaded ? paint.diff[surface + 'Word'](emphasis) : emphasis;
+        };
         const runs = (highlights.get(index) || [{ text: line.type === 'meta' ? line.text.replace(/^\\\s?/, '') : line.text }])
-          .map(word => ({ text: word.text, paint: word.changed ? text => base(paint.bold(paint.underline(text))) : base }));
-        out.push(...wrapRuns(runs, {
+          .map(word => ({ text: word.text, paint: word.changed ? changed : base }));
+        const rows = wrapRuns(runs, {
           columns, indent, first: prefix,
-          rest: paint.text.muted(' '.repeat(cellWidth(gutter)) + glyph('↳ ', '> ')),
+          rest: gutterPaint(' '.repeat(cellWidth(gutter)) + glyph('↳ ', '> ')),
           wordWrap: false,
+        });
+        out.push(...rows.map(row => {
+          if (!shaded) return row;
+          // Leave the transcript indent and final terminal column untouched.
+          // Padding uses terminal cells, so CJK/tabs and wrapped rows align.
+          const padding = ' '.repeat(Math.max(0, Math.max(8, Number(columns) || 80) - 1 - cellWidth(row)));
+          return indent + paint.diff[surface + 'Line'](row.slice(indent.length) + padding);
         }));
       });
     }

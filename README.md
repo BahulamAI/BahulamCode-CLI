@@ -50,8 +50,13 @@ late output and draft preservation with the browser environment described above.
 ### Change and command cards
 
 Live file changes, expanded details, and Markdown diffs share old/new line-number
-gutters, green/red change markers, and emphasis on changed words. Long lines wrap
-without clipping; F2 or `/last` displays all available diff and command content.
+gutters, subtle theme-aware green/red row backgrounds, and stronger shading on
+changed words. Truecolor and 256-color terminals use shaded rows; basic 16-color
+terminals retain green/red text, and plain/`NO_COLOR` output keeps `+`/`-` markers.
+Light/dark appearance follows `BAHULAM_THEME` and the terminal's advertised theme.
+Dark 256-color terminals use neutral shading with green/red text because that
+palette cannot reproduce the muted truecolor surfaces. Long lines wrap without
+clipping; F2 or `/last` displays all available diff and command content.
 A source-side truncation is labelled rather than presented as a complete diff.
 
 Command cards separate the invocation, working directory, exit status, duration,

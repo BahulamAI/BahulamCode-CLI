@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { paint, TOKENS, LIGHT_TOKENS, strip } from '../src/ui/palette.mjs';
+import { paint, TOKENS, LIGHT_TOKENS, DIFF_BACKGROUNDS, strip } from '../src/ui/palette.mjs';
 import { _setForTesting, refresh } from '../src/ui/term.mjs';
 import { renderBanner, printProjectInfo, printAuthStatus, getLoginSuccessHTML } from '../src/ui/banner.mjs';
 
@@ -8,6 +8,8 @@ const vars = ['BAHULAM_THEME', 'COLORFGBG', 'NO_COLOR', 'BAHULAM_PLAIN', 'FORCE_
 const saved = Object.fromEntries(vars.map(key => [key, process.env[key]]));
 const luminance = rgb => rgb.map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4).reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0);
 const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + .05) / (Math.min(luminance(a), luminance(b)) + .05);
+const ansiRgb = n => n >= 232 ? Array(3).fill(8 + (n - 232) * 10)
+  : [Math.floor((n - 16) / 36), Math.floor((n - 16) / 6) % 6, (n - 16) % 6].map(v => [0, 95, 135, 175, 215, 255][v]);
 try {
   for (const key of vars) delete process.env[key];
   for (const [preference, advertised, expected] of [
@@ -38,11 +40,43 @@ try {
       }
     }
   }
+  for (const [appearance, tokens] of [['light', LIGHT_TOKENS], ['dark', TOKENS]]) {
+    for (const [key, token] of Object.entries(DIFF_BACKGROUNDS[appearance])) {
+      const name = key.split('.')[1];
+      for (const colorLevel of ['truecolor', 'ansi256']) {
+        _setForTesting({ appearance, color: true, colorLevel });
+        const result = paint.diff[name]('sample');
+        const prefix = colorLevel === 'truecolor' ? '\x1b[48;2;' + token.rgb.join(';') + 'm'
+          : '\x1b[48;5;' + token.ansi256 + 'm';
+        assert.equal(result, prefix + 'sample\x1b[49m');
+        assert.deepEqual(paint.token(key), { open: prefix, close: '\x1b[49m' });
+        const foregrounds = ['text.primary'];
+        if (appearance === 'dark' && colorLevel === 'ansi256') foregrounds.push(key.includes('add') ? 'state.success' : 'state.danger');
+        for (const foreground of foregrounds) {
+          const fg = tokens[foreground];
+          assert.ok(contrast(colorLevel === 'truecolor' ? fg.rgb : ansiRgb(fg.ansi256),
+            colorLevel === 'truecolor' ? token.rgb : ansiRgb(token.ansi256)) >= 4.5, appearance + ' ' + key + ' ' + colorLevel + ' contrast');
+        }
+      }
+      for (const colorLevel of ['ansi16', 'none']) {
+        _setForTesting({ color: colorLevel !== 'none', colorLevel });
+        assert.equal(paint.diff[name]('sample'), 'sample');
+        assert.deepEqual(paint.token(key), { open: '', close: '' });
+      }
+    }
+    _setForTesting({ appearance, color: true, colorLevel: 'truecolor' });
+    const nested = paint.diff.addLine('before' + paint.diff.addWord(paint.text.primary('word')) + 'after');
+    assert.equal(strip(nested), 'beforewordafter');
+    assert.ok(nested.includes('\x1b[49m' + paint.token('diff.addLine').open + 'after'));
+    assert.ok(nested.endsWith('\x1b[49m'));
+  }
   process.env.FORCE_COLOR = '3';
   process.env.NO_COLOR = '1';
   refresh();
   assert.equal(paint.brand.primary('plain'), 'plain');
   assert.equal(paint.bold('plain'), 'plain');
+  assert.equal(paint.diff.addLine('plain'), 'plain');
+  assert.equal(paint.diff.removeWord('plain'), 'plain');
   assert.ok(!renderBanner('1.0').includes('\x1b'));
   delete process.env.NO_COLOR;
   process.env.BAHULAM_PLAIN = '1';

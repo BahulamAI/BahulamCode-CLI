@@ -40,6 +40,25 @@ export const LIGHT_TOKENS = Object.freeze({
   'text.muted':    { rgb: [96, 100, 114], ansi256: 242, ansi16: 'gray' },
 });
 
+// Diff surfaces are separate from foreground tokens. ANSI 16 palettes are
+// user-defined and cannot reliably supply subtle, contrast-safe backgrounds.
+export const DIFF_BACKGROUNDS = Object.freeze({
+  dark: Object.freeze({
+    // The 256-color cube has no muted near-black green/red. Neutral
+    // surfaces plus the existing colored foreground are the calmer fallback.
+    'diff.addLine':    { rgb: [30, 48, 42], ansi256: 235 },
+    'diff.removeLine': { rgb: [53, 35, 43], ansi256: 236 },
+    'diff.addWord':    { rgb: [40, 76, 57], ansi256: 237 },
+    'diff.removeWord': { rgb: [85, 43, 54], ansi256: 238 },
+  }),
+  light: Object.freeze({
+    'diff.addLine':    { rgb: [232, 244, 233], ansi256: 194 },
+    'diff.removeLine': { rgb: [251, 235, 237], ansi256: 224 },
+    'diff.addWord':    { rgb: [199, 229, 205], ansi256: 151 },
+    'diff.removeWord': { rgb: [245, 201, 206], ansi256: 217 },
+  }),
+});
+
 // ── ANSI 16-color foreground codes ───────────────────────────────────────
 
 const BASIC_FG = {
@@ -68,23 +87,25 @@ const STYLE_CODES = {
 // ── Open / close sequence builders ───────────────────────────────────────
 
 function openForToken(token, capability, appearance) {
-  const def = (appearance === 'light' ? LIGHT_TOKENS : TOKENS)[token];
+  const surface = DIFF_BACKGROUNDS[appearance === 'light' ? 'light' : 'dark'][token];
+  const def = surface || (appearance === 'light' ? LIGHT_TOKENS : TOKENS)[token];
   if (!def) return '';
+  const channel = surface ? 48 : 38;
 
   if (capability === 'truecolor') {
     const [r, g, b] = def.rgb;
-    return `${ESC}38;2;${r};${g};${b}m`;
+    return `${ESC}${channel};2;${r};${g};${b}m`;
   }
   if (capability === 'ansi256') {
-    return `${ESC}38;5;${def.ansi256}m`;
+    return `${ESC}${channel};5;${def.ansi256}m`;
   }
-  if (capability === 'ansi16') {
+  if (capability === 'ansi16' && !surface) {
     return `${ESC}${BASIC_FG[def.ansi16] || BASIC_FG.white}m`;
   }
   return '';
 }
 
-function wrap(open) {
+function wrap(open, background = false) {
   if (!open) return (input) => String(input ?? '');
   // Re-open after every embedded reset so nested styles compose.
   // Cheap and predictable; most tool output is short enough that the cost
@@ -92,6 +113,12 @@ function wrap(open) {
   return (input) => {
     const text = String(input ?? '');
     if (!text) return '';
+    if (background) {
+      // Restore an outer row after a word background closes, and after
+      // foreground resets. Only close the background: never leak it into
+      // the next line or discard the caller's foreground/style state.
+      return `${open}${text.replace(/\x1b\[(?:0|49)m/g, reset => reset + open)}${ESC}49m`;
+    }
     if (!text.includes(RESET)) return `${open}${text}${RESET}`;
     return `${open}${text.split(RESET).join(`${RESET}${open}`)}${RESET}`;
   };
@@ -116,13 +143,13 @@ function buildPaint() {
   const paint = {};
 
   // Brand / state / text colorizers, nested by namespace.
-  for (const token of Object.keys(TOKENS)) {
+  for (const token of [...Object.keys(TOKENS), ...Object.keys(DIFF_BACKGROUNDS.dark)]) {
     const [ns, name] = token.split('.');
     if (!paint[ns]) paint[ns] = {};
     paint[ns][name] = (input) => {
       const t = term();
       if (!t.color) return String(input ?? '');
-      return wrap(openForToken(token, t.colorLevel, t.appearance))(input);
+      return wrap(openForToken(token, t.colorLevel, t.appearance), ns === 'diff')(input);
     };
   }
 
@@ -140,7 +167,8 @@ function buildPaint() {
   paint.token = (key) => {
     const t = term();
     if (!t.color) return { open: '', close: '' };
-    return { open: openForToken(key, t.colorLevel, t.appearance), close: RESET };
+    const open = openForToken(key, t.colorLevel, t.appearance);
+    return { open, close: open ? (key.startsWith('diff.') ? `${ESC}49m` : RESET) : '' };
   };
 
   return paint;
