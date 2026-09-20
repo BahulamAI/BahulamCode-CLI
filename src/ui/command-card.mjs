@@ -55,6 +55,8 @@ export function commandRuns(command) {
     else if (redirection) { painter = paint.text.primary; redirection = false; }
     else if (expectsCommand && !/^[A-Za-z_][\w]*=/.test(text)) { painter = text => paint.bold(paint.brand.primary(text)); expectsCommand = false; }
     else if (/^-/.test(text)) painter = paint.brand.data;
+    else if (/^["']/.test(text)) painter = paint.syntax.string;
+    else if (/^\d+(?:\.\d+)?$/.test(text)) painter = paint.syntax.literal;
     return { text, paint: painter };
   });
 }

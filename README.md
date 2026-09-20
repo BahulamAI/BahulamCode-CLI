@@ -49,6 +49,17 @@ late output and draft preservation with the browser environment described above.
 
 ### Change and command cards
 
+Quiet dividers separate user messages, assistant replies, and tool activity.
+Consecutive tools stay grouped, streamed text does not gain a divider per chunk,
+and the assistant label repeats when a reply resumes after tools or other output.
+Set `BAHULAM_BLOCK_SEPARATOR=space` for whitespace only, `dotted` for dotted rules,
+or `off` to disable separators; the default is `subtle`.
+Body text stays neutral, with teal code/strings, lavender keywords/links, and
+soft amber numbers and verification labels. Green remains for successful outcomes
+and additions. Light themes use deeper versions of these accents for contrast.
+`npm run test:design:transcript` checks streaming section boundaries and accent
+colors in real terminals, with and without the fixed input dock.
+
 Live file changes, expanded details, and Markdown diffs share old/new line-number
 gutters, subtle theme-aware green/red row backgrounds, and stronger shading on
 changed words. Truecolor and 256-color terminals use shaded rows; basic 16-color

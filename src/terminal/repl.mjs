@@ -2165,7 +2165,7 @@ function renderEvent(event) {
         const lines = transcriptRenderableLines(rendered);
         if (lines.length) {
           renderBlockBoundary('content', { compactSame: true });
-          if (!runtime.contentHeaderPrinted) {
+          if (!runtime.contentHeaderPrinted || runtime.lastRenderedBlock !== 'content') {
             process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
             runtime.contentHeaderPrinted = true;
           }
@@ -2899,7 +2899,7 @@ function renderEvent(event) {
         const lines = transcriptRenderableLines(rendered);
         if (lines.length) {
           renderBlockBoundary('content', { compactSame: true });
-          if (!runtime.contentHeaderPrinted) {
+          if (!runtime.contentHeaderPrinted || runtime.lastRenderedBlock !== 'content') {
             process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
             runtime.contentHeaderPrinted = true;
           }
@@ -5296,14 +5296,17 @@ export async function startTerminalRepl() {
   function printSubmittedInput(input) {
     if (!isInputDockMounted()) {
       printInputBottomRule();
+      runtime.lastRenderedBlock = 'user';
       return;
     }
     const lines = String(input || '').split('\n');
     printInputBottomRule();
+    renderBlockBoundary('user');
     process.stderr.write(`${transcriptHeader('you', { tone: 'user' })}\n`);
     for (const line of lines) {
       process.stderr.write(`${transcriptLine(line, { tone: 'user' })}\n`);
     }
+    runtime.lastRenderedBlock = 'user';
   }
 
   // Helper: show prompt with separator + vertical breathing room
@@ -6121,7 +6124,7 @@ export async function startTerminalRepl() {
         });
         moveToContent();
       }
-      startContentStream();
+      startContentStream({ previousBlock: runtime.lastRenderedBlock });
 
       // Immediate feedback so the screen isn't blank between submit and the
       // first backend event. The first `status`, `thinking`, or `content_*`

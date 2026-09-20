@@ -422,8 +422,10 @@ test('tool activity rows only force blank spacing between shell commands', () =>
   assert.ok(renderSource.includes('process.stderr.write(`${combined}\\n`);'));
   assert.ok(renderSource.includes('process.stderr.write(`${runtime.pendingHead.head}\\n`);'));
   assert.ok(renderSource.includes('function renderBlockBoundary(nextBlock'));
-  assert.ok(renderSource.includes("process.env.BAHULAM_BLOCK_SEPARATOR || 'space'"));
-  assert.ok(renderSource.includes("mode === 'dotted' || mode === 'dots'"));
+  const transcriptSource = fs.readFileSync(new URL('../src/ui/transcript-block.mjs', import.meta.url), 'utf-8');
+  assert.ok(renderSource.includes('transcriptBoundary(runtime.lastRenderedBlock, nextBlock'));
+  assert.ok(transcriptSource.includes("process.env.BAHULAM_BLOCK_SEPARATOR || 'subtle'"));
+  assert.ok(transcriptSource.includes("mode === 'dotted' || mode === 'dots'"));
   assert.ok(renderSource.includes("renderBlockBoundary('tool', { compactSame: tool !== 'shell' })"));
   // renderBlockBoundary('thinking'|'content') calls fire from the event
   // dispatcher which still lives in repl.mjs — check both files.
@@ -794,15 +796,11 @@ test('folds indented wrapped bullet continuation into the bullet item', () => {
   }
 });
 
-test('renders structured keys bold cyan and values regular cyan', () => {
-  // Post-Phase-1 palette emits bold and color as separate SGRs:
-  //   \x1b[1m\x1b[36mstatus\x1b[0m... \x1b[36m ready\x1b[0m
-  // Stripped: "status" + ": " + " ready" all coloured.
-  const rendered = renderMarkdown('```yaml\nstatus: ready\n```');
-  assert.ok(rendered.includes('\x1b[1m\x1b[36mstatus') ||
-            rendered.includes('\x1b[1;36mstatus'),
-            'expected bold cyan key');
-  assert.ok(rendered.includes('\x1b[36m ready'));
+test('structured code uses distinct keys, strings, and numeric accents', () => {
+  const rendered = renderMarkdown('```yaml\nstatus: "ready"\nretries: 3\n```');
+  assert.ok(rendered.includes('\x1b[35mstatus'), 'lavender key');
+  assert.ok(rendered.includes('\x1b[36m"ready"'), 'teal string');
+  assert.ok(rendered.includes('\x1b[33m3'), 'amber number');
 });
 
 test('renders diff additions and removals with semantic colors', () => {

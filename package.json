@@ -23,7 +23,8 @@
     "test:design:browser": "node test/test-design-browser.mjs",
     "test:design:terminal": "node test/test-dock-browser.mjs",
     "test:design:cards": "node test/test-code-cards-browser.mjs",
-        "test:design:startup": "node test/test-startup-browser.mjs",
+    "test:design:startup": "node test/test-startup-browser.mjs",
+    "test:design:transcript": "node test/test-transcript-browser.mjs",
     "sync-catalog": "node scripts/sync-catalog.mjs",
     "prepublishOnly": "node scripts/sync-catalog.mjs"
   },

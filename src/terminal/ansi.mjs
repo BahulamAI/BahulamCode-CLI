@@ -12,6 +12,8 @@
 import { paint } from '../ui/palette.mjs';
 import { renderUnifiedDiff } from '../ui/diff.mjs';
 import { term } from '../ui/term.mjs';
+import { wrapRuns } from '../ui/code-layout.mjs';
+import { codeRuns } from '../ui/code-syntax.mjs';
 
 const ESC = '\x1b[';
 const write = (s) => process.stderr.write(s);
@@ -239,19 +241,24 @@ export function renderMarkdown(text) {
     // Code block start/end
     if (line.trimStart().startsWith('```')) {
       if (inCodeBlock) {
-        out.push(c.gray('  └' + '─'.repeat(40)));
+        out.push(c.gray('  ' + (term().unicode ? '└' : '+') + (term().unicode ? '─' : '-').repeat(Math.max(1, Math.min(40, columns - 4)))));
         inCodeBlock = false;
         codeLang = '';
       } else {
         codeLang = line.trim().slice(3).trim();
-        out.push(c.gray('  ┌' + '─'.repeat(4) + (codeLang ? ` ${codeLang} ` : '') + '─'.repeat(Math.max(0, 35 - codeLang.length))));
+        const width = Math.max(1, Math.min(40, columns - 4));
+        const label = codeLang ? (' ' + codeLang + ' ').slice(0, width) : '';
+        out.push(c.gray('  ' + (term().unicode ? '┌' : '+') + label + (term().unicode ? '─' : '-').repeat(Math.max(0, width - label.length))));
         inCodeBlock = true;
       }
       continue;
     }
 
     if (inCodeBlock) {
-      out.push(c.gray('  │ ') + renderCodeLine(line, codeLang));
+      out.push(...wrapRuns(codeRuns(line, codeLang), { columns,
+        first: c.gray(term().unicode ? '  │ ' : '  | '),
+        rest: c.gray(term().unicode ? '  ↳ ' : '  > '), wordWrap: false,
+      }));
       continue;
     }
 
@@ -434,8 +441,8 @@ function markdownColumns() {
   // character boundary — splitting words like "wro/ng" or "multip/le". Reserve
   // that indent (plus one column of safety for wide-char surprises) so the
   // renderer's soft-wrap does the whole job.
-  const raw = process.stdout.columns || process.stderr.columns || 100;
-  return Math.max(40, raw - 3);
+  const raw = process.stdout.columns || process.stderr.columns || term().columns;
+  return Math.max(8, raw - 3);
 }
 
 function renderWrappedMarkdownLine(firstPrefix, continuationPrefix, content, columns, renderContent) {
@@ -492,21 +499,6 @@ function splitLongWord(word, width) {
     chunks.push(word.slice(i, i + safeWidth));
   }
   return chunks;
-}
-
-function renderCodeLine(line, language) {
-  const lang = String(language || '').toLowerCase();
-  if (lang === 'diff') {
-    if (line.startsWith('+')) return c.green(line);
-    if (line.startsWith('-')) return c.red(line);
-    if (line.startsWith('@@')) return c.brand(line);
-  }
-  if (lang === 'json' || lang === 'yaml' || lang === 'yml' || lang === 'toml') {
-    return line.replace(/^(\s*)(["']?[\w.-]+["']?)(\s*[:=])(.*)$/, (_, space, key, separator, value) =>
-      `${space}${c.cyanBold(key)}${c.gray(separator)}${c.cyanRegular(value)}`
-    );
-  }
-  return c.cyan(line);
 }
 
 function parseTableRow(line) {
@@ -608,7 +600,7 @@ function inlineMarkdown(text) {
     .replace(/`(.+?)`/g, (_, s) => c.cyan(s))
     .replace(
       /\[(.+?)\]\((.+?)\)/g,
-      (_, label, url) => `${c.underline(c.white(label))} ${c.gray('(' + url + ')')}`,
+      (_, label, url) => `${c.underline(paint.brand.accent(label))} ${c.gray('(' + url + ')')}`,
     );
 }
 

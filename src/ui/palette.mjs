@@ -18,8 +18,11 @@ const RESET = `${ESC}0m`;
 // Light/dark variants keep the website identity legible in terminal themes.
 export const TOKENS = Object.freeze({
   'brand.primary': { rgb: [190, 198, 255], ansi256: 147, ansi16: 'blue' },
-  'brand.accent':  { rgb: [201, 207, 255], ansi256: 189, ansi16: 'magenta' },
-  'brand.data':    { rgb: [154, 214, 184], ansi256: 151, ansi16: 'cyan' },
+  'brand.accent':  { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'brand.data':    { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'syntax.keyword': { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'syntax.string':  { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'syntax.literal': { rgb: [231, 196, 148], ansi256: 222, ansi16: 'yellow' },
   'state.success': { rgb: [154, 214, 184], ansi256: 151, ansi16: 'green' },
   'state.warn':    { rgb: [242, 203, 137], ansi256: 222, ansi16: 'yellow' },
   'state.danger':  { rgb: [255, 176, 182], ansi256: 217, ansi16: 'red' },
@@ -31,7 +34,10 @@ export const TOKENS = Object.freeze({
 export const LIGHT_TOKENS = Object.freeze({
   'brand.primary': { rgb: [48, 59, 160], ansi256: 61, ansi16: 'blue' },
   'brand.accent':  { rgb: [112, 83, 155], ansi256: 97, ansi16: 'magenta' },
-  'brand.data':    { rgb: [40, 107, 104], ansi256: 23, ansi16: 'cyan' },
+  'brand.data':    { rgb: [38, 105, 120], ansi256: 23, ansi16: 'cyan' },
+  'syntax.keyword': { rgb: [113, 76, 145], ansi256: 97, ansi16: 'magenta' },
+  'syntax.string':  { rgb: [38, 105, 120], ansi256: 23, ansi16: 'cyan' },
+  'syntax.literal': { rgb: [135, 88, 32], ansi256: 94, ansi16: 'yellow' },
   'state.success': { rgb: [40, 104, 79], ansi256: 23, ansi16: 'green' },
   'state.warn':    { rgb: [138, 91, 21], ansi256: 94, ansi16: 'yellow' },
   'state.danger':  { rgb: [173, 54, 63], ansi256: 131, ansi16: 'red' },

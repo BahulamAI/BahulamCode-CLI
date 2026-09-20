@@ -1,5 +1,5 @@
 import { sgr, glyph, sectionHeading } from './chrome.mjs';
-import { transcriptHeader, transcriptLine } from './transcript-block.mjs';
+import { transcriptBoundary, transcriptHeader, transcriptLine } from './transcript-block.mjs';
 import { renderCommandHead, renderCommandResult, toolSource } from './command-card.mjs';
 import { renderFileDiffs } from './diff.mjs';
 /**
@@ -126,18 +126,10 @@ export class EventFormatter {
     }
 
     _boundary(nextBlock, { compactSame = false } = {}) {
-        if (!this._lastBlock) return;
-        if (compactSame && this._lastBlock === nextBlock) return;
-
-        const mode = String(process.env.BAHULAM_BLOCK_SEPARATOR || 'space').toLowerCase();
-        if (mode === 'off' || mode === 'none') return;
-        if (mode === 'dotted' || mode === 'dots') {
-            const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);
-            process.stderr.write(`  ${sgr.muted}${'·'.repeat(Math.min(44, cols - 4))}${sgr.reset}\n`);
-            return;
-        }
-
-        process.stderr.write('\n');
+        const boundary = transcriptBoundary(this._lastBlock, nextBlock, { compactSame,
+            ...(process.stderr.columns || process.stdout.columns ? { columns: process.stderr.columns || process.stdout.columns } : {}),
+        });
+        if (boundary) process.stderr.write(boundary);
     }
 
     _status(data) {

@@ -50,7 +50,7 @@ export const ENV_SCHEMA = {
     BAHULAM_INPUT_ROWS_MAX: { type: 'number', default: 6, description: 'Maximum input rows reserved by the fixed input dock' },
     BAHULAM_PROMPT_BOTTOM_PADDING: { type: 'number', default: 5, description: 'Blank rows reserved below the prompt when the fixed dock is disabled' },
     BAHULAM_PASTE_FLUSH_MS: { type: 'number', default: 35, description: 'Debounce window for non-bracketed multiline paste input' },
-    BAHULAM_BLOCK_SEPARATOR: { type: 'string', default: 'space', description: 'Tool/content separator style: space, dotted, or off' },
+    BAHULAM_BLOCK_SEPARATOR: { type: 'string', default: 'subtle', description: 'Transcript separator style: subtle (default), space, dotted, or off' },
     NO_COLOR: { type: 'boolean', default: false, description: 'Disable colored output' },
     TERM: { type: 'string', description: 'Terminal type' },
 

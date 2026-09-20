@@ -164,25 +164,14 @@ import { detailFor } from '../ui/tool-details.mjs';
 import { renderCommandResult, toolSource } from '../ui/command-card.mjs';
 import { subAgentIndent, inSubAgent as inSubAgentBlock } from '../ui/sub-agent.mjs';
 import { safeCwd } from './repl-utils.mjs';
-import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
-
-export function blockSeparatorMode() {
-  return String(process.env.BAHULAM_BLOCK_SEPARATOR || 'space').toLowerCase();
-}
+import { transcriptBoundary, transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
+export { blockSeparatorMode } from '../ui/transcript-block.mjs';
 
 export function renderBlockBoundary(nextBlock, { compactSame = false } = {}) {
-  if (!runtime.lastRenderedBlock) return;
-  if (compactSame && runtime.lastRenderedBlock === nextBlock) return;
-
-  const mode = blockSeparatorMode();
-  if (mode === 'off' || mode === 'none') return;
-  if (mode === 'dotted' || mode === 'dots') {
-    const cols = Math.max(24, process.stderr.columns || process.stdout.columns || 80);
-    process.stderr.write(`  ${c.dim('·'.repeat(Math.min(44, cols - 4)))}\n`);
-    return;
-  }
-
-  process.stderr.write('\n');
+  const boundary = transcriptBoundary(runtime.lastRenderedBlock, nextBlock, {
+    compactSame, columns: process.stderr.columns || process.stdout.columns || term().columns,
+  });
+  if (boundary) process.stderr.write(boundary);
 }
 
 export function flushPendingHead() {
@@ -255,6 +244,7 @@ function exploreSnapshotMs() {
 }
 
 function writeExploreSnapshot(summary = exploreSummary()) {
+  renderBlockBoundary('tool', { compactSame: true });
   const cols = process.stderr.columns || 120;
   const line = `  ${paint.text.dim(fitAnsiLine(summary, Math.max(32, cols - 2)))}`;
   process.stderr.write(`${line}\n`);
@@ -310,7 +300,6 @@ export function renderExploreRun() {
       presentStatus(rendered);
     }, 80);
   }
-  runtime.lastRenderedBlock = 'tool';
 }
 
 export function flushExploreRun() {
@@ -502,7 +491,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
   // block needs its own real estate.
   const outcomeIsMultiLine = outcome.includes('\n');
   if (runtime.pendingHead && runtime.pendingHead.callId === callId && !hasLint && !runtime.pendingHead.head.includes('\n') && !outcomeIsMultiLine) {
-    const cols = process.stderr.columns || 120;
+    const cols = process.stderr.columns || term().columns;
     const combined = `${runtime.pendingHead.head}  ${outcome}`;
     if (stripAnsi(combined).length <= cols) {
       process.stderr.write(`${combined}\n`);
@@ -848,7 +837,7 @@ export function stopSpinner() {
 // (declaration moved to repl-state.mjs runtime.*)
 // (declaration moved to repl-state.mjs runtime.*)
 
-export function startContentStream() {
+export function startContentStream({ previousBlock = null } = {}) {
   runtime.streamBuffer = '';
   runtime.streamedPartialText = '';
   runtime.renderedToolResults.clear();
@@ -856,7 +845,7 @@ export function startContentStream() {
   runtime.exploreRun = { counts: {}, recent: [], lineActive: false, lastPrintedSummary: '', lastPrintedTotal: 0, lastPrintedAt: 0 };
   runtime.renderedContentThisTurn = false;
   runtime.contentHeaderPrinted = false;
-  runtime.lastRenderedBlock = null;
+  runtime.lastRenderedBlock = previousBlock;
   stopSpinner();
 }
 
@@ -889,7 +878,7 @@ export function flushContent() {
   flushPendingHead();
   flushCompactReadRun();
   renderBlockBoundary('content', { compactSame: true });
-  if (!runtime.contentHeaderPrinted) {
+  if (!runtime.contentHeaderPrinted || runtime.lastRenderedBlock !== 'content') {
     process.stdout.write(`${transcriptHeader('bahulam', { tone: 'assistant' })}\n`);
     runtime.contentHeaderPrinted = true;
   }

@@ -43,13 +43,13 @@ export function renderMissionReport(state) {
   if (state.task) lines.push(text(truncate(state.task, 180), paint.text.primary));
   const files = (label, paths) => {
     if (!Array.isArray(paths) || !paths.length) return;
-    lines.push(text(label, value => paint.bold(paint.brand.primary(value))));
+    lines.push(text(label, value => paint.bold((label === 'Read' ? paint.brand.data : paint.brand.accent)(value))));
     for (const file of paths.slice(0, 8)) lines.push(text(file, paint.text.primary, '    '));
     if (paths.length > 8) lines.push(text(glyph('… ', '... ') + (paths.length - 8) + ' more files; /report lists all', paint.text.muted, '    '));
   };
   files('Read', state.filesRead);
   files('Change', state.filesChanged);
-  lines.push(text('Verify', value => paint.bold(paint.brand.primary(value))));
+  lines.push(text('Verify', value => paint.bold(paint.syntax.literal(value))));
   const passed = state.testsPass?.passed, total = state.testsPass?.total;
   if (Number.isFinite(total) && total > 0 && Number.isFinite(passed)) {
     lines.push(text(passed + '/' + total + ' tests pass' + (passed < total ? glyph(' · ', ' / ') + (total - passed) + ' failing' : ''),
