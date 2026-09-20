@@ -486,6 +486,7 @@ export function isInputDockMounted() {
 
 export function mountInputDock({
   inputRowsMax: requestedMax,
+  preserveScrollback = false,
   initialContentRow = 1,
   initialContentCol = 1,
 } = {}) {
@@ -494,6 +495,15 @@ export function mountInputDock({
   if (t.ttyMode !== 'rich' || t.fixedInput === false) return false;
   if (process.env.BAHULAM_FIXED_INPUT === '0') return false;
   if (mounted) return true;
+
+  // Start a known viewport without erasing shell scrollback or querying stdin.
+  // The queue owns every subsequent startup write, so there is no approximate
+  // cursor seed to drift after wrapping, Unicode, progress or long resumes.
+  if (preserveScrollback) {
+    write('\r' + '\n'.repeat(t.rows) + '\x1b[H');
+    initialContentRow = 1;
+    initialContentCol = 1;
+  }
 
   inputRowsMax = resolveMaxInputRows(requestedMax);
   inputRows = MIN_INPUT_ROWS;

@@ -18,18 +18,47 @@ const write = (s) => { try { out.write(s); } catch {} };
 
 // ── Brand banner ─────────────────────────────────────────────────────────
 
-/**
- * A compact wordmark leaves the workspace, not the logo, in the foreground.
- * Wrapping follows the current terminal width, including ASCII/plain mode.
- */
+function abundanceGlyph() {
+  const loop = term().unicode ? '∞' : 'o';
+  return [
+    '  ' + loop + loop + '   ' + loop + loop + '  ',
+    loop + '   ' + loop + ' ' + loop + '   ' + loop,
+    loop + '    ' + loop + '    ' + loop,
+    loop + '   ' + loop + ' ' + loop + '   ' + loop,
+    '  ' + loop + loop + '   ' + loop + loop + '  ',
+  ];
+}
+
+function wordmarkLines() {
+  const lines = [
+    '████   ███  █   █ █   █ █      ███  █   █',
+    '█   █ █   █ █   █ █   █ █     █   █ ██ ██',
+    '████  █████ █████ █   █ █     █████ █ █ █',
+    '█   █ █   █ █   █ █   █ █     █   █ █   █',
+    '████  █   █ █   █  ███  █████ █   █ █   █',
+  ];
+  return term().unicode ? lines : lines.map(line => line.replaceAll('█', '#'));
+}
+
+/** Keep the original logo intact; narrow terminals use the motif + text name. */
 export function renderBanner(version = '') {
   const t = term();
   const separator = t.unicode ? ' · ' : ' / ';
-  const heading = paint.bold(paint.brand.primary((t.unicode ? '∞ ' : '> ') + 'bahulam.'))
-    + ' code' + (version ? paint.text.muted(separator + 'v' + version) : '');
-  const lines = [heading, paint.text.muted('Your code. Your context. Your terminal.')];
-  return '\n' + lines.flatMap(line => wrapToLines(line, Math.max(1, t.columns - 4)))
-    .map(line => '  ' + line).join('\n') + '\n\n';
+  const mark = abundanceGlyph();
+  const wordmark = wordmarkLines();
+  const fullWidth = 2 + 11 + 2 + Math.max(...wordmark.map(line => line.length));
+  const wide = t.columns > fullWidth;
+  const rows = [''];
+  for (let i = 0; i < mark.length; i++) {
+    const row = '  ' + paint.text.muted(mark[i].padEnd(11));
+    rows.push(wide ? row + '  ' + paint.bold(paint.brand.primary(wordmark[i])) : row);
+  }
+  if (!wide) rows.push('  ' + paint.bold(paint.brand.primary('bahulam.')) + ' code');
+  const descriptor = (wide ? 'code' + separator : '') + 'abundance in your terminal' + (version ? separator + 'v' + version : '');
+  const indent = wide ? ' '.repeat(15) : '  ';
+  rows.push(...wrapToLines(paint.text.muted(descriptor), Math.max(1, t.columns - indent.length - 1)).map(line => indent + line));
+  rows.push('');
+  return rows.join('\n') + '\n';
 }
 
 /**

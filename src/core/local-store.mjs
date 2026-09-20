@@ -461,8 +461,8 @@ async function parseSessionMeta(filePath) {
  * Get recent sessions with metadata.
  * @param {number} n — max sessions to return
  */
-export async function getRecentSessions(n = 10) {
-  const files = listSessionFiles().slice(0, n);
+export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
+  const files = listSessionFiles().filter(file => !sessionIdPrefix || file.sessionId.startsWith(sessionIdPrefix)).slice(0, n);
   const sessions = [];
   for (const f of files) {
     const meta = await parseSessionMeta(f.filePath);

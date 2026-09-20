@@ -18,6 +18,7 @@
 
 import { c, stripAnsi, renderMarkdown, inPlace } from './ansi.mjs';
 import { paint } from '../ui/palette.mjs';
+import { term } from '../ui/term.mjs';
 import { runtime, session } from './repl-state.mjs';
 import { fitAnsiLine } from './repl-format.mjs';
 import { exploreCategory, isExploreTool } from './repl-explore.mjs';
@@ -38,7 +39,7 @@ import * as queue from '../ui/render-queue.mjs';
 const SUB_AGENT_WINDOW_ROWS = 8;
 
 function statusWidth() {
-  return Math.max(8, (process.stderr.columns || process.stdout.columns || 120) - 1);
+  return Math.max(8, (process.stderr.columns || process.stdout.columns || term().columns) - 1);
 }
 
 function fitStatusLine(line) {
@@ -160,6 +161,7 @@ import {
   clearCards,
 } from '../ui/tool-card.mjs';
 import { detailFor } from '../ui/tool-details.mjs';
+import { renderCommandResult, toolSource } from '../ui/command-card.mjs';
 import { subAgentIndent, inSubAgent as inSubAgentBlock } from '../ui/sub-agent.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import { transcriptHeader, transcriptLine } from '../ui/transcript-block.mjs';
@@ -351,7 +353,7 @@ export function renderToolCall(data) {
   // this ahead of explore-collapse so parallel explores do not merge into
   // one global read/search spinner.
   if (fromSubAgent && queue.isActive() && runtime.subAgentWindow?.active) {
-    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    recordCard({ id: callId, tool, args, source: toolSource(data), cwd: safeCwd(), startedAt: Date.now() });
     session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
     const label = readToolLabel(tool, { args });
     const runId = data?.run_id || data?.sub_agent_run_id || '';
@@ -371,7 +373,7 @@ export function renderToolCall(data) {
     session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
     const label = readToolLabel(tool, { args });
     if (label) rememberExplore(label);
-    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    recordCard({ id: callId, tool, args, source: toolSource(data), cwd: safeCwd(), startedAt: Date.now() });
     renderExploreRun();
     return;
   }
@@ -379,7 +381,7 @@ export function renderToolCall(data) {
   // Legacy sub-agent live window fallback for events without explicit
   // sub-agent metadata.
   if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
-    recordCard({ id: callId, tool, args, startedAt: Date.now() });
+    recordCard({ id: callId, tool, args, source: toolSource(data), cwd: safeCwd(), startedAt: Date.now() });
     session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
     const label = readToolLabel(tool, { args });
     pushSubAgentWindowLine(label ? `→ ${tool} · ${label}` : `→ ${tool}`);
@@ -391,11 +393,12 @@ export function renderToolCall(data) {
 
   const head = formatCardHead(tool, args, {
     cwd: safeCwd(),
-    columns: process.stderr.columns || 120,
+    source: toolSource(data),
+    columns: process.stderr.columns || term().columns,
     indent,
   });
 
-  recordCard({ id: callId, tool, args, head, startedAt: Date.now() });
+  recordCard({ id: callId, tool, args, source: toolSource(data), cwd: safeCwd(), head, startedAt: Date.now() });
   session.toolCounts[tool] = (session.toolCounts[tool] || 0) + 1;
   runtime.pendingHead = { callId, head, indent };
   runtime.lastRenderedBlock = 'tool';
@@ -434,7 +437,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
   recordWriteActivity(tool, data.args || {}, data);
 
   // Update the card buffer so /last and `d` can find it.
-  if (callId) recordCard({ id: callId, tool, args: data.args, result: data, durationMs });
+  if (callId) recordCard({ id: callId, tool, args: data.args ?? undefined, result: data, durationMs, source: toolSource(data) || undefined });
 
   if (data._blocked) session.blockedOps++;
 
@@ -455,7 +458,7 @@ export function renderToolResult(data, eventType = 'tool_result') {
   const hasLint = (tool === 'write_file' || tool === 'edit_file') && data.lint;
   const diffPreview = formatCompactFileDiff(data, {
     indent: gutter,
-    columns: process.stderr.columns || 120,
+    columns: process.stderr.columns || term().columns,
   });
   const fromSubAgent = Boolean(data?.internal || data?.sub_agent || data?.sub_agent_label || data?.sub_agent_run_id);
 
@@ -479,6 +482,15 @@ export function renderToolResult(data, eventType = 'tool_result') {
   // Legacy sub-agent live window fallback for events without explicit
   // sub-agent metadata.
   if (queue.isActive() && runtime.subAgentWindow?.active && inSubAgentBlock()) {
+    return;
+  }
+
+  if (shellResultTool(tool)) {
+    flushPendingHead();
+    const args = data.args || getCard(callId)?.args || {};
+    process.stderr.write(renderCommandResult(data, { args, columns: term().columns, indent: indent + '  ', durationMs, summary: summarizeResult(tool, data, args) }) + '\n');
+    if (diffPreview) { process.stderr.write(diffPreview + '\n'); rememberFileDiffPreview(data); }
+    runtime.lastRenderedBlock = 'tool';
     return;
   }
 
@@ -608,7 +620,7 @@ export function renderFileDiffEvent(data = {}) {
     lines_removed: data.lines_removed,
   }, {
     indent: gutter,
-    columns: process.stderr.columns || 120,
+    columns: process.stderr.columns || term().columns,
     showFileHeader: true,
   });
   if (!diffPreview) return false;

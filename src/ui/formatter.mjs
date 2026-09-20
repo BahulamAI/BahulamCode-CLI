@@ -1,7 +1,7 @@
 import { sgr, glyph, sectionHeading } from './chrome.mjs';
-import { term } from './term.mjs';
-import { wrapToLines } from './text-layout.mjs';
 import { transcriptHeader, transcriptLine } from './transcript-block.mjs';
+import { renderCommandHead, renderCommandResult, toolSource } from './command-card.mjs';
+import { renderFileDiffs } from './diff.mjs';
 /**
  * Formatter — Clean terminal output for Bahulam events.
  *
@@ -210,12 +210,9 @@ export class EventFormatter {
 
         const label = toolDisplayLabel(tool);
         const summary = toolDisplaySummary(tool, args);
-        if (tool === 'shell' && summary) {
-            process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${sgr.bold}${label}${sgr.reset}\n`);
-            for (const line of wrapToLines(summary, Math.max(1, term().columns - 5))) {
-                process.stderr.write(`  ${sgr.muted}  ${line}${sgr.reset}\n`);
-            }
-            this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
+        if (tool === 'shell') {
+            process.stderr.write(renderCommandHead(args, { source: toolSource(data) }) + '\n');
+            this.toolCalls.push({ name: tool, callId, args, startTime: Date.now() });
             this._lastBlock = 'tool';
             return;
         }
@@ -230,6 +227,13 @@ export class EventFormatter {
         const tool = data?.tool || '';
         const success = data?.success !== false;
         const durationMs = data?.duration_ms;
+        const result = typeof data?.result === 'object' && data.result ? { ...data, ...data.result } : data;
+        if (tool === 'shell') {
+            const call = [...this.toolCalls].reverse().find(call => data?.call_id ? call.callId === data.call_id : call.name === tool);
+            process.stderr.write(renderCommandResult(result, { args: data.args || call?.args || {}, durationMs }) + '\n');
+            return;
+        }
+        if (result?.file_diff || result?.file_diffs) process.stderr.write(renderFileDiffs(result) + '\n');
 
         if (this.verbose) {
             const dur = durationMs ? ` (${durationMs}ms)` : '';

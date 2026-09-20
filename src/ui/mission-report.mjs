@@ -1,33 +1,18 @@
 /**
- * Mission report — Mission Control (PRD-055 §11).
- *
- * Replaces the trailing "Done" message at the end of a session with a
- * structured summary:
- *
- *   ───────────────────────────────────────────────────
- *   ✓ done
- *   ───────────────────────────────────────────────────
- *   📂 Files       auth.py, tests/test_auth.py
- *   🛠️ Tools read(4)  edit(2)  shell(1)  test(1) · ⏱ Time 2m 18s
- *   🛰️ Sub-agents  explore(1)  plan(1) · saved ≈ $0.08
- *   ✅ Health      24/24 tests pass
- *   ───────────────────────────────────────────────────
- *
- *
- * Failure variant uses "held" and lists blockers.
- *
- * `renderMissionReport(state)` returns the ANSI block; `toMarkdown(state)`
- * returns the plain-markdown version saved by `/report`.
+ * Compact work summary — Read / Change / Verify, followed by command hints.
+ * Keeps complete paths, wraps to terminal width, and never invents test totals.
+ * renderMissionReport returns ANSI; toMarkdown preserves the full saved report.
  */
 
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { paint, width as visibleWidth } from './palette.mjs';
-import { icons } from './icons.mjs';
+import { paint } from './palette.mjs';
 import { toolFamily } from './icons.mjs';
+import { sectionHeading, glyph } from './chrome.mjs';
+import { wrapCode } from './code-layout.mjs';
+import { term } from './term.mjs';
 
-const WIDTH = 56;
 
 // ── Public API ─────────────────────────────────────────────────────────
 
@@ -50,67 +35,43 @@ const WIDTH = 56;
  */
 export function renderMissionReport(state) {
   const success = state.success !== false;
-  const lines = [];
-  const rule  = paint.text.dim('─'.repeat(WIDTH));
-
-  const statusIcon = success ? paint.state.success('✓') : paint.state.danger('✗');
-  const statusText = success ? paint.state.success('done') : paint.state.danger('held');
-  const headerTask = state.task ? paint.text.dim(' · ') + paint.text.primary(truncate(state.task, 60)) : '';
-
-  lines.push('');
-  lines.push(rule);
-  lines.push(`${statusIcon} ${statusText}${headerTask}`);
-  lines.push(rule);
-
-  if (Array.isArray(state.filesChanged) && state.filesChanged.length) {
-    lines.push(row('📂', 'Files',      formatFiles(state.filesChanged)));
+  const columns = term().columns || 80;
+  const lines = ['', sectionHeading(success ? 'Done' : 'Needs attention', {
+    detail: 'Work summary', columns, tone: success ? 'brand' : 'danger',
+  })];
+  const text = (value, painter = paint.text.muted, indent = '  ') => wrapCode(value, painter, { columns, indent });
+  if (state.task) lines.push(text(truncate(state.task, 180), paint.text.primary));
+  const files = (label, paths) => {
+    if (!Array.isArray(paths) || !paths.length) return;
+    lines.push(text(label, value => paint.bold(paint.brand.primary(value))));
+    for (const file of paths.slice(0, 8)) lines.push(text(file, paint.text.primary, '    '));
+    if (paths.length > 8) lines.push(text(glyph('… ', '... ') + (paths.length - 8) + ' more files; /report lists all', paint.text.muted, '    '));
+  };
+  files('Read', state.filesRead);
+  files('Change', state.filesChanged);
+  lines.push(text('Verify', value => paint.bold(paint.brand.primary(value))));
+  const passed = state.testsPass?.passed, total = state.testsPass?.total;
+  if (Number.isFinite(total) && total > 0 && Number.isFinite(passed)) {
+    lines.push(text(passed + '/' + total + ' tests pass' + (passed < total ? glyph(' · ', ' / ') + (total - passed) + ' failing' : ''),
+      passed === total ? paint.state.success : paint.state.danger, '    '));
+  } else if (Number.isFinite(passed)) {
+    lines.push(text(passed + ' tests passed; total not reported', paint.text.muted, '    '));
+  } else {
+    lines.push(text('No test totals reported', paint.text.muted, '    '));
   }
-  if (Array.isArray(state.filesRead) && state.filesRead.length) {
-    lines.push(row('📖', 'Read',       formatFiles(state.filesRead)));
-  }
-
-  const toolSummary = formatToolCounts(state.toolCounts);
-  const time = state.durationS != null ? paint.brand.data(formatDuration(state.durationS)) : '';
-  const metricSegments = [];
-  if (toolSummary) metricSegments.push(`${icons.write} ${paint.text.dim('Tools')} ${toolSummary}`);
-  if (time) metricSegments.push(`${paint.text.dim('⏱ Time')} ${time}`);
-  if (metricSegments.length) lines.push('  ' + metricSegments.join(paint.text.dim(' · ')));
-
+  const tools = stripAnsi(formatToolCounts(state.toolCounts) || '');
+  const metrics = [tools ? 'Tools ' + tools : '', state.durationS != null ? 'Time ' + formatDuration(state.durationS) : ''].filter(Boolean);
+  if (metrics.length) lines.push(text(metrics.join(glyph(' · ', ' / '))));
   if (state.subAgents) {
-    const subSummary = formatSubAgents(state.subAgents);
-    if (subSummary) lines.push(row(icons.subAgent, 'Sub-agents', subSummary));
+    const agents = stripAnsi(formatSubAgents(state.subAgents));
+    if (agents) lines.push(text('Agents ' + agents));
   }
-
-  // Test health.
-  if (state.testsPass && typeof state.testsPass.total === 'number' && state.testsPass.total > 0) {
-    const { passed = 0, total = 0 } = state.testsPass;
-    const allGreen = passed === total;
-    const icon = allGreen ? paint.state.success('✅') : paint.state.danger('❌');
-    const text = allGreen
-      ? `${passed}/${total} tests pass`
-      : `${passed}/${total} tests pass · ${paint.state.danger((total - passed) + ' failing')}`;
-    lines.push(row(icon, allGreen ? 'Health' : 'Tests', text, /*alreadyIcon*/ true));
+  if (!success && state.blockers?.length) {
+    lines.push(text('Blocked by', paint.state.danger));
+    for (const blocker of state.blockers) lines.push(text(blocker, paint.text.primary, '    '));
   }
-
-  lines.push(rule);
-
-  if (!success && Array.isArray(state.blockers) && state.blockers.length) {
-    lines.push('');
-    lines.push('  ' + paint.bold(paint.state.danger('Blocked by:')));
-    for (const b of state.blockers.slice(0, 6)) {
-      lines.push('    ' + paint.text.dim('•') + ' ' + paint.text.primary(truncate(b, WIDTH * 2)));
-    }
-    if (state.blockers.length > 6) {
-      lines.push('    ' + paint.text.dim(`… ${state.blockers.length - 6} more`));
-    }
-  }
-
-  if (Array.isArray(state.nextActions) && state.nextActions.length) {
-    lines.push('');
-    const next = state.nextActions.map(a => paint.brand.data(a)).join(paint.text.dim('   '));
-    lines.push('  ' + paint.text.dim('Next:  ') + next);
-  }
-
+  const actions = state.nextActions?.length ? state.nextActions : ['/last', '/report'];
+  lines.push(text('Next: ' + actions.join(glyph(' · ', ' / ')), paint.brand.primary));
   lines.push('');
   return lines.join('\n');
 }
@@ -143,7 +104,9 @@ export function toMarkdown(state) {
   if (state.durationS != null) out.push('**Time**: ' + formatDuration(state.durationS));
   if (state.testsPass) {
     const { passed = 0, total = 0 } = state.testsPass;
-    out.push(`**Tests**: ${passed}/${total} ${passed === total ? 'pass' : 'pass · ' + (total - passed) + ' failing'}`);
+    out.push(Number.isFinite(total) && total > 0
+      ? `**Tests**: ${passed}/${total} ${passed === total ? 'pass' : 'pass · ' + (total - passed) + ' failing'}`
+      : `**Tests**: ${passed} passed; total not reported`);
   }
   if (!success && Array.isArray(state.blockers) && state.blockers.length) {
     out.push('');
@@ -173,11 +136,6 @@ export function saveReport(state, { cwd = process.cwd(), timestamp } = {}) {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-function row(icon, label, value, alreadyIcon = false) {
-  const i = alreadyIcon ? icon : icon;
-  const labelText = paint.text.dim(label.padEnd(11));
-  return `  ${i} ${labelText} ${value}`;
-}
 
 function resolveReportMeta(state = {}) {
   const cwd = state.cwd || process.cwd();
@@ -210,11 +168,6 @@ function gitValue(cwd, args, transform = value => value) {
   }
 }
 
-function formatFiles(files) {
-  const shortened = files.map(f => paint.text.primary(path.basename(f)));
-  if (shortened.length <= 4) return shortened.join(paint.text.dim(', '));
-  return shortened.slice(0, 4).join(paint.text.dim(', ')) + paint.text.dim(`, +${files.length - 4} more`);
-}
 
 /**
  * Render `read(4)  edit(2)  shell(1)  test(1)` from a counts object/array.

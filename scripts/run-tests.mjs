@@ -51,6 +51,8 @@ const UNIT_TESTS = [
     'test/pi-requirements-smoke.mjs',
     'test/test-formatter.mjs',
     'test/test-terminal-rendering.mjs',
+    'test/test-code-cards.mjs',
+    'test/test-startup-resume.mjs',
     'test/test-design-system.mjs',
     'test/test-render-queue.mjs',
     'test/test-input-dock.mjs',

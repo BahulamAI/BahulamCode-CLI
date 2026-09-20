@@ -12,6 +12,7 @@
  */
 
 import { c } from './ansi.mjs';
+import { term } from '../ui/term.mjs';
 import { session, orbitRef, sessionMgrRef } from './repl-state.mjs';
 import { safeCwd } from './repl-utils.mjs';
 import { startContentStream, flushContent, stopSpinner } from './repl-render.mjs';
@@ -38,12 +39,12 @@ import { getRecentSessions, getSessionDetail, buildResumeHistory, combineResumeS
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
 
-export async function listResumableSessions() {
+export async function listResumableSessions(sessionIdPrefix) {
   // PRD-068 §5.14.6: JSONL is the single source of truth. The legacy
   // per-project state-only entries never had a transcript, so they can't be
   // replayed — silently dropping them removes a source of "picked a session
   // and got a flat history" surprises.
-  const rich = (await getRecentSessions(Infinity)).map(normalizeResumableSession);
+  const rich = (await getRecentSessions(Infinity, { sessionIdPrefix })).map(normalizeResumableSession);
   return rich.sort((a, b) => {
     const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
     const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
@@ -417,6 +418,17 @@ export async function chooseResumeHistoryMode(ctx, { defaultMode = 'compact' } =
 // live event renderer. `renderEvent` still lives in repl.mjs (its extraction
 // is a later slice); passing it via `ctx` here avoids a circular import.
 export function renderResumePreview(resumed, ctx = {}) {
+  if (ctx.previewOnly) {
+    const summaryOnly = ['summary', 'compact'].includes(resumed.historyMode);
+    const preview = summaryOnly && resumed.summary ? [{ role: 'assistant', content: resumed.summary }]
+      : (resumed.history || []).filter(message => message.role === 'user' || message.role === 'assistant');
+    renderHistoryEntries(preview, {
+      limit: ctx.startup ? 2 : 6,
+      maxChars: ctx.startup ? Math.max(12, (process.stderr.columns || term().columns) - 20) : summaryOnly ? 1000 : 400,
+      title: summaryOnly ? 'Continuity summary preview · /history for transcript' : 'Recent conversation · /history for more',
+    });
+    return;
+  }
   const renderEvent = ctx.renderEvent;
   const tailTurns = resumeTailTurnCount(resumed.historyMode);
   if (resumed.historyMode === 'compact' || resumed.historyMode === 'summary') {

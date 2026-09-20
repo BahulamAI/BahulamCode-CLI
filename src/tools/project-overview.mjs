@@ -360,6 +360,8 @@ function defaultScratchRoots() {
 export class ProjectRegistry {
     constructor() {
         this.projects = new Map();
+        this.pending = new Map();
+        this._environment = null;
         this.scratchRoots = new Set(defaultScratchRoots());
         this._globalIdentity = null;
         this._globalPreferences = null;
@@ -400,9 +402,11 @@ export class ProjectRegistry {
     // PRD-69 project context is live metadata, not index cache. Re-read it on
     // every registration attempt so repeated get_project_overview calls pick up
     // .bahulam/BAHULAM.md, goal/plan/style, skills, AGENTS.md, etc. changes.
-    _attachLiveContext(resource, root) {
+    _attachLiveContext(resource, root, { probeEnvironment = true } = {}) {
         const bahulamDir = projectConfigDir(root);
-        resource.environment = detectEnvironment();
+        resource.environment = probeEnvironment
+            ? (this._environment ||= detectEnvironment())
+            : (this._environment || { platform: os.platform(), architecture: os.arch(), node: process.version, tools: {} });
         resource.project_context = _readIfExists(root, 'AGENTS.md', 10000) ||
             _readIfExists(bahulamDir, 'BAHULAM.md', 10000) ||
             _readIfExists(root, 'BAHULAM.md', 10000) ||
@@ -421,7 +425,7 @@ export class ProjectRegistry {
         return resource;
     }
 
-    async register(rawPath, { forceRefresh = false, force_refresh = false, bypassProjectMarkers = false } = {}) {
+    async register(rawPath, { forceRefresh = false, force_refresh = false, bypassProjectMarkers = false, deferIndex = false } = {}) {
         if (!rawPath) {
             throw new Error('get_project_overview requires a project path');
         }
@@ -475,9 +479,37 @@ export class ProjectRegistry {
         }
 
         const id = projectId(root);
-        const fingerprint = projectFingerprint(root);
         const existing = this.projects.get(id);
         const shouldForceRefresh = Boolean(forceRefresh || force_refresh);
+        // Restore path scope immediately. No tree scan, index load or subprocess
+        // probes are needed merely to read history or use ordinary file tools.
+        if (deferIndex && !shouldForceRefresh) {
+            if (existing) {
+                existing.resource.commands = detectCommands(root);
+                this._attachLiveContext(existing.resource, root, { probeEnvironment: false });
+                return { already_registered: true, refreshed: false, resource: existing.resource, output: formatResource(existing.resource) };
+            }
+            const resource = this._attachLiveContext({
+                project_id: id, root, name: path.basename(root), languages: [],
+                commands: detectCommands(root), overview: 'Project at ' + root,
+                index_status: 'deferred', index_version: null,
+            }, root, { probeEnvironment: false });
+            this.projects.set(id, { resource, retriever: new ContextRetriever(root) });
+            return { already_registered: false, refreshed: false, resource, output: formatResource(resource) };
+        }
+        if (this.pending.has(id)) {
+            const pending = await this.pending.get(id);
+            if (!shouldForceRefresh) return pending;
+        }
+        const operation = Promise.resolve().then(() => this._indexProject(root, id, shouldForceRefresh));
+        this.pending.set(id, operation);
+        try { return await operation; }
+        finally { if (this.pending.get(id) === operation) this.pending.delete(id); }
+    }
+
+    async _indexProject(root, id, shouldForceRefresh) {
+        const fingerprint = projectFingerprint(root);
+        const existing = this.projects.get(id);
         if (existing && !shouldForceRefresh && existing.resource.index_version === fingerprint) {
             this._attachLiveContext(existing.resource, root);
             return {

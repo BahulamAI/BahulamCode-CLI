@@ -40,18 +40,19 @@ test('Bahulam brand uses web-aligned indigo with terminal fallbacks', () => {
   assert.ok(c.cyan('code').startsWith('\x1b[36m'));
 });
 
-test('startup banner is compact, width-aware, and ASCII-safe', () => {
+test('startup banner preserves the ASCII logo, adapts to width, and supports plain mode', () => {
   for (const columns of [24, 40, 80, 120]) {
     _setTermForTesting({ color: true, colorLevel: 'ansi16', plain: false, unicode: true, columns });
     const rendered = stripAnsi(renderBanner('2.6.12'));
-    assert.ok(rendered.includes('bahulam.'));
+    assert.ok(rendered.includes(columns >= 80 ? '████' : 'bahulam.'));
     assert.ok(rendered.includes('v2.6.12'));
-    assert.ok(!rendered.includes('████'));
+    assert.ok(rendered.includes('abundance'));
+    assert.ok(rendered.includes('∞'));
     assert.ok(rendered.split('\n').every(line => line.length <= columns));
   }
   _setTermForTesting({ color: false, colorLevel: 'none', plain: true, unicode: false });
   const fallback = renderBanner('2.6.12');
-  assert.ok(fallback.includes('> bahulam. code / v2.6.12'));
+  assert.ok(fallback.includes('####') && fallback.includes('abundance in your terminal') && fallback.includes('v2.6.12'));
   assert.ok(/^[\x00-\x7F]*$/.test(fallback));
   assert.ok(!/\x1b\[/.test(fallback));
   _setTermForTesting({ color: true, colorLevel: 'ansi16', plain: false, unicode: true, columns: 80 });
@@ -252,20 +253,20 @@ test('renders shell commands with semantic syntax colors', () => {
 test('long shell tool heads wrap without hiding command text', () => {
   const command = 'cd "/Users/sree/Sites/Tarang Orca/appstak-platform" && pnpm run dev 2>&1 | head -80';
   const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 58, cwd: '/tmp' }));
-  assert.ok(rendered.includes('• shell ·'));
-  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('Command · shell'));
+  assert.ok(rendered.includes('Command'));
   assert.ok(rendered.includes('$'));
   assert.ok(rendered.includes('appstak-platform'));
   assert.ok(rendered.includes('pnpm run dev'));
   assert.ok(rendered.includes('2>&1 | head -80'));
-  assert.ok(rendered.includes('in appstak-platform'));
+  assert.ok(rendered.includes('cwd  appstak-platform'));
   assert.ok(!rendered.includes('cd "/Users/sree'));
   assert.ok(!rendered.includes('…'));
 
   const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
   const azRendered = stripAnsi(formatCardHead('shell', { command: azCommand }, { columns: 80, cwd: '/tmp' }));
-  assert.ok(azRendered.includes('• shell ·'));
-  assert.ok(azRendered.includes('Running'));
+  assert.ok(azRendered.includes('Command · shell'));
+  assert.ok(azRendered.includes('Command'));
   assert.ok(azRendered.includes('$ az network nsg create'));
   assert.ok(azRendered.includes('az network nsg create'));
   assert.ok(azRendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
@@ -299,7 +300,7 @@ test('long shell tool heads wrap without hiding command text', () => {
     columns: 58,
     cwd: '/tmp',
   }));
-  assert.ok(observed.includes('observed 15.0s tail'));
+  assert.ok(observed.includes('observed output tail · 15.0s'));
 });
 
 test('shell git diff card shows a useful multi-row preview', () => {
@@ -311,10 +312,10 @@ test('shell git diff card shows a useful multi-row preview', () => {
     columns: 120,
     cwd: '/tmp',
   }));
-  assert.ok(rendered.includes('+ changed line 0'));
-  assert.ok(rendered.includes('+ changed line 7'));
-  assert.ok(!rendered.includes('+ changed line 8'));
-  assert.ok(rendered.includes('+ 4 more rows'));
+  assert.ok(/\+\s+changed line 0/.test(rendered));
+  assert.ok(/\+\s+changed line 7/.test(rendered));
+  assert.ok(!/\+\s+changed line 8/.test(rendered));
+  assert.ok(rendered.includes('4 diff lines omitted'));
 });
 
 test('shell card compacts leading cd wrappers', () => {
@@ -326,8 +327,8 @@ test('shell card compacts leading cd wrappers', () => {
     cwd: '/Users/sree/Sites/Tarang Orca/codekepler-npm',
   }));
 
-  assert.ok(rendered.includes('• shell · Running $ git status --short'));
-  assert.ok(rendered.includes('in tarang-ai-agent-framework/agent-framework-pypi'));
+  assert.ok(rendered.includes('$ git status --short'));
+  assert.ok(rendered.includes('cwd  tarang-ai-agent-framework/agent-framework-pypi'));
   assert.ok(!rendered.includes('cd /Users/sree'));
 });
 
@@ -342,11 +343,11 @@ test('multiline shell commands compact instead of leaking left-aligned lines', (
   const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 100, cwd: process.cwd() }));
   const lines = rendered.split('\n').filter(Boolean);
 
-  assert.strictEqual(lines.length, 1);
-  assert.ok(rendered.includes('• shell · Running $ shell script'));
-  assert.ok(rendered.includes('details: F2 or /last'));
+  assert.ok(lines.length >= 3 && lines.length <= 6);
+  assert.ok(rendered.includes('shell script'));
+  assert.ok(rendered.includes('Full command: F2 or /last'));
   assert.ok(!rendered.includes('\ngrep -n'));
-  assert.ok(lines[0].startsWith('• shell ·'));
+  assert.ok(lines[0].trimStart().startsWith('Command ·'));
 });
 
 test('shell card compacts generated scripts and detail exposes command output', () => {
@@ -363,9 +364,9 @@ test('shell card compacts generated scripts and detail exposes command output', 
   assert.strictEqual(profile.preview, 'from pathlib import…');
 
   const head = stripAnsi(formatCardHead('shell', { command }, { columns: 120, cwd: process.cwd() }));
-  assert.ok(head.includes('• shell · Running $ python script'));
+  assert.ok(head.includes('python script'));
   assert.ok(head.includes('preview: from pathlib import…'));
-  assert.ok(head.includes('details: F2 or /last'));
+  assert.ok(head.includes('Full command: F2 or /last'));
   assert.ok(!head.includes('Path("out.txt")'));
   const narrowHead = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
   assert.ok(narrowHead.includes('python script'));
@@ -468,8 +469,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('paint.inverse(c.brand(` ${label} `))'));
   assert.ok(replSource.includes("from '../ui/input-dock.mjs'"));
   assert.ok(replSource.includes('mountInputDock({'));
-  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
-  assert.ok(replSource.includes('initialContentCol: dockCursor.col'));
+  assert.ok(replSource.includes('mountInputDock({ preserveScrollback: true })'));
   assert.ok(!replSource.includes("from '../ui/status-bar.mjs'"));
   assert.ok(!replSource.includes('attachOrbit('));
   assert.ok(replSource.includes("return `${paint.text.primary(who)} ${paint.brand.primary(glyph('›', '>'))} `;"));
@@ -590,13 +590,16 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(!replSource.includes('Ctrl+D'));
 });
 
-test('REPL seeds dock transcript cursor from startup output before first input', () => {
+test('REPL mounts one startup writer before banner and restores locally before network checks', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  assert.ok(replSource.includes('function trackStartupOutput(chunk)'));
-  assert.ok(replSource.includes('const stopStartupOutputTracking = startStartupOutputTracking();'));
-  assert.ok(replSource.includes('dockCursor = startupCursorSeed();'));
-  assert.ok(replSource.includes('stopStartupOutputTracking();'));
-  assert.ok(replSource.includes('initialContentRow: dockCursor.row'));
+  const mount = replSource.indexOf('const inputDockActive = mountInputDock({ preserveScrollback: true })');
+  assert.ok(mount > 0 && mount < replSource.indexOf('  printBanner(auth);', mount));
+  assert.ok(!replSource.includes('function trackStartupOutput(chunk)'));
+  assert.ok(!replSource.includes('startInlineSpinner'));
+  assert.ok(replSource.includes('deferProjectIndex: true'));
+  assert.ok(replSource.includes('registerProjectRoots(rootsToRegister, { deferIndex: true, bypassProjectMarkers: false })'));
+  const prompt = replSource.indexOf('  showPrompt();', mount);
+  assert.ok(prompt < replSource.indexOf('void refreshStartupChecks(', mount));
 });
 
 test('resume preview avoids circular renderEvent import during repl split', () => {
@@ -606,7 +609,7 @@ test('resume preview avoids circular renderEvent import during repl split', () =
   assert.ok(!resumeSource.includes("from './repl.mjs'"));
   assert.ok(resumeSource.includes('export function renderResumePreview(resumed, ctx = {})'));
   assert.ok(resumeSource.includes('const renderEvent = ctx.renderEvent;'));
-  assert.ok(replSource.includes('renderResumePreview(resumed, { renderEvent });'));
+  assert.ok(replSource.includes('renderResumePreview(resumed, { renderEvent, previewOnly: true });'));
 });
 
 test('fixed input dock clears input rows before repainting', () => {
@@ -641,7 +644,7 @@ test('legacy formatter wraps full shell commands without ellipsis', () => {
     process.stderr.write = originalWrite;
   }
   const rendered = stripAnsi(output);
-  assert.ok(rendered.includes('Running'));
+  assert.ok(rendered.includes('Command'));
   assert.ok(rendered.includes('az network nsg create'));
   assert.ok(rendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
   assert.ok(rendered.includes('codekepler-microvm-prod-02'));
@@ -804,8 +807,10 @@ test('renders structured keys bold cyan and values regular cyan', () => {
 
 test('renders diff additions and removals with semantic colors', () => {
   const rendered = renderDiff('@@ -1 +1 @@\n-old\n+new');
-  assert.ok(rendered.includes('\x1b[31m-old'));
-  assert.ok(rendered.includes('\x1b[32m+new'));
+  assert.ok(rendered.includes('\x1b[31m'));
+  assert.ok(stripAnsi(rendered).includes('- old'));
+  assert.ok(rendered.includes('\x1b[32m'));
+  assert.ok(stripAnsi(rendered).includes('+ new'));
 });
 
 test('renders compact file diff previews for writes', () => {
@@ -831,7 +836,7 @@ test('renders compact file diff previews for writes', () => {
     args: { file_path: '/repo/src/example.js', content: 'large content omitted' },
     result: { file_diff: fileDiff, diff: fileDiff.unified },
   }));
-  assert.ok(detail.includes('--- a/src/example.js'));
+  assert.ok(detail.includes('src/example.js'));
   assert.ok(!detail.includes('large content omitted'));
 });
 
@@ -886,8 +891,8 @@ test('renders direct and legacy file diff payloads', () => {
     args: { file_path: 'src/legacy.js' },
     result: { file_diff: legacyDiff },
   }));
-  assert.ok(detail.includes('--- a/src/legacy.js'));
-  assert.ok(detail.includes('+newThing();'));
+  assert.ok(detail.includes('src/legacy.js'));
+  assert.ok(detail.includes('+ newThing();'));
 });
 
 test('stagnation display uses the duplicate-call count from the reason', () => {
@@ -993,8 +998,8 @@ test('mission report omits old title and keeps tools/time on one line', () => {
   assert.ok(!rendered.includes('Author Ravi'));
   assert.ok(!rendered.includes('Cost'));
   assert.ok(!rendered.includes('$0.0003'));
-  assert.ok(rendered.includes('Read        approval.mjs, repl.mjs'));
-  assert.ok(rendered.includes('Tools shell(5) · ⏱ Time 19.9s'));
+  assert.ok(rendered.includes('src/core/approval.mjs') && rendered.includes('src/terminal/repl.mjs'));
+  assert.ok(rendered.includes('Tools shell(5) · Time 19.9s'));
 });
 
 test('approval prompt uses risk title and compact scoped menu', () => {

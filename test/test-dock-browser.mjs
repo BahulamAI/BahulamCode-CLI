@@ -75,7 +75,7 @@ function capture(appearance) {
   return frames;
 }
 
-const browser = await chromium.launch({ headless: true,
+const browser = await chromium.launch({ headless: true, timeout: 20000,
   ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}) });
 try {
   for (const appearance of ['light', 'dark']) {

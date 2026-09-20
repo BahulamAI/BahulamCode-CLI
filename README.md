@@ -30,6 +30,42 @@ Playwright and xterm installations. `PLAYWRIGHT_MODULE` and `XTERM_MODULE` can p
 to existing installations; `BROWSER_EXECUTABLE` selects a browser. The test checks
 light/dark docks, streaming, paging, and resize without connecting to a backend.
 
+### Local-first startup and resume
+
+Startup mounts one transcript writer before printing the banner. Earlier shell
+output stays in scrollback; connection checks run after the input prompt is ready.
+Project paths restore without filesystem fingerprint scans, runtime probes or
+search-index builds. The first search/overview initializes its index, and
+concurrent requests share a single build.
+
+Startup restores the original ASCII logo, infinity motif, abundance tagline and
+version, with a narrow-terminal fallback. It previews two recent messages; in-session
+resume previews six, without reducing the selected agent history mode. `/history` shows more. Summary/tail modes reuse local checkpoints
+and local recaps; `/compact` remains the explicit backend-summary operation.
+Direct `/resume <id>` filters sessions before parsing their metadata.
+
+`npm run test:design:startup` checks populated terminals, narrow layouts, Unicode,
+late output and draft preservation with the browser environment described above.
+
+### Change and command cards
+
+Live file changes, expanded details, and Markdown diffs share old/new line-number
+gutters, green/red change markers, and emphasis on changed words. Long lines wrap
+without clipping; F2 or `/last` displays all available diff and command content.
+A source-side truncation is labelled rather than presented as a complete diff.
+
+Command cards separate the invocation, working directory, exit status, duration,
+and stdout/stderr. Plugin, MCP, workflow, and agent labels appear when the event
+supplies that metadata. Work summaries list changed files and reported test totals;
+missing totals are not treated as passed tests.
+
+Expanded edit/write cards include a shell-quoted `bahulam workspace open` command.
+It opens that file in a **new local workspace**, not a resumed Cloud IDE session.
+No browser is launched automatically and approval policy is unchanged.
+
+Run `npm run test:design:cards` for optional light/dark, 40/80/120-column xterm
+checks, using the same browser/module environment variables described above.
+
 ## About the name
 
 **Bahulam** (बहुलम्) is Sanskrit for *abundance*. The name reflects a

@@ -45,6 +45,8 @@ import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
 import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
+import { fetchUserProfile, refreshStartupChecks } from './startup.mjs';
+import { wrapCode } from '../ui/code-layout.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
 import {
@@ -88,11 +90,10 @@ import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 import { applyModelSelection, resolveModelSelection } from '../core/model-selection.mjs';
 import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { buildContextEnvelope } from '../core/context-envelope.mjs';
-import { buildResumeHistory, combineResumeSummaries, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
+import { buildResumeHistory, getRecentSessions, getSessionDetail, getTranscriptProjectRoots } from '../core/local-store.mjs';
 import { decideResumeMode, projectedTokensForChoice, formatTokens as formatCtxTokens } from '../core/resume-mode.mjs';
 import { appendTask, ensureTaskFiles, loadTaskBoard, moveTask, removeTask, taskCounts, TASK_FILES, updateTask } from '../core/tasks.mjs';
 import { applyCompactSummary, localCompactSummary, parseCompactTailCount, prepareCompactHistory } from '../core/compact-history.mjs';
-import { startSpinner as startInlineSpinner } from '../ui/spinner.mjs';
 import {
   appendVisionAnalysisToInstruction,
   appendDocumentsToInstruction,
@@ -150,7 +151,6 @@ import {
   pickResumableSession,
   previewResumeSession,
   renderResumePreview,
-  summarizeResumeTranscript,
 } from './repl-resume.mjs';
 import {
   endStatusMarker,
@@ -1360,27 +1360,10 @@ function printBanner(auth) {
   const creds = auth.loadCredentials();
   const env = process.env.TARANG_ENV || 'production';
 
-  if (creds.token) {
-    // Authenticated: single quiet status line right under the banner.
-    process.stderr.write(`  ${c.dim(env)}  ${c.green('authenticated')}\n\n`);
-  } else {
-    // Unauthenticated: the /login prompt used to be crammed onto the same
-    // line as the env label directly under the ASCII banner — users
-    // reported not noticing it. Break it out into its own bordered block
-    // one blank line below so it can't be missed.
-    process.stderr.write(`  ${c.dim(env)}  ${c.dim('not authenticated')}\n`);
-    process.stderr.write('\n');
-    const line = c.yellow('  ┃  ');
-    process.stderr.write(`${line}${c.bold(c.yellow('Not logged in.'))} ${c.dim('The agent cannot run without auth.')}\n`);
-    process.stderr.write(`${line}${c.dim('Type')} ${c.bold(c.green('/login'))} ${c.dim('to authenticate ')}${c.dim('(opens browser)')}${c.dim('.')}\n`);
-    process.stderr.write('\n');
+  process.stderr.write(wrapCode(env + (creds.token ? ' · credentials saved; connection checked in background' : ' · not authenticated'), paint.text.muted, { indent: '  ' }) + '\n\n');
+  if (!creds.token) {
+    process.stderr.write(wrapCode('Sign in with /login to run the agent (opens browser).', paint.text.muted, { indent: '  ' }) + '\n\n');
   }
-
-  // Fire-and-forget upgrade check — checks npm registry for a newer
-  // version of the CLI package and, if one exists, prints an unobtrusive
-  // banner after the auth status. Silent on failure (no network, npm
-  // registry down, etc.) — must never block session start.
-  _checkForUpgradeAndAnnounce().catch(() => { /* silent */ });
 }
 
 /** Non-blocking check of npm registry for a newer bahulam version. */
@@ -3052,7 +3035,7 @@ function renderEvent(event) {
           costUsd: null,
           durationS: data?.duration_s,
           testsPass: data?.tests_passed != null
-            ? { passed: data.tests_passed, total: data.tests_total || data.tests_passed }
+            ? { passed: data.tests_passed, total: data.tests_total ?? null }
             : null,
           blockers: !successOverall ? (data?.blockers || extractBlockers(data)) : null,
           nextActions: [],
@@ -4189,7 +4172,7 @@ async function handleCommand(input, ctx) {
     }
 
     case '/sessions': {
-      const resumable = await listResumableSessions();
+      const resumable = await listResumableSessions(targetId);
       if (resumable.length === 0) {
         process.stderr.write(`  ${c.gray('No resumable sessions found.')}\n`);
         return;
@@ -4339,31 +4322,8 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      // 5. Show continuity context. Non-summary modes use the captured
-      //    bahulam_event stream when available so the terminal replay matches
-      //    the original styled interaction; older sessions fall back to
-      //    reconstructed text.
-      if (mode === 'summary' && resumed.summary) {
-        // In summary mode the agent gets only the summary block. Show it so
-        // the user knows what continuity context was included.
-        process.stderr.write(`\n  ${c.bold('Continuity Summary')}\n`);
-        process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
-        for (const line of resumed.summary.split('\n')) {
-          process.stderr.write(`  ${c.dim(line)}\n`);
-        }
-        process.stderr.write('\n');
-      } else if (resumed.replayEvents?.length) {
-        renderResumePreview(resumed, { renderEvent });
-      } else if (resumed.history?.length) {
-        // Full/tail modes feed real conversation to the agent — show
-        // the tail so the user has visual context. Cap at 30 entries to avoid
-        // flooding the terminal on long sessions.
-        renderHistoryEntries(resumed.history, {
-          limit: 30,
-          maxChars: 200,
-          title: mode?.startsWith('tail-') ? `Recent turns (${mode.replace('tail-', 'last ')})` : 'Conversation history (last 30 entries)',
-        });
-      }
+      // Display is bounded independently from the selected agent history mode.
+      renderResumePreview(resumed, { renderEvent, previewOnly: true, startup: true });
       return;
     }
 
@@ -4457,17 +4417,11 @@ async function handleMcpSlashCommand(rest, ctx) {
 // ── Fetch User Profile ──
 
 async function fetchUser(ctx) {
-  const creds = ctx.auth.loadCredentials();
-  if (!creds.token) return;
-  try {
-    const resp = await fetch(`${creds.backendUrl}/api/user/me`, {
-      headers: { 'Authorization': `Bearer ${creds.token}` },
-    });
-    if (resp.ok) {
-      session.user = await resp.json();
-      session.model = session.user.default_reasoning_model || null;
-    }
-  } catch {}
+  const user = await fetchUserProfile(ctx.auth);
+  if (user) {
+    session.user = user;
+    session.model = user.default_reasoning_model || null;
+  }
 }
 
 // ── Main REPL ──
@@ -4525,26 +4479,12 @@ export async function startTerminalRepl() {
     }, dispatchCtx);
   }
 
-  function makeToolExecutor({ showIndexStatus = false } = {}) {
-    const shouldShowIndexStatus = showIndexStatus && process.stderr.isTTY && !term().plain;
-    let stopIndexSpinner = null;
+  function makeToolExecutor() {
     return createToolExecutor({
-      checkpoints,
-      hookRunner,
-      pluginRegistry,
+      checkpoints, hookRunner, pluginRegistry,
+      deferProjectIndex: true,
       delegateRunner: runDelegateFromTool,
       interactionHandler: askUserInteraction,
-      onAutoRegisterStart: shouldShowIndexStatus ? (root) => {
-        const name = path.basename(root || safeCwd()) || root || 'project';
-        stopIndexSpinner?.();
-        stopIndexSpinner = startInlineSpinner(
-          `Indexing ${name} so tools can read and search this project...`
-        );
-      } : null,
-      onAutoRegisterDone: shouldShowIndexStatus ? () => {
-        stopIndexSpinner?.();
-        stopIndexSpinner = null;
-      } : null,
     });
   }
 
@@ -4586,54 +4526,6 @@ export async function startTerminalRepl() {
   registerJobCompletionDispatch(() => {
     return makeDispatchContext(ctx);
   });
-
-  let startupOutputRow = 1;
-  let startupOutputCol = 1;
-
-  function trackStartupOutput(chunk) {
-    if (!process.stderr.isTTY || term().plain) return;
-    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
-    if (!text) return;
-    const clean = text
-      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
-      .replace(/\x1b[()][A-Za-z0-9]/g, '');
-    const width = Math.max(1, process.stderr.columns || process.stdout.columns || 80);
-    for (const ch of clean) {
-      if (ch === '\r') {
-        startupOutputCol = 1;
-        continue;
-      }
-      if (ch === '\n') {
-        startupOutputRow++;
-        startupOutputCol = 1;
-        continue;
-      }
-      startupOutputCol++;
-      if (startupOutputCol > width) {
-        startupOutputRow++;
-        startupOutputCol = 1;
-      }
-    }
-  }
-
-  function startStartupOutputTracking() {
-    if (!process.stderr.isTTY || term().plain) return () => {};
-    const originalWrite = process.stderr.write;
-    function trackedStartupWrite(chunk, ...args) {
-      trackStartupOutput(chunk);
-      return originalWrite.call(this, chunk, ...args);
-    }
-    process.stderr.write = trackedStartupWrite;
-    return () => {
-      if (process.stderr.write === trackedStartupWrite) {
-        process.stderr.write = originalWrite;
-      }
-    };
-  }
-
-  function startupCursorSeed() {
-    return { row: startupOutputRow, col: startupOutputCol };
-  }
 
   async function startNewSession({ announce = true } = {}) {
     stopSpinner();
@@ -4780,43 +4672,10 @@ export async function startTerminalRepl() {
 
     // PRD-068 §5.14.7: explicit cwd confirmation if saved path differs.
     const savedProjectPath = detail?.meta?.project || '';
-    let summarySource = 'local';
-    let summaryWarning = '';
-    if (historyMode !== 'full' && richHistory.sourceMessages?.length) {
-      onProgress('summarizing transcript', 34);
-      const backendSummary = await summarizeResumeTranscript({
-        auth,
-        toolExecutor,
-        sessionId,
-        projectPath: savedProjectPath || safeCwd(),
-        messages: richHistory.sourceMessages,
-      });
-      if (backendSummary?.summary) {
-        richHistory.summary = combineResumeSummaries(richHistory.priorSummary, backendSummary.summary);
-        const summaryIndex = Number.isInteger(richHistory.summaryMessageIndex)
-          ? richHistory.summaryMessageIndex
-          : 0;
-        if (richHistory.agentHistory?.[summaryIndex]) {
-          const tailTurns = resumeTailTurnCount(historyMode);
-          const prefix = tailTurns
-            ? `Summary of earlier turns before the retained last ${tailTurns} conversation messages:\n`
-            : 'Session continuity summary:\n';
-          richHistory.agentHistory[summaryIndex] = {
-            ...richHistory.agentHistory[summaryIndex],
-            content: `${prefix}${richHistory.summary}`,
-          };
-        }
-        summarySource = backendSummary.source || 'backend';
-      } else {
-        summarySource = 'local fallback';
-        summaryWarning = backendSummary?.reason || 'backend summary unavailable';
-      }
-    } else if (historyMode !== 'full') {
-      summarySource = 'not needed';
-      summaryWarning = resumeTailTurnCount(historyMode)
-        ? 'retained tail covers the whole transcript'
-        : 'empty transcript';
-    }
+    // Local checkpoint + local recap are already built. Resume must not wait
+    // for an LLM request; /compact remains the explicit backend-summary path.
+    const summarySource = richHistory.priorSummary ? 'local checkpoint + recap' : 'local recap';
+    const summaryWarning = '';
     const agentHistory = richHistory.agentHistory;
     const originalCwd = safeCwd();
     let switchedProject = false;
@@ -4907,16 +4766,9 @@ export async function startTerminalRepl() {
     const hydrationFailures = [];
     const resumeRoots = getTranscriptProjectRoots(detail);
     const rootsToRegister = [...new Set([safeCwd(), ...resumeRoots].filter(Boolean))];
-    onProgress('hydrating project roots', 68);
-    for (let i = 0; i < rootsToRegister.length; i++) {
-      const root = rootsToRegister[i];
-      onProgress(`hydrating project root ${i + 1}/${rootsToRegister.length}`, 68 + Math.round((i / Math.max(1, rootsToRegister.length)) * 18));
-      try {
-        await toolExecutor.execute('get_project_overview', { path: root });
-      } catch {
-        hydrationFailures.push(root);
-      }
-    }
+    onProgress('restoring project paths (indexing deferred)', 68);
+    const registered = await toolExecutor.registerProjectRoots(rootsToRegister, { deferIndex: true, bypassProjectMarkers: false });
+    for (const result of registered) if (!result.success) hydrationFailures.push(result.root);
 
     onProgress('preparing replay', 92);
     session.history = displayHistory;
@@ -4959,94 +4811,63 @@ export async function startTerminalRepl() {
   }
   ctx.activateResumedSession = activateResumedSession;
 
-  // ── Print banner + preflight + init BEFORE mounting the status bar ──
-  // The status bar shrinks the scroll region; if it mounts first, the
-  // banner scrolls off-screen before the user ever sees it.
-  const stopStartupOutputTracking = startStartupOutputTracking();
-  let dockCursor = startupCursorSeed();
+  // One owner from the first startup line through the first prompt. Keep
+  // existing shell output in scrollback; never guess an absolute cursor row.
+  orbitRef.current = createOrbit();
+  const inputDockActive = mountInputDock({ preserveScrollback: true });
+  printBanner(auth);
+  toolExecutor = makeToolExecutor();
+  ctx.toolExecutor = toolExecutor;
+  await toolExecutor.waitForAutoRegister();
+
+  // PRD-076 W7b: restore persisted /model picks from ~/.bahulam/config.json
+  // before applying CLI-flag overrides, so `bahulam-code` alone re-uses
+  // last session's choices and `bahulam-code --model foo` still wins.
   try {
-    printBanner(auth);
-
-    // Preflight diagnostic (PRD-055 §9). Non-blocking; opt-out via
-    // BAHULAM_NO_PREFLIGHT=1 (used by tests / scripted runs).
-    if (process.env.BAHULAM_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions) {
-      try { await runPreflight({ auth, cwd: safeCwd(), version: VERSION }); }
-      catch { /* preflight is best-effort */ }
+    const persisted = auth.loadCredentials();
+    if (persisted?.modelConfig && Object.keys(persisted.modelConfig).length) {
+      session.modelOverrides = { ...persisted.modelConfig };
+      if (persisted.modelConfig.reasoning) session.model = persisted.modelConfig.reasoning;
     }
+    if (persisted?.modelMode) session.modelMode = persisted.modelMode;
+    if (persisted?.routePreference) session.routePreference = persisted.routePreference;
+  } catch { /* best-effort restore */ }
 
-    // Create the auto-indexing executor after the startup header is visible so
-    // the indexing status appears in the user's line of sight.
-    toolExecutor = makeToolExecutor({ showIndexStatus: true });
-    ctx.toolExecutor = toolExecutor;
+  // Explicit launch choices win over the later background profile response.
+  if (cliArgs.model || cliArgs.route) {
+    try { await applyLaunchModelArgs(cliArgs, ctx); } catch {}
+  }
+  if (session.user) {
+    process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
+  }
+  // ── Resume previous session ──
+  if (cliArgs.resume) {
+    const lastSession = cliArgs.resumeSessionId
+        ? { sessionId: cliArgs.resumeSessionId }
+        : sessionMgr.getLastSession();
 
-    // ── Initialization ──
-    process.stderr.write(`  ${c.brand('⠋')} ${c.dim('Initializing...')}\r`);
-    await fetchUser(ctx);
-
-    // Clear the spinner line
-    process.stderr.write(`\r${' '.repeat(60)}\r`);
-    process.stderr.write(`  ${c.green('✓')} ${c.dim('Ready; projects will be indexed on demand')}\n`);
-
-    // PRD-076 W7b: restore persisted /model picks from ~/.bahulam/config.json
-    // before applying CLI-flag overrides, so `bahulam-code` alone re-uses
-    // last session's choices and `bahulam-code --model foo` still wins.
-    try {
-      const persisted = auth.loadCredentials();
-      if (persisted?.modelConfig && Object.keys(persisted.modelConfig).length) {
-        session.modelOverrides = { ...persisted.modelConfig };
-        if (persisted.modelConfig.reasoning) session.model = persisted.modelConfig.reasoning;
-      }
-      if (persisted?.modelMode) session.modelMode = persisted.modelMode;
-      if (persisted?.routePreference) session.routePreference = persisted.routePreference;
-    } catch { /* best-effort restore */ }
-
-    // --model / --route launch overrides (after fetchUser so they win
-    // over the profile default; catalog validation is fail-open).
-    if (cliArgs.model || cliArgs.route) {
-      try { await applyLaunchModelArgs(cliArgs, ctx); } catch {}
-    }
-    if (session.user) {
-      process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
-    }
-    // ── Resume previous session ──
-    if (cliArgs.resume) {
-      const lastSession = cliArgs.resumeSessionId
-          ? { sessionId: cliArgs.resumeSessionId }
-          : sessionMgr.getLastSession();
-
-      if (lastSession) {
-        const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
-        if (resumed.ok) {
-          process.stderr.write(`  ${c.green('↺')} ${c.dim(`Resumed session: ${messageCountLabel(resumed.messages)}`)}`);
-          process.stderr.write(` ${c.dim('· project')} ${c.brand(path.basename(safeCwd()))}`);
-          process.stderr.write(` ${c.dim(`· agent ${resumed.historyMode}`)}`);
-          if (resumed.switchedProject) process.stderr.write(` ${c.dim('(cwd restored)')}`);
-          if (resumed.projectMissing) process.stderr.write(` ${c.yellow('(saved project path unavailable; using current cwd)')}`);
-          if (resumed.instruction) process.stderr.write(` ${c.dim('—')} ${c.dim(resumed.instruction.slice(0, 50))}`);
-          process.stderr.write('\n');
-          renderResumePreview(resumed, { renderEvent });
-        } else {
-          process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
-        }
+    if (lastSession) {
+      const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
+      if (resumed.ok) {
+        const status = ['Resumed session: ' + messageCountLabel(resumed.messages),
+          'project ' + path.basename(safeCwd()), 'agent ' + resumed.historyMode,
+          resumed.switchedProject ? 'cwd restored' : '',
+          resumed.projectMissing ? 'saved project unavailable; using current cwd' : '',
+        ].filter(Boolean).join(' · ');
+        process.stderr.write(wrapCode(status, paint.brand.primary, { indent: '  ' }) + '\n');
+        for (const failure of resumed.hydrationFailures || []) process.stderr.write(wrapCode('Could not restore project path: ' + failure, paint.state.warn, { indent: '  ' }) + '\n');
+        renderResumePreview(resumed, { renderEvent, previewOnly: true });
       } else {
-        process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
+        process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
+    } else {
+      process.stderr.write(`  ${c.yellow('!')} ${c.dim('No previous session to resume')}\n`);
     }
-
-    process.stderr.write(`\n  ${c.dim('Press')} ${c.brand('Enter')} ${c.dim('to start, or type a prompt below.')}\n`);
-  } finally {
-    dockCursor = startupCursorSeed();
-    stopStartupOutputTracking();
   }
 
-  // Keep one bottom-reserved UI surface: the fixed input dock. The older
-  // status bar used the same terminal scroll-region primitive, so mounting
-  // both would make prompt placement unpredictable.
-  orbitRef.current = createOrbit();
-  const inputDockActive = mountInputDock({
-    initialContentRow: dockCursor.row,
-    initialContentCol: dockCursor.col,
-  });
+  process.stderr.write(wrapCode('Local session ready · search indexing on demand', paint.text.muted, { indent: '  ' }) + '\n');
+  process.stderr.write(wrapCode('/help commands · /resume history · /model models', paint.text.muted, { indent: '  ' }) + '\n');
+
   // 1 Hz live-tick for the elapsed clock in the dock's top strip. The render
   // queue serializes dock paints with agent/tool output. Only metadata is
   // refreshed: calling the idle renderer here replaces the live-instruction
@@ -5498,6 +5319,21 @@ export async function startTerminalRepl() {
   }
 
   showPrompt();
+
+  // Connection checks enrich the local session after input is available.
+  // They share the transcript queue and must never own an inline spinner.
+  void refreshStartupChecks({ auth, session, cwd: safeCwd(), version: VERSION,
+    preflight: process.env.BAHULAM_NO_PREFLIGHT !== '1' && !cliArgs.skipPermissions,
+  }).then(checks => {
+    if (!checks.length || !isInputDockMounted()) return;
+    const user = checks[0]?.user;
+    const account = user?.github_username || user?.email;
+    const parts = [account ? 'Signed in as ' + account : '',
+      ...checks.filter(check => check.label).map(check => [check.label, check.hint].filter(Boolean).join(': ')),
+    ].filter(Boolean);
+    if (parts.length) process.stderr.write(wrapCode(parts.join(' · ') + ' · /preflight for details', paint.text.muted, { indent: '  ' }) + '\n');
+  }).catch(() => {});
+  _checkForUpgradeAndAnnounce().catch(() => {});
 
   if (process.stdin.isTTY) {
     readline.emitKeypressEvents(process.stdin, rl);
