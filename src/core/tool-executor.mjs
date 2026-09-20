@@ -1065,6 +1065,21 @@ export function createToolExecutor({
             return toolMap.TodoWrite(args, options);
         },
 
+        // Backend memory requests must pass through this bridge, not just
+        // appear in the built-in registry. Keep validation failures in the
+        // structured result format expected by the stream callback.
+        remember: async (args, options = {}) => {
+            throwIfAborted(options.signal);
+            const result = await occRegistry.call('remember', args || {}, options);
+            if (typeof result === 'string') {
+                return { success: false, output: result, _tool: 'remember' };
+            }
+            // Do not rely on filesystem timestamp precision for an immediate
+            // read-after-write in the same session.
+            if (result.success) _memoryCache = null;
+            return result;
+        },
+
         // Reserved meta-tool adapter. Cloud backends may implement Delegate
         // natively; local callbacks use this to route through the exact same
         // registry + dispatch funnel as /run and workflows.

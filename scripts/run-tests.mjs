@@ -32,6 +32,7 @@ const UNIT_TESTS = [
     'test/test-agent-history.mjs',
     'test/test-sse-client.mjs',
     'test/test-tool-executor.mjs',
+    'test/test-remember.mjs',
     'test/test-generate-image.mjs',
     'test/test-analyze-image.mjs',
     'test/test-project-artifacts.mjs',

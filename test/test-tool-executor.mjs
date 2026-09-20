@@ -85,6 +85,7 @@ await test('listTools returns core and agent tools', async () => {
     assert.ok(tools.includes('agent_create'));
     assert.ok(tools.includes('agent_sync'));
     assert.ok(tools.includes('delegate'));
+    assert.ok(tools.includes('remember'));
 });
 
 await test('agent context exposes unified agents and sub-agent observability', async () => {
