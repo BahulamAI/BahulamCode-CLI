@@ -10,6 +10,7 @@
   },
   "files": [
     "src/",
+    "assets/bahulam-plugin/",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -19,6 +20,7 @@
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs --unit",
     "test:integration": "node scripts/run-tests.mjs --integration",
+    "test:design:browser": "node test/test-design-browser.mjs",
     "sync-catalog": "node scripts/sync-catalog.mjs",
     "prepublishOnly": "node scripts/sync-catalog.mjs"
   },

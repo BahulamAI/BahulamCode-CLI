@@ -7,26 +7,26 @@
  * ────────────────────────────────────────────────────────────────── */
 
 :root {
-  --ws-fg: #1B1B1B;
-  --ws-muted: rgba(27,27,27,.52);
-  --ws-faint: rgba(27,27,27,.30);
-  --ws-border: rgba(27,27,27,.10);
-  --ws-border-subtle: rgba(27,27,27,.06);
-  --ws-bg: #FFFDF7;
-  --ws-surface: #F7F5EF;
+  --ws-fg: #202331;
+  --ws-muted: #606472;
+  --ws-faint: #606472;
+  --ws-border: #DEDFE5;
+  --ws-border-subtle: #E9EAF0;
+  --ws-bg: #FAF9F6;
+  --ws-surface: #F0F1F5;
   --ws-panel: #fff;
-  --ws-primary: #0891B2;
-  --ws-primary-soft: rgba(8,145,178,.10);
-  --ws-hover: rgba(27,27,27,.04);
-  --ws-active: rgba(8,145,178,.12);
-  --ws-success: #047857;
-  --ws-success-bg: #ECFDF5;
-  --ws-error: #B91C1C;
-  --ws-error-bg: #FEF2F2;
-  --ws-warn: #D97706;
-  --ws-warn-bg: #FFFBEB;
-  --ws-radius-sm: 5px;
-  --ws-radius-md: 8px;
+  --ws-primary: #303BA0;
+  --ws-primary-soft: #ECEDFC;
+  --ws-hover: rgba(32,35,49,.04);
+  --ws-active: rgba(48,59,160,.12);
+  --ws-success: #28684F;
+  --ws-success-bg: #EDF5F0;
+  --ws-error: #AD363F;
+  --ws-error-bg: #FFF0F1;
+  --ws-warn: #8A5B15;
+  --ws-warn-bg: #FFF2D9;
+  --ws-radius-sm: 4px;
+  --ws-radius-md: 6px;
   --ws-radius-lg: 10px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -45,7 +45,7 @@ html, body {
 
 /* ── Brand bar ── */
 .plugin-bar {
-  height: 36px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -57,11 +57,11 @@ html, body {
 .plugin-bar .brand-mark {
   width: 16px; height: 16px;
   border-radius: 4px;
-  background: #1B1B1B;
+  background: #202331;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #FFFDF7;
+  color: #FAF9F6;
   font: 700 10px/1 var(--mono);
 }
 .plugin-bar h1 {
@@ -81,7 +81,7 @@ html, body {
   display: inline-block;
   width: 6px; height: 6px;
   border-radius: 50%;
-  background: #10B981;
+  background: #28684F;
   margin-right: 4px;
   vertical-align: middle;
 }
@@ -138,10 +138,10 @@ html, body {
   border-radius: 999px;
   font-size: 10px;
   font-weight: 500;
-  background: rgba(27,27,27,.06);
+  background: rgba(32,35,49,.06);
   color: var(--ws-muted);
 }
-.badge.primary { background: var(--ws-primary-soft); color: #0E7490; }
+.badge.primary { background: var(--ws-primary-soft); color: #303BA0; }
 .badge.success { background: var(--ws-success-bg); color: var(--ws-success); }
 .badge.error   { background: var(--ws-error-bg); color: var(--ws-error); }
 .badge.warn    { background: var(--ws-warn-bg); color: var(--ws-warn); }
@@ -151,7 +151,7 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
+  min-height: 32px;
   border: 1px solid var(--ws-border);
   border-radius: var(--ws-radius-md);
   background: var(--ws-panel);
@@ -165,16 +165,16 @@ html, body {
   font-family: inherit;
 }
 .btn:hover { background: var(--ws-surface); color: var(--ws-fg); }
-.btn.primary { background: var(--ws-fg); color: #FFFDF7; border-color: var(--ws-fg); }
-.btn.primary:hover { background: #333; }
-.btn.small { height: 22px; font-size: 10px; padding: 0 7px; }
+.btn.primary { background: var(--ws-primary); color: #FFFFFF; border-color: var(--ws-primary); }
+.btn.primary:hover { background: #242A64; }
+.btn.small { min-height: 28px; font-size: 10px; padding: 0 7px; }
 .btn.danger { border-color: rgba(185,28,28,.20); color: var(--ws-error); background: var(--ws-error-bg); }
 .btn.danger:hover { background: #FEE2E2; }
 
 /* ── Code / mono ── */
 code, .mono { font-family: var(--mono); font-size: 11px; }
-.code-inline { font-family: var(--mono); font-size: .92em; background: rgba(27,27,27,.06); border-radius: 4px; padding: 1px 4px; }
-pre.code-block { overflow: auto; background: #0D1117; color: #E5E7EB; border-radius: 7px; padding: 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+.code-inline { font-family: var(--mono); font-size: .92em; background: rgba(32,35,49,.06); border-radius: 4px; padding: 1px 4px; }
+pre.code-block { overflow: auto; background: #202331; color: #E5E7EB; border-radius: 7px; padding: 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
 
 /* ── Empty state ── */
 .empty { text-align: center; color: var(--ws-faint); padding: 40px 20px; font-size: 12px; }
@@ -198,10 +198,10 @@ pre.code-block { overflow: auto; background: #0D1117; color: #E5E7EB; border-rad
 
 /* ── Status dot ── */
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
-.status-dot.ok { background: #10B981; }
-.status-dot.err { background: #DC2626; }
-.status-dot.warn { background: #D97706; }
-.status-dot.running { background: #0891B2; animation: pulse-dot 1.5s ease-in-out infinite; }
+.status-dot.ok { background: #28684F; }
+.status-dot.err { background: #AD363F; }
+.status-dot.warn { background: #8A5B15; }
+.status-dot.running { background: #303BA0; animation: pulse-dot 1.5s ease-in-out infinite; }
 @keyframes pulse-dot { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
 
 /* ── Utilities ── */
@@ -221,3 +221,26 @@ pre.code-block { overflow: auto; background: #0D1117; color: #E5E7EB; border-rad
 .action-link { color: var(--ws-primary); font-size: 11px; text-decoration: none; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
 .action-link:hover { text-decoration: underline; }
 .path-text { word-break: break-all; font-family: var(--mono); font-size: 11px; color: var(--ws-muted); }
+
+/* Shared interaction contract for plugin authors. */
+:root { color-scheme: light; }
+:where(button, a, input, textarea, select):focus-visible { outline: 2px solid #555BB0; outline-offset: 2px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.plugin-body, .card, .metric { min-width: 0; }
+.plugin-bar { flex-wrap: wrap; padding-block: 8px; }
+.plugin-bar h1 { overflow-wrap: anywhere; }
+.plugin-bar .brand-mark { background: var(--ws-primary); color: #FFFFFF; flex: 0 0 auto; }
+.section-head { gap: 12px; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .plugin-body { padding: 16px 12px; }
+  .btn, .btn.small, .action-link { min-height: 40px; }
+  .btn { justify-content: center; }
+  .plugin-table { display: block; overflow-x: auto; }
+  input, select, textarea { font-size: 16px; max-width: 100%; }
+}
+@media (pointer: coarse) {
+  .btn, .btn.small, .action-link { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

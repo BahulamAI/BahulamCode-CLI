@@ -9,6 +9,17 @@ prior sessions, and keeps local project context in `~/.bahulam/`.
 - Sub-agents, skills, workflows, and MCP support
 - Bring your own model (40+ supported)
 
+## Appearance
+
+The terminal and local workspace follow Bahulam's paper, ink, and indigo visual
+language. The browser workspace stays light; terminal colors adapt to the
+advertised background (`COLORFGBG`) and support truecolor, 256-color, basic ANSI, and
+plain output.
+
+Set `BAHULAM_THEME=light` or `BAHULAM_THEME=dark` if your terminal does not advertise its
+background. Unadvertised backgrounds default to dark. `NO_COLOR=1` disables color;
+`BAHULAM_PLAIN=1` also uses the ASCII startup banner. No terminal background is changed.
+
 ## About the name
 
 **Bahulam** (बहुलम्) is Sanskrit for *abundance*. The name reflects a

@@ -34,43 +34,33 @@ function test(name, fn) {
 
 console.log('\n\x1b[1mtest-terminal-rendering.mjs\x1b[0m\n');
 
-test('Bahulam brand uses abundance cyan (post-rebrand)', () => {
-  // Bahulam Code rebrand: paint.brand.primary is cyan #06b6d4 (abundance
-  // theme) — was purple #7c3aed in the pre-rename era. In ansi16 fallback
-  // that resolves to cyan (36); truecolor is \x1b[38;2;6;182;212m.
-  const brand = c.brand('bahulam');
-  assert.ok(brand.startsWith('\x1b[36m') || brand.startsWith('\x1b[38;2;6;182;212m'),
-    `expected cyan/truecolor brand, got ${JSON.stringify(brand)}`);
-  // c.cyan routes through paint.brand.data — neon cyan #22d3ee → ansi16 cyan 36.
-  const cyan = c.cyan('code');
-  assert.ok(cyan.startsWith('\x1b[36m') || cyan.startsWith('\x1b[38;2;34;211;238m'),
-    `expected cyan/truecolor data, got ${JSON.stringify(cyan)}`);
+test('Bahulam brand uses web-aligned indigo with terminal fallbacks', () => {
+  _setTermForTesting({ appearance: 'dark' });
+  assert.ok(c.brand('bahulam').startsWith('\x1b[34m'));
+  assert.ok(c.cyan('code').startsWith('\x1b[36m'));
 });
 
-test('startup banner uses compact abundance mark with ASCII fallback', () => {
-  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
-  const rendered = stripAnsi(renderBanner('2.6.12'));
-  assert.ok(rendered.includes('∞∞   ∞∞'));
-  assert.ok(rendered.includes('████   ███  █   █'));
-  assert.ok(rendered.includes('code · abundance in your terminal · v2.6.12'));
-  assert.ok(!rendered.includes('बहुलम्'));
-  assert.ok(!rendered.includes('0xB0'));
-  assert.ok(!rendered.includes('╔'));
-
-  _setTermForTesting({ isTTY: true, color: false, colorLevel: 'none', plain: true, unicode: false });
+test('startup banner is compact, width-aware, and ASCII-safe', () => {
+  for (const columns of [24, 40, 80, 120]) {
+    _setTermForTesting({ color: true, colorLevel: 'ansi16', plain: false, unicode: true, columns });
+    const rendered = stripAnsi(renderBanner('2.6.12'));
+    assert.ok(rendered.includes('bahulam.'));
+    assert.ok(rendered.includes('v2.6.12'));
+    assert.ok(!rendered.includes('████'));
+    assert.ok(rendered.split('\n').every(line => line.length <= columns));
+  }
+  _setTermForTesting({ color: false, colorLevel: 'none', plain: true, unicode: false });
   const fallback = renderBanner('2.6.12');
-  assert.ok(fallback.includes('oo   oo'));
-  assert.ok(fallback.includes('████   ███  █   █'));
-  assert.ok(fallback.includes('code · abundance in your terminal · v2.6.12'));
-  assert.ok(!/\x1b\[/.test(fallback), `plain banner has ANSI: ${JSON.stringify(fallback)}`);
-
-  _setTermForTesting({ isTTY: true, color: true, colorLevel: 'ansi16', plain: false, unicode: true });
+  assert.ok(fallback.includes('> bahulam. code / v2.6.12'));
+  assert.ok(/^[\x00-\x7F]*$/.test(fallback));
+  assert.ok(!/\x1b\[/.test(fallback));
+  _setTermForTesting({ color: true, colorLevel: 'ansi16', plain: false, unicode: true, columns: 80 });
 });
 
 test('text.primary wraps user labels; markdown links are underlined', () => {
   const white = c.white('You');
-  // text.primary #c9d1d9 → ansi16 37
-  assert.ok(white.startsWith('\x1b[37m') || white.startsWith('\x1b[38;2;201;209;217m'),
+  // text.primary #F0F1F8 → ansi16 37
+  assert.ok(white.startsWith('\x1b[37m') || white.startsWith('\x1b[38;2;240;241;248m'),
     `expected text.primary wrap, got ${JSON.stringify(white)}`);
   const rendered = renderMarkdown('[Documentation](https://example.com)');
   assert.ok(rendered.includes('\x1b[4m'));
@@ -244,20 +234,18 @@ test('folded sub-agent tool batch expands individual details', () => {
 });
 
 test('renders shell commands with semantic syntax colors', () => {
-  // c.blue routes to brand.primary — post-rebrand that's cyan #06b6d4
-  // (was purple #7c3aed pre-Bahulam-Code). Command tokens get the brand
-  // color. Flags stay yellow, pipes stay red.
+  // Commands use Bahulam indigo; flags remain amber and pipes remain red.
   const rendered = formatShellCommand('python -c "print(1)" | head -1', c);
-  // Command tokens — brand.primary (#06b6d4). ansi16 cyan or truecolor.
-  assert.ok(/\x1b\[36m|\x1b\[38;2;6;182;212m/.test(rendered),
+  // Command tokens — indigo, with a basic blue fallback.
+  assert.ok(/\x1b\[34m|\x1b\[38;2;190;198;255m/.test(rendered),
     'expected brand color for command tokens');
   assert.ok(rendered.includes('python'));
   assert.ok(rendered.includes('head'));
-  // Flag and quoted-string — state.warn (yellow #eab308).
-  assert.ok(/\x1b\[33m|\x1b\[38;2;234;179;8m/.test(rendered),
+  // Flag and quoted-string — state.warn.
+  assert.ok(/\x1b\[33m|\x1b\[38;2;242;203;137m/.test(rendered),
     'expected warn/yellow for flags and quoted strings');
-  // Pipe — state.danger (red #ef4444).
-  assert.ok(/\x1b\[31m|\x1b\[38;2;239;68;68m/.test(rendered),
+  // Pipe — state.danger.
+  assert.ok(/\x1b\[31m|\x1b\[38;2;255;176;182m/.test(rendered),
     'expected danger/red for pipe operator');
 });
 
