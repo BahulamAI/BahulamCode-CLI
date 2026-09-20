@@ -472,9 +472,12 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('initialContentCol: dockCursor.col'));
   assert.ok(!replSource.includes("from '../ui/status-bar.mjs'"));
   assert.ok(!replSource.includes('attachOrbit('));
-  assert.ok(replSource.includes("return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;"));
+  assert.ok(replSource.includes("return `${paint.text.primary(who)} ${paint.brand.primary(glyph('›', '>'))} `;"));
   assert.ok(!replSource.includes('printInputSeparator();'));
   assert.ok(replSource.includes('function printInputBottomRule()'));
+  const tick = replSource.slice(replSource.indexOf('_dockTickTimer = setInterval'), replSource.indexOf('_dockTickTimer.unref'));
+  assert.ok(tick.includes('refreshDockMetadata'));
+  assert.ok(!tick.includes('renderIdleDockInput'));
   assert.ok(replSource.includes('printInputBottomRule();'));
   assert.ok(replSource.includes('prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() })'));
   assert.ok(replSource.includes('function printSubmittedInput(input)'));
@@ -558,8 +561,8 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('replaceReadlineLine(pasted.text);'));
   assert.ok(replSource.includes('queueOrRunLine(line);'));
   assert.ok(replSource.includes('function executionInputPrefix()'));
-  assert.ok(replSource.includes('add instruction'));
-  assert.ok(replSource.includes('type extra context'));
+  assert.ok(replSource.includes('add context'));
+  assert.ok(replSource.includes('inputHints({ running: true })'));
   assert.ok(!replSource.includes('[Space] pause/resume'));
   assert.ok(replSource.includes('renderDockInput(executionInputPrefix(), executionInputBuffer'));
   assert.ok(replSource.includes('focusDockInput(executionInputPrefix(), executionInputBuffer)'));
@@ -581,7 +584,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes("command === '/auto'"));
   assert.ok(replSource.includes('await handleCommand(instruction, ctx);'));
   assert.ok(replSource.includes("type: 'user_intervention'"));
-  assert.ok(replSource.includes('[F2] details'));
+  assert.ok(fs.readFileSync(new URL('../src/ui/chrome.mjs', import.meta.url), 'utf8').includes('F2 details'));
   assert.ok(replSource.includes("key.name === 'f2'"));
   assert.ok(replSource.includes('isF2Sequence(text2)'));
   assert.ok(!replSource.includes('Ctrl+D'));
@@ -1109,7 +1112,7 @@ test('approval dock prompt is concise and separate from transcript framing', () 
   assert.ok(dock.lines.some(line => stripAnsi(line).includes('risk   publish')));
   assert.ok(dock.lines.some(line => stripAnsi(line).includes('Decision')));
   assert.ok(dock.lines.some(line => stripAnsi(line).includes('approve once')));
-  assert.ok(dock.tips.includes('d details'));
+  assert.ok(dock.meta.includes('d details'));
   assert.ok(!dock.lines.map(line => stripAnsi(line)).join('\n').includes('│'));
 });
 

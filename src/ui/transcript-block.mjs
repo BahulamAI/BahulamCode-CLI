@@ -1,15 +1,14 @@
 import { paint } from './palette.mjs';
+import { glyph } from './chrome.mjs';
 
 function tonePaint(tone) {
-  // 'user' tone was brand.accent (pink) — swapped to state.success (green)
-  // so the "your input" prompt reads as an active/go signal instead of the
-  // magenta 'attention/warn' tint the accent palette carries elsewhere.
-  return tone === 'user' ? paint.state.success : paint.brand.primary;
+  // Green is reserved for successful outcomes, not ordinary user input.
+  return tone === 'user' ? paint.text.primary : paint.brand.primary;
 }
 
 export function transcriptHeader(label, { tone = 'assistant' } = {}) {
   const p = tonePaint(tone);
-  return `${paint.bold(p(label))} ${p('›')}`;
+  return `${paint.bold(p(label))} ${p(glyph('›', '>'))}`;
 }
 
 export function transcriptLine(line = '', { tone = 'assistant' } = {}) {

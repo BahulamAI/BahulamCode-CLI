@@ -54,6 +54,8 @@ const UNIT_TESTS = [
     'test/test-design-system.mjs',
     'test/test-render-queue.mjs',
     'test/test-input-dock.mjs',
+    'test/test-dock-lifecycle.mjs',
+    'test/test-approval-layout.mjs',
     'test/test-live-steering-client.mjs',
     'test/test-slash-commands.mjs',
     'test/test-approval.mjs',

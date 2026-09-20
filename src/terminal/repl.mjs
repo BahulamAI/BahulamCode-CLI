@@ -18,6 +18,7 @@
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { glyph, sectionHeading, inputHints } from '../ui/chrome.mjs';
 import { execSync as _execSync } from 'node:child_process';
 import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
@@ -190,6 +191,7 @@ import {
   redrawDockFrame,
   redrawDockInput,
   renderDockInput,
+  refreshDockMetadata,
   unmountInputDock,
 } from '../ui/input-dock.mjs';
 import { term } from '../ui/term.mjs';
@@ -2412,7 +2414,7 @@ function renderEvent(event) {
         stopSpinner();
         session.phases.push({ name: phase, time: Date.now() });
         renderBlockBoundary('plan');
-        process.stderr.write(`  ${c.brand('▸')} ${c.bold(phase)}\n`);
+        process.stderr.write(sectionHeading(phase) + '\n');
         runtime.lastRenderedBlock = 'plan';
       }
       break;
@@ -5046,16 +5048,17 @@ export async function startTerminalRepl() {
     initialContentCol: dockCursor.col,
   });
   // 1 Hz live-tick for the elapsed clock in the dock's top strip. The render
-  // queue serializes dock paints with agent/tool output, so the clock must
-  // continue while the npm-owned local/direct loop is executing too.
+  // queue serializes dock paints with agent/tool output. Only metadata is
+  // refreshed: calling the idle renderer here replaces the live-instruction
+  // prefix and draft, making the cursor bounce when the next event arrives.
   // `unref()` ensures the timer never blocks process exit.
   let _dockTickTimer = null;
   if (inputDockActive) {
     process.on('beforeExit', unmountInputDock);
     process.on('exit',       unmountInputDock);
     _dockTickTimer = setInterval(() => {
-      if (!isInputDockMounted()) return;
-      try { renderIdleDockInput(); } catch { /* one bad tick is not fatal */ }
+      if (!isInputDockMounted() || approval._approvalPromptActive) return;
+      try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch { /* one bad tick is not fatal */ }
     }, 1000);
     _dockTickTimer.unref?.();
     process.on('exit', () => { if (_dockTickTimer) clearInterval(_dockTickTimer); });
@@ -5158,9 +5161,8 @@ export async function startTerminalRepl() {
   function userPrompt() {
     const who = session.user?.github_username || session.user?.email?.split('@')[0] || 'You';
     if (term().plain) return `${who} > `;
-    // Brand magenta handle + chevron. No inverse chip, no bold — the color
-    // alone marks this row as user input.
-    return `${paint.brand.primary(who)} ${paint.brand.primary('›')} `;
+    // Neutral speaker text; the small chevron carries the active accent.
+    return `${paint.text.primary(who)} ${paint.brand.primary(glyph('›', '>'))} `;
   }
 
   function printInputBottomRule() {
@@ -5176,11 +5178,11 @@ export async function startTerminalRepl() {
   }
 
   function idleInputTips() {
-    return '[Enter] send  [/] commands  [Tab] complete  [@clipboard] image  [F2] details';
+    return inputHints();
   }
 
   function executionInputTips() {
-    return 'type extra context · [Enter] send · [Esc] cancel · [Ctrl+P] pause · [F2] details';
+    return inputHints({ running: true });
   }
 
   // Proxy stream: swallows writes when the dock owns the input row so
@@ -5433,7 +5435,7 @@ export async function startTerminalRepl() {
   }
 
   function renderIdleDockInput() {
-    if (!isInputDockMounted()) return false;
+    if (!inputActive || approval._approvalPromptActive || !isInputDockMounted()) return false;
     const line = rl.line || '';
     let displayLine = line;
     let displayCursor = typeof rl.cursor === 'number' ? rl.cursor : null;
@@ -5900,7 +5902,7 @@ export async function startTerminalRepl() {
       // Inviting prompt: brand '+' + hint that this accepts any extra
       // context (paths, corrections, more instructions). Visible even when
       // the buffer is empty so users know they can type mid-run.
-      return `${paint.brand.data('+')} ${paint.dim('add instruction')} ${paint.dim('›')} `;
+      return `${paint.brand.primary('+')} ${paint.text.muted('add context')} ${paint.brand.primary(glyph('›', '>'))} `;
     }
 
     function redrawExecutionInput() {

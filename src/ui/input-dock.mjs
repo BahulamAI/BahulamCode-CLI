@@ -1,67 +1,45 @@
 /**
- * Fixed input dock — Bahulam Code identity + meta + tips.
+ * Fixed input dock — shared Bahulam terminal chrome.
  *
- * Reserves rows at the bottom of the terminal so agent/tool output scrolls
- * above the prompt. The input area GROWS DYNAMICALLY as the user types or
- * pastes multi-line content: starts at 1 row, expands up to `MAX_INPUT_ROWS`
- * (default 6) to fit the wrapped buffer, shrinks back when the buffer is
- * cleared. On resize, the scroll region moves so content above reflows
- * smoothly.
+ *   ─ bahulam. code ─────────── model / context / elapsed
+ *     you › Explain this module
+ *   ───────────────────────────────────────────────────
+ *     repository / branch / turn
+ *     Enter send / commands / attachments
+ *   (cursor safety row)
  *
- * When the wrapped buffer still exceeds the max, only the LAST max rows
- * render with a leading '…' marker (explicit truncation).
- *
- * Multi-line paste — including bracketed paste bursts — renders as one
- * visible block in the dock and submits as a single message. The dock
- * itself doesn't parse newlines; wrapToLines treats them as hard breaks.
- *
- * Layout (fixed 8 rows + N input rows):
- *   ── ▎Bahulam Code ══════════════ 12.3k tok · 2m 41s ═══   ← top rule (colored)
- *                                                              ← spacer
- *        + add instruction › foo bar                          ← input row 1
- *        baz quux                                             ← input row 2 (added as needed)
- *        ...                                                  ← up to MAX_INPUT_ROWS
- *                                                              ← spacer
- *   ══════════════════════════════════════════════════════   ← bottom rule (colored)
- *      deepseek-chat-v3 · Bahulam ⎇ main · turn 4         ← meta row
- *      [Enter] send · [/] commands …                          ← tips row
- *   (one blank row at very bottom for cursor safety)
- *
- * Config:
- *   BAHULAM_INPUT_ROWS_MAX   1..12  hard cap on input row growth (default 6)
- *   BAHULAM_TTY_MODE=stable         scrollback-safe transcript, no fixed dock
- *   BAHULAM_PLAIN=1                 deterministic no-ANSI output for automation
- *   BAHULAM_FIXED_INPUT=0           disable dock entirely (fallback readline)
+ * Five fixed rows plus 1..12 input rows. Multiline paste grows the input,
+ * and approval overlays replace it temporarily. No background is imposed.
+ * BAHULAM_TTY_MODE=stable, BAHULAM_PLAIN=1, or BAHULAM_FIXED_INPUT=0
+ * keep the existing transcript/readline fallback.
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
 import { term, onResize } from './term.mjs';
+import { clipLabel, dockHeading, glyph } from './chrome.mjs';
 import { wrapToLines, tailWithEllipsis, cursorPositionInLines } from './text-layout.mjs';
 import * as queue from './render-queue.mjs';
 
 const ESC = '\x1b[';
 const OUT = process.stderr;
 
-const BRAND_LABEL = 'Bahulam Code';
-const LABEL_ACCENT = '▎'; // left-edge accent bar
+const BRAND_LABEL = 'bahulam. code';
 
 // Horizontal margin: text starts INPUT_INDENT cols from the left edge and
 // leaves INPUT_RIGHT_PAD cols of clear space on the right so wrapped lines
 // don't kiss the terminal edge.
-const INPUT_INDENT = 5;
+const INPUT_INDENT = 2;
 const INPUT_RIGHT_PAD = 2;
-const META_INDENT = 4;
+const META_INDENT = 2;
 
 const DEFAULT_MAX_INPUT_ROWS = 6;
 const DEFAULT_OVERLAY_MAX_ROWS = 8;
 const MIN_INPUT_ROWS = 1;
 const MAX_INPUT_ROWS_CAP = 12;
 
-// Fixed rows around the input area:
-//   1 top rule + 1 spacer above + input(N) + 1 spacer below + 1 bottom rule
-//   + 1 meta row + 1 tips row + 1 safety row
-// = 7 + N
-const FIXED_ROWS = 7;
+// Header + lower rule + metadata + keyboard hints + cursor safety.
+// No spacer rows: a one-line prompt occupies six rows in total.
+const FIXED_ROWS = 5;
 
 let mounted = false;
 let inputRowsMax = DEFAULT_MAX_INPUT_ROWS;
@@ -120,7 +98,7 @@ function rows() {
 }
 
 function cols() {
-  return Math.max(40, term().columns || 80);
+  return Math.max(20, term().columns || 80);
 }
 
 function drawableColumns() {
@@ -199,16 +177,22 @@ function unpatchOutputTracking() {
 
 // Row map (top → bottom of the reserved region).
 function topRuleRow()       { return contentBottomRow() + 1; }
-function spacerAboveRow()   { return topRuleRow() + 1; }
-function inputRowStart()    { return spacerAboveRow() + 1; }
+function inputRowStart()    { return topRuleRow() + 1; }
 function inputRowEnd()      { return inputRowStart() + inputRows - 1; }
-function spacerBelowRow()   { return inputRowEnd() + 1; }
-function bottomRuleRow()    { return spacerBelowRow() + 1; }
+function bottomRuleRow()    { return inputRowEnd() + 1; }
 function metaRow()          { return bottomRuleRow() + 1; }
 function tipsRow()          { return metaRow() + 1; }
 
+export function dockContentWidth(columns = cols()) {
+  return Math.max(1, columns - INPUT_INDENT - INPUT_RIGHT_PAD - 1);
+}
+
+export function dockOverlayCapacity(terminalRows = rows()) {
+  return Math.max(1, Math.min(Math.max(12, Math.floor(terminalRows / 2)), terminalRows - FIXED_ROWS - 3));
+}
+
 function inputTextBudget() {
-  return Math.max(8, cols() - INPUT_INDENT - INPUT_RIGHT_PAD - 1);
+  return dockContentWidth();
 }
 
 function resolveMaxInputRows(requested) {
@@ -227,7 +211,7 @@ function resolveOverlayRowCap(requested = DEFAULT_OVERLAY_MAX_ROWS) {
   // the user cannot approve what they cannot see. Allow up to half the
   // terminal so the transcript stays visible; typing input keeps the
   // tight MAX_INPUT_ROWS_CAP via normalizeInputRows above.
-  const dynamicCap = Math.max(MAX_INPUT_ROWS_CAP, Math.floor((rows() || 24) / 2));
+  const dynamicCap = dockOverlayCapacity();
   return Math.max(MIN_INPUT_ROWS, Math.min(dynamicCap, n));
 }
 
@@ -244,7 +228,7 @@ function computeInputRowsForBuffer(prefix, value) {
   const budget = inputTextBudget();
   const wrapped = wrapToLines(`${prefix || ''}${value || ''}`, budget, { preserveTrailingWhitespace: true });
   const wanted = Math.max(MIN_INPUT_ROWS, wrapped.length);
-  return Math.min(inputRowsMax, wanted);
+  return Math.min(inputRowsMax, Math.max(1, rows() - FIXED_ROWS - 3), wanted);
 }
 
 // Resize the input area to a new row count. Moves the scroll region so
@@ -258,7 +242,7 @@ function computeInputRowsForBuffer(prefix, value) {
 // scrolls past them. We clear the old dock region BEFORE moving the frame
 // so the freed rows are blank when they enter the scroll region.
 function setInputRowsTo(nextRows, { maxRows = inputRowsMax } = {}) {
-  const clamped = Math.max(MIN_INPUT_ROWS, Math.min(maxRows, Math.floor(nextRows)));
+  const clamped = Math.max(MIN_INPUT_ROWS, Math.min(maxRows, Math.max(1, rows() - FIXED_ROWS - 3), Math.floor(nextRows)));
   if (clamped === inputRows) return false;
   const shrinking = clamped < inputRows;
   const growing = clamped > inputRows;
@@ -306,56 +290,15 @@ function padLine(text) {
   return value + ' '.repeat(pad);
 }
 
-function fitText(text, maxWidth) {
-  const plain = String(text || '').replace(/\s+/g, ' ').trim();
-  if (visibleWidth(plain) <= maxWidth) return plain;
-  if (maxWidth <= 1) return '';
-  return plain.slice(0, Math.max(0, maxWidth - 1)) + '…';
-}
+const fitText = clipLabel;
 
-function ruleChars(count) {
-  return '═'.repeat(Math.max(0, count));
-}
-
-// Top rule: `── ▎Bahulam Code ═════════════ [context] ═══`
-// - Leading two rule chars for a clean edge
-// - Colored accent bar + brand label on the left
-// - Optional right-aligned context strip (session tokens/elapsed) with rule
-//   fill between label and context
 function topRuleLine(context = '') {
-  const w = Math.max(0, drawableColumns());
-  const brand = paint.brand.primary;
-  const bold = paint.bold;
-
-  const leadRule = brand(ruleChars(2));
-  const accent = brand(LABEL_ACCENT);
-  const label = bold(brand(BRAND_LABEL));
-  const leftBlock = `${leadRule} ${accent}${label}`;
-  const leftWidth = visibleWidth(leftBlock);
-  const rightPadRule = 2;
-
-  const maxCtxWidth = Math.max(0, Math.min(
-    Math.floor(w / 2),
-    w - leftWidth - 1 /* left gap */ - 1 /* minimum middle */ - 1 /* ctx gap */ - rightPadRule - 1 /* tail gap */,
-  ));
-  const ctx = fitText(context, maxCtxWidth);
-  const ctxWidth = ctx ? visibleWidth(ctx) : 0;
-
-  // Rule fill in the middle. Reserve 1 space around ctx when present.
-  const middleWidth = ctx
-    ? Math.max(1, w - leftWidth - ctxWidth - rightPadRule - 3)
-    : Math.max(1, w - leftWidth - 1);
-  const middleRule = brand(ruleChars(middleWidth));
-
-  if (!ctx) {
-    return `${leftBlock} ${middleRule}`;
-  }
-  const tailRule = brand(ruleChars(rightPadRule));
-  return `${leftBlock} ${middleRule} ${paint.text.dim(ctx)} ${tailRule}`;
+  const approval = Array.isArray(lastFrame.overlayLines);
+  return dockHeading(approval ? 'Review action' : BRAND_LABEL, context, drawableColumns(), { approval });
 }
 
 function bottomRuleLine() {
-  return paint.brand.primary(ruleChars(Math.max(0, drawableColumns())));
+  return paint.text.dim(glyph('─', '-').repeat(drawableColumns()));
 }
 
 // Always park the cursor at the tracked (prefix, value) input position.
@@ -365,6 +308,11 @@ function bottomRuleLine() {
 // scroll-region bottom so writes at least stay above the dock frame.
 function parkCursorAtInput() {
   if (!mounted) return;
+  if (isDockOverlayActive()) {
+    if (queue.isActive()) queue.park(rows(), 1);
+    else moveTo(rows(), 1);
+    return;
+  }
   const prefix = lastFrame.prefix || '';
   const value = lastFrame.value || '';
   if (!prefix && !value) {
@@ -390,7 +338,8 @@ function applyLayout({ clearPrevious = false } = {}) {
   // On (re)mount and resize, park at input if we have one; otherwise sit at
   // the bottom of the content region so any pending content writes flush
   // above the dock rather than into a stale mid-frame position.
-  if (lastFrame.prefix || lastFrame.value) {
+  if (lastFrame.prefix || lastFrame.value || isDockOverlayActive()) {
+    if (!isDockOverlayActive()) drawInputLines(layoutInput(lastFrame.prefix, lastFrame.value).lines);
     parkCursorAtInput();
   } else {
     moveTo(bottom, 1);
@@ -405,18 +354,10 @@ function renderFrame(frame = {}) {
   clearLine();
   write(padLine(topRuleLine(lastFrame.context)));
 
-  // Spacer above input.
-  moveTo(spacerAboveRow(), 1);
-  clearLine();
-
   // (input rows are written by drawInputLines / clearInputRows)
   if (Array.isArray(lastFrame.overlayLines)) {
     drawInputLines(lastFrame.overlayLines);
   }
-
-  // Spacer below input.
-  moveTo(spacerBelowRow(), 1);
-  clearLine();
 
   moveTo(bottomRuleRow(), 1);
   clearLine();
@@ -449,6 +390,12 @@ function renderFrame(frame = {}) {
   lastGeometry = {
     top: topRuleRow(),
     bottom: rows(),
+    // Terminal reflow can move old dock rows above their former top when
+    // the window narrows. Keep their real widths to clear that footprint.
+    widths: [topRuleLine(lastFrame.context),
+      ...(lastFrame.overlayLines || layoutInput(lastFrame.prefix, lastFrame.value).lines).map(line => ' '.repeat(INPUT_INDENT) + line),
+      bottomRuleLine(), ' '.repeat(META_INDENT) + fitText(lastFrame.meta, cols() - META_INDENT - 1),
+      ' '.repeat(META_INDENT) + fitText(lastFrame.tips, cols() - META_INDENT - 1), ''].map(visibleWidth),
   };
 }
 
@@ -486,7 +433,7 @@ function layoutInput(prefix, value) {
   const budget = inputTextBudget();
   const combined = `${prefix || ''}${value || ''}`;
   const wrapped = wrapToLines(combined, budget, { preserveTrailingWhitespace: true });
-  const tail = tailWithEllipsis(wrapped, inputRows);
+  const tail = tailWithEllipsis(wrapped, inputRows, glyph('… ', '~ '));
   return {
     lines: tail.visible,
     truncated: tail.truncated,
@@ -566,6 +513,16 @@ export function mountInputDock({
   applyLayout();
 
   unsubResize = onResize(() => {
+    if (lastGeometry) {
+      const extraRows = lastGeometry.widths.reduce((sum, width) => sum + Math.max(0, Math.ceil(width / cols()) - 1), 0);
+      lastGeometry.top = Math.max(1, lastGeometry.top - Math.max(0, lastGeometry.bottom - rows()) - extraRows);
+    }
+    // Reflow input to the new width/height. Approval's owner repaginates its
+    // details after this frame is resized. Never release overlay ownership.
+    inputRows = Array.isArray(lastFrame.overlayLines)
+      ? Math.min(inputRows, dockOverlayCapacity())
+      : computeInputRowsForBuffer(lastFrame.prefix, lastFrame.value);
+    reservedRows = FIXED_ROWS + inputRows;
     if (queue.isActive()) {
       // Terminal reflow makes any tracked position fiction — hard
       // re-anchor to the new content-region bottom before repainting.
@@ -590,6 +547,7 @@ export function unmountInputDock() {
     if (unsubResize) { unsubResize(); unsubResize = null; }
   } finally {
     mounted = false;
+    lastFrame = { context: '', meta: '', tips: '', prefix: '', value: '', cursor: null, overlayLines: null };
     contentTrackingActive = false;
     queue.deactivate();
     unpatchOutputTracking();
@@ -679,8 +637,18 @@ export function redrawDockInput() {
   return true;
 }
 
+export function isDockOverlayActive() {
+  return mounted && Array.isArray(lastFrame.overlayLines);
+}
+
+export function dismissDockOverlay() {
+  if (!isDockOverlayActive()) return false;
+  lastFrame.overlayLines = null;
+  return clearInputPrompt();
+}
+
 export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) {
-  if (!mounted) return false;
+  if (!mounted || isDockOverlayActive()) return false;
   contentTrackingActive = false;
   setInputRowsTo(MIN_INPUT_ROWS);
   clearInputRows();
@@ -690,7 +658,7 @@ export function prepareInputPrompt({ context = '', tips = '', meta = '' } = {}) 
 }
 
 export function clearInputPrompt() {
-  if (!mounted) return false;
+  if (!mounted || isDockOverlayActive()) return false;
   contentTrackingActive = false;
   lastFrame.value = '';
   lastFrame.overlayLines = null;
@@ -702,7 +670,7 @@ export function clearInputPrompt() {
 }
 
 export function renderDockInput(prefix, value, { context = '', tips = '', meta = '', cursor = null, fixedRows = null } = {}) {
-  if (!mounted) return false;
+  if (!mounted || isDockOverlayActive()) return false;
   contentTrackingActive = false;
   lastFrame = { ...lastFrame, context, tips, meta, prefix, value, cursor, overlayLines: null };
   const requestedRows = fixedRows == null
@@ -713,6 +681,31 @@ export function renderDockInput(prefix, value, { context = '', tips = '', meta =
   const layout = layoutInput(prefix, value);
   drawInputLines(layout.lines);
   focusDockInput(prefix, value, cursor);
+  return true;
+}
+
+/**
+ * A clock/context tick is not an input-mode transition. Paint only metadata,
+ * preserving the current draft, prefix, row count, tips, and parked cursor.
+ */
+export function refreshDockMetadata({ context = lastFrame.context, meta = lastFrame.meta } = {}) {
+  if (!mounted || isDockOverlayActive()) return false;
+  if (context === lastFrame.context && meta === lastFrame.meta) return true;
+  lastFrame = { ...lastFrame, context, meta };
+  const header = padLine(topRuleLine(context));
+  const metadata = padLine(' '.repeat(META_INDENT) + paint.text.muted(fitText(meta, cols() - META_INDENT - 1)));
+  const bytes = ESC + topRuleRow() + ';1H' + ESC + '2K' + header
+    + ESC + metaRow() + ';1H' + ESC + '2K' + metadata;
+  if (queue.isActive()) queue.frame(() => write(bytes));
+  else {
+    saveCursor();
+    write(bytes);
+    restoreCursor();
+  }
+  if (lastGeometry) {
+    lastGeometry.widths[0] = visibleWidth(header.trimEnd());
+    lastGeometry.widths[lastGeometry.widths.length - 3] = visibleWidth(metadata.trimEnd());
+  }
   return true;
 }
 
@@ -728,9 +721,10 @@ export function renderDockOverlay({
   const sourceLines = Array.isArray(lines) ? lines : String(lines || '').split('\n');
   const wrapped = layoutOverlayLines(sourceLines);
   const rowCap = resolveOverlayRowCap(maxRows);
-  setInputRowsTo(overlayRowsForWrapped(wrapped.length, rowCap), { maxRows: rowCap });
-  const tail = tailWithEllipsis(wrapped, inputRows);
-  renderFrame({
+  const nextRows = overlayRowsForWrapped(wrapped.length, rowCap);
+  const tail = tailWithEllipsis(wrapped, nextRows);
+  lastFrame = {
+    ...lastFrame,
     context,
     meta,
     tips,
@@ -738,8 +732,11 @@ export function renderDockOverlay({
     value: '',
     cursor: null,
     overlayLines: tail.visible,
-  });
-  moveTo(rows(), 1);
+  };
+  setInputRowsTo(nextRows, { maxRows: rowCap });
+  renderFrame(lastFrame);
+  if (queue.isActive()) queue.park(rows(), 1);
+  else moveTo(rows(), 1);
   return true;
 }
 
@@ -753,7 +750,7 @@ export function renderDockOverlay({
  * readline's `rl.cursor`), not into the wrapped/rendered output.
  */
 export function focusDockInput(prefix, value = '', cursorInValue = null) {
-  if (!mounted) return false;
+  if (!mounted || isDockOverlayActive()) return false;
   contentTrackingActive = false;
   const target = cursorTargetForInput(prefix, value, cursorInValue);
   if (queue.isActive()) {

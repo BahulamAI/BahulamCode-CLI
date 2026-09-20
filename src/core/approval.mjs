@@ -1,15 +1,15 @@
 /**
  * Approval Flow — permission prompts for tool execution.
  *
- * Modeled after Claude Code's visual pattern:
- *   ⏺ Tool(args)          ← tool header
- *   ⎿ Allow? [y/n/a/t]    ← inline prompt
- *   ⎿ ✓ allowed            ← result
+ * Shared Bahulam review dock, with a transcript fallback for small or
+ * plain terminals. Presentation never changes permission policy.
  *
  * Write tools require approval. Read tools auto-approve.
  * Shell commands are risk-assessed (safe/medium/high).
  */
 
+import { sgr } from '../ui/chrome.mjs';
+import { term, onResize } from '../ui/term.mjs';
 import { shellCommandDisplay, shellCommandProfile, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import {
   classify as classifyTier,
@@ -24,7 +24,7 @@ import {
   renderTrustedApproval,
   defaultOptions as approvalOptions,
 } from '../ui/approval.mjs';
-import { clearInputPrompt, isInputDockMounted, moveToContent, renderDockOverlay } from '../ui/input-dock.mjs';
+import { dismissDockOverlay, isInputDockMounted, moveToContent, renderDockOverlay } from '../ui/input-dock.mjs';
 import { isApprovalRequiredWritePath, isSensitiveConfigPath, validateShellCommand } from './safety.mjs';
 import { classifyCommand } from '../permissions/command-classifier.mjs';
 import { ApprovalLog } from './approval-log.mjs';
@@ -121,15 +121,6 @@ function withShellRetryHint(reason) {
 
 // ── ANSI helpers ──
 
-const RST = '\x1b[0m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const CYAN = '\x1b[36m';
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const YELLOW = '\x1b[33m';
-const GRAY = '\x1b[90m';
-const WHITE = '\x1b[37m';
 
 const write = (s) => process.stderr.write(s);
 
@@ -193,11 +184,11 @@ export class ApprovalManager {
     }
 
     getModeLabel() {
-        if (this.approveAll) return `${GREEN}allow-all${RST}`;
+        if (this.approveAll) return `${sgr.success}allow-all${sgr.reset}`;
         if (this.approvedToolTypes.size > 0) {
-            return `${CYAN}auto: ${[...this.approvedToolTypes].join(', ')}${RST}`;
+            return `${sgr.primary}auto: ${[...this.approvedToolTypes].join(', ')}${sgr.reset}`;
         }
-        return `${DIM}ask${RST}`;
+        return `${sgr.muted}ask${sgr.reset}`;
     }
 
     async check(toolName, args, requireApproval = false, context = {}) {
@@ -277,6 +268,10 @@ export class ApprovalManager {
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
         let showDetails = false;
+        let detailPage = 0;
+        let detailPages = 1;
+        let unsubscribeResize = null;
+        let promptClosed = false;
 
         const isInteractive = process.stdin.isTTY;
 
@@ -289,7 +284,7 @@ export class ApprovalManager {
         // In rich TTY mode approval lives in the fixed input dock, replacing
         // "+ add instruction" until the user decides. Fallback/plain mode
         // still renders in the transcript.
-        const useDockPrompt = isInteractive && isInputDockMounted();
+        let useDockPrompt = isInteractive && isInputDockMounted();
         if (!useDockPrompt && isInputDockMounted()) moveToContent();
 
         // For TTYs we redraw in place on every arrow key so the prompt feels
@@ -308,8 +303,20 @@ export class ApprovalManager {
                     selected,
                     options,
                     showDetails,
-                    width: process.stderr.columns || process.stdout.columns || 96,
+                    page: detailPage,
+                    terminalRows: term().rows,
+                    width: term().columns,
                 });
+                detailPage = dock.page;
+                detailPages = dock.pageCount;
+                if (!dock.fits) {
+                    // Tiny windows use the scrollable transcript; never hide decisions.
+                    dismissDockOverlay();
+                    useDockPrompt = false;
+                    moveToContent();
+                    drawPrompt();
+                    return;
+                }
                 renderDockOverlay({
                     context: dock.context,
                     lines: dock.lines || [`${dock.prefix || ''}${dock.value || ''}`],
@@ -340,13 +347,21 @@ export class ApprovalManager {
         const ownsApprovalInput = isInteractive ? this._beginApprovalInput() : false;
 
         try {
-        if (isInteractive) drawPrompt();
+        if (isInteractive) {
+            drawPrompt();
+            unsubscribeResize = onResize(() => { if (!promptClosed) drawPrompt(); });
+        }
 
         // ── Input loop ─────────────────────────────────────────────────
         const choose = async () => {
             for (;;) {
                 const k = await this._readKey();
 
+                if (useDockPrompt && (k === 'pageup' || k === 'pagedown')) {
+                    detailPage = Math.max(0, Math.min(detailPages - 1, detailPage + (k === 'pagedown' ? 1 : -1)));
+                    drawPrompt();
+                    continue;
+                }
                 if (k === 'up' || k === 'left') {
                     if (!isInteractive) continue;
                     selected = (selected - 1 + options.length) % options.length;
@@ -369,6 +384,7 @@ export class ApprovalManager {
                     const lower = k.toLowerCase();
                     if (lower === 'd' && toolName === 'shell') {
                         showDetails = !showDetails;
+                        detailPage = 0;
                         if (isInteractive) drawPrompt();
                         continue;
                     }
@@ -384,11 +400,11 @@ export class ApprovalManager {
         };
 
         const value = await choose();
-        if (useDockPrompt) {
-            clearInputPrompt();
-            if (this._approvalPromptEnd) this._approvalPromptEnd();
-            moveToContent();
-        }
+        promptClosed = true;
+        unsubscribeResize?.();
+        if (useDockPrompt) dismissDockOverlay();
+        try { this._approvalPromptEnd?.(); } catch { /* host rendering cannot block a decision */ }
+        if (isInputDockMounted()) moveToContent();
         const prompt = promptForLog(toolName, args, tier, why);
 
         switch (value) {
@@ -401,7 +417,7 @@ export class ApprovalManager {
             case 'allow-session': {
                 if (!this.policy.hitl?.allowSessionTrust) return await this._prompt(toolName, args, context);
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'SESSION' });
-                write(`  ${GREEN}✓${RST}  ${DIM}trusted for this session: ${rule.pattern}${RST}\n\n`);
+                write(`  ${sgr.success}✓${sgr.reset}  ${sgr.muted}trusted for this session: ${rule.pattern}${sgr.reset}\n\n`);
                 this.history.push({ tool: toolName, decision: 'session-trust', tier, time: Date.now(), rule_id: rule.id });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'SESSION', rule_id: rule.id, prompt });
                 return { approved: true, tier, scope: 'SESSION', rule_id: rule.id };
@@ -410,7 +426,7 @@ export class ApprovalManager {
             case 'allow-project': {
                 if (!this.policy.hitl?.allowProjectTrust) return await this._prompt(toolName, args, context);
                 const rule = this.trustStore.add({ tool: toolName, args, tier, scope: 'PROJECT' });
-                write(`  ${GREEN}✓${RST}  ${DIM}trusted for this project: ${rule.pattern}${RST}\n\n`);
+                write(`  ${sgr.success}✓${sgr.reset}  ${sgr.muted}trusted for this project: ${rule.pattern}${sgr.reset}\n\n`);
                 this.history.push({ tool: toolName, decision: 'project-trust', tier, time: Date.now(), rule_id: rule.id });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve_trusted', scope: 'PROJECT', rule_id: rule.id, prompt });
                 return { approved: true, tier, scope: 'PROJECT', rule_id: rule.id };
@@ -419,7 +435,7 @@ export class ApprovalManager {
             case 'reject':
             {
                 const reason = 'User stopped the command';
-                write(`  ${RED}✗${RST}  ${DIM}stopped${RST}\n\n`);
+                write(`  ${sgr.danger}✗${sgr.reset}  ${sgr.muted}stopped${sgr.reset}\n\n`);
                 this.history.push({ tool: toolName, decision: 'no', tier, time: Date.now(), reason });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'reject', scope: 'once', reason, prompt });
                 this._rememberRejection({ tool: toolName, args, tier, decision: 'reject', reason, note: '' });
@@ -429,7 +445,7 @@ export class ApprovalManager {
             case 'allow-all':
                 if (requiresExplicitApproval(tier)) return await this._prompt(toolName, args, context);
                 this.approveAll = true;
-                write(`  ${GREEN}✓✓${RST} ${DIM}allow-all activated${RST}\n\n`);
+                write(`  ${sgr.success}✓✓${sgr.reset} ${sgr.muted}allow-all activated${sgr.reset}\n\n`);
                 this.history.push({ tool: toolName, decision: 'approve-all', tier, time: Date.now() });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'approve-all', scope: 'session', prompt });
                 return { approved: true, tier };
@@ -443,16 +459,16 @@ export class ApprovalManager {
                 return { approved: true, tier };
 
             case 'why':
-                write(`\n  ${DIM}${(context.reason || why).slice(0, 400)}${RST}\n\n`);
+                write(`\n  ${sgr.muted}${(context.reason || why).slice(0, 400)}${sgr.reset}\n\n`);
                 printedHeight = 0;
                 return await this._prompt(toolName, args, context);
 
             case 'edit':
             case 'replan':
             {
-                const note = await this._readLinePrompt(`  ${DIM}How would you like to proceed? ${RST}`);
+                const note = await this._readLinePrompt(`  ${sgr.muted}How would you like to proceed? ${sgr.reset}`);
                 const reason = note ? `User asked to re-plan: ${note}` : 'User asked to re-plan';
-                write(`  ${YELLOW}↩${RST}  ${DIM}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${RST}\n\n`);
+                write(`  ${sgr.warn}↩${sgr.reset}  ${sgr.muted}${note ? `re-plan — ${truncateNote(note)}` : 'reject with hint — rework the plan'}${sgr.reset}\n\n`);
                 this.history.push({ tool: toolName, decision: 'replan', tier, time: Date.now(), reason });
                 this.approvalLog.append({ tool: toolName, args, tier, decision: 'replan', scope: 'once', reason, prompt });
                 this._rememberRejection({ tool: toolName, args, tier, decision: 'replan', reason, note });
@@ -463,6 +479,11 @@ export class ApprovalManager {
                 return await this._prompt(toolName, args, context);
         }
         } finally {
+            unsubscribeResize?.();
+            if (!promptClosed) {
+                if (useDockPrompt) dismissDockOverlay();
+                try { this._approvalPromptEnd?.(); } catch { /* always restore input ownership */ }
+            }
             if (ownsApprovalInput) this._endApprovalInput();
         }
     }
@@ -505,6 +526,8 @@ export class ApprovalManager {
                     if (bytes[2] === 0x43) { resolve('right'); return; }
                     if (bytes[2] === 0x44) { resolve('left');  return; }
                 }
+                if (str === '\x1b[5~') { resolve('pageup'); return; }
+                if (str === '\x1b[6~') { resolve('pagedown'); return; }
                 // Bare Esc (single byte) — explicit reject signal
                 if (bytes.length === 1 && bytes[0] === 0x1b) { resolve('escape'); return; }
                 if (bytes[0] === 0x09) { resolve('tab'); return; }
@@ -628,12 +651,12 @@ function approvalTitleForLog(tier) {
 
 function writeApprovalConfirmation(tool, args, label) {
     if (tool === 'shell') {
-        write(`  ${GREEN}✓${RST}  ${DIM}${label} · shell ${shellApprovalSubject(args)}${RST}\n`);
+        write(`  ${sgr.success}✓${sgr.reset}  ${sgr.muted}${label} · shell ${shellApprovalSubject(args)}${sgr.reset}\n`);
         return;
     }
     const subject = approvalSummary(tool, args);
     const suffix = subject ? ` · ${truncateNote(subject)}` : '';
-    write(`  ${GREEN}✓${RST}  ${DIM}${label}${suffix}${RST}\n\n`);
+    write(`  ${sgr.success}✓${sgr.reset}  ${sgr.muted}${label}${suffix}${sgr.reset}\n\n`);
 }
 
 function shellApprovalSubject(args = {}) {
@@ -644,15 +667,15 @@ function shellApprovalSubject(args = {}) {
 
 function writeSafetyBlock(reason) {
     const cols = Math.max(40, Math.min(process.stderr.columns || process.stdout.columns || 80, 140));
-    const firstPrefix = `  ${RED}✗${RST}  ${DIM}`;
-    const nextPrefix = `     ${DIM}`;
+    const firstPrefix = `  ${sgr.danger}✗${sgr.reset}  ${sgr.muted}`;
+    const nextPrefix = `     ${sgr.muted}`;
     const firstWidth = Math.max(24, cols - 5);
     const nextWidth = Math.max(24, cols - 5);
     const lines = wrapSafetyText(reason, firstWidth, nextWidth);
 
-    write(`${firstPrefix}${lines[0] || ''}${RST}\n`);
+    write(`${firstPrefix}${lines[0] || ''}${sgr.reset}\n`);
     for (const line of lines.slice(1)) {
-        write(`${nextPrefix}${line}${RST}\n`);
+        write(`${nextPrefix}${line}${sgr.reset}\n`);
     }
     write('\n');
 }

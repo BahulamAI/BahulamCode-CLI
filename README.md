@@ -20,6 +20,16 @@ Set `BAHULAM_THEME=light` or `BAHULAM_THEME=dark` if your terminal does not adve
 background. Unadvertised backgrounds default to dark. `NO_COLOR=1` disables color;
 `BAHULAM_PLAIN=1` also uses the ASCII startup banner. No terminal background is changed.
 
+The compact input dock grows for multiline input. During approval, it stays in
+review mode until you decide; use **PgUp/PgDn** for long command details, arrow
+keys to select, **Enter** to confirm, or **Esc** to cancel. Very small windows use
+the transcript fallback. Approval scopes and keyboard shortcuts are unchanged.
+
+For terminal visual checks, run `npm run test:design:terminal` with optional
+Playwright and xterm installations. `PLAYWRIGHT_MODULE` and `XTERM_MODULE` can point
+to existing installations; `BROWSER_EXECUTABLE` selects a browser. The test checks
+light/dark docks, streaming, paging, and resize without connecting to a backend.
+
 ## About the name
 
 **Bahulam** (बहुलम्) is Sanskrit for *abundance*. The name reflects a
