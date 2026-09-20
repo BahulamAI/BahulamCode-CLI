@@ -145,17 +145,32 @@ const started = performance.now();
 const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), '--resume', 'startup-fixture'], {
   cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
   env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
-    BAHULAM_SKIP_AUTO_REGISTER: 'false', BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1' },
+    BAHULAM_SKIP_AUTO_REGISTER: 'false', BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
 });
 const startupOutput = (child.stdout || '') + (child.stderr || '');
 assert.equal(child.status, 0, child.error?.message || startupOutput);
 assert.ok(startupOutput.includes('Resumed session: 100 messages'));
-assert.ok(startupOutput.includes('Local session ready'));
+assert.ok(!startupOutput.includes('Local session ready'));
+assert.ok(!startupOutput.includes('abundance in your terminal'));
+assert.ok(!startupOutput.includes('/help commands'));
+assert.ok(!startupOutput.includes('Sign in with /login'));
 assert.ok(startupOutput.includes('Fixture message 99'));
 assert.ok(!startupOutput.includes('Fixture message 10'));
 assert.ok(!fs.existsSync(path.join(indexDir(startupProject), 'bm25.json')));
 const saved = fs.readFileSync(transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 assert.equal(saved.filter(row => row.message).length, 100, 'resume does not rewrite or drop original history');
 console.log('End-to-end offline resume: ' + Math.round(performance.now() - started) + 'ms; 100 original messages preserved, no index built.');
+
+for (const args of [[], ['--resume', 'missing-fixture']]) {
+  const fresh = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), ...args], {
+    cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
+    env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
+      BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
+  });
+  const output = (fresh.stdout || '') + (fresh.stderr || '');
+  assert.equal(fresh.status, 0, output);
+  assert.equal((output.match(/abundance in your terminal/g) || []).length, 1, 'fresh/fallback starts retain exactly one branded intro');
+  assert.ok(output.includes('Local session ready'));
+}
 
 console.log('Startup/resume regressions passed: lazy indexing, deduplication, safe scope, deadlines, profile races, bounded replay and indentation.');

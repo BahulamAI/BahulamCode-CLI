@@ -38,14 +38,24 @@ Project paths restore without filesystem fingerprint scans, runtime probes or
 search-index builds. The first search/overview initializes its index, and
 concurrent requests share a single build.
 
-Startup restores the original ASCII logo, infinity motif, abundance tagline and
-version, with a narrow-terminal fallback. It previews two recent messages; in-session
+Fresh starts show the original ASCII logo, infinity motif, abundance tagline and
+version, with a narrow-terminal fallback. Successful `--resume` starts skip the
+intro and new-session hints, showing a resume summary and two recent messages; in-session
 resume previews six, without reducing the selected agent history mode. `/history` shows more. Summary/tail modes reuse local checkpoints
 and local recaps; `/compact` remains the explicit backend-summary operation.
 Direct `/resume <id>` filters sessions before parsing their metadata.
 
 `npm run test:design:startup` checks populated terminals, narrow layouts, Unicode,
 late output and draft preservation with the browser environment described above.
+
+Sign-in is shared across terminals using the same `BAHULAM_HOME` (default
+`~/.bahulam`), regardless of project directory. Open sessions check shared
+credentials every two seconds, refreshing the profile only when credentials
+change; `/whoami` explicitly verifies the account. Settings saves reread shared
+config so an older session cannot restore its cached token after login/logout
+elsewhere. An explicit `B0_TOKEN` overrides the saved login; a different
+`BAHULAM_HOME` intentionally uses a separate credential store. Keep the backend
+environment consistent between terminals as well.
 
 ### Change and command cards
 

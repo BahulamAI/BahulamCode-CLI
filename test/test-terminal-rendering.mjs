@@ -595,7 +595,7 @@ test('REPL prompt keeps a small bottom cushion', () => {
 test('REPL mounts one startup writer before banner and restores locally before network checks', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
   const mount = replSource.indexOf('const inputDockActive = mountInputDock({ preserveScrollback: true })');
-  assert.ok(mount > 0 && mount < replSource.indexOf('  printBanner(auth);', mount));
+  assert.ok(mount > 0 && mount < replSource.indexOf('if (!cliArgs.resume) printBanner(auth);', mount));
   assert.ok(!replSource.includes('function trackStartupOutput(chunk)'));
   assert.ok(!replSource.includes('startInlineSpinner'));
   assert.ok(replSource.includes('deferProjectIndex: true'));

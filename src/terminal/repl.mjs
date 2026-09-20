@@ -45,7 +45,7 @@ import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
 import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
-import { fetchUserProfile, refreshStartupChecks } from './startup.mjs';
+import { createSessionAuthSync, refreshStartupChecks } from './startup.mjs';
 import { wrapCode } from '../ui/code-layout.mjs';
 import { printBanner as printBrandedBanner } from '../ui/banner.mjs';
 import { renderMissionReport, saveReport, toMarkdown as missionMarkdown } from '../ui/mission-report.mjs';
@@ -3603,19 +3603,21 @@ async function handleCommand(input, ctx) {
       return;
 
     case '/whoami': {
-      if (!session.user) await fetchUser(ctx);
-      if (session.user) {
-        process.stderr.write(`\n  ${c.green('✓')} ${session.user.github_username}\n`);
-        process.stderr.write(`  ${c.gray('Email:')}   ${session.user.email || 'n/a'}\n`);
-        process.stderr.write(`  ${c.gray('User ID:')} ${session.user.id}\n`);
-        process.stderr.write(`  ${c.gray('Role:')}    ${session.user.role || 'user'}\n\n`);
+      const verifiedUser = await fetchUser(ctx);
+      if (verifiedUser) {
+        process.stderr.write(`\n  ${c.green('✓')} ${verifiedUser.github_username || verifiedUser.email || 'user'}\n`);
+        process.stderr.write(`  ${c.gray('Email:')}   ${verifiedUser.email || 'n/a'}\n`);
+        process.stderr.write(`  ${c.gray('User ID:')} ${verifiedUser.id}\n`);
+        process.stderr.write(`  ${c.gray('Role:')}    ${verifiedUser.role || 'user'}\n\n`);
       } else {
-        process.stderr.write(`  ${c.red('Not logged in. Run /login.')}\n`);
+        const saved = ctx.auth.loadCredentials().token;
+        process.stderr.write(`  ${saved ? c.yellow('Credentials saved; could not verify your account. Run /preflight for details.') : c.red('Not logged in. Run /login.')}\n`);
       }
       return;
     }
 
     case '/status': {
+      await ctx.refreshAuth();
       if (rest.trim() === 'help') {
         renderHelp('status');
         return;
@@ -4355,6 +4357,7 @@ async function handleCommand(input, ctx) {
     case '/logout': {
       const success = ctx.auth.logout();
       if (success) {
+        await ctx.refreshAuth();
         process.stderr.write(`  ${c.green('✓')} ${c.dim('Signed out. Credentials cleared from ~/.bahulam/config.json')}\n`);
         process.stderr.write(`  ${c.dim('Run /login to sign in again.')}\n`);
       } else {
@@ -4417,11 +4420,7 @@ async function handleMcpSlashCommand(rest, ctx) {
 // ── Fetch User Profile ──
 
 async function fetchUser(ctx) {
-  const user = await fetchUserProfile(ctx.auth);
-  if (user) {
-    session.user = user;
-    session.model = user.default_reasoning_model || null;
-  }
+  return ctx.refreshAuth({ force: true });
 }
 
 // ── Main REPL ──
@@ -4519,6 +4518,7 @@ export async function startTerminalRepl() {
     gatewayUrl,
     localSessionId,
   };
+  ctx.refreshAuth = createSessionAuthSync({ auth, session });
 
   // Wake-on-finish: background jobs with on_complete dispatch their target
   // agent through the trigger funnel when they exit. The ctx builder runs
@@ -4815,7 +4815,7 @@ export async function startTerminalRepl() {
   // existing shell output in scrollback; never guess an absolute cursor row.
   orbitRef.current = createOrbit();
   const inputDockActive = mountInputDock({ preserveScrollback: true });
-  printBanner(auth);
+  if (!cliArgs.resume) printBanner(auth);
   toolExecutor = makeToolExecutor();
   ctx.toolExecutor = toolExecutor;
   await toolExecutor.waitForAutoRegister();
@@ -4837,10 +4837,11 @@ export async function startTerminalRepl() {
   if (cliArgs.model || cliArgs.route) {
     try { await applyLaunchModelArgs(cliArgs, ctx); } catch {}
   }
-  if (session.user) {
+  if (session.user && !cliArgs.resume) {
     process.stderr.write(`  ${c.green('✓')} ${c.dim(`Logged in as ${session.user.github_username || session.user.email || 'user'}`)}\n`);
   }
   // ── Resume previous session ──
+  let resumedAtStartup = false;
   if (cliArgs.resume) {
     const lastSession = cliArgs.resumeSessionId
         ? { sessionId: cliArgs.resumeSessionId }
@@ -4849,6 +4850,7 @@ export async function startTerminalRepl() {
     if (lastSession) {
       const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
       if (resumed.ok) {
+        resumedAtStartup = true;
         const status = ['Resumed session: ' + messageCountLabel(resumed.messages),
           'project ' + path.basename(safeCwd()), 'agent ' + resumed.historyMode,
           resumed.switchedProject ? 'cwd restored' : '',
@@ -4865,8 +4867,11 @@ export async function startTerminalRepl() {
     }
   }
 
-  process.stderr.write(wrapCode('Local session ready · search indexing on demand', paint.text.muted, { indent: '  ' }) + '\n');
-  process.stderr.write(wrapCode('/help commands · /resume history · /model models', paint.text.muted, { indent: '  ' }) + '\n');
+  if (!resumedAtStartup) {
+    if (cliArgs.resume) printBanner(auth); // Failed resume falls back to a fresh session.
+    process.stderr.write(wrapCode('Local session ready · search indexing on demand', paint.text.muted, { indent: '  ' }) + '\n');
+    process.stderr.write(wrapCode('/help commands · /resume history · /model models', paint.text.muted, { indent: '  ' }) + '\n');
+  }
 
   // 1 Hz live-tick for the elapsed clock in the dock's top strip. The render
   // queue serializes dock paints with agent/tool output. Only metadata is
@@ -5323,6 +5328,12 @@ export async function startTerminalRepl() {
 
   showPrompt();
 
+  // Shared login/logout is visible in already-open terminals. Never repaint
+  // the input text or draft, and do not fetch a profile on every timer tick.
+  const authRefreshTimer = setInterval(() => { void ctx.refreshAuth().catch(() => {}); }, 2000);
+  authRefreshTimer.unref?.();
+  rl.once('close', () => clearInterval(authRefreshTimer));
+
   // Connection checks enrich the local session after input is available.
   // They share the transcript queue and must never own an inline spinner.
   void refreshStartupChecks({ auth, session, cwd: safeCwd(), version: VERSION,
@@ -5331,8 +5342,8 @@ export async function startTerminalRepl() {
     if (!checks.length || !isInputDockMounted()) return;
     const user = checks[0]?.user;
     const account = user?.github_username || user?.email;
-    const parts = [account ? 'Signed in as ' + account : '',
-      ...checks.filter(check => check.label).map(check => [check.label, check.hint].filter(Boolean).join(': ')),
+    const parts = [account && !resumedAtStartup ? 'Signed in as ' + account : '',
+      ...checks.filter(check => check.label && (!resumedAtStartup || check.status !== 'ok')).map(check => [check.label, check.hint].filter(Boolean).join(': ')),
     ].filter(Boolean);
     if (parts.length) process.stderr.write(wrapCode(parts.join(' · ') + ' · /preflight for details', paint.text.muted, { indent: '  ' }) + '\n');
   }).catch(() => {});
@@ -5530,6 +5541,7 @@ export async function startTerminalRepl() {
     }
 
     const originalInput = input;
+    void ctx.refreshAuth().catch(() => {});
     const creds = auth.loadCredentials();
     const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
     const openRouterKey = process.env.OPENROUTER_API_KEY || creds.openRouterKey;

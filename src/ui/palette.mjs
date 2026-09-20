@@ -52,16 +52,16 @@ export const DIFF_BACKGROUNDS = Object.freeze({
   dark: Object.freeze({
     // The 256-color cube has no muted near-black green/red. Neutral
     // surfaces plus the existing colored foreground are the calmer fallback.
-    'diff.addLine':    { rgb: [30, 48, 42], ansi256: 235 },
-    'diff.removeLine': { rgb: [53, 35, 43], ansi256: 236 },
-    'diff.addWord':    { rgb: [40, 76, 57], ansi256: 237 },
-    'diff.removeWord': { rgb: [85, 43, 54], ansi256: 238 },
+    'diff.addLine':    { rgb: [34, 61, 49], ansi256: 236 },
+    'diff.removeLine': { rgb: [68, 39, 48], ansi256: 237 },
+    'diff.addWord':    { rgb: [43, 88, 62], ansi256: 238 },
+    'diff.removeWord': { rgb: [104, 47, 59], ansi256: 239 },
   }),
   light: Object.freeze({
-    'diff.addLine':    { rgb: [232, 244, 233], ansi256: 194 },
-    'diff.removeLine': { rgb: [251, 235, 237], ansi256: 224 },
-    'diff.addWord':    { rgb: [199, 229, 205], ansi256: 151 },
-    'diff.removeWord': { rgb: [245, 201, 206], ansi256: 217 },
+    'diff.addLine':    { rgb: [219, 238, 222], ansi256: 194 },
+    'diff.removeLine': { rgb: [247, 221, 224], ansi256: 224 },
+    'diff.addWord':    { rgb: [177, 218, 185], ansi256: 151 },
+    'diff.removeWord': { rgb: [236, 179, 187], ansi256: 217 },
   }),
 });
 
