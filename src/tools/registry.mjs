@@ -10,7 +10,6 @@ import { EditTool } from './edit.mjs';
 import { WriteTool } from './write.mjs';
 import { GlobTool } from './glob.mjs';
 import { GrepTool } from './grep.mjs';
-import { AgentTool } from './agent.mjs';
 import { WebFetchTool } from './web-fetch.mjs';
 import { WebSearchTool } from './web-search.mjs';
 import { TodoWriteTool } from './todo-write.mjs';
@@ -48,7 +47,6 @@ const BUILTIN_TOOLS = [
     WriteTool,
     GlobTool,
     GrepTool,
-    AgentTool,
     WebFetchTool,
     WebSearchTool,
     TodoWriteTool,
@@ -90,20 +88,7 @@ export function createToolRegistry({
 } = {}) {
     const tools = new Map();
     for (const Tool of BUILTIN_TOOLS) {
-        if (Tool === AgentTool) {
-            tools.set(Tool.name, {
-                ...Tool,
-                async call(input, options = {}) {
-                    return Tool.call(input, {
-                        ...options,
-                        pluginRegistry: options.pluginRegistry || pluginRegistry,
-                        stateEmit: options.stateEmit || stateEmit,
-                    });
-                },
-            });
-        } else {
-            tools.set(Tool.name, Tool);
-        }
+        tools.set(Tool.name, Tool);
     }
 
     const pluginStateHandles = new Map();

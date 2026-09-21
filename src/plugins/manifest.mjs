@@ -172,6 +172,42 @@ const SAFE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 // manifest degrades into a working table instead of a failed CREATE.
 const SQL_TYPES = new Set(['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC']);
 
+/**
+ * Normalize `config.lifecycle` — install / seed / uninstall / migration hooks.
+ * Returns null when the section is absent so callers can distinguish
+ * "no lifecycle declared" from "empty lifecycle".
+ *
+ * Shape:
+ *   {
+ *     seed:          "./hooks/seed.mjs"       | null,
+ *     post_install:  "./hooks/post-install.mjs" | null,
+ *     pre_uninstall: "./hooks/pre-uninstall.mjs" | null,
+ *     migrations: [
+ *       { version: "0.3.0", sql: "./migrations/0.3.0.sql" },
+ *       { version: "0.4.0", run: "./migrations/0.4.0.mjs" },
+ *     ],
+ *   }
+ */
+function normalizeLifecycle(value) {
+  if (!value || typeof value !== 'object') return null;
+  const out = {
+    seed:          typeof value.seed === 'string'          ? value.seed          : null,
+    post_install:  typeof value.post_install === 'string'  ? value.post_install  : null,
+    pre_uninstall: typeof value.pre_uninstall === 'string' ? value.pre_uninstall : null,
+    migrations: [],
+  };
+  if (Array.isArray(value.migrations)) {
+    for (const m of value.migrations) {
+      if (!m || typeof m !== 'object' || !m.version) continue;
+      const entry = { version: String(m.version) };
+      if (typeof m.sql === 'string') entry.sql = m.sql;
+      if (typeof m.run === 'string') entry.run = m.run;
+      out.migrations.push(entry);
+    }
+  }
+  return out;
+}
+
 function normalizeSqlType(value) {
   const raw = String(value || '').trim().toUpperCase();
   if (!raw) return 'TEXT';
@@ -520,6 +556,7 @@ export function normalizeManifest(raw, source = '') {
       mcpServers,
       composes,
       state,
+      ...(normalizeLifecycle(config.lifecycle) ? { lifecycle: normalizeLifecycle(config.lifecycle) } : {}),
     },
     source,
     _dir: source ? path.dirname(source) : '',

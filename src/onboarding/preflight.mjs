@@ -75,16 +75,16 @@ export async function checkAuthAndBackend(auth, { timeoutMs } = {}) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    let resp;
+    let resp, user;
     try {
       resp = await fetch(`${url}/api/user/me`, {
         headers: { 'Authorization': `Bearer ${creds.token}` },
         signal: ctrl.signal,
       });
+      if (resp.ok) user = await resp.json().catch(() => null);
     } finally { clearTimeout(t); }
 
     if (resp.ok) {
-      const user = await resp.json().catch(() => null);
       return { status: 'ok', label: 'Online', user };
     }
     if (resp.status === 401 || resp.status === 403) {
@@ -110,15 +110,15 @@ export async function checkCreditsAndPlan(auth, { timeoutMs = 2000 } = {}) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    let resp;
+    let resp, data;
     try {
       resp = await fetch(`${creds.backendUrl}/api/billing/balance`, {
         headers: { 'Authorization': `Bearer ${creds.token}` },
         signal: ctrl.signal,
       });
+      if (resp.ok) data = await resp.json().catch(() => null);
     } finally { clearTimeout(t); }
     if (!resp.ok) return null;
-    const data = await resp.json().catch(() => null);
     if (!data) return null;
 
     const tier = (data.tier || 'free').toUpperCase();

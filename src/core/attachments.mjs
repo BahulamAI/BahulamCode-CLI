@@ -465,6 +465,10 @@ function looksLikeAttachment(value) {
   return looksLikeImagePath(value) || looksLikeDocumentPath(value) || isClipboardAlias(value);
 }
 
+export function looksLikeAttachmentReference(value) {
+  return looksLikeAttachment(value);
+}
+
 /**
  * Parse @path references from `input` for BOTH images and documents.
  * Returns a cleaned instruction (with @refs removed) plus separate

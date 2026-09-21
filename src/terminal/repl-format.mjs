@@ -8,6 +8,8 @@
  */
 
 import * as path from 'node:path';
+import { wrapCode } from '../ui/code-layout.mjs';
+import { paint } from '../ui/palette.mjs';
 import { c, stripAnsi, formatElapsed, inPlace } from './ansi.mjs';
 import * as rqueue from '../ui/render-queue.mjs';
 
@@ -310,11 +312,11 @@ export function historyRoleLabel(role) {
  */
 export function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
   const shown = limit === Infinity ? entries : entries.slice(-limit);
-  process.stderr.write(`\n  ${c.bold(title)} (${shown.length}${shown.length === entries.length ? '' : ` of ${entries.length}`} entries)\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+  const count = shown.length + (shown.length === entries.length ? '' : ' of ' + entries.length);
+  process.stderr.write('\n' + wrapCode(title + ' (' + count + ' entries)', paint.brand.primary, { indent: '  ' }) + '\n');
   for (const msg of shown) {
     const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
-    process.stderr.write(`  ${historyRoleLabel(msg.role)}: ${content.slice(0, maxChars)}${content.length > maxChars ? '...' : ''}\n`);
+    process.stderr.write(wrapCode(stripAnsi(historyRoleLabel(msg.role)) + ': ' + content.slice(0, maxChars) + (content.length > maxChars ? '...' : ''), paint.text.primary, { indent: '    ' }) + '\n');
   }
   process.stderr.write('\n');
 }

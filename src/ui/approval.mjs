@@ -9,13 +9,17 @@
  *     [n] cancel           do not run
  *   ↑↓ move · Enter pick · letter shortcut · Esc cancel
  *
- * The rule colour is `brand.accent` (magenta) for explicit-approval
- * tiers; safe-default prompts use `brand.data` so they read as advisory.
+ * Indigo highlights the active decision; amber marks explicit risks.
+ * Fixed docks page long details while keeping decision choices visible.
  *
  * Pure — caller writes the returned string to stderr.
  */
 
 import { paint, width as visibleWidth } from './palette.mjs';
+import { glyph, sectionHeading } from './chrome.mjs';
+import { term } from './term.mjs';
+import { wrapToLines } from './text-layout.mjs';
+import { dockContentWidth, dockOverlayCapacity } from './input-dock.mjs';
 import { icon } from './icons.mjs';
 import { shellCommandDisplay, shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { label as tierLabel, requiresExplicitApproval, TIERS } from '../core/risk-tier.mjs';
@@ -75,14 +79,14 @@ export function renderApprovalPrompt({
   tool, args = {}, tier, why = '', width,
   options, selected = 0, showDetails = false,
 } = {}) {
-  const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
+  const cols = Math.max(20, Math.min(width || term().columns || 80, 120));
   const explicit = requiresExplicitApproval(tier);
-  const accent = explicit ? paint.brand.accent : paint.brand.data;
+  const accent = explicit ? paint.state.warn : paint.brand.primary;
   const opts = options || defaultOptions(tier, { tool, args });
   const title = `⚠ ${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`;
 
   const lines = [
-    blockHeader(title, accent),
+    sectionHeading('Review action', { detail: title, columns: cols, tone: explicit ? 'warn' : 'brand' }),
     ...subjectRows(tool, args, cols, accent),
     ...detailRows(tool, args, cols, accent, showDetails),
     ...riskRows(tool, args, tier, accent),
@@ -92,49 +96,75 @@ export function renderApprovalPrompt({
     blockLine(accent, paint.text.dim(approvalFooter(tool, showDetails))),
   ];
 
-  return '\n' + lines.join('\n');
+  return '\n' + lines.flatMap(line => wrapToLines(line, Math.max(1, cols - 1))).join('\n');
 }
 
+/**
+ * Paged details with pinned decisions. Paging changes presentation only.
+ * Selection changes never change the height or hide the action's risk.
+ */
 export function renderApprovalDockPrompt({
   tool, args = {}, tier, why = '', width,
-  options, selected = 0, showDetails = false,
+  options, selected = 0, showDetails = false, page = 0, terminalRows = term().rows,
 } = {}) {
-  const cols = Math.max(60, Math.min(width || process.stderr.columns || 96, 120));
+  const cols = Math.max(20, width || term().columns || 80);
+  const budget = dockContentWidth(cols);
   const opts = options || defaultOptions(tier, { tool, args });
-  // Multi-line shell/python scripts auto-expand: the user cannot approve
-  // what they cannot see. "shell script · 5 lines · 309 B" as the only
-  // subject made blind approval the default. After execution the script
-  // collapses back to the one-line tool card (details stay on /last).
-  const isScriptCommand = tool === 'shell'
-    && /\n/.test(String(args.command || args.cmd || ''));
-  const detailView = showDetails || isScriptCommand;
-  const subject = approvalDockSubject(tool, args, cols, detailView);
+  const command = String(args.command || args.cmd || '');
+  const fullCommandRequired = tool === 'shell' && shellCommandProfile(command).compact;
+  const detailView = showDetails || fullCommandRequired;
+  const accent = requiresExplicitApproval(tier) ? paint.state.warn : paint.brand.primary;
+  const wrap = line => wrapToLines(line, budget, { preserveTrailingWhitespace: true });
   const risks = riskTerms(tool, args, tier);
+  const pinned = risks.length ? wrap(paint.state.warn('risk   ' + risks.join(', '))) : [];
+  const subject = tool === 'shell' && detailView
+    ? command : subjectDetails(tool, args, toolDisplaySummary(tool, args, {}), budget).join('\n');
+  const content = [];
+  if (tool === 'shell') {
+    content.push(paint.text.muted(detailView ? 'Command / full details' : 'Command'));
+    // Detail view includes the original command, heredoc terminators, and
+    // trailing commands. Never substitute a shortened script body here.
+    const rawLines = subject.split(/\r?\n/);
+    rawLines.forEach((line, index) => content.push(paint.text.primary(
+      detailView && rawLines.length > 1 ? String(index + 1).padStart(String(rawLines.length).length) + '  ' + line
+        : line.startsWith('$ ') ? line : '$ ' + line
+    )));
+    const cwd = args.cwd || args.working_directory;
+    if (cwd) content.push(paint.text.muted('cwd    ') + paint.text.primary(cwd));
+  } else {
+    content.push(paint.text.muted(toolDisplayLabel(tool)));
+    content.push(...subject.split('\n').map(paint.text.primary));
+  }
   const reason = compactReason(tool, args, why);
-  const lines = [
-    ...approvalDockSubjectRows(subject),
-    ...(risks.length ? [`${paint.text.dim('risk   ')}${paint.state.warn(risks.join(', '))}`] : []),
-    ...(reason ? [`${paint.text.dim('reason ')}${paint.text.primary(truncate(reason, 120))}`] : []),
-    paint.text.dim('Decision'),
-    ...opts.map((option, index) => optionToken(option, index === selected, explicitAccent(tier))),
-  ];
-
-  // Show the WHOLE script when it fits — a partial script (…lines cut at
-  // the top) makes blind approval the default. Cap at half the terminal
-  // so the dock never eats the whole screen. Non-detail approvals keep
-  // the tight 8-row cap.
-  const termRows = Math.max(12, Number(process.stderr.rows) || 24);
-  const detailCap = Math.max(12, Math.floor(termRows / 2));
-  const maxRows = detailView ? Math.min(detailCap, Math.max(12, lines.length + 1)) : 8;
-
+  if (reason) content.push(paint.text.muted('reason ') + paint.text.primary(reason));
+  const body = content.flatMap(wrap);
+  const choices = opts.flatMap((option, index) => {
+    const scope = { 'allow-session': 'session', 'allow-type': 'session', 'allow-project': 'project' }[option.value];
+    const scoped = scope ? { ...option, label: option.label + ' (' + scope + ')' } : option;
+    return wrap(optionToken({ ...scoped, hint: '' }, index === selected, accent));
+  });
+  const decision = [paint.text.muted('Decision'), ...choices];
+  const capacity = dockOverlayCapacity(terminalRows);
+  const bodySize = Math.max(1, capacity - pinned.length - decision.length - 2);
+  const pageCount = Math.max(1, Math.ceil(body.length / bodySize));
+  const currentPage = Math.max(0, Math.min(pageCount - 1, Math.floor(Number(page) || 0)));
+  const pageRows = body.slice(currentPage * bodySize, (currentPage + 1) * bodySize);
+  while (pageRows.length < Math.min(bodySize, body.length)) pageRows.push('');
+  const position = pageCount > 1
+    ? 'Details ' + (currentPage + 1) + '/' + pageCount + glyph(' · ', ' / ') + 'PgUp/PgDn'
+    : 'Review before running';
+  const lines = [...pinned, ...pageRows, ...wrap(paint.text.muted(position)), '', ...decision];
   return {
-    prefix: '? approve › ',
-    value: truncateForDock(subject, detailView ? 1200 : 220),
-    context: `${approvalTitle(tier)} · ${tierLabel(tier)} · ${tool || 'tool'}`,
-    meta: '',
-    tips: approvalFooter(tool, detailView),
+    prefix: '? approve > ',
+    value: subject,
+    context: approvalTitle(tier) + glyph(' · ', ' / ') + tierLabel(tier) + glyph(' · ', ' / ') + (tool || 'tool'),
+    meta: [opts[selected]?.hint, tool === 'shell' ? (fullCommandRequired ? 'Full command' : 'd ' + (showDetails ? 'hide details' : 'details')) : ''].filter(Boolean).join(glyph(' · ', ' / ')),
+    tips: glyph('↑↓ choose · Enter pick · Esc cancel', 'Arrows / Enter pick / Esc cancel'),
     lines,
-    maxRows,
+    maxRows: capacity,
+    page: currentPage,
+    pageCount,
+    fits: lines.length <= capacity,
   };
 }
 
@@ -198,16 +228,8 @@ function approvalTitle(tier) {
   }
 }
 
-function blockHeader(title, accent) {
-  return `  ${paint.bold(accent(title))}`;
-}
-
 function blockLine(accent, text = '') {
   return text ? `  ${text}` : '  ';
-}
-
-function explicitAccent(tier) {
-  return requiresExplicitApproval(tier) ? paint.brand.accent : paint.brand.data;
 }
 
 function subjectRows(tool, args, cols, accent) {
@@ -310,8 +332,8 @@ function riskTerms(tool, args = {}, tier) {
 }
 
 function optionToken(option, selected, accent) {
-  const cursor = selected ? accent('▸ ') : paint.text.dim('  ');
-  const keyTag = paint.text.dim('[') + (selected ? accent(option.key) : paint.brand.data(option.key)) + paint.text.dim('] ');
+  const cursor = selected ? accent(glyph('▸ ', '> ')) : paint.text.dim('  ');
+  const keyTag = paint.text.dim('[') + (selected ? accent(option.key) : paint.text.muted(option.key)) + paint.text.dim('] ');
   const label = selected ? paint.bold(accent(option.label)) : paint.text.primary(option.label);
   const hint = option.hint ? `  ${paint.text.muted(option.hint)}` : '';
   return `${cursor}${keyTag}${label}${hint}`;
@@ -365,27 +387,12 @@ function subjectDetails(tool, args = {}, summary = '', available = 72) {
 
 function detailRows(tool, args = {}, cols, accent, showDetails) {
   if (!showDetails || tool !== 'shell') return [];
-  const profile = shellCommandProfile(args.command || args.cmd || '');
-  const rows = [];
-  const labelWidth = 9;
-  const textWidth = Math.max(28, cols - 5 - labelWidth);
-
-  if (profile.cwdLabel) {
-    rows.push(blockLine(accent, `${paint.text.dim('cwd    ')} ${paint.brand.data(profile.cwdLabel)}`));
-  }
-
-  rows.push(blockLine(accent, paint.text.dim('details')));
-  if (profile.script?.body) {
-    const invocation = profile.script.invocation || profile.command.split('\n')[0] || profile.command;
-    for (const line of wrapText(invocation, textWidth)) {
-      rows.push(blockLine(accent, `${paint.text.dim('cmd    ')} ${paint.text.primary(line)}`));
-    }
-    rows.push(blockLine(accent, paint.text.dim('script ')));
-    rows.push(...numberedRows(profile.script.body, cols, accent, 120));
-  } else {
-    rows.push(...wrappedLabeledRows('cmd    ', profile.command, cols, accent, 120));
-  }
-
+  const rows = [blockLine(accent, paint.text.dim('details / full command'))];
+  // Include wrappers, heredoc terminators and trailing commands in fallback
+  // terminals too. A script-body preview is not the full action.
+  rows.push(...numberedRows(String(args.command || args.cmd || ''), cols, accent));
+  const cwd = args.cwd || args.working_directory;
+  if (cwd) rows.push(...wrappedLabeledRows('cwd    ', cwd, cols, accent));
   return rows;
 }
 
@@ -394,41 +401,6 @@ function approvalFooter(tool, showDetails) {
     ? ` · d ${showDetails ? 'hide details' : 'details'}`
     : '';
   return `↑↓ move · Enter pick · letter shortcut${details} · Esc cancel`;
-}
-
-function approvalDockDetails(tool, args = {}, cols = 96) {
-  if (tool !== 'shell') return subjectDetails(tool, args, toolDisplaySummary(tool, args, {}), cols).join(' · ');
-  const profile = shellCommandProfile(args.command || args.cmd || '');
-  if (profile.script?.body) {
-    const invocation = profile.script.invocation || profile.command.split('\n')[0] || profile.command;
-    return [
-      `$ ${invocation}`,
-      ...profile.script.body.split(/\r?\n/).slice(0, 12).map((line, index) => `${index + 1} ${line}`),
-      ...(profile.script.body.split(/\r?\n/).length > 12 ? ['...'] : []),
-    ].join('\n');
-  }
-  return profile.command;
-}
-
-function approvalDockSubject(tool, args = {}, cols = 96, showDetails = false) {
-  if (showDetails && tool === 'shell') return approvalDockDetails(tool, args, cols);
-  return subjectDetails(
-    tool,
-    args,
-    toolDisplaySummary(tool, args, {}),
-    Math.max(24, cols - 20),
-  ).join(' · ');
-}
-
-function approvalDockSubjectRows(subject) {
-  const lines = String(subject || '').split('\n');
-  const first = lines.shift() || '';
-  // 12 continuation rows matches approvalDockDetails' script cap — a
-  // 12-line script renders fully in the approval prompt.
-  return [
-    `${paint.text.dim('? approve ›')} ${paint.text.primary(truncate(first, 160))}`,
-    ...lines.slice(0, 12).map(line => `${paint.text.dim('           ')}${paint.text.primary(truncate(line, 160))}`),
-  ];
 }
 
 function approvalSubjectSummary(tool, args = {}) {
@@ -467,44 +439,15 @@ function wrappedLabeledRows(label, text, cols, accent, maxLines = 120) {
   return rows;
 }
 
-function numberedRows(text, cols, accent, maxLines = 120) {
-  const rows = [];
+function numberedRows(text, cols, accent) {
   const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-  const width = String(Math.min(lines.length, maxLines)).length;
-  const textWidth = Math.max(28, cols - 5 - width - 2);
-  for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
-    const n = String(i + 1).padStart(width);
-    rows.push(blockLine(accent, `${paint.text.dim(`${n} `)}${paint.text.primary(truncate(lines[i], textWidth))}`));
-  }
-  if (lines.length > maxLines) {
-    rows.push(blockLine(accent, `${paint.text.dim(`... ${lines.length - maxLines} more line(s)`)}`));
-  }
-  return rows;
-}
-
-function truncateForDock(text, maxChars) {
-  const value = String(text || '').trim();
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
+  const numberWidth = String(lines.length).length;
+  const textWidth = Math.max(1, cols - numberWidth - 5);
+  return lines.flatMap((line, index) => wrapText(line, textWidth).map((part, continuation) =>
+    blockLine(accent, paint.text.dim(continuation ? ' '.repeat(numberWidth + 1) : String(index + 1).padStart(numberWidth) + ' ') + paint.text.primary(part))
+  ));
 }
 
 function wrapText(text, width) {
-  const words = String(text || '').split(/\s+/).filter(Boolean);
-  if (!words.length) return [''];
-  const lines = [];
-  let line = '';
-  for (const word of words) {
-    if (!line) {
-      line = word;
-      continue;
-    }
-    if ((line + ' ' + word).length <= width) {
-      line += ' ' + word;
-    } else {
-      lines.push(line);
-      line = word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
+  return wrapToLines(String(text || ''), Math.max(1, width), { preserveTrailingWhitespace: true });
 }

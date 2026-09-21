@@ -8,6 +8,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'path';
 import { makePluginState } from './state.mjs';
+import { normalizeToolResult } from '../core/tool-error.mjs';
 
 /**
  * Load a plugin tool handler by resolving its path relative to the plugin directory.
@@ -105,13 +106,12 @@ export async function createPluginToolExecutor(manifest, opts = {}) {
         get state() { return getState(); },
         pluginName,
       };
+      const traceId = options?._trace_id || null;
       try {
         const result = await entry.handler.call(args || {}, handlerOpts);
-        return result?.success !== false
-          ? { success: true, output: result?.output ?? result, _tool: name, _plugin: pluginName }
-          : { success: false, output: result?.output ?? String(result), _tool: name, _plugin: pluginName };
+        return normalizeToolResult({ tool: name, plugin: pluginName, traceId }, result, null);
       } catch (err) {
-        return { success: false, output: `Plugin tool error (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
+        return normalizeToolResult({ tool: name, plugin: pluginName, traceId }, null, err);
       }
     },
     list: () => [...handlers.keys()],

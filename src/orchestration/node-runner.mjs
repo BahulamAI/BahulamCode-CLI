@@ -43,7 +43,8 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
 
   const model = node.model || effectiveAgent.model || ctx.defaultModel || null;
   const { apiKey = null, openRouterKey = null } = ctx.credentials || {};
-  if (!apiKey && !openRouterKey) {
+  const useGateway = ctx.modelTransport === 'gateway' && ctx.gatewayToken;
+  if (!useGateway && !apiKey && !openRouterKey) {
     throw new Error(
       `Cannot run node '${node.id}' locally: no model API key. ` +
       'Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY, or log in and use the session substrate.',
@@ -60,8 +61,11 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
     .filter(schema => declaredTools.has(schema.name));
 
   const localAgent = new LocalAgent({
-    apiKey,
-    openRouterKey,
+    apiKey: useGateway ? null : apiKey,
+    openRouterKey: useGateway ? null : openRouterKey,
+    gatewayUrl: useGateway ? ctx.gatewayUrl : null,
+    gatewayToken: useGateway ? ctx.gatewayToken : null,
+    sessionId: ctx.sessionId || null,
     model,
     toolExecutor: scopedExecutor,
     cwd: ctx.cwd || process.cwd(),

@@ -231,4 +231,25 @@ await test('sendIntervention idempotency key retries stay stable across calls', 
   assert.strictEqual(second.interventionId, key);
 });
 
+await test('duplicate flag preserves authoritative delivered and queued decisions', async () => {
+  for (const status of ['delivered', 'queued_next_turn']) {
+    const stub = stubFetchOnce(() => jsonResponse({ status, duplicate: true }));
+    try { assert.strictEqual((await makeClient().sendIntervention('hello')).status, status); }
+    finally { stub.restore(); }
+  }
+});
+
+await test('hung intervention has a deadline and retains its stable id', async () => {
+  const keepAlive = setTimeout(() => {}, 1000);
+  const stub = stubFetchOnce((_url, opts) => new Promise((_resolve, reject) => {
+    opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true });
+  }));
+  try {
+    const result = await makeClient().sendIntervention('hello', { idempotencyKey: 'timed-out', timeoutMs: 10 });
+    assert.strictEqual(result.status, 'error');
+    assert.strictEqual(result.interventionId, 'timed-out');
+    assert.match(result.error, /timeout/i);
+  } finally { clearTimeout(keepAlive); stub.restore(); }
+});
+
 console.log(`\n\x1b[32m${passed} passed\x1b[0m\n`);

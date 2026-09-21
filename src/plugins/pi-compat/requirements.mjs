@@ -26,20 +26,22 @@ export const REQUIREMENTS_FILE = '.bahulam-requirements.json';
 // Known binary → install hint DB. Extend as we learn new pi packages.
 // Keep it small and honest: unknown binaries just report the name.
 const INSTALL_HINTS = {
-  ffmpeg:      { darwin: 'brew install ffmpeg',         linux: 'apt install -y ffmpeg' },
-  ffprobe:     { darwin: 'brew install ffmpeg',         linux: 'apt install -y ffmpeg' },
-  imagemagick: { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick' },
-  convert:     { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick' },
-  magick:      { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick' },
-  docker:      { darwin: 'brew install --cask docker',  linux: 'https://docs.docker.com/engine/install/' },
-  git:         { darwin: 'brew install git',            linux: 'apt install -y git' },
-  python:      { darwin: 'brew install python',         linux: 'apt install -y python3' },
-  python3:     { darwin: 'brew install python',         linux: 'apt install -y python3' },
-  node:        { darwin: 'brew install node',           linux: 'apt install -y nodejs' },
-  yt_dlp:      { darwin: 'brew install yt-dlp',         linux: 'pip install yt-dlp' },
-  'yt-dlp':    { darwin: 'brew install yt-dlp',         linux: 'pip install yt-dlp' },
-  pandoc:      { darwin: 'brew install pandoc',         linux: 'apt install -y pandoc' },
-  tesseract:   { darwin: 'brew install tesseract',      linux: 'apt install -y tesseract-ocr' },
+  ffmpeg:      { darwin: 'brew install ffmpeg',         linux: 'apt install -y ffmpeg',              win32: 'choco install ffmpeg' },
+  ffprobe:     { darwin: 'brew install ffmpeg',         linux: 'apt install -y ffmpeg',              win32: 'choco install ffmpeg' },
+  imagemagick: { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick',         win32: 'choco install imagemagick' },
+  convert:     { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick',         win32: 'choco install imagemagick' },
+  magick:      { darwin: 'brew install imagemagick',    linux: 'apt install -y imagemagick',         win32: 'choco install imagemagick' },
+  docker:      { darwin: 'brew install --cask docker',  linux: 'https://docs.docker.com/engine/install/', win32: 'choco install docker-desktop' },
+  git:         { darwin: 'brew install git',            linux: 'apt install -y git',                 win32: 'choco install git' },
+  python:      { darwin: 'brew install python',         linux: 'apt install -y python3',             win32: 'choco install python' },
+  python3:     { darwin: 'brew install python',         linux: 'apt install -y python3',             win32: 'choco install python' },
+  node:        { darwin: 'brew install node',           linux: 'apt install -y nodejs',              win32: 'choco install nodejs-lts' },
+  yt_dlp:      { darwin: 'brew install yt-dlp',         linux: 'pip install yt-dlp',                 win32: 'choco install yt-dlp' },
+  'yt-dlp':    { darwin: 'brew install yt-dlp',         linux: 'pip install yt-dlp',                 win32: 'choco install yt-dlp' },
+  pandoc:      { darwin: 'brew install pandoc',         linux: 'apt install -y pandoc',              win32: 'choco install pandoc' },
+  pdflatex:    { darwin: 'brew install --cask basictex', linux: 'apt install -y texlive-latex-recommended', win32: 'choco install miktex' },
+  xelatex:     { darwin: 'brew install --cask mactex-no-gui', linux: 'apt install -y texlive-xetex', win32: 'choco install miktex' },
+  tesseract:   { darwin: 'brew install tesseract',      linux: 'apt install -y tesseract-ocr',       win32: 'choco install tesseract' },
 };
 
 // Shell keywords that mean "the arg after me is the binary" when
@@ -462,11 +464,22 @@ export function formatRequirementsReport(reqs, { verbose = false } = {}) {
   if (!reqs) return lines;
 
   if (reqs.system_binaries?.length) {
-    lines.push({ level: 'warn', text: `system binaries required: ${reqs.system_binaries.map(b => b.name).join(', ')}` });
+    const platformKey = process.platform === 'win32' ? 'win32'
+      : process.platform === 'darwin' ? 'darwin'
+      : 'linux';
+    const required = reqs.system_binaries.filter(b => b.optional !== true);
+    const optional = reqs.system_binaries.filter(b => b.optional === true);
+    if (required.length) {
+      lines.push({ level: 'warn', text: `system binaries required: ${required.map(b => b.name).join(', ')}` });
+    }
+    if (optional.length) {
+      lines.push({ level: 'info', text: `system binaries optional: ${optional.map(b => b.name).join(', ')}` });
+    }
     if (verbose) {
       for (const b of reqs.system_binaries) {
-        const hint = b.install_hints?.darwin || b.install_hints?.linux;
-        lines.push({ level: 'info', text: `   ${b.name}${hint ? ` — install: ${hint}` : ''}` });
+        const hint = b.install_hints?.[platformKey] || b.install_hints?.darwin || b.install_hints?.linux;
+        const tag = b.optional === true ? ' (optional)' : '';
+        lines.push({ level: 'info', text: `   ${b.name}${tag}${hint ? ` — install: ${hint}` : ''}` });
       }
     }
   }

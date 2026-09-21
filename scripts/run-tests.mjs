@@ -29,9 +29,12 @@ const env = {
 // Must pass on any contributor machine with `node >= 18` and `npm install`.
 const UNIT_TESTS = [
     'test/test-backend-url.mjs',
+    'test/test-auth-sessions.mjs',
+    'test/test-auth-repl.mjs',
     'test/test-agent-history.mjs',
     'test/test-sse-client.mjs',
     'test/test-tool-executor.mjs',
+    'test/test-remember.mjs',
     'test/test-generate-image.mjs',
     'test/test-analyze-image.mjs',
     'test/test-project-artifacts.mjs',
@@ -51,8 +54,14 @@ const UNIT_TESTS = [
     'test/pi-requirements-smoke.mjs',
     'test/test-formatter.mjs',
     'test/test-terminal-rendering.mjs',
+    'test/test-transcript-sections.mjs',
+    'test/test-code-cards.mjs',
+    'test/test-startup-resume.mjs',
+    'test/test-design-system.mjs',
     'test/test-render-queue.mjs',
     'test/test-input-dock.mjs',
+    'test/test-dock-lifecycle.mjs',
+    'test/test-approval-layout.mjs',
     'test/test-live-steering-client.mjs',
     'test/test-slash-commands.mjs',
     'test/test-approval.mjs',
@@ -67,14 +76,21 @@ const UNIT_TESTS = [
     'test/test-bm25.mjs',
     'test/test-output-filter.mjs',
     'test/test-risk-tier.mjs',
+    'test/test-context-reduction.mjs',
     'test/test-resume-append.mjs',
     'test/test-mcp.mjs',
+    'test/test-followup-promote.mjs',
+    'test/test-followup-queue.mjs',
+    'test/test-plugin-lifecycle.mjs',
+    'test/test-tool-error.mjs',
+    'test/test-agent-trace.mjs',
 ];
 
 // ── Integration tests ────────────────────────────────────────────────────────
 // Spawn real processes, bind sockets, or test multi-process coordination.
 // Require no external services but do require a working OS environment.
 const INTEGRATION_TESTS = [
+    'test/test-followup-repl.mjs',
     'test/test-socket-server.mjs',
     'test/test-session-attach.mjs',
     'test/test-session-event-tap.mjs',

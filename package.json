@@ -1,6 +1,6 @@
 {
   "name": "@bahulam/code",
-  "version": "0.1.23",
+  "version": "0.1.27",
   "description": "Bahulam Code — abundance, in your terminal. CLI-first, reliability-first, sub-agents, 65.6% SWE-bench Verified.",
   "type": "module",
   "bin": {
@@ -10,6 +10,7 @@
   },
   "files": [
     "src/",
+    "assets/bahulam-plugin/",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -19,6 +20,11 @@
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs --unit",
     "test:integration": "node scripts/run-tests.mjs --integration",
+    "test:design:browser": "node test/test-design-browser.mjs",
+    "test:design:terminal": "node test/test-dock-browser.mjs",
+    "test:design:cards": "node test/test-code-cards-browser.mjs",
+    "test:design:startup": "node test/test-startup-browser.mjs",
+    "test:design:transcript": "node test/test-transcript-browser.mjs",
     "sync-catalog": "node scripts/sync-catalog.mjs",
     "prepublishOnly": "node scripts/sync-catalog.mjs"
   },

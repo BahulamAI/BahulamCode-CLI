@@ -12,12 +12,16 @@
  */
 
 import { paint } from './palette.mjs';
-import { icon, toolFamily } from './icons.mjs';
+import { icon } from './icons.mjs';
 import { shellCommandProfile, toolDisplayLabel, toolDisplaySummary } from '../terminal/tool-display.mjs';
 import { isSensitiveConfigPath } from '../core/safety.mjs';
+import { renderFileDiffs, renderUnifiedDiff } from './diff.mjs';
+import { renderCommandDetails, workspaceAction } from './command-card.mjs';
+import { wrapCode } from './code-layout.mjs';
+import { stripSequences } from './render-queue.mjs';
+import { sectionHeading } from './chrome.mjs';
 
 const MAX_DETAIL_LINES = 60;
-const MAX_SHELL_DETAIL_LINES = 220;
 const MAX_LINE_WIDTH = 220;
 
 // ── Dispatch ─────────────────────────────────────────────────────────────
@@ -26,9 +30,12 @@ export function detailFor(card) {
   if (!card) return paint.text.dim('  (no card to expand)');
   const { tool } = card;
 
+  if (['shell', 'run_tests', 'validate_build', 'lint_check', 'validate_file', 'validate_structure'].includes(tool)) return renderCommandDetails(card);
   const header = renderHeader(card);
   const body = renderBody(card);
-  return body ? `${header}\n${body}` : header;
+  const file = card.args?.file_path || card.args?.path;
+  const action = ['write_file', 'edit_file'].includes(tool) && card.result?.success !== false ? workspaceAction(file, { cwd: card.cwd }) : '';
+  return [header, body, action].filter(Boolean).join('\n');
 }
 
 function renderBody(card) {
@@ -68,25 +75,11 @@ function renderBody(card) {
 
 function renderHeader(card) {
   const { tool, args, durationMs, result } = card;
-  const label = toolDisplayLabel(tool);
-  const fam = toolFamily(tool);
-  const accent = fam === 'write' ? paint.brand.primary
-              : fam === 'shell' ? paint.state.warn
-              : fam === 'subAgent' ? paint.brand.data
-              : paint.text.primary;
-
-  const lines = [
-    `  ${paint.text.dim('━━')} ${icon(tool)} ${accent(label)} ${paint.text.dim('━━')}`,
-  ];
-
+  const lines = [sectionHeading(toolDisplayLabel(tool), { detail: card.source || '' })];
   const args1 = oneLineArgs(tool, args);
-  if (args1) lines.push(`    ${paint.text.dim('args  ')} ${args1}`);
-  if (durationMs != null) {
-    lines.push(`    ${paint.text.dim('time  ')} ${paint.text.muted(formatDuration(durationMs))}`);
-  }
-  if (result?.success === false) {
-    lines.push(`    ${paint.state.danger('error ')} ${result?.error || 'failed'}`);
-  }
+  if (args1) lines.push(wrapCode('args  ' + stripSequences(args1), paint.text.muted, { indent: '  ' }));
+  if (durationMs != null) lines.push(wrapCode('time  ' + formatDuration(durationMs), paint.text.muted, { indent: '  ' }));
+  if (result?.success === false) lines.push(wrapCode('error ' + (result.error || 'failed'), paint.state.danger, { indent: '  ' }));
   return lines.join('\n');
 }
 
@@ -226,18 +219,19 @@ function detailEditFile(card) {
       : null);
   if (redacted) return renderRedactedDiff(redacted);
 
-  const diff = unifiedForFileDiff(card.result?.file_diff)
-    || card.result?.diff
+  if (card.result?.file_diff) return renderFileDiffs(card.result, { indent: '  ' });
+  const diff = card.result?.diff
     || card.result?.patch
     || card.result?.output;
   if (diff) return renderDiff(String(diff));
 
-  const before = card.args?.search;
-  const after = card.args?.replace;
+  const before = card.args?.search ?? card.args?.old_string;
+  const after = card.args?.replace ?? card.args?.new_string;
   if (before != null && after != null) {
     return [
-      `    ${paint.state.danger('- ' + String(before).split('\n')[0].slice(0, 160))}`,
-      `    ${paint.state.success('+ ' + String(after).split('\n')[0].slice(0, 160))}`,
+      wrapCode('Requested replacement (file line numbers unavailable)', paint.text.muted, { indent: '  ' }),
+      ...String(before).split('\n').map(line => wrapCode(line, paint.state.danger, { indent: '  ', first: '- ', rest: '  ', wordWrap: false })),
+      ...String(after).split('\n').map(line => wrapCode(line, paint.state.success, { indent: '  ', first: '+ ', rest: '  ', wordWrap: false })),
     ].join('\n');
   }
   return paint.text.dim('    (edit applied, no diff returned)');
@@ -250,23 +244,22 @@ function detailWriteFile(card) {
       : null);
   if (redacted) return renderRedactedDiff(redacted);
 
-  const diff = unifiedForFileDiff(card.result?.file_diff) || card.result?.diff;
+  if (card.result?.file_diff) return renderFileDiffs(card.result, { indent: '  ' });
+  const diff = card.result?.diff;
   if (diff) return renderDiff(String(diff));
   const content = card.args?.content;
   if (!content) return paint.text.dim('    (no content)');
-  return numbered(String(content), 1);
+  const lines = String(content).split('\n'), digits = String(lines.length).length;
+  return [wrapCode('Submitted content (no diff returned)', paint.text.muted, { indent: '  ' }),
+    ...lines.map((line, i) => wrapCode(line, paint.text.primary, {
+      indent: '  ', first: paint.text.muted(String(i + 1).padStart(digits) + '  '), rest: ' '.repeat(digits + 2), wordWrap: false,
+    })),
+  ].join('\n');
 }
 
 function detailWriteProject(card) {
   const diffs = card.result?.file_diffs || [];
-  if (diffs.length) {
-    return diffs.map(diff => {
-      const redacted = redactedFileDiff(diff);
-      if (redacted) return renderRedactedDiff(redacted);
-      const unified = unifiedForFileDiff(diff);
-      return unified ? renderDiff(unified) : '';
-    }).filter(Boolean).join('\n');
-  }
+  if (diffs.length) return renderFileDiffs(card.result, { indent: '  ' });
   const files = card.args?.files || [];
   if (!files.length) return paint.text.dim('    (no files)');
   return files.slice(0, 30).map(f => {
@@ -290,10 +283,7 @@ function sensitiveFallbackDiff(card) {
 }
 
 function renderRedactedDiff(diff = {}) {
-  const file = diff.relative_path || diff.path || 'sensitive config';
-  const add = diff.lines_added ?? 0;
-  const rem = diff.lines_removed ?? 0;
-  return `    ${paint.brand.primary(file)} ${paint.text.dim(`+${add} −${rem}`)}\n    ${paint.text.dim('diff redacted for sensitive config')}`;
+  return renderFileDiffs({ ...diff, redacted: true }, { indent: '  ' });
 }
 
 function detailDeleteFile(card) {
@@ -304,39 +294,7 @@ function detailDeleteFile(card) {
 // ── Shell / validators ──────────────────────────────────────────────────
 
 function detailShell(card) {
-  const command = String(card.args?.command || card.args?.cmd || '').trim();
-  const stdout = String(card.result?.stdout ?? card.result?.output ?? '');
-  const stderr = String(card.result?.stderr ?? '');
-  const out = [];
-  if (command) {
-    const profile = shellCommandProfile(command);
-    if (profile.cwdLabel) {
-      out.push(paint.text.dim('    cwd'));
-      out.push(`    ${paint.brand.data(profile.cwdLabel)}`);
-      out.push('');
-    }
-
-    out.push(paint.text.dim('    command'));
-    if (profile.script?.body) {
-      out.push(`    ${paint.text.primary(profile.script.invocation || profile.command.split('\n')[0] || profile.command)}`);
-      out.push('');
-      out.push(paint.text.dim('    script'));
-      out.push(numbered(profile.script.body, 1, { maxLines: MAX_SHELL_DETAIL_LINES }));
-    } else {
-      out.push(clip(profile.command, paint.text.primary, { maxLines: MAX_SHELL_DETAIL_LINES }));
-    }
-  }
-  if (stdout) {
-    if (out.length) out.push('');
-    out.push(paint.text.dim('    stdout'));
-    out.push(clip(stdout, paint.text.primary, { maxLines: MAX_DETAIL_LINES }));
-  }
-  if (stderr) {
-    if (out.length) out.push('');
-    out.push(paint.state.warn('    stderr'));
-    out.push(clip(stderr, paint.state.danger, { maxLines: MAX_DETAIL_LINES }));
-  }
-  return out.length ? out.join('\n') : paint.text.dim('    (no output)');
+  return renderCommandDetails(card);
 }
 
 function detailValidator(card) {
@@ -443,59 +401,7 @@ function indentBlock(text, prefix) {
 }
 
 function renderDiff(text) {
-  return text.split('\n').slice(0, MAX_DETAIL_LINES).map(line => {
-    if (line.startsWith('+++') || line.startsWith('---')) return `    ${paint.bold(paint.text.muted(line))}`;
-    if (line.startsWith('@@'))                            return `    ${paint.brand.data(line)}`;
-    if (line.startsWith('+'))                             return `    ${paint.state.success(line)}`;
-    if (line.startsWith('-'))                             return `    ${paint.state.danger(line)}`;
-    return `    ${paint.text.dim(line)}`;
-  }).join('\n');
-}
-
-function unifiedForFileDiff(diff) {
-  if (!diff) return '';
-  if (diff.unified) return String(diff.unified);
-  const hunks = Array.isArray(diff.hunks) ? diff.hunks : [];
-  if (!hunks.length) return '';
-  const file = diff.relative_path || diff.path || 'file';
-  const out = [`--- a/${file}`, `+++ b/${file}`];
-  for (const hunk of hunks) {
-    const lines = hunkLines(hunk);
-    if (!lines.length) continue;
-    const oldCount = hunk.old_count ?? hunk.old_lines ?? countLinesForSide(lines, 'old');
-    const newCount = hunk.new_count ?? hunk.new_lines ?? countLinesForSide(lines, 'new');
-    out.push(`@@ -${hunk.old_start ?? 1},${oldCount} +${hunk.new_start ?? 1},${newCount} @@`);
-    for (const line of lines) out.push(toUnifiedLine(line));
-  }
-  return out.length > 2 ? out.join('\n') : '';
-}
-
-function hunkLines(hunk = {}) {
-  if (Array.isArray(hunk.lines)) return hunk.lines;
-  if (typeof hunk.body !== 'string') return [];
-  return hunk.body.replace(/\r\n?/g, '\n').split('\n').filter(line => line && !line.startsWith('@@'));
-}
-
-function toUnifiedLine(line) {
-  if (typeof line === 'string') {
-    if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) return line;
-    return ` ${line}`;
-  }
-  const type = String(line?.type || '').toLowerCase();
-  const text = String(line?.text ?? line?.content ?? '');
-  if (type === 'add' || type === 'added') return `+${text}`;
-  if (type === 'remove' || type === 'removed' || type === 'delete') return `-${text}`;
-  return ` ${text}`;
-}
-
-function countLinesForSide(lines, side) {
-  return lines.filter(line => {
-    const type = typeof line === 'string'
-      ? (line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : 'context')
-      : String(line?.type || 'context').toLowerCase();
-    if (side === 'old') return type !== 'add' && type !== 'added';
-    return type !== 'remove' && type !== 'removed' && type !== 'delete';
-  }).length;
+  return renderUnifiedDiff(text, { indent: '  ' });
 }
 
 function formatDuration(ms) {

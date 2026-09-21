@@ -1,32 +1,8 @@
 /**
- * Bahulam palette — semantic color tokens for the CLI.
- *
- * Every feature module imports from here, never from raw ANSI. Tokens resolve
- * at call time so changing terminal capabilities (resize, `refresh()`) is
- * picked up without restarting the process.
- *
- *   import { paint } from './palette.mjs';
- *   process.stdout.write(paint.brand.primary('KEPLER'));
- *
- * Composition (multiple styles on one string):
- *
- *   paint.bold(paint.brand.primary('KEPLER'))
- *
- * Tier behavior:
- *   truecolor → 24-bit RGB
- *   ansi256   → nearest 256-color index
- *   ansi16    → nearest basic color
- *   none      → identity (input returned unchanged)
- *
- * Brand identity (Mission Control PRD-055):
- *   primary  Abundance Cyan     #06b6d4
- *   accent   Stellar Magenta    #ec4899
- *   data     Neon Cyan          #22d3ee
- *   success  Aligned green      #22c55e
- *   warn     Soft amber         #eab308
- *   danger   Failure red        #ef4444
- *   dim      Sub-agent / hint   #6b7280
- *   text     Primary text       #c9d1d9
+ * Bahulam semantic palette: ink, indigo, and calm status colors.
+ * Resolved at call time for light/dark themes and terminal capabilities.
+ * Truecolor, ANSI 256/16, NO_COLOR, and nested style composition are supported.
+ * Use paint.brand.primary('bahulam.') instead of raw ANSI in feature modules.
  */
 
 import { term } from './term.mjs';
@@ -38,21 +14,65 @@ const RESET = `${ESC}0m`;
 // Each token is { rgb: [r,g,b], ansi256: n, ansi16: 'fgName' }.
 // `ansi16` maps to a key in BASIC_FG below.
 
+// Values mirror packages/config/src/bahulam-design.ts in the web platform.
+// Light/dark variants keep the website identity legible in terminal themes.
 export const TOKENS = Object.freeze({
-  // Brand
-  'brand.primary': { rgb: [6, 182, 212],   ansi256: 44,  ansi16: 'cyan'     }, // #06b6d4
-  'brand.accent':  { rgb: [236, 72, 153],  ansi256: 198, ansi16: 'magenta' }, // #ec4899
-  'brand.data':    { rgb: [34, 211, 238],  ansi256: 87,  ansi16: 'cyan'    }, // #22d3ee
+  'brand.primary': { rgb: [190, 198, 255], ansi256: 147, ansi16: 'blue' },
+  'brand.accent':  { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'brand.data':    { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'syntax.keyword': { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'syntax.string':  { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'syntax.literal': { rgb: [231, 196, 148], ansi256: 222, ansi16: 'yellow' },
+  'diffSyntax.keyword': { rgb: [209, 184, 235], ansi256: 183, ansi16: 'magenta' },
+  'diffSyntax.string':  { rgb: [145, 207, 216], ansi256: 116, ansi16: 'cyan' },
+  'diffSyntax.literal': { rgb: [231, 196, 148], ansi256: 222, ansi16: 'yellow' },
+  'diffSyntax.comment': { rgb: [193, 200, 216], ansi256: 251, ansi16: 'gray' },
+  'state.success': { rgb: [154, 214, 184], ansi256: 151, ansi16: 'green' },
+  'state.warn':    { rgb: [242, 203, 137], ansi256: 222, ansi16: 'yellow' },
+  'state.danger':  { rgb: [255, 176, 182], ansi256: 217, ansi16: 'red' },
+  'text.primary':  { rgb: [240, 241, 248], ansi256: 255, ansi16: 'white' },
+  'text.dim':      { rgb: [183, 190, 206], ansi256: 250, ansi16: 'gray' },
+  'text.muted':    { rgb: [183, 190, 206], ansi256: 250, ansi16: 'gray' },
+});
 
-  // State
-  'state.success': { rgb: [34, 197, 94],   ansi256: 41,  ansi16: 'green'   }, // #22c55e
-  'state.warn':    { rgb: [234, 179, 8],   ansi256: 220, ansi16: 'yellow'  }, // #eab308
-  'state.danger':  { rgb: [239, 68, 68],   ansi256: 196, ansi16: 'red'     }, // #ef4444
+export const LIGHT_TOKENS = Object.freeze({
+  'brand.primary': { rgb: [48, 59, 160], ansi256: 61, ansi16: 'blue' },
+  'brand.accent':  { rgb: [112, 83, 155], ansi256: 97, ansi16: 'magenta' },
+  'brand.data':    { rgb: [38, 105, 120], ansi256: 23, ansi16: 'cyan' },
+  'syntax.keyword': { rgb: [113, 76, 145], ansi256: 97, ansi16: 'magenta' },
+  'syntax.string':  { rgb: [38, 105, 120], ansi256: 23, ansi16: 'cyan' },
+  'syntax.literal': { rgb: [135, 88, 32], ansi256: 94, ansi16: 'yellow' },
+  // The same hues with deeper ink keep code readable on tinted diff surfaces,
+  // including the more saturated changed-word backgrounds.
+  'diffSyntax.keyword': { rgb: [96, 59, 125], ansi256: 54, ansi16: 'magenta' },
+  'diffSyntax.string':  { rgb: [29, 80, 92], ansi256: 23, ansi16: 'cyan' },
+  'diffSyntax.literal': { rgb: [109, 65, 21], ansi256: 52, ansi16: 'yellow' },
+  'diffSyntax.comment': { rgb: [75, 79, 91], ansi256: 239, ansi16: 'gray' },
+  'state.success': { rgb: [40, 104, 79], ansi256: 23, ansi16: 'green' },
+  'state.warn':    { rgb: [138, 91, 21], ansi256: 94, ansi16: 'yellow' },
+  'state.danger':  { rgb: [173, 54, 63], ansi256: 131, ansi16: 'red' },
+  'text.primary':  { rgb: [32, 35, 49], ansi256: 235, ansi16: 'black' },
+  'text.dim':      { rgb: [96, 100, 114], ansi256: 242, ansi16: 'gray' },
+  'text.muted':    { rgb: [96, 100, 114], ansi256: 242, ansi16: 'gray' },
+});
 
-  // Text
-  'text.primary':  { rgb: [201, 209, 217], ansi256: 250, ansi16: 'white'   }, // #c9d1d9
-  'text.dim':      { rgb: [107, 114, 128], ansi256: 245, ansi16: 'gray'    }, // #6b7280
-  'text.muted':    { rgb: [156, 163, 175], ansi256: 247, ansi16: 'gray'    }, // #9ca3af
+// Diff surfaces are separate from foreground tokens. ANSI 16 palettes are
+// user-defined and cannot reliably supply subtle, contrast-safe backgrounds.
+export const DIFF_BACKGROUNDS = Object.freeze({
+  dark: Object.freeze({
+    // The 256-color cube has no muted near-black green/red. Neutral
+    // surfaces plus colored +/- markers are the calmer fallback.
+    'diff.addLine':    { rgb: [34, 61, 49], ansi256: 236 },
+    'diff.removeLine': { rgb: [68, 39, 48], ansi256: 237 },
+    'diff.addWord':    { rgb: [43, 88, 62], ansi256: 238 },
+    'diff.removeWord': { rgb: [104, 47, 59], ansi256: 239 },
+  }),
+  light: Object.freeze({
+    'diff.addLine':    { rgb: [219, 238, 222], ansi256: 194 },
+    'diff.removeLine': { rgb: [247, 221, 224], ansi256: 224 },
+    'diff.addWord':    { rgb: [177, 218, 185], ansi256: 151 },
+    'diff.removeWord': { rgb: [236, 179, 187], ansi256: 217 },
+  }),
 });
 
 // ── ANSI 16-color foreground codes ───────────────────────────────────────
@@ -82,24 +102,26 @@ const STYLE_CODES = {
 
 // ── Open / close sequence builders ───────────────────────────────────────
 
-function openForToken(token, capability) {
-  const def = TOKENS[token];
+function openForToken(token, capability, appearance) {
+  const surface = DIFF_BACKGROUNDS[appearance === 'light' ? 'light' : 'dark'][token];
+  const def = surface || (appearance === 'light' ? LIGHT_TOKENS : TOKENS)[token];
   if (!def) return '';
+  const channel = surface ? 48 : 38;
 
   if (capability === 'truecolor') {
     const [r, g, b] = def.rgb;
-    return `${ESC}38;2;${r};${g};${b}m`;
+    return `${ESC}${channel};2;${r};${g};${b}m`;
   }
   if (capability === 'ansi256') {
-    return `${ESC}38;5;${def.ansi256}m`;
+    return `${ESC}${channel};5;${def.ansi256}m`;
   }
-  if (capability === 'ansi16') {
+  if (capability === 'ansi16' && !surface) {
     return `${ESC}${BASIC_FG[def.ansi16] || BASIC_FG.white}m`;
   }
   return '';
 }
 
-function wrap(open) {
+function wrap(open, background = false) {
   if (!open) return (input) => String(input ?? '');
   // Re-open after every embedded reset so nested styles compose.
   // Cheap and predictable; most tool output is short enough that the cost
@@ -107,6 +129,12 @@ function wrap(open) {
   return (input) => {
     const text = String(input ?? '');
     if (!text) return '';
+    if (background) {
+      // Restore an outer row after a word background closes, and after
+      // foreground resets. Only close the background: never leak it into
+      // the next line or discard the caller's foreground/style state.
+      return `${open}${text.replace(/\x1b\[(?:0|49)m/g, reset => reset + open)}${ESC}49m`;
+    }
     if (!text.includes(RESET)) return `${open}${text}${RESET}`;
     return `${open}${text.split(RESET).join(`${RESET}${open}`)}${RESET}`;
   };
@@ -131,13 +159,13 @@ function buildPaint() {
   const paint = {};
 
   // Brand / state / text colorizers, nested by namespace.
-  for (const token of Object.keys(TOKENS)) {
+  for (const token of [...Object.keys(TOKENS), ...Object.keys(DIFF_BACKGROUNDS.dark)]) {
     const [ns, name] = token.split('.');
     if (!paint[ns]) paint[ns] = {};
     paint[ns][name] = (input) => {
       const t = term();
       if (!t.color) return String(input ?? '');
-      return wrap(openForToken(token, t.colorLevel))(input);
+      return wrap(openForToken(token, t.colorLevel, t.appearance), ns === 'diff')(input);
     };
   }
 
@@ -155,7 +183,8 @@ function buildPaint() {
   paint.token = (key) => {
     const t = term();
     if (!t.color) return { open: '', close: '' };
-    return { open: openForToken(key, t.colorLevel), close: RESET };
+    const open = openForToken(key, t.colorLevel, t.appearance);
+    return { open, close: open ? (key.startsWith('diff.') ? `${ESC}49m` : RESET) : '' };
   };
 
   return paint;

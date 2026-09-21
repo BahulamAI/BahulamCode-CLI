@@ -236,7 +236,9 @@ try {
     assert.match(html, /Bahulam/);
     assert.match(html, /Cloud IDE/);
     assert.match(html, /src="\/assets\/bahulam-mark\.png"/);
-    assert.match(html, /Subscriptions/);
+    assert.match(html, /Local workspace/);
+    assert.match(html, /aria-label="Search workspace files"/);
+    assert.match(html, /--ws-primary:#303BA0/);
     assert.match(html, /CLI login needed/);
     assert.match(html, /id="approvalAuto"/);
     assert.match(html, /Auto off/);
@@ -356,12 +358,18 @@ try {
     assert.equal(approvalModeOnRes.mode, 'auto');
     assert.equal(approvalModeOnRes.auto, true);
 
+    // Follow-up when idle promotes to a new turn (instead of the old 409).
+    // Fix intent: after a cancel, "continue"-style input should reliably
+    // resume work rather than dead-ending; see agent-relay.sendFollowup.
     const followupNoTurn = await fetch(`http://127.0.0.1:${service.port}/api/agent/followup?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: 'one more thing' }),
     });
-    assert.equal(followupNoTurn.status, 409);
+    assert.equal(followupNoTurn.status, 200);
+    const followupNoTurnBody = await followupNoTurn.json();
+    assert.equal(followupNoTurnBody.status, 'promoted_to_new_turn');
+    assert.equal(typeof followupNoTurnBody.intervention_id, 'string');
 
     const cancelIdleRes = await fetch(`http://127.0.0.1:${service.port}/api/agent/cancel?token=${encodeURIComponent(token)}`, {
       method: 'POST',

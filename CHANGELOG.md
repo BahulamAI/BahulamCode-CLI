@@ -2,6 +2,25 @@
 
 All notable changes to `@bahulam/code` will be documented in this file.
 
+## [0.1.27] - 2026-09-20
+
+### Fixed
+
+- Save running-turn follow-ups before sending; distinguish acceptance from delivery and promote undelivered instructions after normal completion, including late acknowledgements.
+- Recover safely queued follow-ups from local transcripts; retain interrupted/uncertain work for review instead of automatically repeating it.
+- Keep follow-ups as separate user messages rather than appending instructions to tool output.
+- Skip the fresh-session intro on resume and discover shared sign-in changes across open CLI sessions.
+
+### Changed
+
+- Preserve syntax-colored code on green addition/red removal backgrounds, with stronger changed-word shading and theme-aware contrast.
+- Separate transcript sections with quiet dividers and use a softer teal, lavender, and amber accent palette.
+
+### Tested
+
+- Raw-terminal follow-up races against an isolated SSE server, durable transcript recovery, and intervention request deadlines.
+- Light/dark diff syntax and backgrounds in actual xterm cells at narrow and wide widths.
+
 ## [0.1.7] - 2026-08-28
 
 ### Added

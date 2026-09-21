@@ -124,7 +124,7 @@ export class JsonlWriter {
   /**
    * Write a user turn entry.
    */
-  writeUserTurn(content) {
+  writeUserTurn(content, { interventionId } = {}) {
     this.ensureSessionId();
     const uuid = randomUUID();
     const entry = {
@@ -137,9 +137,32 @@ export class JsonlWriter {
       version: this.version,
       gitBranch: this._gitBranch,
       message: { role: 'user', content },
+      ...(interventionId ? { intervention_id: interventionId } : {}),
     };
     this._appendEntry(entry);
     this.lastUuid = uuid;
+  }
+
+  /** User follow-ups must reach disk before sending, with failures surfaced. */
+  async persistFollowup(item, { initial = false } = {}) {
+    item = { ...item }; // Capture this transition before another acknowledgement changes it.
+    this.ensureSessionId();
+    await this.flush();
+    const records = [];
+    if (initial) {
+      const uuid = randomUUID();
+      records.push({ type: 'user', uuid, parentUuid: this.lastUuid,
+        timestamp: new Date().toISOString(), cwd: this.cwd, sessionId: this.sessionId,
+        intervention_id: item.id, message: { role: 'user', content: item.instruction } });
+      this.lastUuid = uuid;
+    }
+    records.push({ type: 'bahulam_event', timestamp: new Date().toISOString(),
+      cwd: this.cwd, sessionId: this.sessionId, event: { type: 'user_intervention',
+        data: { intervention_id: item.id, instruction: item.instruction, status: item.status, durable: true } } });
+    const write = (this._flushPromise || Promise.resolve()).then(() =>
+      fs.promises.appendFile(this._transcriptPath, records.map(record => JSON.stringify(record)).join('\n') + '\n', { mode: 0o600 }));
+    this._flushPromise = write.catch(() => {}); // ordinary logging can continue after an explicit failure
+    await write;
   }
 
   /**

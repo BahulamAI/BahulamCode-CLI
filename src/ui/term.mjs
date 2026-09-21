@@ -35,6 +35,8 @@ function readEnv() {
     FORCE_COLOR: env.FORCE_COLOR,
     BAHULAM_PLAIN: env.BAHULAM_PLAIN,
     BAHULAM_TTY_MODE: env.BAHULAM_TTY_MODE,
+    BAHULAM_THEME: (env.BAHULAM_THEME || 'auto').toLowerCase(),
+    COLORFGBG: env.COLORFGBG || '',
     COLORTERM: (env.COLORTERM || '').toLowerCase(),
     TERM: (env.TERM || '').toLowerCase(),
     TERM_PROGRAM: env.TERM_PROGRAM || '',
@@ -104,6 +106,7 @@ function compute() {
   const ttyMode = detectTtyMode(env);
   return {
     isTTY,
+    appearance: detectAppearance(env),
     colorLevel: level,                       // 'none' | 'ansi16' | 'ansi256' | 'truecolor'
     color: level !== 'none',
     truecolor: level === 'truecolor',
@@ -116,6 +119,14 @@ function compute() {
     rows: (process.stdout && process.stdout.rows) || 24,
     ci: !!env.CI,
   };
+}
+
+// No terminal queries: respect an explicit preference, then the advertised
+// ANSI background. Unadvertised backgrounds retain the dark-terminal default.
+function detectAppearance(env) {
+  if (env.BAHULAM_THEME === 'light' || env.BAHULAM_THEME === 'dark') return env.BAHULAM_THEME;
+  const background = Number(env.COLORFGBG.split(';').at(-1));
+  return env.COLORFGBG && [7, 15].includes(background) ? 'light' : 'dark';
 }
 
 let _capabilities = compute();

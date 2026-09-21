@@ -85,9 +85,9 @@ export class TarangAuth {
         };
     }
 
-    /** Get the raw config object. */
+    /** Get current shared settings, not a previous process-local snapshot. */
     getRawConfig() {
-        if (!this._config) this.loadCredentials();
+        this.loadCredentials();
         return this._config || {};
     }
 
@@ -108,9 +108,16 @@ export class TarangAuth {
     /** Save credentials atomically (temp-file + rename). */
     saveCredentials(updates) {
         this._ensureConfigDir();
-        const current = this._config || {};
-        const merged = { ...current, ...updates };
         const cfgPath = configPath();
+        // Another terminal may have logged in/out since this instance loaded.
+        // Never copy its cached token back over the shared credentials.
+        let current = {};
+        try { current = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (!current || typeof current !== 'object' || Array.isArray(current)) {
+            throw new Error('Invalid shared configuration; refusing to overwrite it.');
+        }
+        const merged = { ...current, ...updates };
         const tmpPath = `${cfgPath}.tmp.${process.pid}`;
         fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
         fs.renameSync(tmpPath, cfgPath);
@@ -173,8 +180,9 @@ export class TarangAuth {
 
         const remote = await fetchRemoteSettings(creds.token);
         if (!remote) throw new Error('Failed to fetch settings from server.');
-
-        const merged = mergeRemoteSettings(this.getRawConfig(), remote);
+        if (this.loadCredentials().token !== creds.token) return null;
+        // Save only settings fields; a remote response must not re-save a token.
+        const merged = mergeRemoteSettings({ models: this.getRawConfig().models }, remote);
         this.saveCredentials(merged);
         return remote;
     }

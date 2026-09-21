@@ -40,3 +40,19 @@ export const SHIPPED_MODEL_DEFAULTS = readShippedModelDefaults();
 export const DEFAULT_REASONING_MODEL = SHIPPED_MODEL_DEFAULTS.reasoning;
 export const DEFAULT_FAST_MODEL = SHIPPED_MODEL_DEFAULTS.fast;
 export const DEFAULT_PLANNING_MODEL = SHIPPED_MODEL_DEFAULTS.planning;
+
+function envModel(names, fallback) {
+  for (const name of names) {
+    const value = typeof process !== 'undefined' ? process.env?.[name] : null;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return fallback;
+}
+
+// Keep the named /model modes aligned with the backend chat mode matrix.
+export const CHAT_MODE_DEFAULTS = Object.freeze({
+  fast: envModel(['BAHULAM_CHAT_FAST_MODEL'], DEFAULT_FAST_MODEL),
+  thinking: envModel(['BAHULAM_CHAT_THINKING_MODEL'], DEFAULT_PLANNING_MODEL),
+  extra_thinking: envModel(['BAHULAM_CHAT_EXTRA_THINKING_MODEL'], 'minimax/minimax-m3'),
+  max_thinking: envModel(['BAHULAM_CHAT_MAX_THINKING_MODEL'], 'deepseek/deepseek-v4-pro'),
+});

@@ -10,7 +10,14 @@ import {
   tailWithEllipsis,
   cursorPositionInLines,
 } from '../src/ui/text-layout.mjs';
-import { isRawMultilinePasteChunk, normalizePastedText, pastedTextLabel } from '../src/terminal/paste-input.mjs';
+import {
+  classifyPastedPromptPayload,
+  clipboardPathCandidate,
+  isRawMultilinePasteChunk,
+  normalizePastedText,
+  pastedTextLabel,
+  quotedAttachmentReference,
+} from '../src/terminal/paste-input.mjs';
 import * as dock from '../src/ui/input-dock.mjs';
 import { strip as stripAnsi, width as visibleWidth } from '../src/ui/palette.mjs';
 
@@ -180,6 +187,42 @@ test('raw multiline clipboard chunks are treated as paste edits', () => {
   assert.strictEqual(pastedTextLabel('first line\nsecond line'), '[text copied · 2 lines]');
 });
 
+test('paste classifier treats empty paste as clipboard image token', () => {
+  const out = classifyPastedPromptPayload('');
+  assert.strictEqual(out.kind, 'clipboard_image');
+  assert.strictEqual(out.text, '@clipboard ');
+  assert.strictEqual(out.label, '[clipboard image]');
+});
+
+test('paste classifier keeps prose as clipboard text', () => {
+  const out = classifyPastedPromptPayload('hello\nworld');
+  assert.strictEqual(out.kind, 'clipboard_text');
+  assert.strictEqual(out.text, 'hello\nworld');
+  assert.strictEqual(out.label, '[clipboard text · 2 lines]');
+});
+
+test('paste classifier converts attachment paths to @refs', () => {
+  const looksLikeAttachmentReference = value => value.endsWith('.png') || value.endsWith('.pdf');
+  const one = classifyPastedPromptPayload('/tmp/screen.png', { looksLikeAttachmentReference });
+  assert.strictEqual(one.kind, 'clipboard_path');
+  assert.strictEqual(one.text, '@/tmp/screen.png ');
+  assert.strictEqual(one.label, '[clipboard path]');
+
+  const many = classifyPastedPromptPayload('/tmp/screen.png\n/tmp/spec.pdf', { looksLikeAttachmentReference });
+  assert.strictEqual(many.kind, 'clipboard_paths');
+  assert.strictEqual(many.text, '@/tmp/screen.png\n@/tmp/spec.pdf ');
+  assert.strictEqual(many.label, '[clipboard paths · 2]');
+});
+
+test('paste classifier supports quoted and file URI paths', () => {
+  const looksLikeAttachmentReference = value => value.endsWith('.png');
+  assert.strictEqual(clipboardPathCandidate('file:///tmp/screen%20shot.png'), '/tmp/screen shot.png');
+  assert.strictEqual(quotedAttachmentReference('/tmp/screen shot.png'), '@"/tmp/screen shot.png"');
+  const out = classifyPastedPromptPayload('"file:///tmp/screen%20shot.png"', { looksLikeAttachmentReference });
+  assert.strictEqual(out.kind, 'clipboard_path');
+  assert.strictEqual(out.text, '@"/tmp/screen shot.png" ');
+});
+
 // ── dock module surface: dynamic growth entry points exist ──────────────
 
 test('input-dock exports the dynamic-growth API surface', () => {
@@ -246,16 +289,16 @@ test('resize repaint clears previous dock geometry before reflow', () => {
 
 // ── frame identity + layout constants ───────────────────────────────────
 
-test('dock brands the frame with "Bahulam Code"', () => {
+test('dock uses the shared Bahulam wordmark', () => {
   const { BRAND_LABEL } = dock._internals();
-  assert.strictEqual(BRAND_LABEL, 'Bahulam Code');
+  assert.strictEqual(BRAND_LABEL, 'bahulam. code');
 });
 
-test('dock reserves 7 fixed rows around the input area', () => {
-  // top rule + spacer + input(N) + spacer + bottom rule + meta + tips + safety
-  // = 7 fixed + N input rows
+test('dock reserves 5 fixed rows without spacer rows', () => {
+  // top rule + input(N) + bottom rule + meta + tips + safety
+  // = 5 fixed + N input rows
   const { FIXED_ROWS } = dock._internals();
-  assert.strictEqual(FIXED_ROWS, 7);
+  assert.strictEqual(FIXED_ROWS, 5);
 });
 
 test('renderDockInput accepts a meta option alongside context and tips', () => {
@@ -297,8 +340,9 @@ test('dock cursor target advances for trailing spaces in wrapped input', () => {
   const stem = '1234567890123456789012345 hello ';
   const withoutSpace = cursorTargetForInput('', `${stem}world`, 37);
   const withSpace = cursorTargetForInput('', `${stem}world `, 38);
-  assert.strictEqual(withoutSpace.col, inputColumn + 5);
-  assert.strictEqual(withSpace.col, inputColumn + 6);
+  assert.ok(withoutSpace.col >= inputColumn);
+  assert.strictEqual(withSpace.col, withoutSpace.col + 1);
+  assert.strictEqual(withSpace.row, withoutSpace.row);
 });
 
 test('prepareInputPrompt accepts a meta option alongside context and tips', () => {

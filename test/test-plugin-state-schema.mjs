@@ -446,6 +446,8 @@ await test('the classic tool registry opens plugin state WITH its declared table
   // through this path saw no declared schema — and, because
   // applyDeclaredSchema treats an empty list as "declares nothing", it
   // would actively un-apply a schema the executor path had applied.
+  const probe = makePluginState('probe-sqlite', { emit: () => {} });
+  if (!hasSqlite(probe)) return 'skip';
   const root = path.join(tmp, 'plugins');
   const pluginDir = path.join(root, 'exam-tutor');
   fs.mkdirSync(path.join(pluginDir, 'tools'), { recursive: true });
