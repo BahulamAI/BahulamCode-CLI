@@ -625,13 +625,65 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     if (!op) { sendJson(res, 400, { ok: false, error: 'op_required' }); return; }
     try {
       const { makePluginState } = await import('../plugins/state.mjs');
+      const manifest = getPluginManifest(session, pluginName);
+      const tables = manifest?.config?.state?.tables || [];
+      const configFields = manifest?.config?.config?.fields || [];
       const state = makePluginState(pluginName, {
         emit: (evt) => { try { emit('plugin_state_changed', evt); } catch { /* ignore */ } },
+        tables,
+        configFields,
       });
       const result = runStateOp(state, op, body);
       sendJson(res, 200, { ok: true, result });
     } catch (err) {
       sendJson(res, 500, { ok: false, error: 'state_op_failed', message: err.message });
+    }
+    return;
+  }
+
+  // Plugin config status API — reads manifest-declared config fields,
+  // current values from the plugin's state KV, and reports missing fields.
+  // This is the endpoint the panel settings form calls to discover what
+  // fields exist and whether the plugin is configured.
+  // Credentials never travel through the generic plugin-state endpoint.
+  const pluginConfigMatch = (req.method === 'GET' || req.method === 'POST')
+    ? url.pathname.match(/^\/api\/plugin-config\/([^/]+)$/)
+    : null;
+  if (pluginConfigMatch) {
+    const pluginName = decodeURIComponent(pluginConfigMatch[1]);
+    const scoped = session?.plugin?.name;
+    if (scoped && String(scoped).toLowerCase() !== pluginName.toLowerCase()) {
+      sendJson(res, 403, { ok: false, error: 'plugin_scope_mismatch' });
+      return;
+    }
+    const manifest = getPluginManifest(session, pluginName);
+    if (!manifest) {
+      sendJson(res, 404, { ok: false, error: 'plugin_not_found' });
+      return;
+    }
+    const fields = manifest.config?.config?.fields || [];
+    const tables = manifest.config?.state?.tables || [];
+    try {
+      const { makePluginState } = await import('../plugins/state.mjs');
+      const state = makePluginState(pluginName, {
+        emit: (evt) => { try { emit('plugin_state_changed', evt); } catch { /* ignore */ } },
+        tables,
+        configFields: fields,
+      });
+      if (req.method === 'POST') {
+        let updates;
+        try {
+          const body = await readJsonBody(req);
+          updates = normalizePluginConfigUpdate(fields, body?.values);
+        } catch (err) {
+          sendJson(res, 400, { ok: false, error: 'invalid_config', message: err.message });
+          return;
+        }
+        state.set('_config', { ...state.get('_config', {}), ...updates });
+      }
+      sendJson(res, 200, { ok: true, ...pluginConfigStatus(state, fields) });
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: 'config_query_failed', message: err.message });
     }
     return;
   }
@@ -677,6 +729,7 @@ function scanPlugins(session) {
   if (cached && Date.now() - cached.at < 5000) return cached;
   const views = [];
   const dirs = new Map();
+  const manifests = new Map(); // pluginName → normalized manifest
   try {
     const registry = new PluginRegistry({
       pluginDirs: [path.join(os.homedir(), '.bahulam', 'plugins')],
@@ -686,6 +739,7 @@ function scanPlugins(session) {
       if (!pluginName || !manifest._dir) continue;
       if (scope !== '__all__' && pluginName.toLowerCase() !== scope) continue;
       dirs.set(pluginName, manifest._dir);
+      manifests.set(pluginName, manifest);
       (manifest.config?.views || []).forEach((view) => {
         const source = String(view?.source || '').trim().replace(/^\.\//, '');
         if (!source) return;
@@ -699,12 +753,15 @@ function scanPlugins(session) {
   } catch {
     // plugin scan failures must never break the workspace
   }
-  const entry = { at: Date.now(), views, dirs };
+  const entry = { at: Date.now(), views, dirs, manifests };
   _pluginScan.set(scope, entry);
   return entry;
 }
 function getPluginViews(session) { return scanPlugins(session).views; }
 function getPluginDirs(session) { return scanPlugins(session).dirs; }
+function getPluginManifest(session, pluginName) {
+  return scanPlugins(session).manifests.get(pluginName) || null;
+}
 
 /**
  * Dispatch a POST /api/plugin-state op onto the plugin's state proxy.
@@ -712,17 +769,70 @@ function getPluginDirs(session) { return scanPlugins(session).dirs; }
  * a clean 500 with the offending op name rather than a stack trace.
  */
 function runStateOp(state, op, body) {
-  switch (op) {
-    case 'get':    return state.get(body.key, body.fallback ?? null);
-    case 'set':    return state.set(body.key, body.value);
-    case 'patch':  return state.patch(body.key, body.partial ?? body.value);
-    case 'delete': return state.delete(body.key);
-    case 'keys':   return state.keys();
-    case 'append': return state.append(body.stream, body.payload);
-    case 'list':   return state.list(body.stream, { limit: body.limit, order: body.order });
-    case 'query':  return state.query(body.sql, body.params || []);
-    default:       throw new Error(`unknown state op: ${op}`);
+  const key = String(body.key || '');
+  if (op === 'getConfig' || op === 'getAllConfig') {
+    throw new Error('config operations are not available to browser views');
   }
+  if (key === '_config' && ['get', 'set', 'patch', 'delete'].includes(op)) {
+    throw new Error('plugin config is only available through /api/plugin-config');
+  }
+  if (op === 'query' && /(?:\bkv\b|_config)/i.test(String(body.sql || ''))) {
+    throw new Error('queries against protected plugin config are not allowed');
+  }
+  switch (op) {
+    case 'get':         return state.get(body.key, body.fallback ?? null);
+    case 'set':         return state.set(body.key, body.value);
+    case 'patch':       return state.patch(body.key, body.partial ?? body.value);
+    case 'delete':      return state.delete(body.key);
+    case 'keys':        return state.keys().filter(key => key !== '_config');
+    case 'append':      return state.append(body.stream, body.payload);
+    case 'list':        return state.list(body.stream, { limit: body.limit, order: body.order });
+    case 'query':       return state.query(body.sql, body.params || []);
+    default:            throw new Error(`unknown state op: ${op}`);
+  }
+}
+
+function pluginConfigStatus(state, fields) {
+  const stored = state.get('_config', {});
+  const values = {};
+  const missing = [];
+  for (const field of fields) {
+    const value = Object.hasOwn(stored, field.name) ? stored[field.name] : (field.default ?? null);
+    const present = value !== null && value !== '' && value !== undefined;
+    values[field.name] = field.credential && present ? '***set***' : value;
+    if (field.required && !present) missing.push(field.name);
+  }
+  return { fields: fields.map(field => field.credential ? { ...field, default: null } : field),
+    values, missing, configured: missing.length === 0 };
+}
+
+function normalizePluginConfigUpdate(fields, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('config values must be an object');
+  const fieldsByName = new Map(fields.map(field => [field.name, field]));
+  const out = {};
+  for (const [name, raw] of Object.entries(value)) {
+    const field = fieldsByName.get(name);
+    if (!field) throw new Error(`unknown config field: ${name}`);
+    if (raw === undefined || (field.credential && (raw === '' || raw === '***set***'))) continue;
+    if (raw === null) { out[name] = null; continue; }
+    if (field.type === 'boolean' && typeof raw !== 'boolean') throw new Error(`${name} must be a boolean`);
+    if (['string', 'password', 'select'].includes(field.type) && typeof raw !== 'string') throw new Error(`${name} must be a string`);
+    if (['integer', 'number'].includes(field.type)
+      && (!['number', 'string'].includes(typeof raw) || String(raw).trim() === '')) throw new Error(`${name} must be a number`);
+    if (field.type === 'integer') {
+      if (!Number.isInteger(Number(raw))) throw new Error(`${name} must be an integer`);
+      out[name] = Number(raw);
+      continue;
+    }
+    if (field.type === 'number') {
+      if (!Number.isFinite(Number(raw))) throw new Error(`${name} must be a number`);
+      out[name] = Number(raw);
+      continue;
+    }
+    if (field.type === 'select' && !field.options.includes(String(raw))) throw new Error(`${name} must be one of: ${field.options.join(', ')}`);
+    out[name] = raw;
+  }
+  return out;
 }
 
 // Real mime types for plugin views — unlike contentTypeForPath (file

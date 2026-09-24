@@ -21,15 +21,15 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-sliceE-'));
 process.env.BAHULAM_HOME = tmp;
 process.env.BAHULAM_DAEMON_EVENTLOG = '1';
 
-const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../../src/daemon/event-tap.mjs');
-const { startSocketServer } = await import('../../src/daemon/socket-server.mjs');
-const { mintSessionId } = await import('../../src/core/event-log.mjs');
+const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../src/daemon/event-tap.mjs');
+const { startSocketServer } = await import('../src/daemon/socket-server.mjs');
+const { mintSessionId } = await import('../src/core/event-log.mjs');
 const {
   interceptApproval, resolvePending, setTimeoutPolicy, listPending, shutdownAllPending,
-} = await import('../../src/daemon/approval-store.mjs');
+} = await import('../src/daemon/approval-store.mjs');
 const {
   wireEmit: wireInputLockEmit, resetInputLock, snapshot: lockSnapshot,
-} = await import('../../src/daemon/input-lock.mjs');
+} = await import('../src/daemon/input-lock.mjs');
 
 function assert(cond, msg) {
   if (!cond) { console.error('FAIL:', msg); process.exit(1); }

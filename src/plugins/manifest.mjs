@@ -173,6 +173,62 @@ const SAFE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const SQL_TYPES = new Set(['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC']);
 
 /**
+ * Normalize `config.config` — plugin settings that the user must configure
+ * before the plugin operates properly (API keys, subscription IDs, etc.).
+ * Values are stored in the plugin's state KV under `_config` and read by
+ * trusted tool handlers via `state.getConfig()`. They are not automatically
+ * included in model context; handlers must not echo credentials in results.
+ *
+ * Schema:
+ *   fields:
+ *     - name: subscription_id
+ *       type: string
+ *       label: "Azure Subscription ID"
+ *       required: true
+ *       credential: true
+ *       description: "Help text shown in the settings form"
+ *       placeholder: "sub-..."
+ *       default: null
+ *
+ * @param {object|null|undefined} value raw `config.config`
+ * @returns {{fields: object[]}}
+ */
+function normalizeConfigSettings(value) {
+  const empty = { fields: [] };
+  if (!value || typeof value !== 'object') return empty;
+
+  const fields = [];
+  for (const rawField of (Array.isArray(value.fields) ? value.fields : [])) {
+    if (!rawField || typeof rawField !== 'object') continue;
+    const name = String(rawField.name || '').trim();
+    if (!SAFE_IDENT_RE.test(name) || ['__proto__', 'constructor', 'prototype'].includes(name)) {
+      console.warn(`Skipping config field with unsafe or missing name: ${JSON.stringify(rawField.name)}`);
+      continue;
+    }
+    const type = String(rawField.type || 'string').trim().toLowerCase();
+    const validTypes = new Set(['string', 'integer', 'number', 'boolean', 'password', 'select']);
+    fields.push({
+      name,
+      type: validTypes.has(type) ? type : 'string',
+      label: String(rawField.label || rawField.name || name).trim(),
+      description: String(rawField.description || '').trim(),
+      placeholder: String(rawField.placeholder || '').trim(),
+      required: rawField.required === true,
+      credential: rawField.credential === true || type === 'password',
+      default: rawField.default === undefined || rawField.default === null ? null : rawField.default,
+      options: Array.isArray(rawField.options) ? rawField.options.map(o => String(o).trim()).filter(Boolean) : [],
+    });
+  }
+
+  return { fields };
+}
+
+function normalizeWorkplane(value) {
+  if (value === true) return { enabled: true };
+  return { enabled: value?.enabled === true };
+}
+
+/**
  * Normalize `config.lifecycle` — install / seed / uninstall / migration hooks.
  * Returns null when the section is absent so callers can distinguish
  * "no lifecycle declared" from "empty lifecycle".
@@ -536,6 +592,8 @@ export function normalizeManifest(raw, source = '') {
   const mcpServers = _readMcpServers(config.mcpServers, source);
   const composes = normalizeComposes(config.composes);
   const state = normalizeState(config.state);
+  const configSettings = normalizeConfigSettings(config.config);
+  const workplane = normalizeWorkplane(config.workplane);
 
   return {
     apiVersion,
@@ -556,6 +614,8 @@ export function normalizeManifest(raw, source = '') {
       mcpServers,
       composes,
       state,
+      config: configSettings,
+      workplane,
       ...(normalizeLifecycle(config.lifecycle) ? { lifecycle: normalizeLifecycle(config.lifecycle) } : {}),
     },
     source,
@@ -637,6 +697,16 @@ export function validatePluginManifest(manifest) {
     }
     for (const agent of (manifest.config.agents || [])) {
       if (!agent.slug && !agent.name) errors.push('Agent missing slug or name');
+    }
+
+    // Validate declared config fields exist and have safe names
+    const configSettings = manifest.config.config;
+    if (configSettings && configSettings.fields && configSettings.fields.length) {
+      for (const field of configSettings.fields) {
+        if (!SAFE_IDENT_RE.test(field.name)) {
+          errors.push(`Config field "${field.name}" has an unsafe name`);
+        }
+      }
     }
 
     // State declarations that silently vanished during normalization are

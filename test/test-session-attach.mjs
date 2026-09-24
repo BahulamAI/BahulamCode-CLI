@@ -1,6 +1,6 @@
 /**
  * PRD-092 Slice C — attach client smoke test.
- * Run: node tests/prd092/attach-client.smoke.mjs
+ * Run: node test/test-session-attach.mjs
  *
  * Boots a real socket server with a seeded event log, invokes attachToSession
  * from a spawned child (so stdin/stdout are separable), pipes the child's
@@ -21,9 +21,9 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-att-'));
 process.env.BAHULAM_HOME = tmp;
 process.env.BAHULAM_DAEMON_EVENTLOG = '1';
 
-const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../../src/daemon/event-tap.mjs');
-const { startSocketServer } = await import('../../src/daemon/socket-server.mjs');
-const { mintSessionId, writeSessionMeta } = await import('../../src/core/event-log.mjs');
+const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../src/daemon/event-tap.mjs');
+const { startSocketServer } = await import('../src/daemon/socket-server.mjs');
+const { mintSessionId, writeSessionMeta } = await import('../src/core/event-log.mjs');
 
 function assert(cond, msg) {
   if (!cond) { console.error('FAIL:', msg); process.exit(1); }

@@ -152,6 +152,32 @@ bahulam-code --help             Full command reference
 Inside the REPL, type `/help` for slash commands (models, cache, approvals,
 skills, workflows, session tools).
 
+## Plugin settings and workplanes
+
+Plugins can declare settings under `config.config.fields` with `name`, `type`,
+`default`, `required`, and optional `credential` metadata. Supported types are
+`string`, `integer`, `number`, `boolean`, `password`, and `select` (with `options`).
+Password fields are always treated as credentials.
+
+The authenticated local workspace API exposes `GET /api/plugin-config/<name>`
+for field metadata, masked values, and missing required fields. Save settings
+with `POST` and a `{ "values": { ... } }` body. Blank or masked credential values
+preserve the saved secret; explicit `null` clears it. Plugin-scoped sessions
+cannot access another plugin's configuration.
+
+Trusted local tool handlers read settings with `state.getConfig(name)` or
+`state.getAllConfig()`. Settings persist locally in the plugin's state database;
+they are not encrypted at rest, so protect the local account and filesystem.
+Credentials are excluded from automatic state summaries and masked in settings
+responses. Tool authors must not return secrets in tool results or logs.
+
+Setting `config.workplane: true` adds a `<plugin_name>_workplane_update` tool
+(hyphens become underscores). It upserts widgets by `id` into the plugin's
+`workplane` state. Supported types are `metric`, `bar_chart`, `line_chart`,
+`donut_chart`, `table`, `alert`, and `three_scene`. The latter accepts a bounded
+`bar_landscape` scene. Widgets are declarative data; a compatible trusted client
+owns rendering, and agents cannot supply executable HTML or JavaScript widgets.
+
 ## 0.1.7 Highlights
 
 - Published as `@bahulam/code`.

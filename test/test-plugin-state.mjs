@@ -151,5 +151,22 @@ await test('keys() lists every kv key currently set, sorted', async () => {
   assert.deepStrictEqual(s.keys(), ['a', 'z']);
 });
 
+await test('workplane widgets are typed, declarative, and upserted by id', async () => {
+  const s = makePluginState('demo');
+  s.upsertWorkplaneWidgets([
+    { id: 'mtd-cost', type: 'metric', title: 'MTD cost', value: 1423.57, format: 'currency', html: '<script>bad()</script>' },
+    { id: 'cost-trend', type: 'line_chart', title: '30-day trend', data: [{ x: '2026-01-01', y: 42 }] },
+  ], { title: 'Azure costs' });
+  s.upsertWorkplaneWidgets([{ id: 'mtd-cost', type: 'metric', title: 'MTD cost', value: 1500 }]);
+  const plane = s.get('workplane');
+  assert.strictEqual(plane.version, 1);
+  assert.strictEqual(plane.title, 'Azure costs');
+  assert.strictEqual(plane.widgets.length, 2);
+  assert.strictEqual(plane.widgets.find(widget => widget.id === 'mtd-cost').value, 1500);
+  assert.strictEqual('html' in plane.widgets.find(widget => widget.id === 'mtd-cost'), false);
+  assert.throws(() => s.upsertWorkplaneWidgets([{ id: 'unsafe', type: 'html', content: '<svg />' }]), /unsupported/);
+  assert.throws(() => s.upsertWorkplaneWidgets([{ id: 'unsafe-scene', type: 'three_scene', scene: { kind: 'arbitrary_js' } }]), /bar_landscape/);
+});
+
 console.log(`\n${passed}/${passed + failed} passed`);
 if (failed) process.exit(1);

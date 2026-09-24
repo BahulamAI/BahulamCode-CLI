@@ -1,7 +1,7 @@
 /**
  * PRD-092 Slice B.3 — event tap smoke test.
  *
- * Run: `node tests/prd092/event-tap.smoke.mjs`
+ * Run: `node test/test-session-event-tap.mjs`
  * Uses a scratch BAHULAM_HOME so nothing lands in ~/.bahulam.
  *
  * Verifies:
@@ -21,8 +21,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-evtap-'));
 process.env.BAHULAM_HOME = tmp;
 
 // Dynamic import AFTER BAHULAM_HOME is set so paths.mjs resolves to tmp.
-const { tapSseEvent, closeActiveEventLog } = await import('../../src/daemon/event-tap.mjs');
-const { readAllEvents, mintSessionId } = await import('../../src/core/event-log.mjs');
+const { tapSseEvent, closeActiveEventLog } = await import('../src/daemon/event-tap.mjs');
+const { readAllEvents, mintSessionId } = await import('../src/core/event-log.mjs');
 
 function assert(cond, msg) {
   if (!cond) { console.error('FAIL:', msg); process.exit(1); }

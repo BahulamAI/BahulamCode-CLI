@@ -2,6 +2,25 @@
 
 All notable changes to `@bahulam/code` will be documented in this file.
 
+## [0.1.28] - 2026-09-23
+
+### Added
+
+- Manifest-declared plugin settings with typed validation, defaults, required-field status, and authenticated local configuration endpoints.
+- Opt-in workplane update tools for persistent metrics, charts, tables, alerts, and bounded declarative 3D bar scenes.
+- Trusted plugin handlers can read settings through `state.getConfig()` and `state.getAllConfig()` across all executor paths.
+
+### Fixed
+
+- Mask credential values and defaults in settings responses; keep existing secrets when a form submits a blank or masked value, and clear them only on explicit null.
+- Protect reserved configuration state from generic browser state operations and direct key/value SQL queries, and exclude it from automatic context summaries.
+- Provide synchronous state handles consistently to plugin handlers, including the classic tool registry.
+- Normalize workplane identifiers and validate complete widget batches before persisting updates.
+
+### Tested
+
+- Settings persistence, defaults, validation, credential masking, plugin isolation, executor compatibility, and authenticated local HTTP routes with SQLite and JSON fallback storage.
+
 ## [0.1.27] - 2026-09-20
 
 ### Fixed
