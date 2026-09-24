@@ -223,9 +223,44 @@ function normalizeConfigSettings(value) {
   return { fields };
 }
 
+/**
+ * Normalize `config.workplane`.
+ *
+ *   workplane: true                      # enabled, no state writes permitted
+ *   workplane:
+ *     enabled: true
+ *     document: { id, title }            # optional identity for the document
+ *     writablePaths:                     # what a user or agent may commit
+ *       - path: /filters/days
+ *         schema: { type: integer, minimum: 1, maximum: 365 }
+ *
+ * `writablePaths` defaults to EMPTY, which means structural edits only: an
+ * agent may add or remove blocks but cannot write shared state until the plugin
+ * declares a typed path for it. Defaulting the other way would let a plugin
+ * author accidentally expose every value to an agent.
+ */
 function normalizeWorkplane(value) {
-  if (value === true) return { enabled: true };
-  return { enabled: value?.enabled === true };
+  if (value === true) return { enabled: true, writablePaths: [], document: null };
+  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null };
+
+  const writablePaths = [];
+  for (const entry of Array.isArray(value.writablePaths) ? value.writablePaths : []) {
+    const path = typeof entry?.path === 'string' ? entry.path.trim() : '';
+    // A schema is mandatory: an untyped write path is an unbounded one.
+    if (!path.startsWith('/') || !entry?.schema || typeof entry.schema !== 'object') continue;
+    const rule = { path, schema: entry.schema };
+    if (typeof entry.capability === 'string') rule.capability = entry.capability;
+    writablePaths.push(rule);
+  }
+
+  const document = value.document && typeof value.document === 'object'
+    ? {
+        id: typeof value.document.id === 'string' ? value.document.id : null,
+        title: typeof value.document.title === 'string' ? value.document.title : null,
+      }
+    : null;
+
+  return { enabled: true, writablePaths, document };
 }
 
 /**

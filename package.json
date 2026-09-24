@@ -55,6 +55,7 @@
     "url": "git+https://github.com/BahulamAI/BahulamCode-CLI.git"
   },
   "dependencies": {
+    "@bahulam/workplane-ui": "file:../bahulam-workplane-ui/packages/workplane-ui",
     "js-yaml": "^5.4.1",
     "mermaid": "^11.17.2",
     "monaco-editor": "^0.56.0",

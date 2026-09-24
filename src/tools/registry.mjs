@@ -123,10 +123,23 @@ export function createToolRegistry({
                     async call(input) {
                         try {
                             const state = await pluginStateFor(pluginName);
-                            const workplane = state.upsertWorkplaneWidgets(input?.widgets, { title: input?.title });
-                            return { success: true, output: JSON.stringify(workplane), workplane, _tool: name, _plugin: pluginName };
+                            const { runWorkplaneTool } = await import('../plugins/workplane-tools.mjs');
+                            // registry.get() returns the normalized manifest itself.
+                            const manifest = pluginRegistry.get?.(pluginName);
+                            const result = await runWorkplaneTool(
+                                pluginName,
+                                toolDef._workplane_tool.action || 'update',
+                                input,
+                                { state, workplane: manifest?.config?.workplane },
+                            );
+                            return {
+                                ...result,
+                                output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2),
+                                _tool: name,
+                                _plugin: pluginName,
+                            };
                         } catch (err) {
-                            return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
+                            return { success: false, output: `Workplane tool failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
                         }
                     },
                 });

@@ -781,11 +781,22 @@ export function createToolExecutor({
                 const spec = toolDef._workplane_tool;
                 registerPluginTool(name, async (args) => {
                     try {
-                        const state = _pluginStateFor(spec.plugin || pluginName);
-                        const plane = state?.upsertWorkplaneWidgets(args?.widgets, { title: args?.title });
-                        return { success: true, output: JSON.stringify(plane, null, 2), workplane: plane, _tool: name, _plugin: pluginName };
+                        const target = spec.plugin || pluginName;
+                        const state = _pluginStateFor(target);
+                        const { runWorkplaneTool } = await import('../plugins/workplane-tools.mjs');
+                        const manifest = pluginRegistry.get?.(target);
+                        const result = await runWorkplaneTool(target, spec.action || 'update', args, {
+                            state,
+                            workplane: manifest?.config?.workplane,
+                        });
+                        return {
+                            ...result,
+                            output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2),
+                            _tool: name,
+                            _plugin: pluginName,
+                        };
                     } catch (err) {
-                        return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
+                        return { success: false, output: `Workplane tool failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
                     }
                 }, { pluginName, source: 'workplane', workplaneTool: spec });
                 continue;
