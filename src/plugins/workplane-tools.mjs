@@ -11,7 +11,7 @@
  * the whole transaction before anything is persisted.
  */
 import { PROTOCOL_VERSION } from '@bahulam/workplane-ui';
-import { legacyWidgetToBlock } from '@bahulam/workplane-ui/bahulam';
+import { legacyWidgetToBlock, validateLegacyWidget, widgetShapes } from '@bahulam/workplane-ui/bahulam';
 import { agentActor, createWorkplaneAuthority } from './workplane-authority.mjs';
 
 function base(pluginName) {
@@ -89,12 +89,12 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
       ...shared,
       name: names.update,
       description:
-        'Publish typed widgets to the Workplane as a convenience wrapper around ' +
-        'workplane_commit. Widgets are upserted by id into one scene. Supported ' +
-        'types: metric, bar_chart, line_chart, donut_chart, table, alert. ' +
-        'Values are data only — HTML and JavaScript are not supported. Money ' +
-        'values are plain amounts and are converted for you. Prefer ' +
-        `${names.commit} when you need scenes, forms, or query-backed blocks.`,
+        'Publish typed widgets to the Workplane. Widgets are upserted by id into ' +
+        'one scene. Values are DATA ONLY — no HTML, no JavaScript, no formatted ' +
+        'strings: send raw numbers and formatting is applied for you. Each type ' +
+        'has an exact shape and anything else is rejected:\n' +
+        Object.entries(widgetShapes()).map(([type, shape]) => `  ${type}: ${shape}`).join('\n') +
+        `\nPrefer ${names.commit} when you need scenes, forms, or query-backed blocks.`,
       input_schema: {
         type: 'object',
         properties: {
@@ -215,6 +215,21 @@ export async function runWorkplaneTool(pluginName, action, input, { state, workp
     if (!Array.isArray(input?.widgets)) {
       return { success: false, output: 'widgets must be an array' };
     }
+    // Validate EVERY widget before committing any of them. Accepting a widget
+    // whose shape nothing can render, and reporting success, is how an agent
+    // ends up confidently describing charts that do not exist.
+    const problems = input.widgets.map(validateLegacyWidget).filter(Boolean);
+    if (problems.length > 0) {
+      return {
+        success: false,
+        output: {
+          code: 'VALIDATION_FAILED',
+          message: `${problems.length} widget${problems.length === 1 ? '' : 's'} did not match the required shape. Nothing was published.`,
+          problems: problems.map((p) => ({ widget: p.widgetId, problem: p.message, expected: p.expected })),
+        },
+      };
+    }
+
     try {
       operations = widgetOperations(document, input.widgets, input.title);
     } catch (error) {
