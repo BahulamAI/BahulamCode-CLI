@@ -653,19 +653,20 @@ export function createToolExecutor({
      * migrated when the DB opens, so this is also the schema the plugin's
      * own handlers query via `state.query()`.
      */
-    function pluginStateDecl(pluginName) {
+    function pluginManifest(pluginName) {
         if (!pluginName || typeof pluginRegistry?.list !== 'function') return null;
-        const plugin = pluginRegistry.list().find(p => p.metadata?.name === pluginName);
-        return plugin?.config?.state || null;
+        return pluginRegistry.list().find(p => p.metadata?.name === pluginName) || null;
     }
 
     function _pluginStateFor(pluginName) {
         if (!pluginName) return null;
         if (_pluginStateHandles.has(pluginName)) return _pluginStateHandles.get(pluginName);
-        const decl = pluginStateDecl(pluginName);
+        const plugin = pluginManifest(pluginName);
+        const decl = plugin?.config?.state || null;
         const state = makePluginState(pluginName, {
             emit: stateEmit,
             tables: decl?.tables || [],
+            configFields: plugin?.config?.config?.fields || [],
         });
         _pluginStateHandles.set(pluginName, state);
         return state;
@@ -776,6 +777,19 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._workplane_tool) {
+                const spec = toolDef._workplane_tool;
+                registerPluginTool(name, async (args) => {
+                    try {
+                        const state = _pluginStateFor(spec.plugin || pluginName);
+                        const plane = state?.upsertWorkplaneWidgets(args?.widgets, { title: args?.title });
+                        return { success: true, output: JSON.stringify(plane, null, 2), workplane: plane, _tool: name, _plugin: pluginName };
+                    } catch (err) {
+                        return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
+                    }
+                }, { pluginName, source: 'workplane', workplaneTool: spec });
+                continue;
+            }
             if (toolDef._state_tool) {
                 // Manifest-declared state query tool (config.state.context_tools).
                 // There is no module to import — the author declared a table
@@ -891,13 +905,9 @@ export function createToolExecutor({
                 const handlerOpts = {
                     ...options,
                     pluginName,
-                    get state() { /* eslint-disable no-unused-vars */
-                        // Sync getter fronting an async loader — first
-                        // access returns a Promise, which is unusual
-                        // for handler code but common enough as
-                        // `const s = await opts.state`. The awaited
-                        // value is cached on this options object so
-                        // repeat accesses in the same call don't re-await.
+                    get state() {
+                        // Match the direct plugin executor's synchronous
+                        // state handle; awaiting it is also supported.
                         if (this._stateP) return this._stateP;
                         this._stateP = _pluginStateFor(pluginName);
                         return this._stateP;

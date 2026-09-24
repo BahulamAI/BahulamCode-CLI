@@ -343,6 +343,40 @@ function deepMerge(base, patch) {
   return out;
 }
 
+const WORKPLANE_WIDGET_TYPES = new Set([
+  'metric', 'bar_chart', 'line_chart', 'donut_chart', 'table', 'alert', 'three_scene',
+]);
+const WORKPLANE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
+
+function normalizeWorkplaneWidget(widget) {
+  if (!widget || typeof widget !== 'object' || Array.isArray(widget)) throw new Error('workplane widget must be an object');
+  const id = String(widget.id || '').trim();
+  const type = String(widget.type || '').trim();
+  if (!WORKPLANE_ID.test(id)) throw new Error(`invalid workplane widget id: ${id || '(missing)'}`);
+  if (!WORKPLANE_WIDGET_TYPES.has(type)) throw new Error(`unsupported workplane widget type: ${type || '(missing)'}`);
+  // Widgets are declarative data only. In particular, raw html/script is
+  // intentionally absent: the runtime, not an agent, owns executable UI.
+  const copy = JSON.parse(JSON.stringify(widget));
+  copy.id = id;
+  copy.type = type;
+  delete copy.html;
+  delete copy.script;
+  if (type === 'three_scene') {
+    const scene = copy.scene;
+    if (!scene || scene.kind !== 'bar_landscape' || !Array.isArray(scene.data)) {
+      throw new Error('three_scene requires a bar_landscape scene with data');
+    }
+    copy.scene = {
+      kind: 'bar_landscape',
+      data: scene.data.slice(0, 32).map(item => ({
+        label: String(item?.label || '').slice(0, 80),
+        value: Number.isFinite(Number(item?.value)) ? Number(item.value) : 0,
+      })),
+    };
+  }
+  return copy;
+}
+
 /**
  * Build a per-plugin state proxy.
  * @param {string} pluginName  Must match /^[a-z0-9][a-z0-9._-]{0,63}$/i
@@ -355,9 +389,10 @@ function deepMerge(base, patch) {
  *   are created (and additively migrated) when the DB opens, so a plugin
  *   can own real domain tables — questions, documents, answers — without
  *   shipping its own migration logic.
- * @returns proxy with { get, set, patch, append, list, query, delete, summary, readTable, close, db, path }
+ * @returns proxy with { get, set, patch, append, list, query, delete, getConfig,
+ *   upsertWorkplaneWidgets, removeWorkplaneWidgets, summary, readTable, close, db, path }
  */
-export function makePluginState(pluginName, { emit = null, tables = [] } = {}) {
+export function makePluginState(pluginName, { emit = null, tables = [], configFields = [] } = {}) {
   const { db, path: dbPath, declaredTables } = openDb(pluginName, { tables });
 
   // One debounce timer per (kind, target). Fast writes coalesce into
@@ -513,12 +548,79 @@ export function makePluginState(pluginName, { emit = null, tables = [] } = {}) {
               limit: item.limit || 5,
               order: 'desc',
             });
-          } else if (item.kind === 'kv' && item.key) {
+          } else if (item.kind === 'kv' && item.key && item.key !== '_config') {
             out.kv[item.key] = this.get(item.key, null);
           }
         } catch { /* one unreadable slice must not blank the whole summary */ }
       }
       return out;
+    },
+
+    /**
+     * Read a single config field value. Falls back to the declared default
+     * if a field definition exists but no stored value is found.
+     * These values are for trusted in-process tool handlers, not automatic
+     * model context. Handlers must not return credentials in tool results.
+     */
+    getConfig(key) {
+      const all = this.get('_config', {});
+      const val = all[key];
+      if (Object.hasOwn(all, key) && val !== undefined) {
+        // Tool handlers execute locally and may read declared credentials;
+        // the browser-facing API has no route to this method.
+        return val;
+      }
+      const field = configFields.find(f => f.name === key);
+      return field?.default ?? null;
+    },
+
+    /**
+     * Returns all declared config fields with their current values
+     * (credential values are returned as-is since this is used by
+     * tool handlers running in-process; the browser API layer
+     * handles redaction before sending to the panel).
+     */
+    getAllConfig() {
+      const stored = this.get('_config', {});
+      const out = {};
+      for (const f of configFields) {
+        out[f.name] = Object.hasOwn(stored, f.name) ? stored[f.name] : (f.default ?? null);
+      }
+      return out;
+    },
+
+    /**
+     * Atomically upsert typed, declarative widgets into the shared workplane.
+     * The renderer can safely choose layout and visual treatment while tools
+     * (and agents directing them) decide the current outcome to show.
+     */
+    upsertWorkplaneWidgets(widgets, { title = null } = {}) {
+      if (!Array.isArray(widgets)) throw new Error('workplane widgets must be an array');
+      const current = this.get('workplane', {});
+      const byId = new Map(Array.isArray(current?.widgets) ? current.widgets.map(item => [item?.id, item]) : []);
+      for (const widget of widgets) {
+        const normalized = normalizeWorkplaneWidget(widget);
+        byId.set(normalized.id, normalized);
+      }
+      const next = {
+        version: 1,
+        ...(typeof current?.title === 'string' ? { title: current.title } : {}),
+        ...(typeof title === 'string' && title.trim() ? { title: title.trim() } : {}),
+        widgets: [...byId.values()],
+        updated_at: now(),
+      };
+      return this.set('workplane', next);
+    },
+
+    removeWorkplaneWidgets(ids) {
+      const remove = new Set((Array.isArray(ids) ? ids : [ids]).map(id => String(id)));
+      const current = this.get('workplane', {});
+      return this.set('workplane', {
+        ...(current && typeof current === 'object' ? current : {}),
+        version: 1,
+        widgets: (Array.isArray(current?.widgets) ? current.widgets : []).filter(widget => !remove.has(widget?.id)),
+        updated_at: now(),
+      });
     },
 
     /**

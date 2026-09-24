@@ -87,7 +87,11 @@ export async function createPluginToolExecutor(manifest, opts = {}) {
   function getState() {
     if (!pluginName) return null; // no name → no isolation → refuse state
     if (_state) return _state;
-    _state = makePluginState(pluginName, { emit: opts.stateEmit || null });
+    _state = makePluginState(pluginName, {
+      emit: opts.stateEmit || null,
+      tables: manifest.config?.state?.tables || [],
+      configFields: manifest.config?.config?.fields || [],
+    });
     return _state;
   }
 

@@ -1,7 +1,7 @@
 /**
  * PRD-092 Slice B.4 — socket server smoke test.
  *
- * Run: `node tests/prd092/socket-server.smoke.mjs`
+ * Run: `node test/test-socket-server.mjs`
  *
  * Boots a socket server against a scratch BAHULAM_HOME session, pre-populates
  * the event log with a few events (via the tap), connects a client over the
@@ -24,9 +24,9 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'b0-sock-'));
 process.env.BAHULAM_HOME = tmp;
 process.env.BAHULAM_DAEMON_EVENTLOG = '1';
 
-const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../../src/daemon/event-tap.mjs');
-const { startSocketServer } = await import('../../src/daemon/socket-server.mjs');
-const { mintSessionId, readAllEvents } = await import('../../src/core/event-log.mjs');
+const { tapSseEvent, closeActiveEventLog, registerBroadcaster } = await import('../src/daemon/event-tap.mjs');
+const { startSocketServer } = await import('../src/daemon/socket-server.mjs');
+const { mintSessionId, readAllEvents } = await import('../src/core/event-log.mjs');
 
 function assert(cond, msg) {
   if (!cond) { console.error('FAIL:', msg); process.exit(1); }

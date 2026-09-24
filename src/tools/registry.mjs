@@ -5,6 +5,7 @@
  */
 
 import { BashTool } from './bash.mjs';
+import { makePluginState } from '../plugins/state.mjs';
 import { ReadTool } from './read.mjs';
 import { EditTool } from './edit.mjs';
 import { WriteTool } from './write.mjs';
@@ -92,17 +93,17 @@ export function createToolRegistry({
     }
 
     const pluginStateHandles = new Map();
-    async function pluginStateFor(pluginName) {
+    function pluginStateFor(pluginName) {
         if (!pluginName) return null;
         if (pluginStateHandles.has(pluginName)) return pluginStateHandles.get(pluginName);
-        const { makePluginState } = await import('../plugins/state.mjs');
         // Pass the plugin's declared tables through, otherwise this path
         // opens the shared handle without them — and `applyDeclaredSchema`
         // treats an empty list as "this plugin declares nothing", which
         // would *un-apply* a schema the executor path had already applied.
         const plugin = pluginRegistry?.get?.(pluginName) || null;
         const tables = plugin?.config?.state?.tables || [];
-        const state = makePluginState(pluginName, { emit: stateEmit, tables });
+        const configFields = plugin?.config?.config?.fields || [];
+        const state = makePluginState(pluginName, { emit: stateEmit, tables, configFields });
         pluginStateHandles.set(pluginName, state);
         return state;
     }
@@ -113,6 +114,24 @@ export function createToolRegistry({
             const name = String(toolDef.name || '').trim();
             if (!name || tools.has(name)) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
+            if (toolDef._workplane_tool) {
+                tools.set(name, {
+                    name,
+                    description: toolDef.description || '',
+                    inputSchema: toolDef.input_schema || { type: 'object', properties: {} },
+                    validateInput() { return []; },
+                    async call(input) {
+                        try {
+                            const state = await pluginStateFor(pluginName);
+                            const workplane = state.upsertWorkplaneWidgets(input?.widgets, { title: input?.title });
+                            return { success: true, output: JSON.stringify(workplane), workplane, _tool: name, _plugin: pluginName };
+                        } catch (err) {
+                            return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
+                        }
+                    },
+                });
+                continue;
+            }
             if (toolDef._composed?.kind === 'pi') {
                 tools.set(name, {
                     name,
