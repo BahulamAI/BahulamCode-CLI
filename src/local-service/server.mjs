@@ -9,6 +9,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
+import { bahulamHome } from '../core/paths.mjs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
@@ -641,6 +642,107 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     return;
   }
 
+  // Workplane command boundary (PRD-108 section 12.2).
+  //
+  // The host is the SOLE writer. A panel commits through here rather than
+  // running its own authority, which is what stops two writers producing
+  // conflicting revisions of one document. The same authority serves the agent
+  // tools, so an agent and a user edit one document.
+  //
+  //   GET  /api/workplane/<plugin>                      authorized snapshot
+  //   POST /api/workplane/<plugin>/commands             commit a transaction
+  //   GET  /api/workplane/<plugin>/events?after=<rev>   bounded replay
+  const workplaneMatch = url.pathname.match(/^\/api\/workplane\/([^/]+)(\/commands|\/events)?$/);
+  if (workplaneMatch) {
+    const pluginName = decodeURIComponent(workplaneMatch[1]);
+    const suffix = workplaneMatch[2] || '';
+
+    // Same scope guard as plugin-state: a pinned session cannot reach another
+    // plugin's document by hand-crafting a URL.
+    const scoped = session?.plugin?.name;
+    if (scoped && String(scoped).toLowerCase() !== pluginName.toLowerCase()) {
+      sendJson(res, 403, { ok: false, error: 'plugin_scope_mismatch' });
+      return;
+    }
+    if (!getPluginDirs(session).has(pluginName)) {
+      sendJson(res, 404, { ok: false, error: 'plugin_not_found' });
+      return;
+    }
+    const manifest = getPluginManifest(session, pluginName);
+    const workplane = manifest?.config?.workplane;
+    if (!workplane?.enabled) {
+      sendJson(res, 404, { ok: false, error: 'workplane_not_enabled' });
+      return;
+    }
+
+    const { makePluginState } = await import('../plugins/state.mjs');
+    const { createWorkplaneAuthority } = await import('../plugins/workplane-authority.mjs');
+    const state = makePluginState(pluginName, {
+      emit: (evt) => { try { emit('plugin_state_changed', evt); } catch { /* ignore */ } },
+      tables: manifest?.config?.state?.tables || [],
+      configFields: manifest?.config?.config?.fields || [],
+    });
+    const { authority, documentId, policy, storage } = createWorkplaneAuthority(pluginName, { state, workplane });
+
+    try {
+      if (req.method === 'GET' && suffix === '') {
+        const document = await authority.snapshot(documentId);
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            document,
+            documentId,
+            historyComplete: storage.historyComplete(),
+            writablePaths: policy.writablePaths.map((rule) => ({ path: rule.path, schema: rule.schema })),
+          },
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && suffix === '/events') {
+        const after = Number.parseInt(url.searchParams.get('after') || '0', 10) || 0;
+        const events = await authority.eventsAfter(documentId, after);
+        sendJson(res, 200, { ok: true, result: { events, historyComplete: storage.historyComplete() } });
+        return;
+      }
+
+      if (req.method === 'POST' && suffix === '/commands') {
+        const transaction = await readJsonBody(req);
+        // The ACTOR is derived here, from the authenticated session — never
+        // from the request body. A payload claiming to be someone else is not
+        // authority (PRD-108 section 9.2).
+        const actor = {
+          id: `user:${session?.id || 'local'}`,
+          type: 'user',
+          label: 'Panel',
+          capabilities: ['workplane.edit'],
+        };
+        const result = await authority.commit({ ...transaction, documentId }, actor);
+        if (!result.ok) {
+          sendJson(res, 200, { ok: true, result: { ok: false, error: result.error } });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            ok: true,
+            revision: result.revision,
+            document: result.document,
+            event: result.event,
+            replayed: result.replayed,
+          },
+        });
+        return;
+      }
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: 'workplane_failed', message: err.message });
+      return;
+    }
+
+    sendJson(res, 405, { ok: false, error: 'method_not_allowed' });
+    return;
+  }
+
   // Plugin config status API — reads manifest-declared config fields,
   // current values from the plugin's state KV, and reports missing fields.
   // This is the endpoint the panel settings form calls to discover what
@@ -731,8 +833,11 @@ function scanPlugins(session) {
   const dirs = new Map();
   const manifests = new Map(); // pluginName → normalized manifest
   try {
+    // Resolve through bahulamHome() so BAHULAM_HOME is honoured here as it is
+    // in plugin-manage and the state layer. Hardcoding os.homedir() made this
+    // the one place that ignored it, which is both inconsistent and untestable.
     const registry = new PluginRegistry({
-      pluginDirs: [path.join(os.homedir(), '.bahulam', 'plugins')],
+      pluginDirs: [path.join(bahulamHome(), 'plugins')],
     }).scan();
     for (const manifest of registry.list()) {
       const pluginName = manifest.metadata?.name || '';
