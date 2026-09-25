@@ -231,6 +231,45 @@ function openDb(pluginName, { tables = [] } = {}) {
     );
     CREATE INDEX IF NOT EXISTS records_stream_idx
       ON records(stream, id DESC);
+
+    -- Workplane document storage. Host infrastructure, not plugin-declared:
+    -- every plugin with config.workplane gets these, and a plugin manifest
+    -- cannot reshape them.
+    --
+    -- The snapshot is the current document; the event log is APPEND-ONLY and is
+    -- the history. Keeping history in a bounded array inside one JSON value —
+    -- which is what the browser fallback still does — discards the very thing
+    -- content-addressed commits exist to make verifiable.
+    CREATE TABLE IF NOT EXISTS workplane_documents (
+      document_id    TEXT PRIMARY KEY,
+      revision       INTEGER NOT NULL,
+      head_commit_id TEXT,
+      snapshot       TEXT NOT NULL,
+      updated_at     TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workplane_events (
+      commit_id    TEXT PRIMARY KEY,
+      document_id  TEXT NOT NULL,
+      revision     INTEGER NOT NULL,
+      parent_id    TEXT,
+      command_id   TEXT NOT NULL,
+      actor_id     TEXT NOT NULL,
+      actor_type   TEXT NOT NULL,
+      actor_label  TEXT,
+      operations   TEXT NOT NULL,
+      committed_at TEXT NOT NULL
+    );
+    -- One commit per revision per document: the database refuses a second
+    -- writer's revision N rather than leaving the conflict to be noticed later.
+    CREATE UNIQUE INDEX IF NOT EXISTS workplane_events_revision_idx
+      ON workplane_events(document_id, revision);
+    CREATE TABLE IF NOT EXISTS workplane_receipts (
+      document_id          TEXT NOT NULL,
+      command_id           TEXT NOT NULL,
+      payload_fingerprint  TEXT NOT NULL,
+      revision             INTEGER NOT NULL,
+      PRIMARY KEY (document_id, command_id)
+    );
   `);
     handle = { db, dir, path: dbPath, schemaSig: null, declaredTables: new Set() };
     _handles.set(pluginName, handle);
@@ -377,6 +416,54 @@ function normalizeWorkplaneWidget(widget) {
   return copy;
 }
 
+const WORKPLANE_FALLBACK_KEY = 'workplane_document';
+const WORKPLANE_FALLBACK_MAX_EVENTS = 500;
+
+/** JSON-value fallback for runtimes without node:sqlite. Bounded history. */
+function fallbackRead(io, documentId) {
+  const raw = io.get(WORKPLANE_FALLBACK_KEY, null);
+  return raw && raw.document?.id === String(documentId) ? raw : undefined;
+}
+
+function fallbackCommit(io, documentId, { document, event, receipt }) {
+  const current = fallbackRead(io, documentId) ?? { events: [], receipts: {} };
+  const events = [...(current.events ?? []), event];
+  const overflow = events.length - WORKPLANE_FALLBACK_MAX_EVENTS;
+  const kept = overflow > 0 ? events.slice(overflow) : events;
+  io.set(WORKPLANE_FALLBACK_KEY, {
+    document,
+    events: kept,
+    receipts: { ...(current.receipts ?? {}), [receipt.commandId]: receipt },
+    ...(overflow > 0 ? { compactedBefore: kept[0].revision } : {}),
+  });
+}
+
+/**
+ * Synthetic key for an event written before content addressing. The table needs
+ * a primary key; this is NOT a commit id and must never be presented as one.
+ */
+const LEGACY_COMMIT_PREFIX = 'legacy_';
+
+function rowToEvent(row) {
+  // Map a synthetic key back to "absent". Returning it as a commitId would make
+  // a pre-chain event look verifiable, and the chain check would then report
+  // "broken" — a false accusation — instead of "unverifiable".
+  const synthetic = String(row.commit_id ?? '').startsWith(LEGACY_COMMIT_PREFIX);
+  return {
+    documentId: row.document_id,
+    revision: row.revision,
+    commandId: row.command_id,
+    operations: JSON.parse(row.operations),
+    actor: {
+      id: row.actor_id,
+      type: row.actor_type,
+      ...(row.actor_label ? { label: row.actor_label } : {}),
+    },
+    committedAt: row.committed_at,
+    ...(synthetic ? {} : { commitId: row.commit_id, parentId: row.parent_id ?? null }),
+  };
+}
+
 /**
  * Build a per-plugin state proxy.
  * @param {string} pluginName  Must match /^[a-z0-9][a-z0-9._-]{0,63}$/i
@@ -435,6 +522,21 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
     append: db.prepare('INSERT INTO records(stream, payload, created_at) VALUES(?, ?, ?)'),
     listAsc:  db.prepare('SELECT id, payload, created_at FROM records WHERE stream = ? ORDER BY id ASC  LIMIT ?'),
     listDesc: db.prepare('SELECT id, payload, created_at FROM records WHERE stream = ? ORDER BY id DESC LIMIT ?'),
+  };
+
+  // Minimal kv accessor for the Workplane fallback path, so it does not depend
+  // on the proxy object existing while the proxy is still being constructed.
+  const kvIo = {
+    get(key, fallback = null) {
+      const row = stmts.get.get(String(key));
+      if (!row) return fallback;
+      try { return JSON.parse(row.value); } catch { return fallback; }
+    },
+    set(key, value) {
+      stmts.upsert.run(String(key), JSON.stringify(value), now());
+      fire('set', 'kv', String(key));
+      return value;
+    },
   };
 
   return {
@@ -621,6 +723,162 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
         widgets: (Array.isArray(current?.widgets) ? current.widgets : []).filter(widget => !remove.has(widget?.id)),
         updated_at: now(),
       });
+    },
+
+    /**
+     * Workplane document storage.
+     *
+     * A narrow, purpose-built surface rather than a general table-write API:
+     * the authority needs exactly these six operations, and exposing arbitrary
+     * writes to reach them would be a far larger security surface for no gain.
+     *
+     * On the native backend the three writes commit in ONE SQLite transaction,
+     * so a crash cannot leave an acknowledged change with no durable record.
+     * Without node:sqlite (Node < 22) it falls back to a single JSON value under
+     * the `kv` key, which keeps the same interface but CANNOT keep unbounded
+     * history — `historyComplete()` reports which mode is in effect.
+     */
+    workplane: {
+      native: Boolean(DatabaseSync),
+      // `io` is the proxy's own kv path, used only by the non-native fallback.
+
+      loadDocument(documentId) {
+        if (!DatabaseSync) return fallbackRead(kvIo, documentId)?.document;
+        const row = db.prepare('SELECT snapshot FROM workplane_documents WHERE document_id = ?').get(String(documentId));
+        if (row) return JSON.parse(row.snapshot);
+        // A document written before the tables existed lives in the kv blob.
+        // Adopt it rather than starting empty, which would silently discard it.
+        return this.adoptLegacy(documentId)?.document;
+      },
+
+      /**
+       * One-time migration of a document from the old single-JSON-value layout
+       * into the tables. Idempotent: it does nothing once a row exists.
+       *
+       * Events from before content addressing have no commitId, so they are
+       * given a synthetic one derived from document and revision. They cannot
+       * be verified — verifyHistory reports them as unverifiable rather than
+       * broken, which is the honest answer.
+       */
+      adoptLegacy(documentId) {
+        if (!DatabaseSync) return undefined;
+        const legacy = fallbackRead(kvIo, documentId);
+        if (!legacy?.document) return undefined;
+        const existing = db.prepare('SELECT 1 FROM workplane_documents WHERE document_id = ?').get(String(documentId));
+        if (existing) return legacy;
+
+        const id = String(documentId);
+        const now = new Date().toISOString();
+        const events = Array.isArray(legacy.events) ? legacy.events : [];
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const event of events) {
+            db.prepare(`INSERT OR IGNORE INTO workplane_events
+                (commit_id, document_id, revision, parent_id, command_id,
+                 actor_id, actor_type, actor_label, operations, committed_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(
+                event.commitId ?? `${LEGACY_COMMIT_PREFIX}${id}_${event.revision}`,
+                id, event.revision, event.parentId ?? null, event.commandId ?? `legacy_${event.revision}`,
+                event.actor?.id ?? 'unknown', event.actor?.type ?? 'system', event.actor?.label ?? null,
+                JSON.stringify(event.operations ?? []), event.committedAt ?? now,
+              );
+          }
+          for (const receipt of Object.values(legacy.receipts ?? {})) {
+            db.prepare(`INSERT OR IGNORE INTO workplane_receipts
+                (document_id, command_id, payload_fingerprint, revision) VALUES (?, ?, ?, ?)`)
+              .run(id, receipt.commandId, receipt.payloadFingerprint, receipt.revision);
+          }
+          db.prepare(`INSERT INTO workplane_documents
+              (document_id, revision, head_commit_id, snapshot, updated_at) VALUES (?, ?, ?, ?, ?)`)
+            .run(id, legacy.document.revision, events[events.length - 1]?.commitId ?? null,
+                 JSON.stringify(legacy.document), now);
+          db.exec('COMMIT');
+        } catch (err) {
+          db.exec('ROLLBACK');
+          throw err;
+        }
+        return legacy;
+      },
+
+      /** Atomic across snapshot, event, and receipt. */
+      commit(documentId, { document, event, receipt }) {
+        if (!DatabaseSync) return fallbackCommit(kvIo, documentId, { document, event, receipt });
+        const now = new Date().toISOString();
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          db.prepare(`INSERT INTO workplane_documents
+              (document_id, revision, head_commit_id, snapshot, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(document_id) DO UPDATE SET
+              revision = excluded.revision,
+              head_commit_id = excluded.head_commit_id,
+              snapshot = excluded.snapshot,
+              updated_at = excluded.updated_at`)
+            .run(String(documentId), document.revision, event.commitId ?? null, JSON.stringify(document), now);
+
+          // Append-only. The unique index on (document_id, revision) makes a
+          // second writer's revision N fail here rather than silently win.
+          db.prepare(`INSERT INTO workplane_events
+              (commit_id, document_id, revision, parent_id, command_id,
+               actor_id, actor_type, actor_label, operations, committed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(
+              event.commitId ?? `${LEGACY_COMMIT_PREFIX}${documentId}_${event.revision}`,
+              String(documentId), event.revision, event.parentId ?? null, event.commandId,
+              event.actor.id, event.actor.type, event.actor.label ?? null,
+              JSON.stringify(event.operations), event.committedAt,
+            );
+
+          db.prepare(`INSERT INTO workplane_receipts
+              (document_id, command_id, payload_fingerprint, revision)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(document_id, command_id) DO NOTHING`)
+            .run(String(documentId), receipt.commandId, receipt.payloadFingerprint, receipt.revision);
+
+          db.exec('COMMIT');
+        } catch (err) {
+          db.exec('ROLLBACK');
+          throw err;
+        }
+        fire('set', 'kv', `workplane:${documentId}`);
+      },
+
+      receipt(documentId, commandId) {
+        if (!DatabaseSync) {
+          return fallbackRead(kvIo, documentId)?.receipts?.[String(commandId)];
+        }
+        const row = db.prepare('SELECT command_id, payload_fingerprint, revision FROM workplane_receipts WHERE document_id = ? AND command_id = ?')
+          .get(String(documentId), String(commandId));
+        return row
+          ? { commandId: row.command_id, payloadFingerprint: row.payload_fingerprint, revision: row.revision }
+          : undefined;
+      },
+
+      eventsAfter(documentId, revision, limit = 500) {
+        if (!DatabaseSync) {
+          return (fallbackRead(kvIo, documentId)?.events ?? []).filter((e) => e.revision > revision);
+        }
+        return db.prepare(`SELECT * FROM workplane_events
+            WHERE document_id = ? AND revision > ?
+            ORDER BY revision ASC LIMIT ?`)
+          .all(String(documentId), Number(revision), Math.max(1, Math.min(5000, limit)))
+          .map(rowToEvent);
+      },
+
+      /** Full history, oldest first. Append-only, so nothing is ever dropped. */
+      history(documentId, { from = 0, limit = 500 } = {}) {
+        return this.eventsAfter(documentId, from - 1, limit);
+      },
+
+      /**
+       * Whether history is genuinely complete. False on the JSON fallback,
+       * where old events are discarded — a caller verifying a commit chain has
+       * to know the difference between "broken" and "not all here".
+       */
+      historyComplete() {
+        return Boolean(DatabaseSync);
+      },
     },
 
     /**

@@ -112,11 +112,26 @@ try {
   const classic = createToolRegistry({ pluginRegistry: registry, exposePluginTools: true });
   const core = createToolExecutor({ pluginRegistry: registry, deferProjectIndex: true });
   const direct = await createPluginToolExecutor(manifest);
+  // The update tool no longer writes the legacy widget blob; it compiles widgets
+  // into a transaction against the Workplane document, so the result is a commit
+  // receipt rather than a widget list. Snapshot the legacy key so we can prove
+  // the tool leaves it alone.
+  const legacyBefore = JSON.stringify(state.get('workplane'));
+  assert.ok(registry.listTools().some(tool => tool.name === 'settings_fixture_workplane_inspect'));
+  assert.ok(registry.listTools().some(tool => tool.name === 'settings_fixture_workplane_commit'));
+
   for (const execute of [classic.call.bind(classic), core.execute.bind(core)]) {
-    const result = await execute(toolName, { widgets: [{ id: 'total', type: 'metric', value: 7 }] });
+    const result = await execute(toolName, { widgets: [{ id: 'total', type: 'metric', title: 'Total', value: 7 }] });
     assert.equal(result.success, true, result.output);
-    assert.equal(result.workplane.widgets[0].value, 7);
+    const receipt = JSON.parse(result.output);
+    assert.ok(receipt.revision >= 1, 'a widget update commits a revision');
+    assert.ok(receipt.blocks.includes('total'), 'the widget became an addressable block');
+
+    // An unknown type is refused, and so is a widget whose shape cannot render.
     assert.equal((await execute(toolName, { widgets: [{ id: 'bad', type: 'html' }] })).success, false);
+    const malformed = await execute(toolName, { widgets: [{ id: 'm', type: 'metric', title: 'M', value: '£3,000' }] });
+    assert.equal(malformed.success, false, 'a formatted string is not a metric value');
+    assert.match(JSON.parse(malformed.output).problems[0].expected, /metric/);
   }
   for (const execute of [classic.call.bind(classic), core.execute.bind(core), direct.execute.bind(direct)]) {
     const result = await execute('settings_probe', {});
@@ -183,7 +198,15 @@ try {
   assert.equal((await request(statePath, { op: 'keys' })).data.result.includes('_config'), false);
   assert.equal((await request(statePath, { op: 'set', key: 'public', value: 'updated' })).status, 200);
   assert.equal((await request(statePath, { op: 'get', key: 'public' })).data.result, 'updated');
-  assert.equal((await request(statePath, { op: 'get', key: 'workplane' })).data.result.widgets[0].value, 7);
+  // The two stores no longer contend: the tool commits to the document and
+  // leaves the legacy widget key exactly as it found it.
+  assert.equal(JSON.stringify(state.get('workplane')), legacyBefore,
+    'the agent tool must not touch the legacy widget key');
+  const committed = state.workplane.loadDocument('wp_settings-fixture');
+  assert.ok(committed, 'the tool committed a Workplane document');
+  assert.ok(committed.blocks.total, 'the widget became an addressable block');
+  assert.equal(committed.blocks.total.rendererId, 'workplane.metric');
+  assert.equal(committed.blocks.total.spec.value, 7);
   const cleared = await request(configPath, { values: { api_key: null } });
   assert.equal(cleared.status, 200);
   assert.equal(cleared.data.configured, false);
@@ -199,7 +222,14 @@ try {
   const reopened = makePluginState(pluginName, { configFields: manifest.config.config.fields });
   assert.equal(reopened.getConfig('api_key'), 'fixture-stored-secret');
   assert.equal(reopened.getConfig('region'), 'west');
-  assert.equal(reopened.get('workplane').widgets[0].value, 7);
+  // Both stores survive a reopen: the legacy widget key as written directly,
+  // and the Workplane document the agent tool committed.
+  assert.ok(reopened.get('workplane').widgets.length >= 1, 'legacy widget key persists');
+  const reloaded = reopened.workplane.loadDocument('wp_settings-fixture');
+  assert.equal(reloaded.blocks.total.spec.value, 7, 'committed document persists');
+  const history = reopened.workplane.history('wp_settings-fixture');
+  assert.ok(history.length >= 1, 'append-only history persists');
+  assert.ok(history.at(-1).commitId?.startsWith('wpc_'), 'commits are content-addressed');
   console.log('✓ authenticated plugin settings API, credential masking, protected state, and scoped access');
 } finally {
   if (service) await service.close();

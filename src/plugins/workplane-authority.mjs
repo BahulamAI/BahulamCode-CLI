@@ -5,18 +5,21 @@
  * serializes commands, so an agent and a browser view commit through the same
  * gateway rather than each keeping their own copy.
  *
- * The storage format is byte-compatible with the browser adapter's
- * `PluginStateStorage` — one JSON value under the `workplane_document` key
- * holding `{ document, events, receipts }`. That compatibility is the point: a
- * panel and an agent must see one document, not two that happen to look alike.
+ * Storage is the plugin's own SQLite sidecar, through the narrow
+ * `state.workplane` surface: a document snapshot plus an APPEND-ONLY event log,
+ * written in one transaction. A unique index on (document_id, revision) means
+ * a second writer's revision N is refused by the database rather than noticed
+ * afterwards — the structural half of what content-addressed commits detect.
+ *
+ * Without node:sqlite (Node < 22) the same surface falls back to a single JSON
+ * value with bounded history. `state.workplane.historyComplete()` reports which
+ * is in effect, so a caller verifying a commit chain can tell "not all here"
+ * from "broken".
  */
 import { LocalAuthority, createDocument } from '@bahulam/workplane-ui';
 
-const DOCUMENT_KEY = 'workplane_document';
-const MAX_EVENTS = 500;
-
-/** StoragePort over a plugin's shared-blackboard KV. */
-class PluginKvStorage {
+/** StoragePort over the plugin's Workplane tables. */
+class PluginWorkplaneStorage {
   #state;
   #seed;
 
@@ -25,41 +28,30 @@ class PluginKvStorage {
     this.#seed = seed;
   }
 
-  #read() {
-    const raw = this.#state.get(DOCUMENT_KEY, null);
-    if (raw && typeof raw === 'object' && raw.document?.id) {
-      return {
-        document: raw.document,
-        events: Array.isArray(raw.events) ? raw.events : [],
-        receipts: raw.receipts && typeof raw.receipts === 'object' ? raw.receipts : {},
-      };
-    }
-    return { document: this.#seed, events: [], receipts: {} };
-  }
-
   async load(documentId) {
-    const persisted = this.#read();
-    return persisted.document.id === documentId ? persisted.document : undefined;
+    return this.#state.workplane.loadDocument(documentId) ?? this.#seed;
   }
 
   async commit(bundle) {
-    const persisted = this.#read();
-    const events = [...persisted.events, bundle.event];
-    // Document, event and receipt land in ONE `set`, so a crash cannot leave an
-    // acknowledged change with no durable record.
-    this.#state.set(DOCUMENT_KEY, {
-      document: bundle.document,
-      events: events.length > MAX_EVENTS ? events.slice(-MAX_EVENTS) : events,
-      receipts: { ...persisted.receipts, [bundle.receipt.commandId]: bundle.receipt },
-    });
+    this.#state.workplane.commit(bundle.document.id, bundle);
   }
 
-  async receipt(_documentId, commandId) {
-    return this.#read().receipts[commandId];
+  async receipt(documentId, commandId) {
+    return this.#state.workplane.receipt(documentId, commandId);
   }
 
-  async eventsAfter(_documentId, revision) {
-    return this.#read().events.filter((event) => event.revision > revision);
+  async eventsAfter(documentId, revision) {
+    return this.#state.workplane.eventsAfter(documentId, revision);
+  }
+
+  /** Full append-only history, oldest first. */
+  async history(documentId, options) {
+    return this.#state.workplane.history(documentId, options);
+  }
+
+  /** False when running on the bounded JSON fallback. */
+  historyComplete() {
+    return this.#state.workplane.historyComplete();
   }
 }
 
@@ -87,10 +79,13 @@ export function createWorkplaneAuthority(pluginName, { state, workplane }) {
     writablePaths: workplane?.writablePaths ?? [],
   };
 
+  const storage = new PluginWorkplaneStorage(state, seed);
+
   return {
     documentId,
     policy,
-    authority: new LocalAuthority({ storage: new PluginKvStorage(state, seed), policy }),
+    storage,
+    authority: new LocalAuthority({ storage, policy }),
   };
 }
 
