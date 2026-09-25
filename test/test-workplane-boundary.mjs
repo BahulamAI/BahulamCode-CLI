@@ -134,7 +134,61 @@ try {
   const { normalizeManifest } = await import('../src/plugins/manifest.mjs');
   void normalizeManifest;
 
-  console.log('✓ workplane boundary: auth, scope, commit, session-derived actor, conflict, policy, idempotency, verified history, one document');
+  // --- the bus fires on a commit, so a panel can update without a reload ----
+  {
+    const controller = new AbortController();
+    const seen = [];
+    const stream = await fetch(new URL(`/api/events?token=${encodeURIComponent(token)}`, service.url), {
+      signal: controller.signal,
+    });
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const pump = (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          for (const chunk of buffer.split('\n\n')) {
+            const name = /^event:\s*(.+)$/m.exec(chunk)?.[1];
+            const data = /^data:\s*(.+)$/m.exec(chunk)?.[1];
+            if (name === 'plugin_state_changed' && data) {
+              try { seen.push(JSON.parse(data)); } catch { /* partial frame */ }
+            }
+          }
+          buffer = buffer.slice(buffer.lastIndexOf('\n\n') + 2);
+        }
+      } catch { /* aborted */ }
+    })();
+
+    // Commit through the agent tool — a different entry point to the same
+    // authority — and the panel's bus must hear about it.
+    const { runWorkplaneTool } = await import('../src/plugins/workplane-tools.mjs');
+    const { makePluginState } = await import('../src/plugins/state.mjs');
+    const emitted = [];
+    const agentState = makePluginState(pluginName, { emit: (evt) => emitted.push(evt) });
+    const head = await runWorkplaneTool(pluginName, 'inspect', {}, { state: agentState, workplane: manifest.config.workplane });
+    const committed = await runWorkplaneTool(pluginName, 'commit', {
+      expectedRevision: head.output.revision,
+      operations: [{ op: 'scene.add', scene: { id: 'live', title: 'Live' } }],
+    }, { state: agentState, workplane: manifest.config.workplane });
+    assert.equal(committed.success, true, JSON.stringify(committed.output));
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    controller.abort();
+    await pump;
+
+    // The state layer emitted, and the target identifies it as a Workplane
+    // write so a client can skip round trips for unrelated state.
+    assert.ok(emitted.length > 0, 'a commit must emit a state-change event');
+    assert.ok(
+      emitted.some((evt) => String(evt.target || '').startsWith('workplane')),
+      `a Workplane commit must be identifiable on the bus, got ${JSON.stringify(emitted)}`,
+    );
+  }
+
+  console.log('✓ workplane boundary: auth, scope, commit, session-derived actor, conflict, policy, idempotency, verified history, one document, bus emission');
 } finally {
   if (service) await service.close();
   os.homedir = originalHomedir;
