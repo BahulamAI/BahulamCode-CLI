@@ -60,6 +60,36 @@ try {
     assert.equal(normalizeManifest({ ...raw, config: { workplane } }).config.workplane.enabled, false);
   }
 
+  // A plugin declares which renderers its panel registers, and the agent is
+  // offered exactly those. Advertising one the panel never registered produces a
+  // block that commits cleanly and then draws a placeholder, which reads to the
+  // user as the agent lying about what it did.
+  {
+    const { describeCatalog } = await import('@bahulam/workplane-ui');
+    const { expandWorkplaneTools } = await import('../src/plugins/workplane-tools.mjs');
+
+    const declared = normalizeManifest({
+      ...raw,
+      config: { workplane: { enabled: true, renderers: ['workplane.table', 'workplane.markdown', '../etc/passwd'] } },
+    }).config.workplane;
+    assert.deepEqual(declared.renderers, ['workplane.table', 'workplane.markdown'],
+      'a renderer id that is not an id shape is dropped, not passed through');
+
+    const [inspect] = expandWorkplaneTools(pluginName, pluginRoot, declared);
+    assert.match(inspect.description, /workplane\.table/);
+    assert.doesNotMatch(inspect.description, /workplane\.echarts/,
+      'a renderer the panel does not register must not be offered to the agent');
+
+    // Saying nothing still means everything, so existing manifests keep working.
+    const all = expandWorkplaneTools(pluginName, pluginRoot, { enabled: true, renderers: [] })[0];
+    assert.match(all.description, /workplane\.echarts/);
+
+    // The catalog carries a copyable example, not only prose. Every mistake the
+    // agent made against this API was a shape it had to guess at.
+    assert.match(all.description, /example: \{/);
+    assert.equal(describeCatalog([]), '', 'a host that registers nothing describes nothing');
+  }
+
   const state = makePluginState(pluginName, { configFields: manifest.config.config.fields });
   assert.ok(state.path.startsWith(fixture + path.sep));
   assert.equal(state.getConfig('region'), 'east');

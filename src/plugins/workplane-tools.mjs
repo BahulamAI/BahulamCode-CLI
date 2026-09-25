@@ -15,6 +15,21 @@ import { BUILTIN_RENDERERS, describeCatalog, PROTOCOL_VERSION } from '@bahulam/w
 import { createActionBroker, UnregisteredActionError } from './workplane-actions.mjs';
 import { agentActor, createWorkplaneAuthority } from './workplane-authority.mjs';
 
+/**
+ * The renderers this plugin's panel can actually draw.
+ *
+ * The library advertises every renderer it ships a contract for, including the
+ * two that need a peer dependency. A plugin whose panel does not register one
+ * must not have it offered: the agent would commit a valid block and the reader
+ * would get a placeholder. An empty declaration means the panel registers all.
+ */
+function catalogFor(workplane) {
+  const declared = workplane?.renderers ?? [];
+  if (declared.length === 0) return BUILTIN_RENDERERS;
+  const wanted = new Set(declared);
+  return BUILTIN_RENDERERS.filter((descriptor) => wanted.has(descriptor.id));
+}
+
 function base(pluginName) {
   return String(pluginName || '').replace(/[^A-Za-z0-9_]/g, '_');
 }
@@ -48,7 +63,7 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
         'Read the current Workplane document: revision, scenes, blocks, committed state, ' +
         'the renderer catalog, registered actions, and which state paths are writable. ' +
         'Call this before committing so the expectedRevision is current.\n\nRenderers:\n' +
-        describeCatalog(),
+        describeCatalog(catalogFor(workplane)),
       input_schema: { type: 'object', properties: {} },
       _workplane_tool: { plugin: pluginName, action: 'inspect' },
     },
@@ -92,7 +107,7 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
   ];
 }
 
-function projectDocument(document, policy) {
+function projectDocument(document, policy, workplane) {
   return {
     documentId: document.id,
     revision: document.revision,
@@ -114,7 +129,7 @@ function projectDocument(document, policy) {
       requiresApproval: action.requiresApproval,
     })),
     queries: Object.keys(document.queries),
-    catalog: BUILTIN_RENDERERS,
+    catalog: catalogFor(workplane),
     operations: OPERATIONS_DOC,
   };
 }
@@ -149,12 +164,12 @@ export async function runWorkplaneTool(pluginName, action, input, { state, workp
           revision: 0,
           empty: true,
           writablePaths: policy.writablePaths.map((r) => ({ path: r.path, schema: r.schema })),
-          catalog: BUILTIN_RENDERERS,
+          catalog: catalogFor(workplane),
           operations: OPERATIONS_DOC,
         },
       };
     }
-    return { success: true, output: projectDocument(document, policy) };
+    return { success: true, output: projectDocument(document, policy, workplane) };
   }
 
   const document = await snapshot();

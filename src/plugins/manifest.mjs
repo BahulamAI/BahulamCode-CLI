@@ -240,8 +240,8 @@ function normalizeConfigSettings(value) {
  * author accidentally expose every value to an agent.
  */
 function normalizeWorkplane(value) {
-  if (value === true) return { enabled: true, writablePaths: [], document: null, actions: [] };
-  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null, actions: [] };
+  if (value === true) return { enabled: true, writablePaths: [], document: null, actions: [], renderers: [] };
+  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null, actions: [], renderers: [] };
 
   const writablePaths = [];
   for (const entry of Array.isArray(value.writablePaths) ? value.writablePaths : []) {
@@ -279,7 +279,15 @@ function normalizeWorkplane(value) {
       }
     : null;
 
-  return { enabled: true, writablePaths, document, actions };
+  // Which renderers the plugin's panel registers. An empty list means "all",
+  // so a manifest that says nothing keeps working. Declaring the set matters
+  // because the agent is told what exists: offering a renderer the panel never
+  // registered yields a block that commits cleanly and then draws a placeholder.
+  const renderers = (Array.isArray(value.renderers) ? value.renderers : [])
+    .filter((id) => typeof id === 'string' && /^[a-z][a-z0-9_.-]{0,63}$/i.test(id.trim()))
+    .map((id) => id.trim());
+
+  return { enabled: true, writablePaths, document, actions, renderers };
 }
 
 /**
