@@ -101,37 +101,59 @@ try {
   assert.deepEqual(sceneWidget.scene.data[0], { label: 'x'.repeat(80), value: 0 });
   assert.equal(state.removeWorkplaneWidgets(['status', 'scene']).widgets.length, 1);
 
-  const toolName = 'settings_fixture_workplane_update';
+  const toolName = 'settings_fixture_workplane_commit';
   assert.ok(registry.listTools().some(tool => tool.name === toolName));
   assert.equal(JSON.stringify(registry.listTools()).includes('fixture-default-secret'), false);
   registry.register(normalizeManifest({ ...raw, metadata: { name: 'no-workplane' }, config: {} }));
-  assert.equal(registry.listTools().some(tool => tool.name === 'no_workplane_workplane_update'), false);
+  assert.equal(registry.listTools().some(tool => tool.name === 'no_workplane_workplane_commit'), false);
   const { createToolRegistry } = await import('../src/tools/registry.mjs');
   const { createToolExecutor } = await import('../src/core/tool-executor.mjs');
   const { createPluginToolExecutor } = await import('../src/plugins/executor.mjs');
   const classic = createToolRegistry({ pluginRegistry: registry, exposePluginTools: true });
   const core = createToolExecutor({ pluginRegistry: registry, deferProjectIndex: true });
   const direct = await createPluginToolExecutor(manifest);
-  // The update tool no longer writes the legacy widget blob; it compiles widgets
-  // into a transaction against the Workplane document, so the result is a commit
-  // receipt rather than a widget list. Snapshot the legacy key so we can prove
-  // the tool leaves it alone.
+  // There is exactly ONE way to write: a transaction through the command
+  // gateway. Snapshot the legacy widget key to prove nothing else touches it.
   const legacyBefore = JSON.stringify(state.get('workplane'));
   assert.ok(registry.listTools().some(tool => tool.name === 'settings_fixture_workplane_inspect'));
   assert.ok(registry.listTools().some(tool => tool.name === 'settings_fixture_workplane_commit'));
 
-  for (const execute of [classic.call.bind(classic), core.execute.bind(core)]) {
-    const result = await execute(toolName, { widgets: [{ id: 'total', type: 'metric', title: 'Total', value: 7 }] });
+  const inspectName = 'settings_fixture_workplane_inspect';
+  const block = (id, value) => ({
+    id, kind: 'content.metric', title: 'Total',
+    rendererId: 'workplane.metric', specVersion: '1', spec: { value, currency: 'USD' },
+  });
+  for (const [index, execute] of [classic.call.bind(classic), core.execute.bind(core)].entries()) {
+    const seen = JSON.parse((await execute(inspectName, {})).output);
+    const sceneId = `s${index}`;
+    const result = await execute(toolName, {
+      expectedRevision: seen.revision,
+      operations: [
+        { op: 'scene.add', scene: { id: sceneId, title: 'Totals' } },
+        { op: 'block.add', sceneId, block: block(`total${index}`, 7) },
+      ],
+    });
     assert.equal(result.success, true, result.output);
     const receipt = JSON.parse(result.output);
-    assert.ok(receipt.revision >= 1, 'a widget update commits a revision');
-    assert.ok(receipt.blocks.includes('total'), 'the widget became an addressable block');
+    assert.ok(receipt.revision >= 1, 'a commit advances the revision');
+    assert.ok(receipt.blocks.includes(`total${index}`), 'the block is addressable');
 
-    // An unknown type is refused, and so is a widget whose shape cannot render.
-    assert.equal((await execute(toolName, { widgets: [{ id: 'bad', type: 'html' }] })).success, false);
-    const malformed = await execute(toolName, { widgets: [{ id: 'm', type: 'metric', title: 'M', value: '£3,000' }] });
-    assert.equal(malformed.success, false, 'a formatted string is not a metric value');
-    assert.match(JSON.parse(malformed.output).problems[0].expected, /metric/);
+    // A block with no renderer can never be displayed, so it is refused.
+    const after = JSON.parse((await execute(inspectName, {})).output);
+    const bad = await execute(toolName, {
+      expectedRevision: after.revision,
+      operations: [{ op: 'block.add', sceneId, block: { id: 'bad', title: 'Bad' } }],
+    });
+    assert.equal(bad.success, false, 'a block without a rendererId must be refused');
+    assert.match(JSON.parse(bad.output).detail.all, /rendererId/);
+
+    // A stale revision is a conflict, not a silent overwrite.
+    const stale = await execute(toolName, {
+      expectedRevision: 0,
+      operations: [{ op: 'scene.add', scene: { id: 'z', title: 'Z' } }],
+    });
+    assert.equal(stale.success, false);
+    assert.equal(JSON.parse(stale.output).code, 'CONFLICT');
   }
   for (const execute of [classic.call.bind(classic), core.execute.bind(core), direct.execute.bind(direct)]) {
     const result = await execute('settings_probe', {});
@@ -198,15 +220,14 @@ try {
   assert.equal((await request(statePath, { op: 'keys' })).data.result.includes('_config'), false);
   assert.equal((await request(statePath, { op: 'set', key: 'public', value: 'updated' })).status, 200);
   assert.equal((await request(statePath, { op: 'get', key: 'public' })).data.result, 'updated');
-  // The two stores no longer contend: the tool commits to the document and
-  // leaves the legacy widget key exactly as it found it.
+  // Nothing but the command gateway writes the document, and nothing at all
+  // writes the old widget key.
   assert.equal(JSON.stringify(state.get('workplane')), legacyBefore,
-    'the agent tool must not touch the legacy widget key');
+    'no tool may touch the legacy widget key');
   const committed = state.workplane.loadDocument('wp_settings-fixture');
   assert.ok(committed, 'the tool committed a Workplane document');
-  assert.ok(committed.blocks.total, 'the widget became an addressable block');
-  assert.equal(committed.blocks.total.rendererId, 'workplane.metric');
-  assert.equal(committed.blocks.total.spec.value, 7);
+  assert.equal(committed.blocks.total0.rendererId, 'workplane.metric');
+  assert.equal(committed.blocks.total0.spec.value, 7);
   const cleared = await request(configPath, { values: { api_key: null } });
   assert.equal(cleared.status, 200);
   assert.equal(cleared.data.configured, false);
@@ -226,7 +247,7 @@ try {
   // and the Workplane document the agent tool committed.
   assert.ok(reopened.get('workplane').widgets.length >= 1, 'legacy widget key persists');
   const reloaded = reopened.workplane.loadDocument('wp_settings-fixture');
-  assert.equal(reloaded.blocks.total.spec.value, 7, 'committed document persists');
+  assert.equal(reloaded.blocks.total0.spec.value, 7, 'committed document persists');
   const history = reopened.workplane.history('wp_settings-fixture');
   assert.ok(history.length >= 1, 'append-only history persists');
   assert.ok(history.at(-1).commitId?.startsWith('wpc_'), 'commits are content-addressed');

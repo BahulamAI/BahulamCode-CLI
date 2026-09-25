@@ -1,17 +1,17 @@
 /**
  * Workplane agent tools.
  *
- * Plugins opt in with `config.workplane: true`. The generated tools let an agent
- * inspect and change a Workplane document through the host authority — the same
- * gateway a browser panel commits through, so the agent and the user are editing
- * one document rather than two that look alike.
+ * Plugins opt in with `config.workplane: true`. Two tools: read the document,
+ * and commit a transaction to it. There is exactly ONE way to write — the same
+ * gateway a browser panel commits through — because a second, friendlier write
+ * vocabulary is how an agent ends up publishing something the document model
+ * cannot represent and being told it succeeded.
  *
  * An agent never receives HTML, JavaScript, or a renderer it can define. It
  * names a renderer from the catalog and supplies data; the authority validates
  * the whole transaction before anything is persisted.
  */
 import { PROTOCOL_VERSION } from '@bahulam/workplane-ui';
-import { legacyWidgetToBlock, validateLegacyWidget, widgetShapes } from '@bahulam/workplane-ui/bahulam';
 import { agentActor, createWorkplaneAuthority } from './workplane-authority.mjs';
 
 function base(pluginName) {
@@ -21,7 +21,6 @@ function base(pluginName) {
 export function workplaneToolNames(pluginName) {
   const prefix = base(pluginName);
   return {
-    update: `${prefix}_workplane_update`,
     inspect: `${prefix}_workplane_inspect`,
     commit: `${prefix}_workplane_commit`,
   };
@@ -85,63 +84,7 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
       },
       _workplane_tool: { plugin: pluginName, action: 'commit' },
     },
-    {
-      ...shared,
-      name: names.update,
-      description:
-        'Publish typed widgets to the Workplane. Widgets are upserted by id into ' +
-        'one scene. Values are DATA ONLY — no HTML, no JavaScript, no formatted ' +
-        'strings: send raw numbers and formatting is applied for you. Each type ' +
-        'has an exact shape and anything else is rejected:\n' +
-        Object.entries(widgetShapes()).map(([type, shape]) => `  ${type}: ${shape}`).join('\n') +
-        `\nPrefer ${names.commit} when you need scenes, forms, or query-backed blocks.`,
-      input_schema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Optional scene title.' },
-          widgets: { type: 'array', description: 'Widgets to create or replace by id. Each needs id and type.' },
-        },
-        required: ['widgets'],
-      },
-      _workplane_tool: { plugin: pluginName, action: 'update' },
-    },
   ];
-}
-
-const AGENT_SCENE = 'agent';
-
-/**
- * Convert an upsert of widgets into add/update operations against the CURRENT
- * document, so calling twice with the same id replaces rather than duplicates.
- */
-function widgetOperations(document, widgets, title) {
-  const operations = [];
-  if (!document.scenes[AGENT_SCENE]) {
-    operations.push({
-      op: 'scene.add',
-      scene: { id: AGENT_SCENE, title: title || 'Agent additions', layout: 'grid' },
-    });
-  } else if (title) {
-    operations.push({ op: 'scene.update', sceneId: AGENT_SCENE, patch: { title } });
-  }
-
-  for (const widget of widgets) {
-    if (!widget || typeof widget !== 'object' || !widget.id || !widget.type) {
-      throw new Error('every widget needs an id and a type');
-    }
-    const block = legacyWidgetToBlock(widget, { provenance: 'published by the plugin agent' });
-    if (document.blocks[block.id]) {
-      // Replace the spec and title; never silently change which scene owns it.
-      operations.push({
-        op: 'block.update',
-        blockId: block.id,
-        patch: { title: block.title, spec: block.spec, fallback: block.fallback },
-      });
-    } else {
-      operations.push({ op: 'block.add', sceneId: AGENT_SCENE, block });
-    }
-  }
-  return operations;
 }
 
 function projectDocument(document, policy) {
@@ -209,43 +152,16 @@ export async function runWorkplaneTool(pluginName, action, input, { state, workp
     return { success: false, output: 'The Workplane document could not be opened.' };
   }
 
-  let operations;
-  let expectedRevision;
-  if (action === 'update') {
-    if (!Array.isArray(input?.widgets)) {
-      return { success: false, output: 'widgets must be an array' };
-    }
-    // Validate EVERY widget before committing any of them. Accepting a widget
-    // whose shape nothing can render, and reporting success, is how an agent
-    // ends up confidently describing charts that do not exist.
-    const problems = input.widgets.map(validateLegacyWidget).filter(Boolean);
-    if (problems.length > 0) {
-      return {
-        success: false,
-        output: {
-          code: 'VALIDATION_FAILED',
-          message: `${problems.length} widget${problems.length === 1 ? '' : 's'} did not match the required shape. Nothing was published.`,
-          problems: problems.map((p) => ({ widget: p.widgetId, problem: p.message, expected: p.expected })),
-        },
-      };
-    }
-
-    try {
-      operations = widgetOperations(document, input.widgets, input.title);
-    } catch (error) {
-      return { success: false, output: error.message };
-    }
-    // The wrapper reads the revision itself, so an agent cannot get it wrong.
-    expectedRevision = document.revision;
-  } else if (action === 'commit') {
-    if (!Array.isArray(input?.operations) || input.operations.length === 0) {
-      return { success: false, output: 'operations must be a non-empty array' };
-    }
-    operations = input.operations;
-    expectedRevision = Number.isInteger(input.expectedRevision) ? input.expectedRevision : document.revision;
-  } else {
+  if (action !== 'commit') {
     return { success: false, output: `unknown workplane action: ${action}` };
   }
+  if (!Array.isArray(input?.operations) || input.operations.length === 0) {
+    return { success: false, output: 'operations must be a non-empty array' };
+  }
+  const operations = input.operations;
+  const expectedRevision = Number.isInteger(input.expectedRevision)
+    ? input.expectedRevision
+    : document.revision;
 
   if (operations.length === 0) {
     return { success: true, output: { revision: document.revision, applied: 0, note: 'nothing to change' } };
