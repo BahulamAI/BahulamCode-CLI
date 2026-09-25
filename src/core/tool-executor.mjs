@@ -788,6 +788,7 @@ export function createToolExecutor({
                         const result = await runWorkplaneTool(target, spec.action || 'update', args, {
                             state,
                             workplane: manifest?.config?.workplane,
+                            deps: { executeTool: (toolName, toolArgs) => toolMap[toolName]?.(toolArgs) },
                         });
                         return {
                             ...result,

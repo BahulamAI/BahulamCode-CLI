@@ -36,6 +36,14 @@ config:
     writablePaths:
       - path: /n
         schema: { type: integer, minimum: 0, maximum: 100 }
+    actions:
+      - id: safe_action
+        tool: probe_tool
+        summary: Runs a harmless probe
+      - id: risky_action
+        tool: probe_tool
+        summary: Reaches outside the document
+        requiresApproval: true
 `);
 
 let service = null;
@@ -133,6 +141,53 @@ try {
   // A plugin without config.workplane has no boundary at all.
   const { normalizeManifest } = await import('../src/plugins/manifest.mjs');
   void normalizeManifest;
+
+  // --- registered actions: one broker for panel and agent (AC-10) ---------
+  {
+    const listed = await call(`${base}/actions`);
+    assert.equal(listed.status, 200);
+    assert.deepEqual(
+      listed.data.result.actions.map(a => a.actionId).sort(),
+      ['risky_action', 'safe_action'],
+    );
+
+    // An unregistered id is refused, whichever door it comes through.
+    const bogus = await call(`${base}/actions`, { actionId: 'not_registered' });
+    assert.equal(bogus.data.result.success, false);
+    assert.equal(bogus.data.result.output.code, 'FORBIDDEN');
+
+    // Naming the TOOL rather than the action is refused too: the indirection is
+    // the point, so a document cannot reach an arbitrary tool.
+    const viaTool = await call(`${base}/actions`, { actionId: 'probe_tool' });
+    assert.equal(viaTool.data.result.success, false);
+
+    // An action the author marked as needing approval does not run without one.
+    const risky = await call(`${base}/actions`, { actionId: 'risky_action' });
+    assert.equal(risky.data.result.output.status, 'approval-required');
+
+    // The agent reaches the identical broker and the identical policy.
+    const { runWorkplaneTool } = await import('../src/plugins/workplane-tools.mjs');
+    const { makePluginState } = await import('../src/plugins/state.mjs');
+    const agentState = makePluginState(pluginName, {});
+    const agentBogus = await runWorkplaneTool(pluginName, 'action',
+      { actionId: 'not_registered' }, { state: agentState, workplane: manifest.config.workplane });
+    assert.equal(agentBogus.success, false);
+    assert.equal(agentBogus.output.code, 'FORBIDDEN',
+      'an agent must hit the same refusal a panel does');
+
+    const agentRisky = await runWorkplaneTool(pluginName, 'action',
+      { actionId: 'risky_action' }, { state: agentState, workplane: manifest.config.workplane });
+    assert.equal(agentRisky.output.status, 'approval-required',
+      'approval policy must not depend on who asked');
+
+    // And the catalog an agent reads lists them.
+    const head = await runWorkplaneTool(pluginName, 'inspect', {},
+      { state: agentState, workplane: manifest.config.workplane });
+    assert.deepEqual(head.output.actions.map(a => a.actionId).sort(), ['risky_action', 'safe_action']);
+    assert.ok(head.output.catalog.some(r => r.id === 'workplane.markdown'),
+      'the renderer catalog must reach the agent');
+    assert.ok(head.output.catalog.some(r => r.id === 'workplane.diagram'));
+  }
 
   // --- history navigation (section 5.4.6) ---------------------------------
   {

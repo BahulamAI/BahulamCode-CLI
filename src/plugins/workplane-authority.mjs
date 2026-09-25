@@ -77,6 +77,9 @@ export function createWorkplaneAuthority(pluginName, { state, workplane }) {
     // the plugin's own agent below; a future read-only actor simply lacks it.
     structuralCapability: 'workplane.edit',
     writablePaths: workplane?.writablePaths ?? [],
+    // Carried on the policy so every caller — panel, agent, HTTP — reads the
+    // same registered list rather than assembling its own.
+    actions: workplane?.actions ?? [],
   };
 
   const storage = new PluginWorkplaneStorage(state, seed);

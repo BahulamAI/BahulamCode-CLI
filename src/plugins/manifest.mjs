@@ -240,8 +240,8 @@ function normalizeConfigSettings(value) {
  * author accidentally expose every value to an agent.
  */
 function normalizeWorkplane(value) {
-  if (value === true) return { enabled: true, writablePaths: [], document: null };
-  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null };
+  if (value === true) return { enabled: true, writablePaths: [], document: null, actions: [] };
+  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null, actions: [] };
 
   const writablePaths = [];
   for (const entry of Array.isArray(value.writablePaths) ? value.writablePaths : []) {
@@ -253,6 +253,25 @@ function normalizeWorkplane(value) {
     writablePaths.push(rule);
   }
 
+  // Registered actions. A button names an id from this list and nothing else,
+  // so what a document can trigger is decided by the manifest rather than by
+  // whoever authored the block. An entry without a tool is dropped: an action
+  // that maps to nothing is a promise the host cannot keep.
+  const actions = [];
+  for (const entry of Array.isArray(value.actions) ? value.actions : []) {
+    const id = typeof entry?.id === 'string' ? entry.id.trim() : '';
+    const tool = typeof entry?.tool === 'string' ? entry.tool.trim() : '';
+    if (!/^[a-z][a-z0-9_.-]{0,63}$/i.test(id) || !tool) continue;
+    actions.push({
+      id,
+      tool,
+      summary: typeof entry.summary === 'string' ? entry.summary : `Runs ${tool}`,
+      // Approval is the plugin author's call, and it is a one-way door: an
+      // action that reaches outside the document should ask first.
+      requiresApproval: entry.requiresApproval === true,
+    });
+  }
+
   const document = value.document && typeof value.document === 'object'
     ? {
         id: typeof value.document.id === 'string' ? value.document.id : null,
@@ -260,7 +279,7 @@ function normalizeWorkplane(value) {
       }
     : null;
 
-  return { enabled: true, writablePaths, document };
+  return { enabled: true, writablePaths, document, actions };
 }
 
 /**

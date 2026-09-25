@@ -652,7 +652,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
   //   GET  /api/workplane/<plugin>                      authorized snapshot
   //   POST /api/workplane/<plugin>/commands             commit a transaction
   //   GET  /api/workplane/<plugin>/events?after=<rev>   bounded replay
-  const workplaneMatch = url.pathname.match(/^\/api\/workplane\/([^/]+)(\/commands|\/events|\/history|\/revision)?$/);
+  const workplaneMatch = url.pathname.match(/^\/api\/workplane\/([^/]+)(\/commands|\/events|\/history|\/revision|\/actions)?$/);
   if (workplaneMatch) {
     const pluginName = decodeURIComponent(workplaneMatch[1]);
     const suffix = workplaneMatch[2] || '';
@@ -753,6 +753,35 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
             ok: true,
             document: rebuilt.document,
             diff: current ? diffDocuments(rebuilt.document, current) : null,
+          },
+        });
+        return;
+      }
+
+      // A panel requesting a registered action reaches the SAME broker an agent
+      // does, with the same manifest-declared policy — AC-10.
+      if (req.method === 'POST' && suffix === '/actions') {
+        const body = await readJsonBody(req);
+        const { runWorkplaneTool } = await import('../plugins/workplane-tools.mjs');
+        const relay = getAgentRelay(session);
+        const outcome = await runWorkplaneTool(pluginName, 'action', body, {
+          state,
+          workplane,
+          deps: { executeTool: (name, args) => relay.executeTool(name, args) },
+        });
+        sendJson(res, 200, { ok: true, result: outcome });
+        return;
+      }
+
+      if (req.method === 'GET' && suffix === '/actions') {
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            actions: (workplane.actions ?? []).map((action) => ({
+              actionId: action.id,
+              summary: action.summary,
+              requiresApproval: action.requiresApproval,
+            })),
           },
         });
         return;

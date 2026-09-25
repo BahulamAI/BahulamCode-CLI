@@ -130,7 +130,12 @@ export function createToolRegistry({
                                 pluginName,
                                 toolDef._workplane_tool.action || 'update',
                                 input,
-                                { state, workplane: manifest?.config?.workplane },
+                                {
+                                    state,
+                                    workplane: manifest?.config?.workplane,
+                                    // An action maps to a plugin tool; this is how it runs.
+                                    deps: { executeTool: (toolName, toolArgs) => tools.get(toolName)?.call(toolArgs) },
+                                },
                             );
                             return {
                                 ...result,

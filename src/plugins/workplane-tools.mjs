@@ -11,7 +11,8 @@
  * names a renderer from the catalog and supplies data; the authority validates
  * the whole transaction before anything is persisted.
  */
-import { PROTOCOL_VERSION } from '@bahulam/workplane-ui';
+import { BUILTIN_RENDERERS, describeCatalog, PROTOCOL_VERSION } from '@bahulam/workplane-ui';
+import { createActionBroker, UnregisteredActionError } from './workplane-actions.mjs';
 import { agentActor, createWorkplaneAuthority } from './workplane-authority.mjs';
 
 function base(pluginName) {
@@ -23,24 +24,9 @@ export function workplaneToolNames(pluginName) {
   return {
     inspect: `${prefix}_workplane_inspect`,
     commit: `${prefix}_workplane_commit`,
+    action: `${prefix}_workplane_action`,
   };
 }
-
-/**
- * Renderers the host ships, with the spec fields each accepts.
- *
- * This is the agent's catalog. It is deliberately a fixed list on the host side:
- * a plugin cannot add a renderer by describing one, and an agent cannot invoke a
- * renderer that is not here.
- */
-const CATALOG = [
-  { rendererId: 'workplane.metric', accepts: 'query: {queryId, column} | inline: {value (integer minor units), currency}' },
-  { rendererId: 'workplane.text', accepts: '{text, generated?}' },
-  { rendererId: 'workplane.fact', accepts: '{template} with {name} placeholders resolved from bindings' },
-  { rendererId: 'workplane.table', accepts: 'query: {queryId, columns[], pageSize} | inline: {columns[], rows[][], moneyColumns[], currency, pageSize}' },
-  { rendererId: 'workplane.form', accepts: '{fields[{name,label,control,path,options?,min?,max?}], submitLabel}' },
-  { rendererId: 'workplane.echarts', accepts: 'query: {chartType: bar|line|pie, queryId, categoryColumn, valueColumn} | inline: {chartType, data[{label,value,id?}], currency}' },
-];
 
 const OPERATIONS_DOC =
   'Supported operations: scene.add, scene.update, scene.remove, scene.move, ' +
@@ -59,9 +45,10 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
       ...shared,
       name: names.inspect,
       description:
-        'Read the current Workplane document: revision, scenes, blocks, committed ' +
-        'state, the renderer catalog, and which state paths are writable. Call this ' +
-        'before committing so the expectedRevision is current.',
+        'Read the current Workplane document: revision, scenes, blocks, committed state, ' +
+        'the renderer catalog, registered actions, and which state paths are writable. ' +
+        'Call this before committing so the expectedRevision is current.\n\nRenderers:\n' +
+        describeCatalog(),
       input_schema: { type: 'object', properties: {} },
       _workplane_tool: { plugin: pluginName, action: 'inspect' },
     },
@@ -84,6 +71,24 @@ export function expandWorkplaneTools(pluginName, pluginDir, workplane) {
       },
       _workplane_tool: { plugin: pluginName, action: 'commit' },
     },
+    {
+      ...shared,
+      name: names.action,
+      description:
+        'Request a registered action by id. The ids come from workplane_inspect; an action ' +
+        'maps to a plugin tool chosen by the manifest, so this cannot name a tool, a URL, or a ' +
+        'command. A user clicking a button reaches the SAME broker with the same policy, and an ' +
+        'action the author marked as needing approval is not run without it.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          actionId: { type: 'string', description: 'A registered action id.' },
+          arguments: { type: 'object', description: 'Typed arguments for that action.' },
+        },
+        required: ['actionId'],
+      },
+      _workplane_tool: { plugin: pluginName, action: 'action' },
+    },
   ];
 }
 
@@ -103,8 +108,13 @@ function projectDocument(document, policy) {
     })),
     state: document.shared,
     writablePaths: policy.writablePaths.map((rule) => ({ path: rule.path, schema: rule.schema })),
+    actions: (policy.actions ?? []).map((action) => ({
+      actionId: action.id,
+      summary: action.summary,
+      requiresApproval: action.requiresApproval,
+    })),
     queries: Object.keys(document.queries),
-    catalog: CATALOG,
+    catalog: BUILTIN_RENDERERS,
     operations: OPERATIONS_DOC,
   };
 }
@@ -117,7 +127,7 @@ let commandCounter = 0;
  * `state` is the plugin state proxy the caller already built; the authority is
  * constructed around it so the agent writes exactly where the panel reads.
  */
-export async function runWorkplaneTool(pluginName, action, input, { state, workplane }) {
+export async function runWorkplaneTool(pluginName, action, input, { state, workplane, deps } = {}) {
   const { authority, documentId, policy } = createWorkplaneAuthority(pluginName, { state, workplane });
   const actor = agentActor(pluginName);
 
@@ -139,7 +149,7 @@ export async function runWorkplaneTool(pluginName, action, input, { state, workp
           revision: 0,
           empty: true,
           writablePaths: policy.writablePaths.map((r) => ({ path: r.path, schema: r.schema })),
-          catalog: CATALOG,
+          catalog: BUILTIN_RENDERERS,
           operations: OPERATIONS_DOC,
         },
       };
@@ -150,6 +160,28 @@ export async function runWorkplaneTool(pluginName, action, input, { state, workp
   const document = await snapshot();
   if (!document) {
     return { success: false, output: 'The Workplane document could not be opened.' };
+  }
+
+  if (action === 'action') {
+    const broker = createActionBroker({
+      actions: policy.actions ?? [],
+      execute: deps?.executeTool
+        ? deps.executeTool
+        : async () => { throw new Error('This host cannot run plugin tools from an action.'); },
+      approve: deps?.approve ?? null,
+    });
+    try {
+      const outcome = await broker.request({
+        actionId: input?.actionId,
+        arguments: input?.arguments ?? {},
+      });
+      return { success: outcome.status !== 'approval-required', output: outcome };
+    } catch (error) {
+      if (error instanceof UnregisteredActionError) {
+        return { success: false, output: { code: 'FORBIDDEN', message: error.message } };
+      }
+      return { success: false, output: { code: 'INTERNAL_ERROR', message: error.message } };
+    }
   }
 
   if (action !== 'commit') {
