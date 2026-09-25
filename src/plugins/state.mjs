@@ -263,6 +263,17 @@ function openDb(pluginName, { tables = [] } = {}) {
     -- writer's revision N rather than leaving the conflict to be noticed later.
     CREATE UNIQUE INDEX IF NOT EXISTS workplane_events_revision_idx
       ON workplane_events(document_id, revision);
+    -- Periodic full snapshots. Events record what changed, not what it changed
+    -- FROM, so a past revision can only be rebuilt by replaying FORWARD from a
+    -- known-good document. Without checkpoints, pruning old events would make
+    -- every revision before the prune unreachable. PRD section 19.1.
+    CREATE TABLE IF NOT EXISTS workplane_checkpoints (
+      document_id TEXT NOT NULL,
+      revision    INTEGER NOT NULL,
+      snapshot    TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      PRIMARY KEY (document_id, revision)
+    );
     CREATE TABLE IF NOT EXISTS workplane_receipts (
       document_id          TEXT NOT NULL,
       command_id           TEXT NOT NULL,
@@ -416,6 +427,7 @@ function normalizeWorkplaneWidget(widget) {
   return copy;
 }
 
+const CHECKPOINT_EVERY = 25;
 const WORKPLANE_FALLBACK_KEY = 'workplane_document';
 const WORKPLANE_FALLBACK_MAX_EVENTS = 500;
 
@@ -836,6 +848,15 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
             ON CONFLICT(document_id, command_id) DO NOTHING`)
             .run(String(documentId), receipt.commandId, receipt.payloadFingerprint, receipt.revision);
 
+          // Checkpoint inside the same transaction, so a snapshot can never
+          // record a revision the event log does not also contain.
+          if (document.revision === 1 || document.revision % CHECKPOINT_EVERY === 0) {
+            db.prepare(`INSERT INTO workplane_checkpoints
+                (document_id, revision, snapshot, created_at) VALUES (?, ?, ?, ?)
+              ON CONFLICT(document_id, revision) DO NOTHING`)
+              .run(String(documentId), document.revision, JSON.stringify(document), now);
+          }
+
           db.exec('COMMIT');
         } catch (err) {
           db.exec('ROLLBACK');
@@ -864,6 +885,35 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
             ORDER BY revision ASC LIMIT ?`)
           .all(String(documentId), Number(revision), Math.max(1, Math.min(5000, limit)))
           .map(rowToEvent);
+      },
+
+      /**
+       * Checkpoints at or before `revision`, newest first.
+       * A caller rebuilds a past revision from the nearest one plus the events
+       * that follow it.
+       */
+      checkpoints(documentId, { atOrBefore = Number.MAX_SAFE_INTEGER, limit = 4 } = {}) {
+        if (!DatabaseSync) return [];
+        return db.prepare(`SELECT revision, snapshot FROM workplane_checkpoints
+            WHERE document_id = ? AND revision <= ?
+            ORDER BY revision DESC LIMIT ?`)
+          .all(String(documentId), Number(atOrBefore), Math.max(1, Math.min(50, limit)))
+          .map((row) => ({ revision: row.revision, document: JSON.parse(row.snapshot) }));
+      },
+
+      /**
+       * Write a checkpoint for the CURRENT document on demand — used before
+       * pruning history, so revisions that survive stay reachable.
+       */
+      writeCheckpoint(documentId) {
+        if (!DatabaseSync) return false;
+        const document = this.loadDocument(documentId);
+        if (!document) return false;
+        db.prepare(`INSERT INTO workplane_checkpoints
+            (document_id, revision, snapshot, created_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(document_id, revision) DO NOTHING`)
+          .run(String(documentId), document.revision, JSON.stringify(document), new Date().toISOString());
+        return true;
       },
 
       /** Full history, oldest first. Append-only, so nothing is ever dropped. */

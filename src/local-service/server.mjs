@@ -652,7 +652,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
   //   GET  /api/workplane/<plugin>                      authorized snapshot
   //   POST /api/workplane/<plugin>/commands             commit a transaction
   //   GET  /api/workplane/<plugin>/events?after=<rev>   bounded replay
-  const workplaneMatch = url.pathname.match(/^\/api\/workplane\/([^/]+)(\/commands|\/events)?$/);
+  const workplaneMatch = url.pathname.match(/^\/api\/workplane\/([^/]+)(\/commands|\/events|\/history|\/revision)?$/);
   if (workplaneMatch) {
     const pluginName = decodeURIComponent(workplaneMatch[1]);
     const suffix = workplaneMatch[2] || '';
@@ -703,6 +703,58 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
         const after = Number.parseInt(url.searchParams.get('after') || '0', 10) || 0;
         const events = await authority.eventsAfter(documentId, after);
         sendJson(res, 200, { ok: true, result: { events, historyComplete: storage.historyComplete() } });
+        return;
+      }
+
+      // History navigation (PRD-108 section 5.4.6). Read-only: opening a past
+      // revision runs no query and starts no job, and cannot change live state.
+      if (req.method === 'GET' && suffix === '/history') {
+        const events = await storage.history(documentId, { limit: 200 });
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            historyComplete: storage.historyComplete(),
+            checkpoints: state.workplane.checkpoints(documentId).map((c) => c.revision),
+            entries: events.map((event) => ({
+              revision: event.revision,
+              commitId: event.commitId ?? null,
+              parentId: event.parentId ?? null,
+              actor: event.actor,
+              committedAt: event.committedAt,
+              operations: event.operations.map((op) => op.op),
+            })),
+          },
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && suffix === '/revision') {
+        const wanted = Number.parseInt(url.searchParams.get('at') || '', 10);
+        if (!Number.isInteger(wanted) || wanted < 0) {
+          sendJson(res, 400, { ok: false, error: 'revision_required' });
+          return;
+        }
+        const { documentAt, diffDocuments } = await import('@bahulam/workplane-ui');
+        const rebuilt = documentAt(
+          wanted,
+          state.workplane.checkpoints(documentId, { atOrBefore: wanted }),
+          await storage.history(documentId, { limit: 500 }),
+        );
+        if (!rebuilt.ok) {
+          // Refusing beats guessing: a historical view that is quietly wrong
+          // gets compared against live data and trusted.
+          sendJson(res, 200, { ok: true, result: { ok: false, ...rebuilt } });
+          return;
+        }
+        const current = await authority.snapshot(documentId);
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            ok: true,
+            document: rebuilt.document,
+            diff: current ? diffDocuments(rebuilt.document, current) : null,
+          },
+        });
         return;
       }
 

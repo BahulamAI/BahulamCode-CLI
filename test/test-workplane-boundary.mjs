@@ -134,6 +134,37 @@ try {
   const { normalizeManifest } = await import('../src/plugins/manifest.mjs');
   void normalizeManifest;
 
+  // --- history navigation (section 5.4.6) ---------------------------------
+  {
+    const history = await call(`${base}/history`);
+    assert.equal(history.status, 200);
+    assert.equal(history.data.result.historyComplete, true);
+    assert.deepEqual(history.data.result.entries.map(e => e.revision), [1, 2]);
+    assert.ok(history.data.result.entries[0].commitId.startsWith('wpc_'));
+    assert.deepEqual(history.data.result.entries[0].operations, ['state.set']);
+    assert.deepEqual(history.data.result.checkpoints, [1], 'the first revision is checkpointed');
+
+    // Rebuild an earlier revision and diff it against live.
+    const at1 = await call(`${base}/revision?at=1`);
+    assert.equal(at1.status, 200);
+    assert.equal(at1.data.result.ok, true, JSON.stringify(at1.data.result));
+    assert.equal(at1.data.result.document.revision, 1);
+    assert.equal(at1.data.result.document.shared.n, 7, 'the historical value, not the live one');
+    assert.deepEqual(at1.data.result.diff.shared, [{ path: '/n', from: 7, to: 8 }]);
+
+    // Opening history must not change anything.
+    const afterBrowse = await call(base);
+    assert.equal(afterBrowse.data.result.document.revision, 2, 'browsing history changed the document');
+    assert.equal(afterBrowse.data.result.document.shared.n, 8);
+
+    // A revision that cannot be rebuilt is refused, not approximated.
+    const unreachable = await call(`${base}/revision?at=999`);
+    assert.equal(unreachable.data.result.ok, false);
+    assert.match(unreachable.data.result.message, /needs|before the earliest/);
+
+    assert.equal((await call(`${base}/revision`)).status, 400, 'a revision is required');
+  }
+
   // --- the bus fires on a commit, so a panel can update without a reload ----
   {
     const controller = new AbortController();
