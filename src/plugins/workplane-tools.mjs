@@ -25,9 +25,18 @@ import { agentActor, createWorkplaneAuthority } from './workplane-authority.mjs'
  */
 function catalogFor(workplane) {
   const declared = workplane?.renderers ?? [];
-  if (declared.length === 0) return BUILTIN_RENDERERS;
-  const wanted = new Set(declared);
-  return BUILTIN_RENDERERS.filter((descriptor) => wanted.has(descriptor.id));
+  const wanted = declared.length === 0 ? null : new Set(declared);
+  // A button names a registered action id and nothing else. With no actions in
+  // the manifest there is no id it could name, so every button would commit
+  // cleanly and then be refused by the broker on click — the same defect as
+  // advertising a renderer the panel never registered, one layer down.
+  const buttonsPossible = (workplane?.actions ?? []).length > 0;
+
+  return BUILTIN_RENDERERS.filter((descriptor) => {
+    if (wanted && !wanted.has(descriptor.id)) return false;
+    if (descriptor.id === 'workplane.button' && !buttonsPossible) return false;
+    return true;
+  });
 }
 
 function base(pluginName) {

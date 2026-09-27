@@ -87,6 +87,16 @@ try {
     // The catalog carries a copyable example, not only prose. Every mistake the
     // agent made against this API was a shape it had to guess at.
     assert.match(all.description, /example: \{/);
+
+    // A button can only name a registered action. Offering the renderer with no
+    // actions declared produces a block that commits and then refuses to work.
+    assert.doesNotMatch(all.description, /workplane\.button/,
+      'buttons were offered with no registered action to name');
+    const withAction = expandWorkplaneTools(pluginName, pluginRoot, {
+      enabled: true, renderers: [],
+      actions: [{ id: 'refresh', tool: 'azure_cost_by_service', summary: 'Refresh', requiresApproval: false }],
+    })[0];
+    assert.match(withAction.description, /workplane\.button/);
     assert.equal(describeCatalog([]), '', 'a host that registers nothing describes nothing');
   }
 
