@@ -114,42 +114,6 @@ export function createToolRegistry({
             const name = String(toolDef.name || '').trim();
             if (!name || tools.has(name)) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
-            if (toolDef._workplane_tool) {
-                tools.set(name, {
-                    name,
-                    description: toolDef.description || '',
-                    inputSchema: toolDef.input_schema || { type: 'object', properties: {} },
-                    validateInput() { return []; },
-                    async call(input) {
-                        try {
-                            const state = await pluginStateFor(pluginName);
-                            const { runWorkplaneTool } = await import('../plugins/workplane-tools.mjs');
-                            // registry.get() returns the normalized manifest itself.
-                            const manifest = pluginRegistry.get?.(pluginName);
-                            const result = await runWorkplaneTool(
-                                pluginName,
-                                toolDef._workplane_tool.action || 'update',
-                                input,
-                                {
-                                    state,
-                                    workplane: manifest?.config?.workplane,
-                                    // An action maps to a plugin tool; this is how it runs.
-                                    deps: { executeTool: (toolName, toolArgs) => tools.get(toolName)?.call(toolArgs) },
-                                },
-                            );
-                            return {
-                                ...result,
-                                output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2),
-                                _tool: name,
-                                _plugin: pluginName,
-                            };
-                        } catch (err) {
-                            return { success: false, output: `Workplane tool failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
-                        }
-                    },
-                });
-                continue;
-            }
             if (toolDef._composed?.kind === 'pi') {
                 tools.set(name, {
                     name,

@@ -785,31 +785,6 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
-            if (toolDef._workplane_tool) {
-                const spec = toolDef._workplane_tool;
-                registerPluginTool(name, async (args) => {
-                    try {
-                        const target = spec.plugin || pluginName;
-                        const state = _pluginStateFor(target);
-                        const { runWorkplaneTool } = await import('../plugins/workplane-tools.mjs');
-                        const manifest = pluginRegistry.get?.(target);
-                        const result = await runWorkplaneTool(target, spec.action || 'update', args, {
-                            state,
-                            workplane: manifest?.config?.workplane,
-                            deps: { executeTool: (toolName, toolArgs) => toolMap[toolName]?.(toolArgs) },
-                        });
-                        return {
-                            ...result,
-                            output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2),
-                            _tool: name,
-                            _plugin: pluginName,
-                        };
-                    } catch (err) {
-                        return { success: false, output: `Workplane tool failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
-                    }
-                }, { pluginName, source: 'workplane', workplaneTool: spec });
-                continue;
-            }
             if (toolDef._state_tool) {
                 // Manifest-declared state query tool (config.state.context_tools).
                 // There is no module to import — the author declared a table

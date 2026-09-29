@@ -308,72 +308,6 @@ function normalizeConfigSettings(value) {
   return { fields };
 }
 
-/**
- * Normalize `config.workplane`.
- *
- *   workplane: true                      # enabled, no state writes permitted
- *   workplane:
- *     enabled: true
- *     document: { id, title }            # optional identity for the document
- *     writablePaths:                     # what a user or agent may commit
- *       - path: /filters/days
- *         schema: { type: integer, minimum: 1, maximum: 365 }
- *
- * `writablePaths` defaults to EMPTY, which means structural edits only: an
- * agent may add or remove blocks but cannot write shared state until the plugin
- * declares a typed path for it. Defaulting the other way would let a plugin
- * author accidentally expose every value to an agent.
- */
-function normalizeWorkplane(value) {
-  if (value === true) return { enabled: true, writablePaths: [], document: null, actions: [], renderers: [] };
-  if (value?.enabled !== true) return { enabled: false, writablePaths: [], document: null, actions: [], renderers: [] };
-
-  const writablePaths = [];
-  for (const entry of Array.isArray(value.writablePaths) ? value.writablePaths : []) {
-    const path = typeof entry?.path === 'string' ? entry.path.trim() : '';
-    // A schema is mandatory: an untyped write path is an unbounded one.
-    if (!path.startsWith('/') || !entry?.schema || typeof entry.schema !== 'object') continue;
-    const rule = { path, schema: entry.schema };
-    if (typeof entry.capability === 'string') rule.capability = entry.capability;
-    writablePaths.push(rule);
-  }
-
-  // Registered actions. A button names an id from this list and nothing else,
-  // so what a document can trigger is decided by the manifest rather than by
-  // whoever authored the block. An entry without a tool is dropped: an action
-  // that maps to nothing is a promise the host cannot keep.
-  const actions = [];
-  for (const entry of Array.isArray(value.actions) ? value.actions : []) {
-    const id = typeof entry?.id === 'string' ? entry.id.trim() : '';
-    const tool = typeof entry?.tool === 'string' ? entry.tool.trim() : '';
-    if (!/^[a-z][a-z0-9_.-]{0,63}$/i.test(id) || !tool) continue;
-    actions.push({
-      id,
-      tool,
-      summary: typeof entry.summary === 'string' ? entry.summary : `Runs ${tool}`,
-      // Approval is the plugin author's call, and it is a one-way door: an
-      // action that reaches outside the document should ask first.
-      requiresApproval: entry.requiresApproval === true,
-    });
-  }
-
-  const document = value.document && typeof value.document === 'object'
-    ? {
-        id: typeof value.document.id === 'string' ? value.document.id : null,
-        title: typeof value.document.title === 'string' ? value.document.title : null,
-      }
-    : null;
-
-  // Which renderers the plugin's panel registers. An empty list means "all",
-  // so a manifest that says nothing keeps working. Declaring the set matters
-  // because the agent is told what exists: offering a renderer the panel never
-  // registered yields a block that commits cleanly and then draws a placeholder.
-  const renderers = (Array.isArray(value.renderers) ? value.renderers : [])
-    .filter((id) => typeof id === 'string' && /^[a-z][a-z0-9_.-]{0,63}$/i.test(id.trim()))
-    .map((id) => id.trim());
-
-  return { enabled: true, writablePaths, document, actions, renderers };
-}
 
 /**
  * Normalize `config.lifecycle` — install / seed / uninstall / migration hooks.
@@ -740,7 +674,6 @@ export function normalizeManifest(raw, source = '') {
   const composes = normalizeComposes(config.composes);
   const state = normalizeState(config.state);
   const configSettings = normalizeConfigSettings(config.config);
-  const workplane = normalizeWorkplane(config.workplane);
   // PRD-112 additions are descriptive and additive. Existing v1 executable
   // fields remain the source of runtime behavior until each host opts into the
   // normalized capability graph.
@@ -769,7 +702,6 @@ export function normalizeManifest(raw, source = '') {
       composes,
       state,
       config: configSettings,
-      workplane,
       skills,
       connectors,
       outcome_runtime: outcomeRuntime,

@@ -10,7 +10,6 @@ import path from 'path';
 import { parsePluginManifestFile, validatePluginManifest } from './manifest.mjs';
 import { expandComposedTools } from './pi-compose.mjs';
 import { expandStateContextTools } from './state-tools.mjs';
-import { expandWorkplaneTools } from './workplane-tools.mjs';
 import { pluginDirs as defaultPluginDirs } from '../core/paths.mjs';
 
 export class PluginRegistry {
@@ -168,11 +167,6 @@ export class PluginRegistry {
         plugin.metadata?.name || '',
         plugin._dir,
         plugin.config?.state,
-      ));
-      tools.push(...expandWorkplaneTools(
-        plugin.metadata?.name || '',
-        plugin._dir,
-        plugin.config?.workplane,
       ));
     }
     return tools;
