@@ -1566,6 +1566,7 @@ ${workspaceStyles}
             <div class="composer-actions">
               <div class="composer-left">
                 <button class="icon-button" id="attachFiles" type="button" title="Attach files" aria-label="Attach files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></button>
+                <button class="icon-button" id="voiceInput" type="button" title="Record voice message" aria-label="Record voice message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"></path></svg></button>
                 <input id="fileUpload" type="file" multiple hidden>
                 <div class="status" id="sendStatus"></div>
               </div>
@@ -1706,6 +1707,31 @@ function fileToDataBase64(file){
     reader.readAsDataURL(file);
   });
 }
+let voiceRecognition=null;
+let voiceStartText='';
+function setVoiceRecording(active){
+  const button=document.getElementById('voiceInput');
+  if(!button)return;
+  button.classList.toggle('voice-recording',active);
+  button.title=active?'Stop recording':'Record voice message';
+  button.setAttribute('aria-label',active?'Stop recording':'Record voice message');
+  button.innerHTML=active
+    ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"></path></svg>';
+}
+function startVoiceRecording(){
+  const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!Speech){document.getElementById('sendStatus').textContent='Browser voice transcription is unavailable here. A local speech engine can be installed later.';return;}
+  const input=document.getElementById('prompt');
+  voiceStartText=input.value.trim();
+  voiceRecognition=new Speech();
+  voiceRecognition.continuous=true;voiceRecognition.interimResults=true;voiceRecognition.lang=navigator.language||'en-US';
+  voiceRecognition.onresult=event=>{let text='';for(let i=event.resultIndex;i<event.results.length;i++)text+=event.results[i][0].transcript;input.value=[voiceStartText,text.trim()].filter(Boolean).join(voiceStartText?' ':'');};
+  voiceRecognition.onerror=event=>{document.getElementById('sendStatus').textContent=event.error==='not-allowed'?'Microphone permission was not granted.':'Voice transcription stopped. Review the text above.';};
+  voiceRecognition.onend=()=>{voiceRecognition=null;setVoiceRecording(false);if(input.value.trim())document.getElementById('sendStatus').textContent='Voice text is ready to review.';};
+  try{voiceRecognition.start();setVoiceRecording(true);document.getElementById('sendStatus').textContent='Listening… select the microphone again when you are done.';}catch(err){voiceRecognition=null;setVoiceRecording(false);document.getElementById('sendStatus').textContent=err?.message||'Could not start voice transcription.';}
+}
+function toggleVoiceRecording(){if(voiceRecognition){voiceRecognition.stop();return;}startVoiceRecording();}
 function renderUploadTray(){
   const tray=document.getElementById('uploadTray');
   if(!tray)return;
@@ -3425,6 +3451,7 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
 });
 document.getElementById('prompt').addEventListener('keydown', e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();document.getElementById('composer').requestSubmit();}});
 document.getElementById('attachFiles').addEventListener('click',()=>document.getElementById('fileUpload').click());
+document.getElementById('voiceInput').addEventListener('click',toggleVoiceRecording);
 document.getElementById('stopAgent').addEventListener('click',stopAgentTurn);
 document.getElementById('fileUpload').addEventListener('change',async(e)=>{
   try{await uploadFiles(e.target.files||[]);}catch(err){document.getElementById('sendStatus').textContent=err.message;addActivity('error','Upload failed',{detail:err.message});}
