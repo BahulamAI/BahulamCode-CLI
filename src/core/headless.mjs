@@ -113,7 +113,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         toolExecutor = createToolExecutor({ pluginRegistry, delegateRunner: runDelegateFromTool });
         // Load MCP servers from settings chain (~/.claude/settings.json etc.)
         const _settings = await loadSettings();
-        const _mcpClients = await loadMcpServers(toolExecutor, _settings);
+        const _mcpClients = await loadMcpServers(toolExecutor, _settings, { pluginRegistry });
         const timer = setTimeout(() => {
             emit({ type: 'timeout', duration_s: timeout });
             process.exit(2);
@@ -193,7 +193,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
 
     // Load MCP servers from settings chain (~/.claude/settings.json etc.)
     const _settings = await loadSettings();
-    const _mcpClients = await loadMcpServers(toolExecutor, _settings);
+    const _mcpClients = await loadMcpServers(toolExecutor, _settings, { pluginRegistry });
 
     // Auto-approve everything — no prompts
     const approval = new ApprovalManager({ autoApprove: true });

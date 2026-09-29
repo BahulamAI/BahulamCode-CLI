@@ -51,6 +51,8 @@ const UNIT_TESTS = [
     'test/test-plugin-state-schema.mjs',
     'test/test-plugin-settings-workplane.mjs',
     'test/test-workplane-boundary.mjs',
+    'test/test-plugin-capability-graph.mjs',
+    'test/test-plugin-runtime-loaders.mjs',
     'test/pi-compat-smoke.mjs',
     'test/pi-scaffold-smoke.mjs',
     'test/pi-requirements-smoke.mjs',

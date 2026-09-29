@@ -144,6 +144,20 @@ export class SkillsLoader {
         return this;
     }
 
+    /** Add skills shipped by already-validated plugins without clearing the
+     * normal project/global sources. Project skills retain higher precedence;
+     * plugin skills intentionally outrank unrelated global skills. */
+    loadPluginSkills(pluginRegistry) {
+        if (!pluginRegistry?.listSkillSources) return this;
+        for (const entry of pluginRegistry.listSkillSources()) {
+            const source = `plugin:${entry.plugin}:${entry.id}`;
+            const config = { dir: entry.root, source, scope: 'plugin', priority: 350 };
+            this.searchPaths.push(config);
+            this._loadFromDir(config);
+        }
+        return this;
+    }
+
     _loadFromDir(config) {
         for (const skillDir of discoverSkillDirectories(config.dir)) {
             try {

@@ -196,8 +196,46 @@ export class PluginRegistry {
       const pluginName = plugin.metadata?.name || '';
       for (const [name, config] of Object.entries(servers)) {
         if (config && typeof config === 'object') {
-          out.push({ plugin: pluginName, name, config });
+          // Resolve package-relative executable references at the manifest
+          // boundary. The existing McpClient still owns transport and process
+          // lifecycle; it simply receives a runnable config in every CLI CWD.
+          const resolveRef = value => typeof value === 'string' && value.startsWith('.')
+            ? path.resolve(plugin._dir || '', value)
+            : value;
+          out.push({ plugin: pluginName, name, config: {
+            ...config,
+            command: resolveRef(config.command),
+            args: Array.isArray(config.args) ? config.args.map(resolveRef) : config.args,
+          } });
         }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * List plugin-owned SKILL.md roots for the existing SkillsLoader. Paths are
+   * resolved here so every caller gets the same traversal protection and so a
+   * manifest can only expose files shipped inside its own package.
+   */
+  listSkillSources() {
+    const out = [];
+    for (const plugin of this.plugins.values()) {
+      const root = path.resolve(plugin._dir || '');
+      if (!root) continue;
+      for (const skill of (plugin.config?.skills || [])) {
+        const source = String(skill.source || '').trim();
+        if (!source) continue;
+        const candidate = path.resolve(root, source);
+        if (candidate !== root && !candidate.startsWith(root + path.sep)) continue;
+        const skillRoot = path.basename(candidate).toLowerCase() === 'skill.md' ? path.dirname(candidate) : candidate;
+        if (!fs.existsSync(path.join(skillRoot, 'SKILL.md'))) continue;
+        out.push({
+          plugin: plugin.metadata?.name || '',
+          id: skill.id,
+          root: skillRoot,
+          availability: skill.availability || [],
+        });
       }
     }
     return out;

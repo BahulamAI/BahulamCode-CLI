@@ -26,7 +26,7 @@ const subcommandArgs = process.argv.slice(3);
 const PLUGIN_MANAGEMENT_COMMANDS = new Set([
   'validate', 'check', 'lint',
   'list', 'ls', 'remove', 'rm', 'uninstall',
-  'enable', 'disable', 'info', 'update', 'upgrade',
+  'enable', 'disable', 'info', 'inspect', 'update', 'upgrade',
   'doctor',
 ]);
 
@@ -74,7 +74,7 @@ function parsePluginArgs(argv) {
       if (arg && (arg.includes('/') || fs.existsSync?.(arg))) parsed.source = arg;
       else parsed.pluginName = arg;
     }
-    else if (['info', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'update', 'upgrade', 'doctor'].includes(parsed.action)) {
+    else if (['info', 'inspect', 'remove', 'rm', 'uninstall', 'enable', 'disable', 'update', 'upgrade', 'doctor'].includes(parsed.action)) {
       parsed.pluginName = positional.shift() || null;
     }
   } else {
