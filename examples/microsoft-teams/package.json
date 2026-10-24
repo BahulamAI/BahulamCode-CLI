@@ -1,9 +1,0 @@
-{
-  "name": "bahulam-teams-host",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=22.13.0" },
-  "scripts": { "start": "node start.mjs" },
-  "dependencies": { "@microsoft/teams.apps": "2.1.1" }
-}

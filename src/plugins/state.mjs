@@ -31,9 +31,9 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { bahulamHome } from '../core/paths.mjs';
 
 const require = createRequire(import.meta.url);
 let DatabaseSync = null;
@@ -60,7 +60,7 @@ if (process.env.BAHULAM_PLUGIN_STATE_BACKEND !== 'json') {
   }
 }
 
-const DATA_ROOT = () => path.join(bahulamHome(), 'data');
+const DATA_ROOT = () => path.join(os.homedir(), '.bahulam', 'data');
 const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const DEBOUNCE_MS = 50;
 
