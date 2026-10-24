@@ -9,6 +9,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
+import { bahulamHome } from '../core/paths.mjs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
@@ -585,6 +586,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     const views = getPluginViews(session).map(v => ({
       plugin: v.plugin,
       name: v.name,
+      permissions: v.permissions,
       url: `/plugin-view/${encodeURIComponent(v.plugin)}/${v.source.split('/').map(encodeURIComponent).join('/')}`,
     }));
     sendJson(res, 200, { ok: true, views });
@@ -640,6 +642,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     }
     return;
   }
+
 
   // Plugin config status API — reads manifest-declared config fields,
   // current values from the plugin's state KV, and reports missing fields.
@@ -731,8 +734,11 @@ function scanPlugins(session) {
   const dirs = new Map();
   const manifests = new Map(); // pluginName → normalized manifest
   try {
+    // Resolve through bahulamHome() so BAHULAM_HOME is honoured here as it is
+    // in plugin-manage and the state layer. Hardcoding os.homedir() made this
+    // the one place that ignored it, which is both inconsistent and untestable.
     const registry = new PluginRegistry({
-      pluginDirs: [path.join(os.homedir(), '.bahulam', 'plugins')],
+      pluginDirs: [path.join(bahulamHome(), 'plugins')],
     }).scan();
     for (const manifest of registry.list()) {
       const pluginName = manifest.metadata?.name || '';
@@ -747,6 +753,7 @@ function scanPlugins(session) {
           plugin: pluginName,
           name: String(view?.name || '').trim() || pluginName,
           source,
+          permissions: (Array.isArray(view.permissions) ? view.permissions : []).filter(p => ['downloads', 'external-links', 'dialogs'].includes(p)),
         });
       });
     }
@@ -1380,6 +1387,7 @@ ${workspaceStyles}
             <div class="composer-actions">
               <div class="composer-left">
                 <button class="icon-button" id="attachFiles" type="button" title="Attach files" aria-label="Attach files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></button>
+                <button class="icon-button" id="voiceInput" type="button" title="Record voice message" aria-label="Record voice message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"></path></svg></button>
                 <input id="fileUpload" type="file" multiple hidden>
                 <div class="status" id="sendStatus"></div>
               </div>
@@ -1520,6 +1528,31 @@ function fileToDataBase64(file){
     reader.readAsDataURL(file);
   });
 }
+let voiceRecognition=null;
+let voiceStartText='';
+function setVoiceRecording(active){
+  const button=document.getElementById('voiceInput');
+  if(!button)return;
+  button.classList.toggle('voice-recording',active);
+  button.title=active?'Stop recording':'Record voice message';
+  button.setAttribute('aria-label',active?'Stop recording':'Record voice message');
+  button.innerHTML=active
+    ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"></path></svg>';
+}
+function startVoiceRecording(){
+  const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!Speech){document.getElementById('sendStatus').textContent='Browser voice transcription is unavailable here. A local speech engine can be installed later.';return;}
+  const input=document.getElementById('prompt');
+  voiceStartText=input.value.trim();
+  voiceRecognition=new Speech();
+  voiceRecognition.continuous=true;voiceRecognition.interimResults=true;voiceRecognition.lang=navigator.language||'en-US';
+  voiceRecognition.onresult=event=>{let text='';for(let i=event.resultIndex;i<event.results.length;i++)text+=event.results[i][0].transcript;input.value=[voiceStartText,text.trim()].filter(Boolean).join(voiceStartText?' ':'');};
+  voiceRecognition.onerror=event=>{document.getElementById('sendStatus').textContent=event.error==='not-allowed'?'Microphone permission was not granted.':'Voice transcription stopped. Review the text above.';};
+  voiceRecognition.onend=()=>{voiceRecognition=null;setVoiceRecording(false);if(input.value.trim())document.getElementById('sendStatus').textContent='Voice text is ready to review.';};
+  try{voiceRecognition.start();setVoiceRecording(true);document.getElementById('sendStatus').textContent='Listening… select the microphone again when you are done.';}catch(err){voiceRecognition=null;setVoiceRecording(false);document.getElementById('sendStatus').textContent=err?.message||'Could not start voice transcription.';}
+}
+function toggleVoiceRecording(){if(voiceRecognition){voiceRecognition.stop();return;}startVoiceRecording();}
 function renderUploadTray(){
   const tray=document.getElementById('uploadTray');
   if(!tray)return;
@@ -2903,8 +2936,14 @@ function openPluginView(key){
   if(!openTabs.some(t=>t.path===key))openTabs.push({path:key,name:view.name||view.plugin});
   renderTabs();
   renderExplorer();
+  // Permissions are opt-in per plugin view and mapped to a fixed allowlist.
+  const permissions=new Set(view.permissions||[]);
+  const sandbox=['allow-scripts','allow-same-origin','allow-forms'];
+  if(permissions.has('downloads'))sandbox.push('allow-downloads');
+  if(permissions.has('external-links'))sandbox.push('allow-popups','allow-popups-to-escape-sandbox');
+  if(permissions.has('dialogs'))sandbox.push('allow-modals');
   renderViewer('<div class="file-header"><span>⚙</span><span class="path">'+esc(view.plugin)+' · '+esc(view.name)+'</span></div>'+
-    '<div class="frame-preview"><iframe sandbox="allow-scripts allow-same-origin allow-forms" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>');
+    '<div class="frame-preview"><iframe sandbox="'+sandbox.join(' ')+'" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>');
 }
 function setTurnRunning(running){
   turnRunning=Boolean(running);
@@ -3239,6 +3278,7 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
 });
 document.getElementById('prompt').addEventListener('keydown', e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();document.getElementById('composer').requestSubmit();}});
 document.getElementById('attachFiles').addEventListener('click',()=>document.getElementById('fileUpload').click());
+document.getElementById('voiceInput').addEventListener('click',toggleVoiceRecording);
 document.getElementById('stopAgent').addEventListener('click',stopAgentTurn);
 document.getElementById('fileUpload').addEventListener('change',async(e)=>{
   try{await uploadFiles(e.target.files||[]);}catch(err){document.getElementById('sendStatus').textContent=err.message;addActivity('error','Upload failed',{detail:err.message});}

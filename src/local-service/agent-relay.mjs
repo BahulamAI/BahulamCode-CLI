@@ -19,6 +19,7 @@ import {
 import { BahulamStreamClient } from '../core/stream-client.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
 import { buildWorkScope } from '../core/work-scope.mjs';
+import { SkillsLoader } from '../skills/loader.mjs';
 import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
 import { dispatch } from '../orchestration/dispatch.mjs';
 import { BrowserApprovalManager } from './approval-bridge.mjs';
@@ -795,7 +796,19 @@ export class LocalAgentRelay {
         cwd: this.session.root_path,
       });
     };
-    toolExecutor = createToolExecutor({ pluginRegistry, stateEmit, channel: 'workspace', delegateRunner: runDelegateFromTool });
+    // The workspace registry was built from this session's active plugins.
+    // Only those plugins may contribute skills to this agent turn.
+    const skillsLoader = new SkillsLoader()
+      .load(this.session.root_path || process.cwd())
+      .loadPluginSkills(pluginRegistry);
+    toolExecutor = createToolExecutor({
+      skillsLoader,
+      pluginRegistry,
+      pluginSkillsRegistry: pluginRegistry,
+      stateEmit,
+      channel: 'workspace',
+      delegateRunner: runDelegateFromTool,
+    });
     await toolExecutor.waitForAutoRegister?.();
     await toolExecutor.registerProjectRoots?.([this.session.root_path], { forceRefresh: false });
 

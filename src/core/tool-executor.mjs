@@ -55,6 +55,10 @@ export function createToolExecutor({
     onAutoRegisterStart = null,
     onAutoRegisterDone = null,
     pluginRegistry = null,
+    // Explicit active-plugin registry whose skills belong in this executor.
+    // Kept separate from pluginRegistry because a host may know installed
+    // plugin tools without granting their instructions to this session.
+    pluginSkillsRegistry = null,
     // Optional emit hook: called (debounced per key) after any plugin
     // state write commits. Wired by the workspace server so writes turn
     // into SSE `plugin_state_changed` events for live view updates.
@@ -69,6 +73,9 @@ export function createToolExecutor({
     // session plugin's agents are fully available.
     channel = 'main',
 } = {}) {
+    // Plugin skills are deliberately not loaded from this generic executor.
+    // A host must explicitly pass a loader populated from its active-plugin
+    // registry. Installation alone must never alter ordinary CLI/chat work.
     // Cross-session memory cache. Ships in getAgentContext() on every turn,
     // so we need it to be byte-identical when the underlying disk file hasn't
     // changed — otherwise the backend's prompt cache invalidates on every
@@ -233,6 +240,7 @@ export function createToolExecutor({
 
     function reloadSkillCatalog() {
         skillsLoader.load(installer.cwd || process.cwd());
+        if (pluginSkillsRegistry?.listSkillSources) skillsLoader.loadPluginSkills(pluginSkillsRegistry);
         return skillsLoader.list();
     }
 
@@ -777,19 +785,6 @@ export function createToolExecutor({
             const name = String(toolDef.name || '').trim();
             if (!name || toolMap[name]) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
-            if (toolDef._workplane_tool) {
-                const spec = toolDef._workplane_tool;
-                registerPluginTool(name, async (args) => {
-                    try {
-                        const state = _pluginStateFor(spec.plugin || pluginName);
-                        const plane = state?.upsertWorkplaneWidgets(args?.widgets, { title: args?.title });
-                        return { success: true, output: JSON.stringify(plane, null, 2), workplane: plane, _tool: name, _plugin: pluginName };
-                    } catch (err) {
-                        return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
-                    }
-                }, { pluginName, source: 'workplane', workplaneTool: spec });
-                continue;
-            }
             if (toolDef._state_tool) {
                 // Manifest-declared state query tool (config.state.context_tools).
                 // There is no module to import — the author declared a table
@@ -2989,6 +2984,7 @@ export function createToolExecutor({
 
         reloadSkills(cwd = process.cwd()) {
             skillsLoader.load(cwd);
+            if (pluginSkillsRegistry?.listSkillSources) skillsLoader.loadPluginSkills(pluginSkillsRegistry);
             return skillsLoader.list();
         },
 

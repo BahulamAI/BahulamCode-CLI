@@ -22,7 +22,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
-import { parsePluginManifestFile } from '../plugins/manifest.mjs';
+import { capabilityGraphForManifest, parsePluginManifestFile } from '../plugins/manifest.mjs';
 import { preflightPlugin, existingInstalledNames } from '../plugins/preflight.mjs';
 import { parsePiSource } from '../plugins/pi-compose.mjs';
 import { bahulamHome, pluginDirs, pluginInstallDir } from '../core/paths.mjs';
@@ -719,6 +719,30 @@ function cmdInfo(args, cwd) {
   process.stderr.write('\n');
 }
 
+// ── inspect ─────────────────────────────────────────────────────────
+// Unlike `info`, this is the stable, credential-free payload that a hosted
+// catalog can consume. It makes plugin capabilities and locality visible
+// before a runtime or connector is enabled.
+function cmdInspect(args, cwd) {
+  if (!args.pluginName) throw new Error('inspect requires a plugin name');
+  const found = findByName(args.pluginName, cwd);
+  if (!found) throw new Error(`plugin not found: ${args.pluginName}`);
+  if (found.disabled) throw new Error(`plugin is disabled: ${args.pluginName}`);
+  const manifest = readManifest(found.directory)?.manifest;
+  if (!manifest) throw new Error(`plugin manifest is unreadable: ${args.pluginName}`);
+  const graph = capabilityGraphForManifest(manifest);
+  const result = { ok: true, installed: { name: found.name, version: found.version, directory: found.directory, scope: found.scope }, graph };
+  if (args.json) { process.stdout.write(JSON.stringify(result, null, 2) + '\n'); return; }
+  process.stderr.write(`\n${BOLD}${CYAN}${found.name}${RESET} ${DIM}capability graph${RESET}\n`);
+  process.stderr.write(`  ${DIM}tools${RESET}       ${graph.capabilities.tools.map(item => item.id).join(', ') || '(none)'}\n`);
+  process.stderr.write(`  ${DIM}agents${RESET}      ${graph.capabilities.agents.map(item => item.id).join(', ') || '(none)'}\n`);
+  process.stderr.write(`  ${DIM}skills${RESET}      ${graph.capabilities.skills.map(item => item.id).join(', ') || '(none)'}\n`);
+  process.stderr.write(`  ${DIM}connectors${RESET}  ${graph.connectors.length ? graph.connectors.map(item => `${item.id} (${item.transport || 'invalid'}, ${item.connection_scope || 'invalid'})`).join(', ') : '(none)'}\n`);
+  const runtime = graph.outcome_runtime;
+  process.stderr.write(`  ${DIM}outcome${RESET}     ${runtime.state?.mode || '(none)'}${runtime.workplane?.renderers?.length ? ` · ${runtime.workplane.renderers.join(', ')}` : ''}\n`);
+  process.stderr.write(`  ${DIM}policy${RESET}      ${graph.policy.operations.length ? graph.policy.operations.map(item => `${item.id}:${item.approval || 'none'}`).join(', ') : '(none)'}\n\n`);
+}
+
 // ── update ──────────────────────────────────────────────────────────
 
 async function cmdUpdate(args, cwd) {
@@ -968,6 +992,7 @@ export async function handlePluginManagementCommand(args, { cwd = process.cwd(),
       case 'enable': toggle(args, cwd, true); return;
       case 'disable': toggle(args, cwd, false); return;
       case 'info': cmdInfo(args, cwd); return;
+      case 'inspect': cmdInspect(args, cwd); return;
       case 'doctor': await cmdDoctor(args, cwd); return;
       case 'update': case 'upgrade': await cmdUpdate(args, cwd); return;
       default: throw new Error(`unknown plugin action: ${args.action}`);

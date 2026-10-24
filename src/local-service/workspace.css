@@ -34,6 +34,8 @@ button{color:inherit}
 .icon-button:hover{background:#F0F1F5;color:var(--ws-foreground)}
 .icon-button[aria-pressed="true"]{background:var(--ws-primary-soft);border-color:rgba(48,59,160,.22);color:#303BA0}
 .icon-button svg{width:14px;height:14px}
+.icon-button.voice-recording{background:#FFF0F1;border-color:rgba(185,28,28,.28);color:#AD363F;animation:voice-pulse 1.25s ease-in-out infinite}
+@keyframes voice-pulse{50%{box-shadow:0 0 0 5px rgba(185,28,28,.10)}}
 .auto-toggle{height:32px;display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(32,35,49,.10);border-radius:999px;background:#fff;padding:0 8px 0 6px;color:var(--ws-muted);font-size:11px;font-weight:650;cursor:pointer;white-space:nowrap}
 .auto-toggle:hover{background:#F0F1F5;color:var(--ws-foreground)}
 .auto-toggle input{position:absolute;opacity:0;pointer-events:none}

@@ -53,6 +53,91 @@ function normalizeViews(value) {
   return Array.isArray(value) ? value.filter(view => view && typeof view === 'object') : [];
 }
 
+const CAPABILITY_ID_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
+const SURFACES = new Set(['chat', 'ide', 'cli', 'cli-remote', 'video', 'plugin', 'mobile']);
+const CONNECTOR_TRANSPORTS = new Set(['local-driver', 'stdio-mcp', 'remote-mcp', 'hosted-adapter']);
+const CONNECTOR_SCOPES = new Set(['user', 'organization', 'workspace', 'local-machine']);
+const AUTH_TYPES = new Set(['oauth2', 'api-key', 'ssh-key', 'device-code', 'none']);
+const OUTCOME_STATE_MODES = new Set(['local', 'hosted', 'mirrored', 'import-export']);
+
+function normalizeSurfaceList(value) {
+  return normalizeStringList(value).map(item => item.toLowerCase()).filter(item => SURFACES.has(item));
+}
+
+function normalizeSkills(value) {
+  const skills = [];
+  for (const raw of (Array.isArray(value) ? value : [])) {
+    if (!raw || typeof raw !== 'object') continue;
+    const id = String(raw.id || raw.name || '').trim();
+    if (!CAPABILITY_ID_RE.test(id)) continue;
+    skills.push({
+      id,
+      source: typeof raw.source === 'string' ? raw.source.trim() : '',
+      applies_to: normalizeStringList(raw.applies_to || raw.appliesTo),
+      availability: normalizeSurfaceList(raw.availability || raw.surfaces),
+      description: typeof raw.description === 'string' ? raw.description.trim() : '',
+    });
+  }
+  return skills;
+}
+
+function normalizeConnectors(value) {
+  const connectors = [];
+  for (const raw of (Array.isArray(value) ? value : [])) {
+    if (!raw || typeof raw !== 'object') continue;
+    const id = String(raw.id || raw.name || '').trim();
+    if (!CAPABILITY_ID_RE.test(id)) continue;
+    const auth = raw.auth && typeof raw.auth === 'object' ? raw.auth : {};
+    const permissions = raw.permissions && typeof raw.permissions === 'object' ? raw.permissions : {};
+    connectors.push({
+      id,
+      transport: CONNECTOR_TRANSPORTS.has(raw.transport) ? raw.transport : '',
+      connection_scope: CONNECTOR_SCOPES.has(raw.connection_scope || raw.connectionScope) ? (raw.connection_scope || raw.connectionScope) : '',
+      auth: {
+        type: AUTH_TYPES.has(auth.type) ? auth.type : '',
+        required_scopes: normalizeStringList(auth.required_scopes || auth.requiredScopes),
+      },
+      permissions: { read: normalizeStringList(permissions.read), write: normalizeStringList(permissions.write) },
+      approval_required: normalizeStringList(raw.approval_required || raw.approvalRequired),
+      availability: normalizeSurfaceList(raw.availability || raw.surfaces),
+      secret_residency: typeof raw.secret_residency === 'string' ? raw.secret_residency.trim() : '',
+    });
+  }
+  return connectors;
+}
+
+function normalizeOutcomeRuntime(value) {
+  const empty = { state: null, artifacts: '', workplane: null };
+  if (!value || typeof value !== 'object') return empty;
+  const state = value.state && typeof value.state === 'object' ? value.state : null;
+  const workplane = value.workplane && typeof value.workplane === 'object' ? value.workplane : null;
+  return {
+    state: state ? {
+      mode: OUTCOME_STATE_MODES.has(state.mode) ? state.mode : '',
+      schema_version: Number.isInteger(state.schema_version || state.schemaVersion) ? (state.schema_version || state.schemaVersion) : null,
+    } : null,
+    artifacts: typeof value.artifacts === 'string' ? value.artifacts.trim() : '',
+    workplane: workplane ? {
+      source: typeof workplane.source === 'string' ? workplane.source.trim() : '',
+      renderers: normalizeStringList(workplane.renderers),
+      availability: normalizeSurfaceList(workplane.availability || workplane.surfaces),
+    } : null,
+  };
+}
+
+function normalizePolicy(value) {
+  const empty = { data_classification: '', egress: '', audit: '', operations: [] };
+  if (!value || typeof value !== 'object') return empty;
+  const operations = [];
+  for (const raw of (Array.isArray(value.operations) ? value.operations : [])) {
+    if (!raw || typeof raw !== 'object') continue;
+    const id = String(raw.id || '').trim();
+    if (!CAPABILITY_ID_RE.test(id)) continue;
+    operations.push({ id, approval: typeof raw.approval === 'string' ? raw.approval.trim() : '', billing_class: typeof raw.billing_class === 'string' ? raw.billing_class.trim() : '' });
+  }
+  return { data_classification: typeof value.data_classification === 'string' ? value.data_classification.trim() : '', egress: typeof value.egress === 'string' ? value.egress.trim() : '', audit: typeof value.audit === 'string' ? value.audit.trim() : '', operations };
+}
+
 function normalizeWorkspaceDeclaration(value) {
   if (typeof value === 'string' && value.trim()) {
     return { agentPath: value.trim(), views: [] };
@@ -223,10 +308,6 @@ function normalizeConfigSettings(value) {
   return { fields };
 }
 
-function normalizeWorkplane(value) {
-  if (value === true) return { enabled: true };
-  return { enabled: value?.enabled === true };
-}
 
 /**
  * Normalize `config.lifecycle` — install / seed / uninstall / migration hooks.
@@ -593,7 +674,13 @@ export function normalizeManifest(raw, source = '') {
   const composes = normalizeComposes(config.composes);
   const state = normalizeState(config.state);
   const configSettings = normalizeConfigSettings(config.config);
-  const workplane = normalizeWorkplane(config.workplane);
+  // PRD-112 additions are descriptive and additive. Existing v1 executable
+  // fields remain the source of runtime behavior until each host opts into the
+  // normalized capability graph.
+  const skills = normalizeSkills(config.skills);
+  const connectors = normalizeConnectors(config.connectors);
+  const outcomeRuntime = normalizeOutcomeRuntime(config.outcome_runtime || config.outcomeRuntime);
+  const policy = normalizePolicy(config.policy);
 
   return {
     apiVersion,
@@ -615,11 +702,36 @@ export function normalizeManifest(raw, source = '') {
       composes,
       state,
       config: configSettings,
-      workplane,
+      skills,
+      connectors,
+      outcome_runtime: outcomeRuntime,
+      policy,
       ...(normalizeLifecycle(config.lifecycle) ? { lifecycle: normalizeLifecycle(config.lifecycle) } : {}),
     },
     source,
     _dir: source ? path.dirname(source) : '',
+  };
+}
+
+/**
+ * Produce the host-neutral capability graph exchanged by CLI, backend, and
+ * UI hosts. It is declaration-only: no credentials, MCP env, or local paths
+ * are emitted. The executor continues to use the existing manifest fields.
+ */
+export function capabilityGraphForManifest(manifest) {
+  const config = manifest?.config || {};
+  const plugin = manifest?.metadata?.name || '';
+  return {
+    version: 1,
+    plugin: { id: plugin, version: manifest?.metadata?.version || '0.0.0' },
+    capabilities: {
+      tools: (config.tools || []).map(tool => ({ id: tool.name, description: tool.description || '' })),
+      agents: (config.agents || []).map(agent => ({ id: agent.slug || agent.name, description: agent.description || '' })),
+      skills: config.skills || [],
+    },
+    connectors: (config.connectors || []).map(({ id, transport, connection_scope, auth, permissions, approval_required, availability, secret_residency }) => ({ id, transport, connection_scope, auth, permissions, approval_required, availability, secret_residency })),
+    outcome_runtime: config.outcome_runtime || { state: null, artifacts: '', workplane: null },
+    policy: config.policy || { data_classification: '', egress: '', audit: '', operations: [] },
   };
 }
 
@@ -720,6 +832,29 @@ export function validatePluginManifest(manifest) {
           errors.push(`State context tool "${tool.name}" references undeclared table "${tool.table}"`);
         }
       }
+    }
+
+    for (const skill of (manifest.config.skills || [])) {
+      if (!skill.id) errors.push('Skill missing id');
+      if (!skill.source) errors.push(`Skill "${skill.id || '(unnamed)'}" missing source`);
+    }
+    for (const connector of (manifest.config.connectors || [])) {
+      if (!connector.id) errors.push('Connector missing id');
+      if (!CONNECTOR_TRANSPORTS.has(connector.transport)) errors.push(`Connector "${connector.id}": unsupported or missing transport`);
+      if (!CONNECTOR_SCOPES.has(connector.connection_scope)) errors.push(`Connector "${connector.id}": unsupported or missing connection_scope`);
+      if (!AUTH_TYPES.has(connector.auth?.type)) errors.push(`Connector "${connector.id}": unsupported or missing auth.type`);
+      if (!connector.availability?.length) errors.push(`Connector "${connector.id}": availability must name at least one supported surface`);
+    }
+    const runtime = manifest.config.outcome_runtime;
+    if (runtime?.state && !OUTCOME_STATE_MODES.has(runtime.state.mode)) {
+      errors.push('outcome_runtime.state.mode must be local, hosted, mirrored, or import-export');
+    }
+    if (runtime?.state && (!Number.isInteger(runtime.state.schema_version) || runtime.state.schema_version < 1)) {
+      errors.push('outcome_runtime.state.schema_version must be a positive integer');
+    }
+    for (const operation of (manifest.config.policy?.operations || [])) {
+      if (!operation.id) errors.push('Policy operation missing id');
+      if (operation.approval && !['none', 'explicit'].includes(operation.approval)) errors.push(`Policy operation "${operation.id}": approval must be none or explicit`);
     }
   }
 

@@ -2,6 +2,25 @@
 
 All notable changes to `@bahulam/code` will be documented in this file.
 
+## [0.2.0] - 2026-10-24
+
+### Added
+
+- Plugin capability declarations for skills, connectors, outcome-runtime metadata, and policy, with `bahulam plugin inspect <name> --json` for discovery.
+- Plugin-scoped skill loading and package-relative MCP runtime paths.
+- Browser workspace voice capture into an editable draft, subject to browser support and microphone permission.
+- Opt-in plugin view permissions for downloads, external links, and dialogs, mapped to an explicit iframe sandbox allowlist.
+
+### Changed
+
+- Local plugin panels use plugin-owned state and authored views; hosted capability declarations require explicit host support.
+- Remove stale local Workplane package links from the dependency lockfile.
+
+### Removed / migration
+
+- Remove the CLI Workplane document/widget runtime, `config.workplane` opt-in, generated Workplane update tools, and state widget helper methods. Plugins using the 0.1.28 helpers must migrate to domain tools, plugin state, and `config.views`.
+- Existing saved plugin data is retained; no automatic widget migration is provided.
+
 ## [0.1.28] - 2026-09-23
 
 ### Added

@@ -231,6 +231,7 @@ function openDb(pluginName, { tables = [] } = {}) {
     );
     CREATE INDEX IF NOT EXISTS records_stream_idx
       ON records(stream, id DESC);
+
   `);
     handle = { db, dir, path: dbPath, schemaSig: null, declaredTables: new Set() };
     _handles.set(pluginName, handle);
@@ -343,39 +344,12 @@ function deepMerge(base, patch) {
   return out;
 }
 
-const WORKPLANE_WIDGET_TYPES = new Set([
-  'metric', 'bar_chart', 'line_chart', 'donut_chart', 'table', 'alert', 'three_scene',
-]);
-const WORKPLANE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 
-function normalizeWorkplaneWidget(widget) {
-  if (!widget || typeof widget !== 'object' || Array.isArray(widget)) throw new Error('workplane widget must be an object');
-  const id = String(widget.id || '').trim();
-  const type = String(widget.type || '').trim();
-  if (!WORKPLANE_ID.test(id)) throw new Error(`invalid workplane widget id: ${id || '(missing)'}`);
-  if (!WORKPLANE_WIDGET_TYPES.has(type)) throw new Error(`unsupported workplane widget type: ${type || '(missing)'}`);
-  // Widgets are declarative data only. In particular, raw html/script is
-  // intentionally absent: the runtime, not an agent, owns executable UI.
-  const copy = JSON.parse(JSON.stringify(widget));
-  copy.id = id;
-  copy.type = type;
-  delete copy.html;
-  delete copy.script;
-  if (type === 'three_scene') {
-    const scene = copy.scene;
-    if (!scene || scene.kind !== 'bar_landscape' || !Array.isArray(scene.data)) {
-      throw new Error('three_scene requires a bar_landscape scene with data');
-    }
-    copy.scene = {
-      kind: 'bar_landscape',
-      data: scene.data.slice(0, 32).map(item => ({
-        label: String(item?.label || '').slice(0, 80),
-        value: Number.isFinite(Number(item?.value)) ? Number(item.value) : 0,
-      })),
-    };
-  }
-  return copy;
-}
+
+
+
+
+
 
 /**
  * Build a per-plugin state proxy.
@@ -435,6 +409,21 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
     append: db.prepare('INSERT INTO records(stream, payload, created_at) VALUES(?, ?, ?)'),
     listAsc:  db.prepare('SELECT id, payload, created_at FROM records WHERE stream = ? ORDER BY id ASC  LIMIT ?'),
     listDesc: db.prepare('SELECT id, payload, created_at FROM records WHERE stream = ? ORDER BY id DESC LIMIT ?'),
+  };
+
+  // Minimal kv accessor for the Workplane fallback path, so it does not depend
+  // on the proxy object existing while the proxy is still being constructed.
+  const kvIo = {
+    get(key, fallback = null) {
+      const row = stmts.get.get(String(key));
+      if (!row) return fallback;
+      try { return JSON.parse(row.value); } catch { return fallback; }
+    },
+    set(key, value) {
+      stmts.upsert.run(String(key), JSON.stringify(value), now());
+      fire('set', 'kv', String(key));
+      return value;
+    },
   };
 
   return {
@@ -589,39 +578,8 @@ export function makePluginState(pluginName, { emit = null, tables = [], configFi
       return out;
     },
 
-    /**
-     * Atomically upsert typed, declarative widgets into the shared workplane.
-     * The renderer can safely choose layout and visual treatment while tools
-     * (and agents directing them) decide the current outcome to show.
-     */
-    upsertWorkplaneWidgets(widgets, { title = null } = {}) {
-      if (!Array.isArray(widgets)) throw new Error('workplane widgets must be an array');
-      const current = this.get('workplane', {});
-      const byId = new Map(Array.isArray(current?.widgets) ? current.widgets.map(item => [item?.id, item]) : []);
-      for (const widget of widgets) {
-        const normalized = normalizeWorkplaneWidget(widget);
-        byId.set(normalized.id, normalized);
-      }
-      const next = {
-        version: 1,
-        ...(typeof current?.title === 'string' ? { title: current.title } : {}),
-        ...(typeof title === 'string' && title.trim() ? { title: title.trim() } : {}),
-        widgets: [...byId.values()],
-        updated_at: now(),
-      };
-      return this.set('workplane', next);
-    },
 
-    removeWorkplaneWidgets(ids) {
-      const remove = new Set((Array.isArray(ids) ? ids : [ids]).map(id => String(id)));
-      const current = this.get('workplane', {});
-      return this.set('workplane', {
-        ...(current && typeof current === 'object' ? current : {}),
-        version: 1,
-        widgets: (Array.isArray(current?.widgets) ? current.widgets : []).filter(widget => !remove.has(widget?.id)),
-        updated_at: now(),
-      });
-    },
+
 
     /**
      * Read rows from a table the plugin declared in `config.state.tables`.

@@ -218,6 +218,7 @@ function printPluginUsage(cwd = process.cwd()) {
     `  ${CYAN}bahulam plugin validate <path|name>${RESET}         Preflight without installing (schema + handlers + collisions)\n` +
     `  ${CYAN}bahulam plugin list${RESET}                         List installed plugins\n` +
     `  ${CYAN}bahulam plugin info <name>${RESET}                  Show manifest details\n` +
+    `  ${CYAN}bahulam plugin inspect <name> [--json]${RESET}      Show the safe capability graph\n` +
     `  ${CYAN}bahulam plugin remove <name>${RESET}                Uninstall a plugin\n` +
     `  ${CYAN}bahulam plugin enable|disable <name>${RESET}        Toggle without deleting\n` +
     `  ${CYAN}bahulam plugin update <name>${RESET}                git pull the latest for git-installed plugins\n` +

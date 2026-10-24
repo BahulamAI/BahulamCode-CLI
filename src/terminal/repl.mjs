@@ -73,6 +73,8 @@ import { listLocalWorkflows } from '../agents/workflow_scaffold.mjs';
 import { dispatch } from '../orchestration/dispatch.mjs';
 import { registerJobCompletionDispatch } from '../orchestration/completion-triggers.mjs';
 import { PluginRegistry } from '../plugins/registry.mjs';
+import { loadSettings } from '../config/settings.mjs';
+import { loadMcpServers } from '../mcp/loader.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
@@ -4489,6 +4491,11 @@ export async function startTerminalRepl() {
   }
 
   const pluginRegistry = new PluginRegistry().scan();
+  async function attachPluginMcp(executor) {
+    const loaded = await loadMcpServers(executor, await loadSettings(), { pluginRegistry });
+    executor._mcpClients = loaded.clients;
+    return loaded;
+  }
   let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
@@ -4562,6 +4569,7 @@ export async function startTerminalRepl() {
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd() });
     toolExecutor = makeToolExecutor();
+    await attachPluginMcp(toolExecutor);
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -4712,6 +4720,7 @@ export async function startTerminalRepl() {
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
     toolExecutor = makeToolExecutor();
+    await attachPluginMcp(toolExecutor);
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
@@ -4828,6 +4837,7 @@ export async function startTerminalRepl() {
   if (!cliArgs.resume) printBanner(auth);
   toolExecutor = makeToolExecutor();
   ctx.toolExecutor = toolExecutor;
+  await attachPluginMcp(toolExecutor);
   await toolExecutor.waitForAutoRegister();
 
   // PRD-076 W7b: restore persisted /model picks from ~/.bahulam/config.json

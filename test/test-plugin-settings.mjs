@@ -35,7 +35,6 @@ try {
         { name: 'enabled', type: 'boolean', default: false, required: true },
         { name: 'mode', type: 'select', options: ['fast', 'safe'] },
       ] },
-      workplane: true,
       tools: [{ name: 'settings_probe', tool: './probe.mjs' }],
     },
   };
@@ -46,7 +45,6 @@ try {
         hasKey: Boolean(state.getConfig('api_key')), enabled: state.getAllConfig().enabled }) };
     }
   `);
-  const { normalizeManifest } = await import('../src/plugins/manifest.mjs');
   const { PluginRegistry } = await import('../src/plugins/registry.mjs');
   const { makePluginState, _resetForTests } = await import('../src/plugins/state.mjs');
   resetState = _resetForTests;
@@ -55,10 +53,6 @@ try {
   const manifest = registry.get(pluginName);
   assert.ok(manifest);
   assert.equal(manifest.config.config.fields[0].credential, true, 'password fields are always masked');
-  assert.equal(manifest.config.workplane.enabled, true);
-  for (const workplane of [false, undefined, { enabled: false }, { enabled: 'false' }]) {
-    assert.equal(normalizeManifest({ ...raw, config: { workplane } }).config.workplane.enabled, false);
-  }
 
   const state = makePluginState(pluginName, { configFields: manifest.config.config.fields });
   assert.ok(state.path.startsWith(fixture + path.sep));
@@ -75,55 +69,20 @@ try {
   const other = makePluginState('other-fixture', { configFields: manifest.config.config.fields });
   assert.equal(other.getConfig('api_key'), null, 'plugin settings are isolated');
 
-  state.upsertWorkplaneWidgets([
-    { id: ' total ', type: ' metric ', value: 3, html: '<script>bad()</script>', script: 'bad()' },
-    { id: 'status', type: 'alert', text: 'Ready' },
-  ], { title: ' Overview ' });
-  const updated = state.upsertWorkplaneWidgets([{ id: 'total', type: 'metric', value: 4 }]);
-  assert.equal(updated.title, 'Overview');
-  assert.equal(updated.widgets.length, 2);
-  assert.equal(updated.widgets[0].value, 4);
-  assert.equal(updated.widgets[0].id, 'total');
-  const before = state.get('workplane');
-  assert.throws(() => state.upsertWorkplaneWidgets([
-    { id: 'total', type: 'metric', value: 999 }, { id: 'invalid', type: 'html' },
-  ]), /unsupported/);
-  assert.deepEqual(state.get('workplane'), before, 'a failed batch cannot partially update widgets');
-  assert.throws(() => state.upsertWorkplaneWidgets([{ id: '../bad', type: 'metric' }]), /invalid/);
-  assert.throws(() => state.upsertWorkplaneWidgets([{ id: 'bad', type: 'three_scene', scene: { kind: 'script' } }]), /bar_landscape/);
-  const scenePlane = state.upsertWorkplaneWidgets([{
-    id: 'scene', type: 'three_scene', html: 'blocked', script: 'blocked',
-    scene: { kind: 'bar_landscape', script: 'blocked', data: Array.from({ length: 40 }, () => ({ label: 'x'.repeat(100), value: 'bad' })) },
-  }]);
-  const sceneWidget = scenePlane.widgets.find(widget => widget.id === 'scene');
-  assert.equal('html' in sceneWidget || 'script' in sceneWidget || 'script' in sceneWidget.scene, false);
-  assert.equal(sceneWidget.scene.data.length, 32);
-  assert.deepEqual(sceneWidget.scene.data[0], { label: 'x'.repeat(80), value: 0 });
-  assert.equal(state.removeWorkplaneWidgets(['status', 'scene']).widgets.length, 1);
-
-  const toolName = 'settings_fixture_workplane_update';
-  assert.ok(registry.listTools().some(tool => tool.name === toolName));
   assert.equal(JSON.stringify(registry.listTools()).includes('fixture-default-secret'), false);
-  registry.register(normalizeManifest({ ...raw, metadata: { name: 'no-workplane' }, config: {} }));
-  assert.equal(registry.listTools().some(tool => tool.name === 'no_workplane_workplane_update'), false);
   const { createToolRegistry } = await import('../src/tools/registry.mjs');
   const { createToolExecutor } = await import('../src/core/tool-executor.mjs');
   const { createPluginToolExecutor } = await import('../src/plugins/executor.mjs');
   const classic = createToolRegistry({ pluginRegistry: registry, exposePluginTools: true });
   const core = createToolExecutor({ pluginRegistry: registry, deferProjectIndex: true });
   const direct = await createPluginToolExecutor(manifest);
-  for (const execute of [classic.call.bind(classic), core.execute.bind(core)]) {
-    const result = await execute(toolName, { widgets: [{ id: 'total', type: 'metric', value: 7 }] });
-    assert.equal(result.success, true, result.output);
-    assert.equal(result.workplane.widgets[0].value, 7);
-    assert.equal((await execute(toolName, { widgets: [{ id: 'bad', type: 'html' }] })).success, false);
-  }
+  // Every path a plugin tool can be invoked through must behave identically.
   for (const execute of [classic.call.bind(classic), core.execute.bind(core), direct.execute.bind(direct)]) {
     const result = await execute('settings_probe', {});
     assert.equal(result.success, true, result.output);
     assert.deepEqual(JSON.parse(result.output), { region: 'east', hasKey: true, enabled: false });
   }
-  console.log('✓ plugin settings defaults, isolation, workplane validation, and all executor paths');
+  console.log('✓ plugin settings defaults, isolation, and all executor paths');
 
   const { createLocalWorkspaceSession, touchLocalWorkspaceSession } = await import('../src/local-service/session-store.mjs');
   const { startLocalWorkspaceService } = await import('../src/local-service/server.mjs');
@@ -183,7 +142,6 @@ try {
   assert.equal((await request(statePath, { op: 'keys' })).data.result.includes('_config'), false);
   assert.equal((await request(statePath, { op: 'set', key: 'public', value: 'updated' })).status, 200);
   assert.equal((await request(statePath, { op: 'get', key: 'public' })).data.result, 'updated');
-  assert.equal((await request(statePath, { op: 'get', key: 'workplane' })).data.result.widgets[0].value, 7);
   const cleared = await request(configPath, { values: { api_key: null } });
   assert.equal(cleared.status, 200);
   assert.equal(cleared.data.configured, false);
@@ -199,7 +157,6 @@ try {
   const reopened = makePluginState(pluginName, { configFields: manifest.config.config.fields });
   assert.equal(reopened.getConfig('api_key'), 'fixture-stored-secret');
   assert.equal(reopened.getConfig('region'), 'west');
-  assert.equal(reopened.get('workplane').widgets[0].value, 7);
   console.log('✓ authenticated plugin settings API, credential masking, protected state, and scoped access');
 } finally {
   if (service) await service.close();

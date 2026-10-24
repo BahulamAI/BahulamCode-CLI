@@ -114,24 +114,6 @@ export function createToolRegistry({
             const name = String(toolDef.name || '').trim();
             if (!name || tools.has(name)) continue;
             const pluginName = toolDef._plugin_name || toolDef.plugin_name || null;
-            if (toolDef._workplane_tool) {
-                tools.set(name, {
-                    name,
-                    description: toolDef.description || '',
-                    inputSchema: toolDef.input_schema || { type: 'object', properties: {} },
-                    validateInput() { return []; },
-                    async call(input) {
-                        try {
-                            const state = await pluginStateFor(pluginName);
-                            const workplane = state.upsertWorkplaneWidgets(input?.widgets, { title: input?.title });
-                            return { success: true, output: JSON.stringify(workplane), workplane, _tool: name, _plugin: pluginName };
-                        } catch (err) {
-                            return { success: false, output: `Workplane update failed (${name}): ${err.message}`, _tool: name, _plugin: pluginName };
-                        }
-                    },
-                });
-                continue;
-            }
             if (toolDef._composed?.kind === 'pi') {
                 tools.set(name, {
                     name,
