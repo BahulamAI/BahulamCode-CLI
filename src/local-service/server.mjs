@@ -586,6 +586,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     const views = getPluginViews(session).map(v => ({
       plugin: v.plugin,
       name: v.name,
+      permissions: v.permissions,
       url: `/plugin-view/${encodeURIComponent(v.plugin)}/${v.source.split('/').map(encodeURIComponent).join('/')}`,
     }));
     sendJson(res, 200, { ok: true, views });
@@ -752,6 +753,7 @@ function scanPlugins(session) {
           plugin: pluginName,
           name: String(view?.name || '').trim() || pluginName,
           source,
+          permissions: (Array.isArray(view.permissions) ? view.permissions : []).filter(p => ['downloads', 'external-links', 'dialogs'].includes(p)),
         });
       });
     }
@@ -2934,8 +2936,14 @@ function openPluginView(key){
   if(!openTabs.some(t=>t.path===key))openTabs.push({path:key,name:view.name||view.plugin});
   renderTabs();
   renderExplorer();
+  // Permissions are opt-in per plugin view and mapped to a fixed allowlist.
+  const permissions=new Set(view.permissions||[]);
+  const sandbox=['allow-scripts','allow-same-origin','allow-forms'];
+  if(permissions.has('downloads'))sandbox.push('allow-downloads');
+  if(permissions.has('external-links'))sandbox.push('allow-popups','allow-popups-to-escape-sandbox');
+  if(permissions.has('dialogs'))sandbox.push('allow-modals');
   renderViewer('<div class="file-header"><span>⚙</span><span class="path">'+esc(view.plugin)+' · '+esc(view.name)+'</span></div>'+
-    '<div class="frame-preview"><iframe sandbox="allow-scripts allow-same-origin allow-forms" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>');
+    '<div class="frame-preview"><iframe sandbox="'+sandbox.join(' ')+'" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>');
 }
 function setTurnRunning(running){
   turnRunning=Boolean(running);

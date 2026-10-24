@@ -152,7 +152,7 @@ bahulam-code --help             Full command reference
 Inside the REPL, type `/help` for slash commands (models, cache, approvals,
 skills, workflows, session tools).
 
-## Plugin settings and workplanes
+## Plugin settings and views
 
 Plugins can declare settings under `config.config.fields` with `name`, `type`,
 `default`, `required`, and optional `credential` metadata. Supported types are
@@ -171,12 +171,37 @@ they are not encrypted at rest, so protect the local account and filesystem.
 Credentials are excluded from automatic state summaries and masked in settings
 responses. Tool authors must not return secrets in tool results or logs.
 
-Setting `config.workplane: true` adds a `<plugin_name>_workplane_update` tool
-(hyphens become underscores). It upserts widgets by `id` into the plugin's
-`workplane` state. Supported types are `metric`, `bar_chart`, `line_chart`,
-`donut_chart`, `table`, `alert`, and `three_scene`. The latter accepts a bounded
-`bar_landscape` scene. Widgets are declarative data; a compatible trusted client
-owns rendering, and agents cannot supply executable HTML or JavaScript widgets.
+Plugins declare authored HTML panels through `config.views`. Panels read plugin
+state and call tools through the local workspace API. A view can opt into
+`permissions: [downloads, external-links, dialogs]`; the host maps only these
+recognized values to iframe sandbox permissions. Grant the capabilities your
+view needs and treat installed local plugin code as trusted.
+
+Inspect a plugin's declared capabilities with:
+
+```bash
+bahulam plugin inspect <name> --json
+```
+
+The capability graph includes skills, connectors, outcome-runtime metadata, and
+policy declarations. These declarations describe intent; enforcement and hosted
+availability require the corresponding host implementation.
+
+### Migrating from 0.1.28
+
+Version 0.2.0 removes the CLI Workplane document/widget runtime, including
+`config.workplane`, generated `<plugin_name>_workplane_update` tools, and the
+`state.upsertWorkplaneWidgets()` / `state.removeWorkplaneWidgets()` helpers.
+Use plugin-owned state, domain tools, and `config.views` for the local panel.
+Previously saved plugin data is not deleted; this release does not migrate old
+Workplane widgets into a new rendering system. The `outcome_runtime.workplane`
+capability declaration remains descriptive metadata.
+
+### Browser voice input
+
+The browser workspace offers voice capture when the browser supports speech
+recognition. Captured speech becomes an editable draft; submit it to start the
+agent turn. Availability depends on browser support and microphone permission.
 
 ## 0.1.7 Highlights
 
