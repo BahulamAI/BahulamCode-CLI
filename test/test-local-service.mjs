@@ -432,6 +432,16 @@ try {
     assert.equal(saveRes.preview.content, '# Local Workspace\n\nEdited in browser.\n');
     assert.equal(fs.readFileSync(path.join(workspace, 'README.md'), 'utf8'), '# Local Workspace\n\nEdited in browser.\n');
 
+    fs.writeFileSync(path.join(workspace, 'README.md'), '# External edit\n');
+    const staleSave = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'README.md', content: '# Browser draft\n', expected_content: saveRes.preview.content }),
+    });
+    assert.equal(staleSave.status, 409);
+    assert.equal(fs.readFileSync(path.join(workspace, 'README.md'), 'utf8'), '# External edit\n');
+    fs.writeFileSync(path.join(workspace, 'README.md'), saveRes.preview.content);
+
     const rejectedSave = await fetch(`http://127.0.0.1:${service.port}/api/file/save?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

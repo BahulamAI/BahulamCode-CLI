@@ -7,6 +7,7 @@
 
 import assert from 'node:assert';
 import { LocalAgentRelay } from '../src/local-service/agent-relay.mjs';
+import { AssistantMessageStream } from '../src/local-service/chat-presentation.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -75,6 +76,68 @@ await test('sendFollowup rejects empty instruction', async () => {
   const { relay } = makeRelay();
   stubRunTurn(relay);
   await assert.rejects(relay.sendFollowup({ instruction: '' }), /instruction is required/);
+});
+
+await test('terminal completion queues accepted follow-ups without delivery acknowledgement', async () => {
+  const { relay, events } = makeRelay();
+  relay.running = true;
+  relay.currentTurnId = 'turn-1';
+  relay.client = { currentTaskId: 'task-1', sendIntervention: async (_text, options) =>
+    ({ status: 'accepted', interventionId: options.idempotencyKey }) };
+  relay._ensureJsonlWriter = () => ({ writeBahulamEvent() {} });
+  const result = await relay.sendFollowup({ instruction: 'continue after final', clientId: 'client-1' });
+  relay._emitAgentEvent({ type: 'complete', data: { user_interventions: { delivered_ids: [] } } }, { turnId: 'turn-1' });
+  relay._queueUndeliveredFollowups('turn-1');
+  assert.equal(result.status, 'accepted');
+  assert.equal(relay.displayHistory.filter(entry => entry.content === 'continue after final').length, 1);
+  assert.ok(events.some(event => event.type === 'agent_followup_status'
+    && event.data.status === 'queued_next_turn' && event.data.client_id === 'client-1'));
+});
+
+await test('late acceptance cannot undo next-turn queue after completion', async () => {
+  const { relay } = makeRelay();
+  relay.running = true;
+  relay.currentTurnId = 'turn-1';
+  let accept;
+  relay.client = { currentTaskId: 'task-1', sendIntervention: () => new Promise(resolve => { accept = resolve; }) };
+  relay._ensureJsonlWriter = () => ({ writeBahulamEvent() {} });
+  const pending = relay.sendFollowup({ instruction: 'late follow-up', clientId: 'client-2' });
+  relay._emitAgentEvent({ type: 'complete', data: {} }, { turnId: 'turn-1' });
+  relay._queueUndeliveredFollowups('turn-1');
+  accept({ status: 'accepted' });
+  assert.equal((await pending).status, 'queued_next_turn');
+});
+
+await test('running a queued follow-up reuses its user entry and transcript record', async () => {
+  const { relay } = makeRelay();
+  const writes = [];
+  relay.resumeLoaded = true;
+  relay.creds = { backendUrl: 'http://example.test' };
+  relay.client = { sessionId: 'session-1', currentTaskId: null,
+    async *execute() { yield { type: 'complete', data: {} }; } };
+  relay._ensureReady = async () => {};
+  relay._buildInstruction = instruction => instruction;
+  relay._buildExecContext = async () => ({});
+  relay._ensureJsonlWriter = () => ({ sessionId: 'session-1',
+    writeUserTurn: () => writes.push('user'), writeHistory() {},
+    writeBahulamEvent: event => writes.push(event.data?.status || event.type),
+    setTurnUsage() {}, flushAssistantTurn() {}, async flush() {} });
+  const entry = { role: 'user', content: 'late follow-up', clientId: 'client-3',
+    interventionId: 'iv-3', followupStatus: 'queued_next_turn', turnId: 'earlier' };
+  relay.displayHistory.push(entry);
+  relay.followupEntries.set('iv-3', entry);
+  await relay.runTurn({ prompt: 'late follow-up', followupClientId: 'client-3' });
+  assert.deepEqual(writes.filter(value => ['user', 'started', 'completed'].includes(value)), ['started', 'completed']);
+  assert.equal(relay.displayHistory.filter(item => item.role === 'user').length, 1);
+  assert.equal(entry.followupStatus, 'completed');
+});
+
+await test('assistant presentation retains an additive content event after partial text', () => {
+  const stream = new AssistantMessageStream();
+  const first = stream.accept({ type: 'content_partial', data: { text: 'Alpha ' } }, 'turn-1');
+  const final = stream.accept({ type: 'content', data: { text: 'Beta' } }, 'turn-1');
+  assert.equal(first.text + final.text, 'Alpha Beta');
+  assert.equal(final.content, 'Alpha Beta');
 });
 
 // ── Background-job nudge ───────────────────────────────────────────────

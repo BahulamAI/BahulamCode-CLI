@@ -41,6 +41,8 @@ const UNIT_TESTS = [
     'test/test-work-scope.mjs',
     'test/test-lint-resolver.mjs',
     'test/test-local-service.mjs',
+    'test/test-workspace-voice.mjs',
+    'test/test-workspace-file-tabs.mjs',
     'test/test-skills.mjs',
     'test/test-callback.mjs',
     'test/test-rate-limit-display.mjs',
