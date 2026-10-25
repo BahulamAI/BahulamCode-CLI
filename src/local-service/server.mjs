@@ -42,6 +42,10 @@ import {
 } from './session-store.mjs';
 
 const workspaceStyles = fs.readFileSync(new URL('./workspace.css', import.meta.url), 'utf8');
+const workspaceMarkdown = fs.readFileSync(new URL('./workspace-markdown.js', import.meta.url), 'utf8');
+const workspaceChat = fs.readFileSync(new URL('./workspace-chat.js', import.meta.url), 'utf8');
+const workspaceVoice = fs.readFileSync(new URL('./workspace-voice.js', import.meta.url), 'utf8');
+const workspaceFileTabs = fs.readFileSync(new URL('./workspace-file-tabs.js', import.meta.url), 'utf8');
 
 const LOCAL_UPLOAD_DIR = 'bahulam-uploads';
 const DEFAULT_MAX_UPLOAD_FILES = 20;
@@ -437,7 +441,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
   }
 
   if (req.method === 'POST' && url.pathname === '/api/file/save') {
-    const body = await readJsonBody(req, envInt('BAHULAM_LOCAL_SAVE_MAX_BODY_BYTES', DEFAULT_MAX_SAVE_BYTES + 64 * 1024));
+    const body = await readJsonBody(req, envInt('BAHULAM_LOCAL_SAVE_MAX_BODY_BYTES', DEFAULT_MAX_SAVE_BYTES + 384 * 1024));
     const result = saveWorkspaceTextFile(session, body);
     emit('file_saved', {
       path: result.path,
@@ -527,6 +531,7 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
         prompt: body.prompt,
         path: body.path || session.focus_path || '.',
         attachments: body.attachments || [],
+        followupClientId: typeof body.followup_client_id === 'string' ? body.followup_client_id.slice(0, 128) : null,
       });
       sendJson(res, 200, result);
     } catch (err) {
@@ -545,7 +550,8 @@ async function routeRequest({ req, res, sessionId, token, events, sseClients, em
     const instruction = String(body.prompt || body.instruction || '').slice(0, 500);
     emit('agent_followup_requested', { instruction });
     const relay = getAgentRelay(session);
-    const result = await relay.sendFollowup({ instruction: body.prompt || body.instruction });
+    const result = await relay.sendFollowup({ instruction: body.prompt || body.instruction,
+      clientId: typeof body.client_id === 'string' ? body.client_id.slice(0, 128) : null });
     sendJson(res, 200, result);
     return;
   }
@@ -934,6 +940,11 @@ function saveWorkspaceTextFile(session, body = {}) {
   if (before.preview.truncated) {
     const err = new Error('Large truncated previews are read-only in the browser');
     err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  if (typeof body.expected_content === 'string' && body.expected_content !== before.preview.content) {
+    const err = new Error('File changed on disk since it was opened. Your browser edits were kept.');
+    err.code = 'CONFLICT';
     throw err;
   }
 
@@ -1379,7 +1390,7 @@ ${workspaceStyles}
       </div>
       <div class="chat-body">
         <div class="chat-pane active" id="chatPane" role="tabpanel" aria-labelledby="chatTab">
-          <div class="thread" id="thread"><div class="thread-inner" id="threadInner"><div class="empty-chat" id="emptyChat"><span class="empty-kicker">Your local context</span><h2>Start with your workspace.</h2><p>Ask about this local workspace.</p><small>Review tool approvals before changes run.</small></div></div></div>
+          <div class="thread" id="thread" role="log" aria-label="Agent conversation"><div class="thread-inner" id="threadInner"><div class="empty-chat" id="emptyChat"><span class="empty-kicker">Your local context</span><h2>Start with your workspace.</h2><p>Ask about this local workspace.</p><small>Review tool approvals before changes run.</small></div></div></div>
           <form class="composer" id="composer">
             <div class="composer-box">
             <div class="upload-tray" id="uploadTray" hidden></div>
@@ -1451,6 +1462,7 @@ let workspaceSearchSeq = 0;
 const openTabs = [];
 const fileCache = new Map();
 let activePath = null;
+let fileOpenSeq = 0;
 let activeTurn = null;
 let turnSeq = 0;
 let turnRunning = false;
@@ -1528,6 +1540,7 @@ function fileToDataBase64(file){
     reader.readAsDataURL(file);
   });
 }
+${workspaceVoice}
 let voiceRecognition=null;
 let voiceStartText='';
 function setVoiceRecording(active){
@@ -1547,7 +1560,7 @@ function startVoiceRecording(){
   voiceStartText=input.value.trim();
   voiceRecognition=new Speech();
   voiceRecognition.continuous=true;voiceRecognition.interimResults=true;voiceRecognition.lang=navigator.language||'en-US';
-  voiceRecognition.onresult=event=>{let text='';for(let i=event.resultIndex;i<event.results.length;i++)text+=event.results[i][0].transcript;input.value=[voiceStartText,text.trim()].filter(Boolean).join(voiceStartText?' ':'');};
+  voiceRecognition.onresult=event=>{const text=speechTranscript(event);input.value=[voiceStartText,text].filter(Boolean).join(' ');};
   voiceRecognition.onerror=event=>{document.getElementById('sendStatus').textContent=event.error==='not-allowed'?'Microphone permission was not granted.':'Voice transcription stopped. Review the text above.';};
   voiceRecognition.onend=()=>{voiceRecognition=null;setVoiceRecording(false);if(input.value.trim())document.getElementById('sendStatus').textContent='Voice text is ready to review.';};
   try{voiceRecognition.start();setVoiceRecording(true);document.getElementById('sendStatus').textContent='Listening… select the microphone again when you are done.';}catch(err){voiceRecognition=null;setVoiceRecording(false);document.getElementById('sendStatus').textContent=err?.message||'Could not start voice transcription.';}
@@ -1789,7 +1802,11 @@ function fileHeader(data,{language=null,languageAuto=false,truncated=false,extra
 function renderViewer(html){
   disposeActiveEditor();
   const viewer=document.getElementById('viewer');
-  viewer.innerHTML=html;
+  for(const pane of viewer.querySelectorAll('[data-plugin-pane]'))pane.hidden=true;
+  let filePane=viewer.querySelector('[data-file-pane]');
+  if(!filePane){filePane=document.createElement('div');filePane.className='viewer-pane';filePane.dataset.filePane='';viewer.prepend(filePane);}
+  filePane.innerHTML=html;
+  filePane.hidden=false;
   viewer.classList.toggle('maximized',previewMaximized);
 }
 function setFileDirty(path,dirty,content=null){
@@ -1843,7 +1860,7 @@ async function saveCurrentFile(path){
   buttons.forEach(btn=>{btn.disabled=true;});
   document.getElementById('sendStatus').textContent='Saving '+basename(path)+'...';
   try{
-    const saved=await api('/api/file/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
+    const saved=await api('/api/file/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content,expected_content:currentSavedText(data)})});
     fileCache.set(saved.path,saved);
     if(saved.path!==path)fileCache.delete(path);
     setFileDirty(saved.path,false);
@@ -1921,29 +1938,36 @@ async function loadDir(path){
     renderExplorer();
   }
 }
+${workspaceFileTabs}
 async function openFile(path, knownData){
   if(path&&path.startsWith('plugin://')){openPluginView(path);return;}
+  const request=++fileOpenSeq;
+  ensureWorkspaceFileTab(openTabs,path);
   currentPath=path;
-  if(!openTabs.some(t=>t.path===path))openTabs.push({path,name:basename(path)});
   activePath=path;
   renderTabs();
   renderExplorer();
-  let data=knownData||fileCache.get(path);
-  if(!data){
-    renderViewer('<div class="file-header"><span class="path">'+esc(path)+'</span></div><div class="empty">Loading...</div>');
-    data=await api('/api/files?path='+encodeURIComponent(path));
-    fileCache.set(path,data);
-  }
-  renderFile(data);
+  renderViewer('<div class="file-header"><span class="path">'+esc(path)+'</span></div><div class="empty">Loading...</div>');
+  const data=knownData||await api('/api/files?path='+encodeURIComponent(path));
+  if(request!==fileOpenSeq||activePath!==path)return;
+  const retainedDraft=dirtyPaths.has(path)&&fileCache.has(path);
+  if(!retainedDraft)fileCache.set(path,data);
+  renderFile(retainedDraft?fileCache.get(path):data);
+  if(retainedDraft&&currentSavedText(data)!==currentSavedText(fileCache.get(path)))
+    document.getElementById('sendStatus').textContent='File changed on disk. Your unsaved edits are preserved.';
 }
 function closeTab(path){
+  if(path?.startsWith('plugin://')){
+    const pane=[...document.querySelectorAll('#viewer [data-plugin-pane]')].find(item=>item.dataset.pluginPane===path);
+    pane?.remove();
+  }
   const i=openTabs.findIndex(t=>t.path===path);
   if(i>=0)openTabs.splice(i,1);
   if(activePath===path){
     const next=openTabs[Math.max(0,i-1)]||openTabs[0]||null;
     activePath=next?next.path:null;
     if(next) openFile(next.path);
-    else renderEmptyViewer();
+    else{fileOpenSeq++;renderEmptyViewer();}
   }
   renderTabs();
 }
@@ -2100,8 +2124,8 @@ function renderCodeEditor(data,text,language,{auto=true,originalText=null}={}){
     updateSaveButtons(data.path);
   }).catch(err=>{
     addTrace('preview_editor_fallback',{path:data.path,message:err.message});
-    const viewer=document.getElementById('viewer');
-    if(viewer) viewer.innerHTML=header+'<div class="code-fallback" data-preview-content>'+renderCode(value)+'</div>';
+    const pane=document.querySelector('#viewer [data-file-pane]');
+    if(pane) pane.innerHTML=header+'<div class="code-fallback" data-preview-content>'+renderCode(value)+'</div>';
     bindHeaderActions(data.path);
   });
 }
@@ -2313,8 +2337,10 @@ async function renderSpreadsheetFile(data){
   bindHeaderActions(data.path);
   try{
     const preview=await api('/api/file/spreadsheet-preview?path='+encodeURIComponent(data.path));
+    if(activePath!==data.path)return;
     renderSpreadsheetSheet(data,preview,0);
   }catch(err){
+    if(activePath!==data.path)return;
     renderPreviewError(data,'Spreadsheet preview failed',err.message||String(err),'spreadsheet');
   }
 }
@@ -2362,12 +2388,14 @@ async function renderOfficeFile(data,kind){
   bindHeaderActions(data.path);
   try{
     const preview=await api('/api/file/office-preview?path='+encodeURIComponent(data.path));
+    if(activePath!==data.path)return;
     if(preview.ok&&preview.preview_url){
       renderOfficePdf(data,preview);
       return;
     }
     renderPreviewError(data,label,preview.message||'Conversion preview is unavailable.',kind,preview.install_hint||'');
   }catch(err){
+    if(activePath!==data.path)return;
     renderPreviewError(data,label,err.message||String(err),kind);
   }
 }
@@ -2412,38 +2440,14 @@ function renderTable(text,delim){
   const body=rows.slice(1);
   return '<div class="table-preview" data-preview-content><div class="table-meta">'+esc(rows.length-1)+' rows shown, '+esc(head.length)+' columns</div><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+body.map(r=>'<tr>'+head.map((_,i)=>'<td>'+esc(r[i]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
 }
-function markdown(text){
-  const lines=String(text||'').split('\\n');
-  let out='';let inUl=false;let inPre=false;let preLang='';let preLines=[];
-  const fence=String.fromCharCode(96,96,96);
-  for(const raw of lines){const line=String(raw).trimEnd();
-    if(line.startsWith(fence)){
-      if(inUl){out+='</ul>';inUl=false;}
-      if(inPre){
-        const code=preLines.join('\\n');
-        out+=preLang==='mermaid'?mermaidCard(code):'<pre><code>'+esc(code)+'</code></pre>';
-        inPre=false;preLang='';preLines=[];
-      }else{
-        preLang=line.slice(fence.length).trim().toLowerCase();
-        inPre=true;preLines=[];
-      }
-      continue;
-    }
-    if(inPre){preLines.push(line);continue;}
-    if(!line.trim()){if(inUl){out+='</ul>';inUl=false;}continue;}
-    const h=line.match(/^(#{1,3})\\s+(.*)$/);if(h){if(inUl){out+='</ul>';inUl=false;}out+='<h'+h[1].length+'>'+inlineMd(h[2])+'</h'+h[1].length+'>';continue;}
-    const li=line.match(/^[-*]\\s+(.*)$/);if(li){if(!inUl){out+='<ul>';inUl=true;}out+='<li>'+inlineMd(li[1])+'</li>';continue;}
-    if(inUl){out+='</ul>';inUl=false;}out+='<p>'+inlineMd(line)+'</p>';
-  }
-  if(inUl)out+='</ul>';if(inPre)out+='<pre><code>'+esc(preLines.join('\\n'))+'</code></pre>';return out;
-}
-function inlineMd(s){const tick=String.fromCharCode(96);return s.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>').replace(new RegExp(tick+'([^'+tick+']+)'+tick,'g'),'<code>$1</code>');}
+${workspaceMarkdown}
 function mermaidCard(source){
   return '<div class="mermaid-card" data-mermaid-card><div class="mermaid-output" data-mermaid-output>Rendering diagram...</div><pre class="mermaid-source">'+esc(source)+'</pre></div>';
 }
-async function renderMermaidBlocks(){
-  const cards=[...document.querySelectorAll('[data-mermaid-card]')];
+async function renderMermaidBlocks(root=document){
+  const cards=[...(root?.querySelectorAll('[data-mermaid-card]')||[])].filter(card=>!card.dataset.rendered);
   if(!cards.length)return;
+  for(const card of cards)card.dataset.rendered='pending';
   try{
     const mermaid=await loadMermaid();
     for(const card of cards){
@@ -2453,6 +2457,7 @@ async function renderMermaidBlocks(){
       mermaidSeq+=1;
       const result=await mermaid.render('bahulam_mermaid_'+mermaidSeq,source);
       output.innerHTML=result.svg;
+      card.dataset.rendered='done';
       result.bindFunctions?.(output);
     }
   }catch(err){
@@ -2618,29 +2623,14 @@ function addTrace(type, detail){
 }
 function resetThread(emptyText='Ask about this local workspace.'){
   activeTurn=null;
+  assistantSegments.length=0;followupByClient.clear();followupByIntervention.clear();pendingFollowupStatus.clear();
+  queuedFollowups.length=0;queuedFollowupIds.clear();queuedFollowupInFlight=null;
   document.getElementById('threadInner').innerHTML='<div class="empty-chat" id="emptyChat"><span class="empty-kicker">Your local context</span><h2>Start with your workspace.</h2><p>'+esc(emptyText)+'</p><small>Review tool approvals before changes run.</small></div>';
 }
 function attachmentHtml(attachments){
   const files=Array.isArray(attachments)?attachments:[];
   if(!files.length)return '';
   return '<div class="message-attachments">'+files.map(file=>'<button type="button" class="message-attachment" data-open-upload="'+esc(file.path)+'"><span>'+esc(file.name||basename(file.path))+'</span><small>'+esc(attachmentHint(file))+' · '+esc(formatBytes(file.size))+'</small></button>').join('')+'</div>';
-}
-function addUserMessage(text, attachments=[]){
-  document.getElementById('emptyChat')?.remove();
-  const el=document.createElement('div');
-  el.className='msg user';
-  el.innerHTML='<div class="bubble">'+esc(text)+attachmentHtml(attachments)+'</div>';
-  document.getElementById('threadInner').appendChild(el);
-  el.querySelectorAll('[data-open-upload]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.openUpload)));
-  scrollThread();
-}
-function addAssistantMessage(text){
-  document.getElementById('emptyChat')?.remove();
-  const el=document.createElement('div');
-  el.className='msg assistant';
-  el.innerHTML='<div class="assistant-stack"><div class="assistant-bubble message-content">'+markdown(text)+'</div></div>';
-  document.getElementById('threadInner').appendChild(el);
-  scrollThread();
 }
 function renderHistorySnapshot(history){
   resetThread(history.backend_session_id ? 'No chat messages in this transcript yet.' : 'Ask about this local workspace.');
@@ -2660,8 +2650,8 @@ function renderHistorySnapshot(history){
     addTrace(item.type || 'history_tool', {tool:item.tool, kind:item.kind, content:item.content});
   }
   for(const msg of messages){
-    if(msg.role==='user')addUserMessage(msg.content||'');
-    else if(msg.role==='assistant')addAssistantMessage(msg.content||'');
+    if(msg.role==='user')addUserMessage(msg.content||'',[],{followup:Boolean(msg.intervention_id||msg.followup_status),interventionId:msg.intervention_id,clientId:msg.client_id,status:msg.followup_status,timestamp:msg.timestamp});
+    else if(msg.role==='assistant')addAssistantMessage(msg.content||'',msg);
   }
   scrollThread();
   setAgentTab('chat');
@@ -2752,8 +2742,7 @@ function approvalLineHtml(approval,decision,message=''){
 }
 function findApprovalRow(approval){
   const key=approvalActivityKey(approval);
-  if(activeTurn?.byKey?.has(key))return {turn:activeTurn,row:activeTurn.byKey.get(key)};
-  return null;
+  return findActivityRow(key);
 }
 function resolveInlineApproval(decision,message,approval=pendingApproval){
   const found=findApprovalRow(approval);
@@ -2844,51 +2833,7 @@ async function startNewChat(){
     addTrace('history_error', {message:err.message});
   }
 }
-function ensureAssistantTurn(){
-  if(activeTurn)return activeTurn;
-  turnSeq+=1;
-  const el=document.createElement('div');
-  el.className='msg assistant';
-  el.innerHTML='<div class="assistant-stack"><div class="activity-card" data-activity><button class="activity-head" type="button"><span class="activity-label">Starting...</span><span class="activity-rollup"></span><span>›</span></button><div class="activity-rows"></div></div><div class="assistant-bubble message-content" data-content></div></div>';
-  document.getElementById('threadInner').appendChild(el);
-  const activity=el.querySelector('[data-activity]');
-  activity.querySelector('.activity-head').addEventListener('click',()=>{activity.classList.toggle('expanded');});
-  activeTurn={id:'local_'+turnSeq,el,text:'',activity:[],byKey:new Map(),active:true};
-  return activeTurn;
-}
-function addActivity(level,message,opts={}){
-  const turn=ensureAssistantTurn();
-  const key=opts.key||null;
-  let row=key?turn.byKey.get(key):null;
-  if(row){Object.assign(row,{level,message,...opts});}
-  else{row={key,level,message,ts:Date.now(),...opts};turn.activity.push(row);if(key)turn.byKey.set(key,row);}
-  renderActivity(turn);
-}
-function renderActivity(turn){
-  const card=turn.el.querySelector('[data-activity]');
-  const rows=turn.activity.filter(a=>a.message&&String(a.message).trim());
-  if(!rows.length&&!turn.active){card.classList.remove('active');return;}
-  card.classList.add('active');
-  const latest=rows[rows.length-1];
-  card.querySelector('.activity-label').textContent=latest?latest.message:'Starting...';
-  const tools=rows.filter(r=>r.kind==='tool').length;
-  const errors=rows.filter(r=>r.level==='error').length;
-  card.querySelector('.activity-rollup').textContent=[tools?tools+' tools':'',errors?errors+' errors':''].filter(Boolean).join(' · ');
-  card.querySelector('.activity-rows').innerHTML=rows.slice(card.classList.contains('expanded')?0:-4).map(r=>{
-    const approval=r.approval?activityApprovalHtml(r.approval,r.approvalFading):'';
-    const result=r.approvalResult?'<div class="activity-result">'+approvalLineHtml(r.approvalResult.approval,r.approvalResult.decision,r.approvalResult.message)+'</div>':'';
-    const detail=r.detail?'<pre>'+esc(r.detail)+'</pre>':'';
-    return '<div class="activity-row '+esc(r.level||'')+'" data-activity-key="'+esc(r.key||'')+'"><span class="status-dot"></span><span class="activity-main"><span class="activity-message">'+esc(r.message)+'</span>'+approval+result+detail+'</span></div>';
-  }).join('');
-  card.querySelectorAll('[data-approval-decision]').forEach(btn=>btn.addEventListener('click',()=>submitApproval(btn.dataset.approvalDecision)));
-}
-function appendAssistantText(text){
-  const turn=ensureAssistantTurn();
-  turn.text+=text||'';
-  turn.el.querySelector('[data-content]').innerHTML=markdown(turn.text);
-  scrollThread();
-}
-function scrollThread(){const t=document.getElementById('thread');t.scrollTop=t.scrollHeight;}
+${workspaceChat}
 function setAgentTab(tab){
   const next=tab==='trace'?'trace':'chat';
   document.getElementById('chatPane')?.classList.toggle('active', next==='chat');
@@ -2931,19 +2876,31 @@ async function loadPluginViews(){
 function openPluginView(key){
   const view=pluginViews.get(key);
   if(!view)return;
+  fileOpenSeq++;
   currentPath=key;
   activePath=key;
   if(!openTabs.some(t=>t.path===key))openTabs.push({path:key,name:view.name||view.plugin});
   renderTabs();
   renderExplorer();
+  disposeActiveEditor();
+  const viewer=document.getElementById('viewer');
+  const filePane=viewer.querySelector('[data-file-pane]');
+  if(filePane)filePane.hidden=true;
+  for(const pane of viewer.querySelectorAll('[data-plugin-pane]'))pane.hidden=true;
+  let pane=[...viewer.querySelectorAll('[data-plugin-pane]')].find(item=>item.dataset.pluginPane===key);
+  if(pane){pane.hidden=false;return;}
   // Permissions are opt-in per plugin view and mapped to a fixed allowlist.
   const permissions=new Set(view.permissions||[]);
   const sandbox=['allow-scripts','allow-same-origin','allow-forms'];
   if(permissions.has('downloads'))sandbox.push('allow-downloads');
   if(permissions.has('external-links'))sandbox.push('allow-popups','allow-popups-to-escape-sandbox');
   if(permissions.has('dialogs'))sandbox.push('allow-modals');
-  renderViewer('<div class="file-header"><span>⚙</span><span class="path">'+esc(view.plugin)+' · '+esc(view.name)+'</span></div>'+
-    '<div class="frame-preview"><iframe sandbox="'+sandbox.join(' ')+'" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>');
+  pane=document.createElement('div');
+  pane.className='viewer-pane';
+  pane.dataset.pluginPane=key;
+  pane.innerHTML='<div class="file-header"><span>⚙</span><span class="path">'+esc(view.plugin)+' · '+esc(view.name)+'</span></div>'+
+    '<div class="frame-preview"><iframe sandbox="'+sandbox.join(' ')+'" src="'+esc(view.url)+'?token='+encodeURIComponent(token)+'"></iframe></div>';
+  viewer.appendChild(pane);
 }
 function setTurnRunning(running){
   turnRunning=Boolean(running);
@@ -2964,11 +2921,12 @@ function setTurnCancelling(cancelling){
 }
 function finishCancelledTurn(data={}){
   addActivity('error', data.reason || 'Cancelled by user', {key:'turn-cancelled', kind:'status'});
-  if(activeTurn){activeTurn.active=false;renderActivity(activeTurn);activeTurn=null;}
+  finishAssistantTurns();
   setTurnRunning(false);
   setTurnCancelling(false);
   document.getElementById('bridgeState').textContent='cancelled';
   document.getElementById('sendStatus').textContent='Cancelled';
+  if(queuedFollowupInFlight){updateFollowup({status:'held'},queuedFollowupInFlight);queuedFollowupInFlight=null;}
 }
 async function stopAgentTurn(){
   if(!turnRunning||turnCancelling)return;
@@ -3050,17 +3008,6 @@ async function handleLocalSlashCommand(rawPrompt){
   addTrace('command_error',{command:text,message:'Usage: /auto [on|off|status]'});
   return true;
 }
-function followupMessage(data){
-  const status=String(data?.status||'');
-  if(status==='accepted')return 'Follow-up sent to running agent';
-  if(status==='delivered')return 'Follow-up delivered to agent';
-  if(status==='queued')return 'Follow-up queued';
-  if(status==='waiting_for_task')return 'Follow-up waiting for agent task';
-  if(status==='duplicate')return 'Follow-up already sent';
-  if(status==='queued_next_turn')return 'Follow-up queued for next turn';
-  if(status==='error')return 'Follow-up failed';
-  return 'Follow-up status: '+(status||'unknown');
-}
 function shouldQueueFollowup(result){
   const status=String(result?.status||'');
   return status==='queued_next_turn'||status==='no_task';
@@ -3073,14 +3020,15 @@ function queueFollowupNextTurn(prompt,attachments=[],path=currentPath,reason='',
   queuedFollowupIds.add(key);
   queuedFollowups.push({prompt,attachments,path,id:key});
   document.getElementById('sendStatus').textContent=reason||'Queued for next turn';
+  if(!turnRunning)runNextQueuedFollowup();
 }
-async function runAgentTurn(prompt,attachments=[],path=currentPath,{displayed=false}={}){
+async function runAgentTurn(prompt,attachments=[],path=currentPath,{displayed=false,followupClientId=null}={}){
   if(!displayed)addUserMessage(prompt,attachments);
-  activeTurn=null;
+  sealAssistantMessage();
   setTurnRunning(true);
   document.getElementById('sendStatus').textContent='Sending...';
   try{
-    await api('/api/agent/turn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,path,attachments})});
+    await api('/api/agent/turn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,path,attachments,followup_client_id:followupClientId})});
   }catch(err){
     document.getElementById('sendStatus').textContent=err.message;
     document.getElementById('bridgeState').textContent=err.status===401?'auth required':'error';
@@ -3093,15 +3041,20 @@ async function runAgentTurn(prompt,attachments=[],path=currentPath,{displayed=fa
 function runNextQueuedFollowup(){
   if(turnRunning||!queuedFollowups.length)return;
   const next=queuedFollowups.shift();
-  queuedFollowupIds.delete(next.id);
+  const message=followupByClient.get(next.id)||followupByIntervention.get(next.id);
+  if(['delivered','completed'].includes(message?.status)){runNextQueuedFollowup();return;}
   document.getElementById('sendStatus').textContent='Running queued follow-up...';
-  runAgentTurn(next.prompt,next.attachments,next.path,{displayed:true});
+  queuedFollowupInFlight=followupByClient.get(next.id)||followupByIntervention.get(next.id)||null;
+  if(queuedFollowupInFlight)updateFollowup({status:'started'},queuedFollowupInFlight);
+  runAgentTurn(next.prompt,next.attachments,next.path,{displayed:true,followupClientId:message?.clientId||null});
 }
 function handleRelayEvent(type, event){
+  if(event.id&&seenRelayEvents.has(event.id))return;
+  if(event.id){seenRelayEvents.add(event.id);if(seenRelayEvents.size>2000)seenRelayEvents.delete(seenRelayEvents.values().next().value);}
   const data = event.data || {};
   addTrace(type, JSON.stringify(data));
   if (type === 'agent_content') {
-    appendAssistantText(data.text || '');
+    appendAssistantText(data.text || '', data);
     return;
   }
   if (type === 'agent_relay_ready') {
@@ -3157,8 +3110,8 @@ function handleRelayEvent(type, event){
     return;
   }
   if (type === 'agent_turn_started') {
-    activeTurn=null;
-    ensureAssistantTurn();
+    sealAssistantMessage();
+    ensureAssistantTurn({turn_id:data.turn_id});
     setTurnRunning(true);
     document.getElementById('bridgeState').textContent = 'running';
     return;
@@ -3175,10 +3128,12 @@ function handleRelayEvent(type, event){
     return;
   }
   if (type === 'agent_turn_complete') {
-    if(activeTurn){activeTurn.active=false;renderActivity(activeTurn);activeTurn=null;}
+    finishAssistantTurns();
+    finishFollowupPresentation();
     setTurnRunning(false);
     document.getElementById('bridgeState').textContent = 'ready';
     document.getElementById('sendStatus').textContent = 'Done';
+    if(queuedFollowupInFlight){updateFollowup({status:'completed'},queuedFollowupInFlight);queuedFollowupInFlight=null;}
     runNextQueuedFollowup();
     return;
   }
@@ -3187,17 +3142,22 @@ function handleRelayEvent(type, event){
     document.getElementById('bridgeState').textContent = 'error';
     document.getElementById('sendStatus').textContent = data.message || data.error || 'Agent error';
     addActivity('error', data.message || data.error || 'Agent error', {detail: data.code || ''});
+    finishAssistantTurns();
+    if(queuedFollowupInFlight){updateFollowup({status:'error',error:data.message||data.error},queuedFollowupInFlight);queuedFollowupInFlight=null;}
     return;
   }
-  if (type === 'agent_followup_status') {
-    addActivity(data.ok===false?'error':'thinking', followupMessage(data), {key:data.intervention_id||'followup', kind:'followup', detail:data.error||data.instruction||''});
-    if(shouldQueueFollowup(data))queueFollowupNextTurn(data.instruction||'',[],currentPath,followupMessage(data),data.intervention_id||'');
-    document.getElementById('sendStatus').textContent=followupMessage(data);
+  if (type === 'agent_followup_status' || type === 'agent_followup_promoted') {
+    const statusData=type==='agent_followup_promoted'?{...data,status:'promoted_to_new_turn'}:data;
+    const message=updateFollowup(statusData);
+    if(type==='agent_followup_promoted'&&message)queuedFollowupInFlight=message;
+    if(shouldQueueFollowup(data))queueFollowupNextTurn(message?.instruction||message?.prompt||data.instruction||'',message?.attachments||[],message?.path||currentPath,followupMessage(data),message?.clientId||data.intervention_id||'');
+    document.getElementById('sendStatus').textContent=followupMessage(message?{status:message.status}:statusData);
     return;
   }
   if (type === 'agent_followup_event') {
     const inner=data.data||{};
-    addActivity('done', followupMessage({status:String(data.type||'').replace('user_intervention_',''), intervention_id:inner.intervention_id}), {key:inner.intervention_id||data.type, kind:'followup', detail:inner.delivered_at_tool||''});
+    const message=updateFollowup({...inner,status:String(data.type||'').replace('user_intervention_','')});
+    if(message)document.getElementById('sendStatus').textContent=followupMessage({status:message.status});
     return;
   }
   if (type === 'agent_tool_call') {
@@ -3223,11 +3183,12 @@ es.onmessage = evt => { try { const e = JSON.parse(evt.data); addTrace(e.type, J
 [
   'session_started','file_browsed','file_read','file_uploaded','file_saved','tool_execution_requested','session_stopped',
   'agent_turn_requested','agent_relay_ready','agent_turn_started','agent_cancel_requested','agent_turn_cancelled','agent_turn_complete','cancelled',
-  'agent_history_loaded','agent_history_new','agent_approval_mode','agent_approval_event','agent_approval_required','agent_approval_resolved','agent_followup_requested','agent_followup_status','agent_followup_event','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
+  'agent_history_loaded','agent_history_new','agent_approval_mode','agent_approval_event','agent_approval_required','agent_approval_resolved','agent_followup_requested','agent_followup_status','agent_followup_promoted','agent_followup_event','agent_session','agent_status','agent_reasoning','agent_content','agent_tool_call',
   'agent_tool_result','agent_activity','agent_complete','agent_error','agent_event'
 ].forEach(type => {
   es.addEventListener(type, evt => { try { handleRelayEvent(type, JSON.parse(evt.data)); } catch {} });
 });
+document.getElementById('thread').addEventListener('scroll',()=>{const thread=document.getElementById('thread');threadFollowing=thread.scrollHeight-thread.scrollTop-thread.clientHeight<72;},{passive:true});
 document.getElementById('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const rawPrompt = document.getElementById('prompt').value.trim();
@@ -3241,28 +3202,30 @@ document.getElementById('composer').addEventListener('submit', async (e) => {
   if(turnCancelling){document.getElementById('sendStatus').textContent='Cancelling...';return;}
   setSessionMenuOpen(false);
   if(!historySelectionReady) historySelectionReady=true;
-  addUserMessage(prompt, attachments);
+  const followup=turnRunning;
+  const message=addUserMessage(prompt, attachments, {followup});
   document.getElementById('prompt').value='';
   pendingAttachments=[];
   renderUploadTray();
-  const followup=turnRunning;
   if(followup){
     const attachmentLines=attachments.length?('\\n\\nAttached files for this follow-up:\\n'+attachments.map(file=>'- '+(file.name||basename(file.path))+' path='+file.path).join('\\n')):'';
+    message.instruction=prompt+attachmentLines;
     document.getElementById('sendStatus').textContent = 'Sending follow-up...';
     try {
-      const result=await api('/api/agent/followup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt: prompt+attachmentLines }) });
-      document.getElementById('sendStatus').textContent = followupMessage(result);
-      if(shouldQueueFollowup(result))queueFollowupNextTurn(prompt+attachmentLines,attachments,currentPath,followupMessage(result),result.intervention_id||'');
-      if(result.ok===false)addActivity('error', followupMessage(result), {key:result.intervention_id||'followup', kind:'followup', detail:result.error||''});
+      const result=await api('/api/agent/followup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt: message.instruction, client_id: message.clientId }) });
+      updateFollowup(result,message);
+      document.getElementById('sendStatus').textContent = followupMessage({status:message.status});
+      if(shouldQueueFollowup(result))queueFollowupNextTurn(message.instruction,attachments,currentPath,followupMessage(result),message.clientId);
+      if(result.ok===false)updateFollowup({...result,status:'error'},message);
     } catch (err) {
       document.getElementById('sendStatus').textContent = err.message;
-      addActivity('error', (err.status ? err.status + ' ' : '') + err.message);
+      updateFollowup({status:'error',error:err.message},message);
       pendingAttachments=attachments.concat(pendingAttachments);
       renderUploadTray();
     }
     return;
   }
-  activeTurn=null;
+  sealAssistantMessage();
   setTurnRunning(true);
   document.getElementById('sendStatus').textContent = 'Sending...';
   try {

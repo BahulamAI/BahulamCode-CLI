@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'node:fs';
+import { AssistantMessageStream } from './chat-presentation.mjs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { BahulamAuth } from '../auth/bahulam-auth.mjs';
@@ -104,6 +105,11 @@ export class LocalAgentRelay {
     this.resumeSessionId = null;
     this.historyMode = 'full';
     this.displayHistory = [];
+    this.messageStream = new AssistantMessageStream();
+    this.presentationEntries = new Map();
+    this.followupEntries = new Map();
+    this.currentTurnId = null;
+    this.terminalTurnId = null;
     this.agentHistory = [];
     this.jsonlWriter = null;
     this.approvalAutoMode = false;
@@ -162,6 +168,11 @@ export class LocalAgentRelay {
     this.resumeSessionId = null;
     this.turnCount = 0;
     this.displayHistory = [];
+    this.messageStream = new AssistantMessageStream();
+    this.presentationEntries = new Map();
+    this.followupEntries = new Map();
+    this.currentTurnId = null;
+    this.terminalTurnId = null;
     this.agentHistory = [];
     this._pendingToolCalls.clear();
     this._traceSeq = 0;
@@ -214,6 +225,11 @@ export class LocalAgentRelay {
       const history = buildResumeHistory({ ...detail, recapTailTurns: 8 }, this.historyMode);
       this.resumeSessionId = match.sessionId;
       this.displayHistory = history.displayHistory || [];
+      this.messageStream = new AssistantMessageStream();
+      this.presentationEntries.clear();
+      this.followupEntries.clear();
+      this.currentTurnId = null;
+      this.terminalTurnId = null;
       this.agentHistory = history.agentHistory || [];
       this.resumeLoaded = true;
       this.turnCount = 0;
@@ -239,7 +255,7 @@ export class LocalAgentRelay {
     return this._historySnapshot();
   }
 
-  async runTurn({ prompt, path = '.', attachments = [] } = {}) {
+  async runTurn({ prompt, path = '.', attachments = [], followupClientId = null } = {}) {
     const instruction = String(prompt || '').trim();
     const turnAttachments = normalizeTurnAttachments(attachments);
     if (!instruction && !turnAttachments.length) {
@@ -261,7 +277,11 @@ export class LocalAgentRelay {
     this.cancellationEventEmitted = false;
     this.turnCount += 1;
     const turnId = `turn_${Date.now().toString(36)}_${this.turnCount}`;
+    this.currentTurnId = turnId;
+    this.terminalTurnId = null;
     const userInstruction = instruction || 'Review the attached files.';
+    const existingFollowup = followupClientId && [...new Set(this.followupEntries.values())]
+      .find(entry => entry.clientId === followupClientId);
     const relayInstruction = this._buildInstruction(userInstruction, path, turnAttachments);
     const writer = this._ensureJsonlWriter();
     const turnHistory = new AgentHistoryTurnBuilder();
@@ -271,11 +291,22 @@ export class LocalAgentRelay {
     let userTurnWritten = false;
     const writeUserTurn = () => {
       if (userTurnWritten) return;
-      writer.writeUserTurn(userInstruction);
+      if (!existingFollowup) writer.writeUserTurn(userInstruction);
       writer.writeHistory(userInstruction);
       userTurnWritten = true;
     };
     if (this.client.sessionId) writeUserTurn();
+
+    if (existingFollowup) {
+      existingFollowup.followupStatus = 'started';
+      writer.writeBahulamEvent({ type: 'user_intervention', data: {
+        intervention_id: existingFollowup.interventionId,
+        instruction: existingFollowup.content,
+        status: 'started',
+      } });
+    }
+    else this.displayHistory.push({ role: 'user', content: userInstruction,
+      timestamp: new Date().toISOString(), order: this.displayHistory.length });
 
     this.emit('agent_turn_started', {
       turn_id: turnId,
@@ -336,14 +367,16 @@ export class LocalAgentRelay {
           writer.flushAssistantTurn();
         }
 
-        this._emitAgentEvent(event, { turnId, contentText: contentUpdate?.delta });
+        this._emitAgentEvent(event, { turnId });
         await this._flushQueuedFollowups();
       }
 
       const wasCancelled = this.cancellationRequested || Boolean(this.client?._cancelled);
       this._markUndeliveredFollowupsQueued(wasCancelled ? 'Task cancelled' : '');
+      if (!wasCancelled) this._queueUndeliveredFollowups(turnId);
       if (!userTurnWritten && (this.client.sessionId || wasCancelled)) writeUserTurn();
       if (wasCancelled) {
+        if (existingFollowup) existingFollowup.followupStatus = 'held';
         writer.writeBahulamEvent({
           type: 'cancelled',
           data: {
@@ -354,20 +387,6 @@ export class LocalAgentRelay {
         writer.flushAssistantTurn();
       }
 
-      this.displayHistory.push({
-        role: 'user',
-        content: userInstruction,
-        timestamp: new Date().toISOString(),
-        order: this.displayHistory.length,
-      });
-      if (assistantContent) {
-        this.displayHistory.push({
-          role: 'assistant',
-          content: assistantContent,
-          timestamp: new Date().toISOString(),
-          order: this.displayHistory.length,
-        });
-      }
       const structuredTurn = turnHistory.finish();
       if (structuredTurn.length) {
         this.agentHistory.push({ role: 'user', content: userInstruction }, ...structuredTurn);
@@ -401,6 +420,15 @@ export class LocalAgentRelay {
         };
       }
 
+      if (existingFollowup) {
+        existingFollowup.followupStatus = 'completed';
+        writer.writeBahulamEvent({ type: 'user_intervention', data: {
+          intervention_id: existingFollowup.interventionId,
+          instruction: existingFollowup.content,
+          status: 'completed',
+        } });
+        await writer.flush();
+      }
       this.emit('agent_turn_complete', {
         turn_id: turnId,
         event_count: eventCount,
@@ -418,6 +446,7 @@ export class LocalAgentRelay {
         transcript_session_id: writer.sessionId || null,
       };
     } catch (err) {
+      if (existingFollowup) existingFollowup.followupStatus = 'held';
       this._markUndeliveredFollowupsQueued(err.message || String(err));
       this.emit('agent_error', {
         turn_id: turnId,
@@ -427,6 +456,8 @@ export class LocalAgentRelay {
       throw err;
     } finally {
       this.running = false;
+      this.messageStream.finish(turnId);
+      if (this.currentTurnId === turnId) this.currentTurnId = null;
     }
   }
 
@@ -494,7 +525,7 @@ export class LocalAgentRelay {
     };
   }
 
-  async sendFollowup({ instruction } = {}) {
+  async sendFollowup({ instruction, clientId = null } = {}) {
     const text = String(instruction || '').trim();
     if (!text) {
       const err = new Error('instruction is required');
@@ -514,6 +545,7 @@ export class LocalAgentRelay {
       try {
         this.emit('agent_followup_promoted', {
           intervention_id: promotedId,
+          client_id: clientId,
           instruction: text.slice(0, 500),
           reason: this.running ? 'client-not-initialized' : 'no-running-turn',
         });
@@ -534,23 +566,35 @@ export class LocalAgentRelay {
         ok: true,
         status: 'promoted_to_new_turn',
         intervention_id: promotedId,
+        client_id: clientId,
         task_id: null,
       };
     }
 
     const item = {
+      clientId,
       instruction: text,
       role: 'user',
       messageType: 'user_intervention',
       priority: 'high',
       idempotencyKey: `local-followup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     };
+    const entry = { role: 'user', content: text, clientId, turnId: this.currentTurnId,
+      interventionId: item.idempotencyKey, followupStatus: 'sending',
+      timestamp: new Date().toISOString(), order: this.displayHistory.length };
+    this.displayHistory.push(entry);
+    // Continued text belongs after this visible user message. Keep the stream's
+    // snapshot state so a final content echo is still deduplicated correctly.
+    this.presentationEntries.clear();
+    this.followupEntries.set(item.idempotencyKey, entry);
     if (!this.client.currentTaskId) {
       this.pendingFollowups.push(item);
+      entry.followupStatus = 'waiting_for_task';
       const result = {
         ok: true,
         status: 'waiting_for_task',
         intervention_id: item.idempotencyKey,
+        client_id: item.clientId || null,
         task_id: null,
       };
       this.emit('agent_followup_status', {
@@ -579,16 +623,30 @@ export class LocalAgentRelay {
     while (this.pendingFollowups.length) {
       const item = this.pendingFollowups.shift();
       const failed = Boolean(error);
+      const entry = this.followupEntries.get(item.idempotencyKey);
+      if (entry) entry.followupStatus = failed ? 'error' : 'queued_next_turn';
       this.emit('agent_followup_status', {
         ok: !failed,
         status: failed ? 'error' : 'queued_next_turn',
         intervention_id: item.idempotencyKey,
+        client_id: item.clientId || null,
         task_id: this.client?.currentTaskId || null,
         instruction: item.instruction.slice(0, 500),
         error: error || null,
         role: item.role || 'user',
         message_type: item.messageType || 'user_intervention',
         priority: item.priority || 'high',
+      });
+    }
+  }
+
+  _queueUndeliveredFollowups(turnId) {
+    for (const entry of new Set(this.followupEntries.values())) {
+      if (entry.turnId !== turnId || ['delivered', 'completed', 'started', 'queued_next_turn'].includes(entry.followupStatus)) continue;
+      entry.followupStatus = 'queued_next_turn';
+      this.emit('agent_followup_status', {
+        ok: true, status: 'queued_next_turn', intervention_id: entry.interventionId,
+        client_id: entry.clientId || null, instruction: entry.content,
       });
     }
   }
@@ -679,6 +737,7 @@ export class LocalAgentRelay {
       ok: result.status !== 'error',
       status: result.status || 'unknown',
       intervention_id: result.interventionId || item.idempotencyKey,
+      client_id: item.clientId || null,
       task_id: this.client.currentTaskId || null,
       role: item.role || 'user',
       message_type: item.messageType || 'user_intervention',
@@ -686,6 +745,14 @@ export class LocalAgentRelay {
       error: result.error || null,
       http_status: result.httpStatus || null,
     };
+    const entry = this.followupEntries.get(item.idempotencyKey);
+    if (entry) {
+      entry.interventionId = payload.intervention_id;
+      if (entry.turnId && entry.turnId === this.terminalTurnId && !['delivered', 'completed'].includes(entry.followupStatus)
+        && payload.status !== 'delivered') payload.status = 'queued_next_turn';
+      if (!['delivered', 'completed', 'started'].includes(entry.followupStatus)) entry.followupStatus = payload.status;
+      this.followupEntries.set(payload.intervention_id, entry);
+    }
     this._ensureJsonlWriter().writeBahulamEvent({
       type: 'user_intervention',
       data: {
@@ -786,7 +853,7 @@ export class LocalAgentRelay {
         toolExecutor,
         listRunnables: () => toolExecutor?.listRunnables?.() || [],
         listLocalWorkflows: () => listLocalWorkflows(this.session.root_path),
-        renderEvent: event => this._emitAgentEvent(event, { turnId, contentText: event?.data?.text || event?.data?.content || null }),
+        renderEvent: event => this._emitAgentEvent({ ...event, data: { ...event?.data, sub_agent: event?.data?.sub_agent || slug || agent?.slug || 'Agent' } }, { turnId }),
         sessionSubstrate: this._makeWorkspaceSessionSubstrate(pluginRegistry),
         auth: { token: creds.token || null },
         credentials: {
@@ -1064,9 +1131,10 @@ export class LocalAgentRelay {
     };
   }
 
-  _emitAgentEvent(event, { turnId, contentText = null }) {
+  _emitAgentEvent(event, { turnId }) {
     const type = event?.type || 'unknown';
     const data = event?.data || {};
+    const presentation = this.messageStream.accept(event, turnId);
 
     switch (type) {
       case 'session_info':
@@ -1082,8 +1150,17 @@ export class LocalAgentRelay {
         break;
       case 'content_partial':
       case 'content': {
-        const text = contentText ?? data.text ?? data.content ?? '';
-        this.emit('agent_content', { turn_id: turnId, text, partial: type === 'content_partial' });
+        if (!presentation) return;
+        let entry = this.presentationEntries.get(presentation.message_id);
+        if (!entry && (presentation.text || presentation.replace)) {
+          entry = { role: 'assistant', messageId: presentation.message_id, author: presentation.author,
+            content: '', timestamp: new Date().toISOString(), order: this.displayHistory.length };
+          this.displayHistory.push(entry);
+          this.presentationEntries.set(presentation.message_id, entry);
+        }
+        if (entry) entry.content = presentation.replace ? presentation.content : entry.content + presentation.text;
+        const { content: snapshot, ...update } = presentation;
+        this.emit('agent_content', update);
         return;
       }
       case 'tool_call':
@@ -1140,7 +1217,12 @@ export class LocalAgentRelay {
       case 'user_intervention_accepted':
       case 'user_intervention_delivered':
       case 'user_intervention_queued':
-        this.emit('agent_followup_event', { turn_id: turnId, type, data });
+        {
+          const entry = this.followupEntries.get(data.intervention_id);
+          const status = type.replace('user_intervention_', '');
+          if (entry && !['delivered', 'completed'].includes(entry.followupStatus)) entry.followupStatus = status;
+          this.emit('agent_followup_event', { turn_id: turnId, type, data: { ...data, client_id: entry?.clientId || null } });
+        }
         break;
       case 'cancelled':
         this.cancellationRequested = true;
@@ -1163,6 +1245,15 @@ export class LocalAgentRelay {
         this.emit('agent_error', { turn_id: turnId, ...data });
         break;
       case 'complete':
+        this.terminalTurnId = turnId;
+        // Completion snapshots can carry acknowledgements missed by the live
+        // stream. Only these explicit IDs establish delivered status.
+        for (const id of data.user_interventions?.delivered_ids || []) {
+          const entry = this.followupEntries.get(id);
+          if (entry) entry.followupStatus = 'delivered';
+          this.emit('agent_followup_event', { turn_id: turnId, type: 'user_intervention_delivered',
+            data: { intervention_id: id, client_id: entry?.clientId || null } });
+        }
         this.emit('agent_complete', { turn_id: turnId, data });
         break;
       default:
@@ -1264,6 +1355,11 @@ function browserMessages(history = []) {
       role: entry.role,
       content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content || ''),
       timestamp: entry.timestamp || null,
+      message_id: entry.messageId || null,
+      author: entry.author || null,
+      intervention_id: entry.interventionId || null,
+      client_id: entry.clientId || null,
+      followup_status: entry.followupStatus || null,
     }));
 }
 
