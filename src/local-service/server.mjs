@@ -1139,6 +1139,8 @@ function sendHtml(res, html) {
 
 function sendBrandMark(res) {
   const candidates = [
+    '../../../bahulam-web/apps/bahulam/public/brand/bahulam-mark.png',
+    '../../../bahulam-web/apps/appstak/public/brand/bahulam-mark.png',
     '../../../appstak-platform/apps/bahulam/public/brand/bahulam-mark.png',
     '../../../appstak-platform/apps/appstak/public/brand/bahulam-mark.png',
   ].map((relative) => fileURLToPath(new URL(relative, import.meta.url)));
