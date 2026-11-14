@@ -6,11 +6,19 @@ import {
 } from '../src/core/error-guidance.mjs';
 
 let passed = 0;
+let failed = 0;
 
+// A throwing test must not abort the run: without try/catch the first failure
+// killed the script and masked every later test (and the summary said 0 failed).
 function test(name, fn) {
-  fn();
-  passed++;
-  console.log(`  \x1b[32m✓\x1b[0m ${name}`);
+  try {
+    fn();
+    passed++;
+    console.log(`  \x1b[32m✓\x1b[0m ${name}`);
+  } catch (err) {
+    failed++;
+    console.log(`  \x1b[31m✗\x1b[0m ${name}: ${err.message}`);
+  }
 }
 
 console.log('\n\x1b[1mtest-error-guidance.mjs\x1b[0m\n');
@@ -42,18 +50,27 @@ test('gateway errors produce generic provider settings guidance', () => {
   });
 
   assert.strictEqual(guidance.title, 'Provider rejected request.');
-  assert.ok(guidance.lines.some((line) => line.includes('provider gateway failed')));
+  // Gateway-phase failures are reported provider-generically on purpose: on the
+  // platform route the user has no provider key, so BYOK key-checking advice
+  // would be wrong and alarming (commit 4714380).
+  assert.ok(
+    guidance.lines.some((line) => /upstream .*request failed/i.test(line)),
+    `expected an upstream-failure line, got: ${JSON.stringify(guidance.lines)}`,
+  );
 });
 
 test('provider guidance map gives tailored OpenRouter next steps', () => {
+  // Provider-specific key advice is deliberately gated on route==='byok'
+  // (commit 4714380) — on the platform route the user has no provider key.
   const guidance = formatAgentErrorGuidance({
     message: 'Provider rejected request.',
     code: 'gateway_invalid_request',
     phase: 'gateway',
     provider: 'openrouter',
+    route: 'byok',
   });
 
-  assert.ok(guidance.lines.some((line) => line.includes('OpenRouter gateway failed')));
+  assert.ok(guidance.lines.some((line) => line.includes('upstream OpenRouter request failed')));
   assert.ok(guidance.lines.some((line) => line.includes('OpenRouter API key')));
   assert.ok(guidance.lines.some((line) => line.includes('provider routing')));
   assert.ok(guidance.meta.includes('provider=openrouter'));
@@ -78,9 +95,13 @@ test('provider guidance map covers common BYOK gateways', () => {
   for (const [provider, expected] of cases) {
     const guidance = formatAgentErrorGuidance({
       message: 'Provider rejected request.',
-      code: 'gateway_authentication_error',
+      // Deliberately NOT gateway_authentication_error: that code matches the
+      // session-re-login branch first, so it never reaches the provider map.
+      // This test covers the per-provider BYOK guidance lines.
+      code: 'gateway_invalid_request',
       phase: 'gateway',
       provider,
+      route: 'byok',
     });
     assert.ok(
       guidance.lines.some((line) => line.includes(expected)),
@@ -124,4 +145,5 @@ test('message window guidance explains wait or upgrade decision', () => {
   assert.ok(guidance.lines.some((line) => line.includes('bahulam.ai/pricing')));
 });
 
-console.log(`\n  ${passed} passed, 0 failed\n`);
+console.log(`\n  ${passed} passed, ${failed} failed\n`);
+if (failed > 0) process.exit(1);

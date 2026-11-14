@@ -4,6 +4,7 @@
  */
 
 import { LocalAgent } from '../src/core/local-agent.mjs';
+import { DEFAULT_REASONING_MODEL } from '../src/config/model-defaults.mjs';
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
 import assert from 'node:assert';
 
@@ -27,7 +28,9 @@ const executor = createToolExecutor();
 
 await test('constructor sets defaults', async () => {
     const agent = new LocalAgent({ apiKey: 'sk-ant-test', toolExecutor: executor });
-    assert.strictEqual(agent.model, 'claude-sonnet-4-20250514');
+    // Assert against the shipped default rather than a literal: the old
+    // hardcoded 'claude-sonnet-4-20250514' outlived the default model swap.
+    assert.strictEqual(agent.model, DEFAULT_REASONING_MODEL);
     assert.strictEqual(agent.verbose, false);
     assert.strictEqual(agent._cancelled, false);
 });
@@ -164,7 +167,7 @@ await test('batches a multi-tool response without duplicating assistant history'
                 usage: null,
             };
         }
-        nextTurnMessages = messages;
+        nextTurnMessages = [...messages];
         return { content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', usage: null };
     };
 
