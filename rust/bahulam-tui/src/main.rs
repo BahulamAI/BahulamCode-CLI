@@ -32,6 +32,23 @@ impl Drop for TerminalGuard {
     }
 }
 
+fn scoped_card_indices(
+    model: &bahulam_tui::model::Model,
+    agent_filter: Option<&str>,
+) -> Vec<usize> {
+    model
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| {
+            agent_filter
+                .map(|agent| card.agent == agent)
+                .unwrap_or(card.agent == "main")
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut file = None;
@@ -156,7 +173,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if follow {
             focused_card = model
                 .lock()
-                .map(|m| m.cards.len().saturating_sub(1))
+                .map(|m| {
+                    scoped_card_indices(&m, agent_filter.as_deref())
+                        .last()
+                        .copied()
+                        .unwrap_or(0)
+                })
                 .unwrap_or(0);
         }
         let visible_scroll = if follow { u16::MAX } else { scroll };
@@ -214,28 +236,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
-                        if count > 0 {
-                            focused_card = focused_card.min(count - 1);
+                        let indices = model
+                            .lock()
+                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                            .unwrap_or_default();
+                        if !indices.is_empty() {
+                            if !indices.contains(&focused_card) {
+                                focused_card = *indices.last().unwrap_or(&indices[0]);
+                            }
                             if !expanded.remove(&focused_card) {
                                 expanded.insert(focused_card);
                             }
                         }
                     }
                     KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
-                        if count > 0 {
-                            focused_card = (focused_card + 1).min(count - 1);
+                        let indices = model
+                            .lock()
+                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                            .unwrap_or_default();
+                        if !indices.is_empty() {
+                            let position = indices
+                                .iter()
+                                .position(|index| *index == focused_card)
+                                .unwrap_or(0);
+                            let next = (position + 1).min(indices.len() - 1);
+                            focused_card = indices[next];
                             follow = false;
-                            scroll = focused_card.min(u16::MAX as usize) as u16;
+                            scroll = next.min(u16::MAX as usize) as u16;
                             focus_panel = 1;
                         }
                     }
                     KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        focused_card = focused_card.saturating_sub(1);
-                        follow = false;
-                        scroll = focused_card.min(u16::MAX as usize) as u16;
-                        focus_panel = 1;
+                        let indices = model
+                            .lock()
+                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                            .unwrap_or_default();
+                        if !indices.is_empty() {
+                            let position = indices
+                                .iter()
+                                .position(|index| *index == focused_card)
+                                .unwrap_or(0);
+                            let previous = position.saturating_sub(1);
+                            focused_card = indices[previous];
+                            follow = false;
+                            scroll = previous.min(u16::MAX as usize) as u16;
+                            focus_panel = 1;
+                        }
                     }
                     KeyCode::Char('1') if stdio && focus_panel == 0 => {
                         let action = model
@@ -338,12 +384,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Enter if focus_panel == 2 => {
-                        if let Some(agent) = model
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.agents.get(focused_agent).map(|a| a.id.clone()))
-                        {
+                        let selected_agent = model.lock().ok().and_then(|m| {
+                            m.agents.get(focused_agent).map(|agent| {
+                                let id = agent.id.clone();
+                                let last = scoped_card_indices(&m, Some(&id))
+                                    .last()
+                                    .copied()
+                                    .unwrap_or(0);
+                                (id, last)
+                            })
+                        });
+                        if let Some((agent, last_card)) = selected_agent {
                             agent_filter = Some(agent);
+                            focused_card = last_card;
+                            scroll = u16::MAX;
                             follow = true;
                             focus_panel = 1;
                         }
@@ -373,7 +427,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if follow {
                             scroll = model
                                 .lock()
-                                .map(|m| m.cards.len().saturating_sub(5) as u16)
+                                .map(|m| {
+                                    scoped_card_indices(&m, agent_filter.as_deref())
+                                        .len()
+                                        .saturating_sub(5)
+                                        as u16
+                                })
                                 .unwrap_or(0);
                             follow = false;
                         } else {
@@ -385,7 +444,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             && detail_card.is_none() =>
                     {
                         if !follow {
-                            let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
+                            let count = model
+                                .lock()
+                                .map(|m| scoped_card_indices(&m, agent_filter.as_deref()).len())
+                                .unwrap_or(0);
                             scroll = scroll.saturating_add(1);
                             if scroll as usize >= count.saturating_sub(5) {
                                 follow = true;
@@ -439,7 +501,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if follow {
                             scroll = model
                                 .lock()
-                                .map(|m| m.cards.len().saturating_sub(15) as u16)
+                                .map(|m| {
+                                    scoped_card_indices(&m, agent_filter.as_deref())
+                                        .len()
+                                        .saturating_sub(15)
+                                        as u16
+                                })
                                 .unwrap_or(0);
                             follow = false;
                         } else {
@@ -448,7 +515,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::PageDown if focus_panel == 1 => {
                         if !follow {
-                            let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
+                            let count = model
+                                .lock()
+                                .map(|m| scoped_card_indices(&m, agent_filter.as_deref()).len())
+                                .unwrap_or(0);
                             scroll = scroll.saturating_add(10);
                             if scroll as usize >= count.saturating_sub(5) {
                                 follow = true;

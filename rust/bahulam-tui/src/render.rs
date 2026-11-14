@@ -205,7 +205,13 @@ pub fn draw_with_input(
             })
             .unwrap_or_else(|| " Details ".into())
     } else if let Some(agent) = agent_filter {
-        format!(" Agent detail  ·  {} ", safe_text(agent))
+        let label = model
+            .agents
+            .iter()
+            .find(|row| row.id == agent)
+            .map(|row| row.label.as_str())
+            .unwrap_or(agent);
+        format!(" Agent detail  ·  {} ", safe_text(label))
     } else if live {
         format!(" Conversation  ·  seq {} ", model.last_seq)
     } else {
@@ -281,7 +287,7 @@ pub fn draw_with_input(
                     Span::styled(format!("{tree}{glyph} "), Style::default().fg(color)),
                     Span::styled(
                         middle_ellipsis(&safe_text(&agent.label), 24),
-                        Style::default().fg(p.text),
+                        Style::default().fg(agent_identity_color(&agent.id, p)),
                     ),
                     Span::styled(
                         format!("  {}{}", safe_text(&agent.status), detail),
@@ -431,7 +437,11 @@ pub fn draw_with_input(
         2 => "agents",
         _ => "prompt",
     };
-    let shortcuts = if interactive {
+    let shortcuts = if interactive && agent_filter.is_some() {
+        "Ctrl+N/P tool · Enter details · Esc main · Ctrl+O all".to_owned()
+    } else if interactive && focus_panel == 2 {
+        "↑↓ select agent · Enter transcript · Tab panel · Ctrl+Q exit".to_owned()
+    } else if interactive {
         format!("Tab {focus_name} · Ctrl+N/P card · Enter open · Ctrl+O all · Ctrl+Q exit")
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O all · q exit".to_owned()
@@ -457,6 +467,20 @@ fn agent_state(status: &str, p: Palette) -> (&'static str, Color) {
         "failed" => ("✗", p.danger),
         "done" | "complete" => ("✓", p.success),
         _ => ("○", p.muted),
+    }
+}
+
+fn agent_identity_color(agent: &str, p: Palette) -> Color {
+    if agent == "main" {
+        return p.accent;
+    }
+    let hash = agent.bytes().fold(0usize, |value, byte| {
+        value.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    match hash % 3 {
+        0 => p.accent,
+        1 => p.success,
+        _ => p.code,
     }
 }
 
@@ -577,7 +601,8 @@ fn card_lines(
         _ => ("•", p.accent),
     };
     let focus = if focused == Some(index) { "›" } else { " " };
-    let is_assistant = card.title == "Assistant";
+    let agent_message = card.title.strip_prefix("Agent: ");
+    let is_assistant = card.title == "Assistant" || agent_message.is_some();
     let is_user = card.title == "Prompt";
     let glyph = if is_assistant {
         "•"
@@ -586,8 +611,10 @@ fn card_lines(
     } else {
         glyph
     };
-    let display_title = if is_assistant {
+    let display_title = if card.title == "Assistant" {
         "Bahulam"
+    } else if let Some(agent) = agent_message {
+        agent
     } else if is_user {
         "You"
     } else {
@@ -600,8 +627,10 @@ fn card_lines(
     } else {
         &card.status
     };
-    let color = if is_assistant {
+    let color = if card.title == "Assistant" {
         p.accent
+    } else if is_assistant {
+        agent_identity_color(&card.agent, p)
     } else if is_user {
         p.text
     } else {

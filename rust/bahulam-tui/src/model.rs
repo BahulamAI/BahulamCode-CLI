@@ -131,6 +131,24 @@ pub fn safe_text(input: &str) -> String {
 }
 
 impl Model {
+    fn message_title(&self, agent: &str) -> String {
+        if agent == "main" {
+            return "Assistant".into();
+        }
+        let label = self
+            .agents
+            .iter()
+            .find(|row| row.id == agent)
+            .map(|row| row.label.as_str())
+            .unwrap_or(agent);
+        let name = label
+            .split_once(':')
+            .map(|(name, _)| name)
+            .unwrap_or(label)
+            .trim();
+        format!("Agent: {}", if name.is_empty() { agent } else { name })
+    }
+
     pub fn request_details(&mut self, index: usize) -> Option<String> {
         let card = self.cards.get_mut(index)?;
         if card.detail.is_some() {
@@ -251,7 +269,8 @@ impl Model {
                 let index = if let Some(index) = self.messages.get(&message_key) {
                     *index
                 } else {
-                    let index = self.card(agent, "Assistant", String::new(), "streaming");
+                    let title = self.message_title(&agent);
+                    let index = self.card(&agent, &title, String::new(), "streaming");
                     self.messages.insert(message_key.clone(), index);
                     index
                 };
@@ -269,10 +288,12 @@ impl Model {
                     }
                     self.cards[index].status = "done".into();
                 } else if !final_text.is_empty() {
-                    let index = self.card(agent, "Assistant", final_text, "done");
+                    let title = self.message_title(&agent);
+                    let index = self.card(&agent, &title, final_text, "done");
                     self.cards[index].detail = Some(self.cards[index].body.clone());
                 } else if let Some(reference) = &event.payload_ref {
-                    let index = self.card(agent, "Assistant", String::new(), "done");
+                    let title = self.message_title(&agent);
+                    let index = self.card(&agent, &title, String::new(), "done");
                     self.cards[index].payload_ref = Some(reference.clone());
                 }
             }
@@ -347,10 +368,11 @@ impl Model {
                             "done"
                         }
                         .into();
-                    self.cards[index].body = if data.get("preview").is_some() {
-                        text(data, "preview")
-                    } else {
+                    let preview = text(data, "preview");
+                    self.cards[index].body = if preview.is_empty() {
                         text(data, "summary")
+                    } else {
+                        preview
                     };
                     if let Some(output) = data.get("output") {
                         let detail = output

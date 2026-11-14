@@ -265,10 +265,15 @@ function project(type, src, identity) {
     case 'agent_spawned':
       return { agent_id: identity.agentId, type: src.type || src.worker || src.name || 'agent',
         task: src.task || src.query || '', model: src.model };
-    case 'agent_finished':
-      return { agent_id: identity.agentId, ok: !src.error && src.ok !== false && src.success !== false,
-        report: asText(src.report || src.summary) || '', tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens,
-        cost_usd: src.cost_usd, error: asText(src.error) };
+    case 'agent_finished': {
+      const ok = !src.error && src.ok !== false && src.success !== false;
+      const report = asText(src.report || src.summary) || '';
+      const error = asText(src.error);
+      return { agent_id: identity.agentId, ok,
+        report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
+        tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens,
+        cost_usd: src.cost_usd, error };
+    }
     case 'agent_status':
       return { agent_id: identity.agentId, status: src.status || src.message || 'working',
         current_tool_id: src.current_tool_id, tokens: src.tokens, elapsed_ms: src.elapsed_ms };
