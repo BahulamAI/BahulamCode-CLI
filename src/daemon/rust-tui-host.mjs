@@ -18,7 +18,7 @@ export function startRustTuiHost({ onCommand, onExit } = {}) {
   const unregister = registerBroadcaster(event => {
     if (closed || !events.writable) return;
     events.write(`${JSON.stringify(event)}\n`);
-  }, { schemaVersion: 2 });
+  }, { schemaVersion: 2, live: true });
 
   commands.setEncoding('utf8');
   commands.on('data', chunk => {

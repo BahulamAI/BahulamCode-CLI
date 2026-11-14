@@ -27,7 +27,7 @@ import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { LocalAgent } from '../core/local-agent.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
-import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
+import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
@@ -5494,18 +5494,24 @@ export async function startTerminalRepl() {
                 data: { payload_ref: payloadRef, ...detail },
               });
               try {
-                if (!/^payloads\/event-[1-9]\d*\.json$/.test(payloadRef)) {
-                  throw new Error('invalid session payload reference');
+                let payload;
+                if (payloadRef.startsWith('memory:')) {
+                  payload = readTransientPayload(payloadRef);
+                  if (!payload) throw new Error('live detail payload expired; run the command again to capture it');
+                } else {
+                  if (!/^payloads\/event-[1-9]\d*\.json$/.test(payloadRef)) {
+                    throw new Error('invalid session payload reference');
+                  }
+                  const { daemonSessionDir } = await import('../core/paths.mjs');
+                  const sessionDir = fs.realpathSync(daemonSessionDir(session.id));
+                  const payloadPath = fs.realpathSync(path.join(sessionDir, payloadRef));
+                  if (!payloadPath.startsWith(`${sessionDir}${path.sep}`)) {
+                    throw new Error('payload path is outside this session');
+                  }
+                  const size = fs.statSync(payloadPath).size;
+                  if (size > 64 * 1024 * 1024) throw new Error('session payload exceeds 64 MiB');
+                  payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
                 }
-                const { daemonSessionDir } = await import('../core/paths.mjs');
-                const sessionDir = fs.realpathSync(daemonSessionDir(session.id));
-                const payloadPath = fs.realpathSync(path.join(sessionDir, payloadRef));
-                if (!payloadPath.startsWith(`${sessionDir}${path.sep}`)) {
-                  throw new Error('payload path is outside this session');
-                }
-                const size = fs.statSync(payloadPath).size;
-                if (size > 64 * 1024 * 1024) throw new Error('session payload exceeds 64 MiB');
-                const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
                 let detail;
                 if (payload.name && payload.args && typeof payload.args === 'object') {
                   const args = payload.args;

@@ -64,31 +64,65 @@ export async function closeActiveEventLog() {
 
 // ── broadcasters (.4) ─────────────────────────────────────────
 //
-// The socket server registers itself here so live events fan out to
-// attached clients as they're written to the durable log. Broadcasters
-// are fire-and-forget; a slow/broken one MUST NOT slow down or block
-// the tap. Each broadcaster is invoked in its own try/catch.
+// Live clients receive projected events independently of optional disk
+// logging. Socket and dashboard clients also receive events when persistence
+// is on. Broadcasters are fire-and-forget and must not block the tap.
 //
 // Registration is process-global (one bahulamd = one process = one tap
 // registry). Multiple socket servers CAN register; the tap doesn't care.
 
 const _broadcasters = [];
+const _transientPayloads = new Map();
+let _transientPayloadBytes = 0;
+let _wireState = null;
 
 /**
  * Register a broadcaster. Returns an unregister function.
- * The broadcaster receives the exact serialized frame after it is queued for
- * persistence (flush remains buffered). Existing subscribers get v1; a new
- * client can request { schemaVersion: 2 }.
+ * Persistence is controlled by BAHULAM_DAEMON_EVENTLOG; live-only clients
+ * opt in with `live: true`. Existing subscribers get v1; a new client can
+ * request schema version 2.
  */
-export function registerBroadcaster(fn, { schemaVersion = 1 } = {}) {
+export function registerBroadcaster(fn, { schemaVersion = 1, live = false } = {}) {
   if (typeof fn !== 'function') throw new Error('registerBroadcaster: fn must be a function');
   if (![1, 2].includes(schemaVersion)) throw new Error('Unsupported broadcaster schema version');
-  const subscriber = { fn, schemaVersion };
+  const subscriber = { fn, schemaVersion, live: live === true };
   _broadcasters.push(subscriber);
   return () => {
     const i = _broadcasters.indexOf(subscriber);
     if (i >= 0) _broadcasters.splice(i, 1);
+    if (subscriber.live && !_broadcasters.some(entry => entry.live)) {
+      _transientPayloads.clear();
+      _transientPayloadBytes = 0;
+    }
   };
+}
+
+/** Read an in-memory detail payload emitted to a live client when disk logging is off. */
+export function readTransientPayload(ref) {
+  if (typeof ref !== 'string' || !ref.startsWith('memory:')) return undefined;
+  const serialized = _transientPayloads.get(ref);
+  return serialized ? JSON.parse(serialized) : undefined;
+}
+
+function retainTransientPayload(ref, serialized) {
+  const bytes = Buffer.byteLength(serialized);
+  if (bytes > 64 * 1024 * 1024) return false;
+  while (_transientPayloads.size >= 128 || _transientPayloadBytes + bytes > 64 * 1024 * 1024) {
+    const oldest = _transientPayloads.keys().next().value;
+    if (!oldest) break;
+    _transientPayloadBytes -= Buffer.byteLength(_transientPayloads.get(oldest) || '');
+    _transientPayloads.delete(oldest);
+  }
+  _transientPayloads.set(ref, serialized);
+  _transientPayloadBytes += bytes;
+  return true;
+}
+
+function boundedMetadata(data) {
+  const safe = Object.fromEntries(Object.entries(data).filter(([key, value]) =>
+    key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
+      (typeof value === 'string' && Buffer.byteLength(value) <= 256))));
+  return Buffer.byteLength(JSON.stringify(safe)) <= 2048 ? safe : {};
 }
 
 // ── SSE →  event mapping ──────────────────────────────────────
@@ -221,26 +255,52 @@ function project(type, src, identity) {
   }
 }
 
-/** Read-only SSE tap. v2 is durable; existing broadcasters retain v1 by default. */
+/** Read-only SSE tap. Events persist when enabled and otherwise stay transient for live clients. */
 export function tapSseEvent(event, { sessionId, turnId } = {}) {
-  if (!_enabled() || !event?.type || !sessionId) return;
+  const persist = _enabled();
+  const hasLiveClient = _broadcasters.some(subscriber => subscriber.live);
+  if ((!persist && !hasLiveClient) || !event?.type || !sessionId) return;
   const type = SSE_TO_V2[event.type];
   if (!type) return;
   try {
-    const log = _openLogFor(sessionId);
+    const log = persist ? _openLogFor(sessionId) : null;
+    if (!_wireState || _wireState.sessionId !== sessionId) {
+      _wireState = { sessionId, turnId: null, seq: log?.currentSeq() || 0 };
+    }
+    const nextSeq = log ? log.currentSeq() + 1 : _wireState.seq + 1;
     const src = event.data || {};
     const scoped = type !== 'session_started';
-    if (scoped) _current.turnId = turnId || src.turn_id || _current.turnId || `turn_${log.currentSeq() + 1}`;
+    if (scoped) _wireState.turnId = turnId || src.turn_id || _wireState.turnId || `turn_${nextSeq}`;
     const agentEvent = type.startsWith('agent_');
     const agentId = src.run_id || src.sub_agent_run_id || src.agent_id || src.subagent_id || src.sub_agent_id ||
-      (agentEvent ? src.worker || src.name || `unattributed-agent:${log.currentSeq() + 1}` :
-        (src.sub_agent || src.internal ? `unattributed-agent:${log.currentSeq() + 1}` : 'main'));
+      (agentEvent ? src.worker || src.name || `unattributed-agent:${nextSeq}` :
+        (src.sub_agent || src.internal ? `unattributed-agent:${nextSeq}` : 'main'));
     const parentAgentId = agentId !== 'main' ? src.parent_agent_id || src.parent_run_id || 'main' : undefined;
-    const data = project(type, src, { agentId, nextSeq: log.currentSeq() + 1, sourceType: event.type });
-    const wireEvent = log.appendEvent(type, data, {
-      turnId: scoped ? _current.turnId : null, agentId, parentAgentId,
-    });
-    if (type === 'turn_ended') _current.turnId = null;
+    let data = project(type, src, { agentId, nextSeq, sourceType: event.type });
+    let wireEvent;
+    if (log) {
+      wireEvent = log.appendEvent(type, data, {
+        turnId: scoped ? _wireState.turnId : null, agentId, parentAgentId,
+      });
+    } else {
+      const serialized = JSON.stringify(data);
+      let payloadRef;
+      if (Buffer.byteLength(serialized) > 4096) {
+        payloadRef = `memory:${sessionId}:${nextSeq}`;
+        if (!retainTransientPayload(payloadRef, serialized)) {
+          throw new Error('live detail payload exceeds the 64 MiB display limit');
+        }
+        data = boundedMetadata(data);
+      }
+      wireEvent = {
+        seq: nextSeq, ts: new Date().toISOString(), type, session_id: sessionId,
+        v: 2, turn_id: scoped ? _wireState.turnId : null, agent_id: agentId,
+        ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
+        id: `${sessionId}:${nextSeq}`, ...(payloadRef ? { payload_ref: payloadRef } : {}), data,
+      };
+    }
+    _wireState.seq = wireEvent.seq;
+    if (type === 'turn_ended') _wireState.turnId = null;
     for (const { fn, schemaVersion } of _broadcasters) {
       try {
         const frame = schemaVersion === 2 ? wireEvent : toLegacyEvent(wireEvent);
