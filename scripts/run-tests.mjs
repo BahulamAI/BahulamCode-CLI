@@ -110,6 +110,8 @@ const UNIT_TESTS = [
     'test/test-bahulam-contract.mjs',
     'test/test-session-manager.mjs',
     'test/test-session-core.mjs',
+    'test/test-session-protocol.mjs',
+    'test/test-protocol-cache-invariance.mjs',
     'test/test-safety.mjs',
     'test/test-jsonl-writer.mjs',
     'test/test-analytics.mjs',

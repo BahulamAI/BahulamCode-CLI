@@ -1,0 +1,771 @@
+use crate::protocol::{EventEnvelope, EVENT_TYPES};
+use serde_json::Value;
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct Card {
+    pub agent: String,
+    pub title: String,
+    pub primary: String,
+    pub metadata: String,
+    pub body: String,
+    pub status: String,
+    pub payload_ref: Option<String>,
+    pub detail: Option<String>,
+    pub detail_loading: bool,
+}
+#[derive(Debug, Clone)]
+pub struct Agent {
+    pub id: String,
+    pub parent: Option<String>,
+    pub label: String,
+    pub status: String,
+    pub current_tool: String,
+    pub elapsed_ms: Option<f64>,
+    pub tokens: String,
+}
+#[derive(Debug, Clone)]
+pub struct Approval {
+    pub id: String,
+    pub tool: String,
+    pub command: String,
+    pub cwd: String,
+    pub reason: String,
+    pub payload_ref: Option<String>,
+}
+#[derive(Debug, Default)]
+pub struct Model {
+    pub session: String,
+    pub cwd: String,
+    pub model: String,
+    pub last_seq: i64,
+    pub cards: Vec<Card>,
+    pub agents: Vec<Agent>,
+    pub plan: Vec<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost: f64,
+    pub context_used_pct: f64,
+    pub status: String,
+    pub warnings: Vec<String>,
+    pub approval: Option<Approval>,
+    tools: HashMap<String, usize>,
+    messages: HashMap<String, usize>,
+}
+
+fn text(data: &Value, key: &str) -> String {
+    data.get(key)
+        .and_then(Value::as_str)
+        .map(safe_text)
+        .unwrap_or_default()
+}
+
+pub fn known_event(kind: &str) -> bool {
+    EVENT_TYPES.contains(&kind)
+        || [
+            "tool_call",
+            "tool_result",
+            "agent_complete",
+            "tokens_used",
+            "sub_agent_start",
+            "sub_agent_complete",
+        ]
+        .contains(&kind)
+}
+
+/// Logs are untrusted display data. Strip terminal controls, including OSC/DCS/CSI.
+/// Phase 0 has no SGR rendering; preserving styled output is a later renderer task.
+pub fn safe_text(input: &str) -> String {
+    enum State {
+        Text,
+        Escape,
+        Csi,
+        String,
+        StringEscape,
+    }
+    let mut state = State::Text;
+    let mut out = String::new();
+    for ch in input.chars() {
+        state = match state {
+            State::Text => match ch {
+                '\u{1b}' => State::Escape,
+                '\u{9b}' => State::Csi,
+                '\u{9d}' | '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => State::String,
+                '\n' | '\t' => {
+                    out.push(ch);
+                    State::Text
+                }
+                c if c.is_control() => State::Text,
+                _ => {
+                    out.push(ch);
+                    State::Text
+                }
+            },
+            State::Escape => match ch {
+                '[' => State::Csi,
+                ']' | 'P' | 'X' | '^' | '_' => State::String,
+                _ => State::Text,
+            },
+            State::Csi => {
+                if ('\u{40}'..='\u{7e}').contains(&ch) {
+                    State::Text
+                } else {
+                    State::Csi
+                }
+            }
+            State::String => match ch {
+                '\u{7}' | '\u{9c}' => State::Text,
+                '\u{1b}' => State::StringEscape,
+                _ => State::String,
+            },
+            State::StringEscape => {
+                if ch == '\\' {
+                    State::Text
+                } else {
+                    State::String
+                }
+            }
+        };
+    }
+    out
+}
+
+impl Model {
+    pub fn request_details(&mut self, index: usize) -> Option<String> {
+        let card = self.cards.get_mut(index)?;
+        if card.detail.is_some() {
+            return None;
+        }
+        let reference = card.payload_ref.clone()?;
+        if card.detail_loading {
+            return None;
+        }
+        card.detail_loading = true;
+        Some(reference)
+    }
+
+    pub fn detail_line_count(&self, index: usize) -> usize {
+        self.cards
+            .get(index)
+            .and_then(|card| card.detail.as_deref().or(Some(card.body.as_str())))
+            .map(str::lines)
+            .map(Iterator::count)
+            .unwrap_or(0)
+    }
+
+    fn card(&mut self, agent: &str, title: &str, body: String, status: &str) -> usize {
+        let index = self.cards.len();
+        self.cards.push(Card {
+            agent: agent.into(),
+            title: title.into(),
+            primary: String::new(),
+            metadata: String::new(),
+            body,
+            status: status.into(),
+            payload_ref: None,
+            detail: None,
+            detail_loading: false,
+        });
+        index
+    }
+
+    pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
+        if event.r#type == "detail_loaded" {
+            let reference = text(&event.data, "payload_ref");
+            let detail = text(&event.data, "detail");
+            if let Some(card) = self
+                .cards
+                .iter_mut()
+                .find(|card| card.payload_ref.as_deref() == Some(reference.as_str()))
+            {
+                card.detail = Some(detail.clone());
+                card.detail_loading = false;
+                if event.data.get("error").is_some() {
+                    card.detail = Some(format!(
+                        "Could not load details: {}",
+                        text(&event.data, "error")
+                    ));
+                }
+            }
+            if self
+                .approval
+                .as_ref()
+                .is_some_and(|approval| approval.payload_ref.as_deref() == Some(reference.as_str()))
+            {
+                if let Some(approval) = self.approval.as_mut() {
+                    approval.command = detail;
+                }
+            }
+            return Ok(());
+        }
+        if self.session.is_empty() {
+            self.session = event.session_id.clone();
+        }
+        if self.session != event.session_id {
+            return Err("Replay contains more than one session".into());
+        }
+        if event.seq <= self.last_seq {
+            return Ok(());
+        }
+        self.last_seq = event.seq;
+        let kind = event.r#type.as_str();
+        if !known_event(kind) {
+            return Ok(());
+        }
+        let data = &event.data;
+        let agent = event
+            .agent_id
+            .as_deref()
+            .or_else(|| data.get("subagent_id").and_then(Value::as_str))
+            .unwrap_or("main");
+        let turn = event.turn_id.as_deref().unwrap_or("legacy");
+        if !self.agents.iter().any(|a| a.id == agent) {
+            self.agents.push(Agent {
+                id: agent.into(),
+                parent: event.parent_agent_id.clone(),
+                label: safe_text(agent),
+                status: "idle".into(),
+                current_tool: String::new(),
+                elapsed_ms: None,
+                tokens: String::new(),
+            });
+        }
+        let tool_id = text(data, "tool_id");
+        let key = format!("{turn}/{agent}/{tool_id}");
+        let message_key = format!("{turn}/{agent}");
+        match kind {
+            "session_started" => {
+                self.cwd = text(data, "cwd");
+                self.model = text(data, "model");
+                self.status = self.model.clone();
+                self.card(agent, "Session", text(data, "cwd"), "ready");
+            }
+            "turn_started" => {
+                self.status = "working".into();
+                if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
+                    main.status = "working".into();
+                }
+                self.card(agent, "Prompt", text(data, "text"), "sent");
+            }
+            "text_delta" => {
+                let index = if let Some(index) = self.messages.get(&message_key) {
+                    *index
+                } else {
+                    let index = self.card(agent, "Assistant", String::new(), "streaming");
+                    self.messages.insert(message_key.clone(), index);
+                    index
+                };
+                self.cards[index].body.push_str(&text(data, "chunk"));
+            }
+            "message_end" => {
+                let final_text = text(data, "text");
+                if let Some(index) = self.messages.remove(&message_key) {
+                    if !final_text.is_empty() {
+                        self.cards[index].body = final_text;
+                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                        self.cards[index].payload_ref = None;
+                    } else if let Some(reference) = &event.payload_ref {
+                        self.cards[index].payload_ref = Some(reference.clone());
+                    }
+                    self.cards[index].status = "done".into();
+                } else if !final_text.is_empty() {
+                    let index = self.card(agent, "Assistant", final_text, "done");
+                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                } else if let Some(reference) = &event.payload_ref {
+                    let index = self.card(agent, "Assistant", String::new(), "done");
+                    self.cards[index].payload_ref = Some(reference.clone());
+                }
+            }
+            "tool_requested" | "tool_call" if !self.tools.contains_key(&key) => {
+                let name = text(data, "name");
+                let args_value = data.get("args").cloned().unwrap_or(Value::Null);
+                let primary = text(data, "primary");
+                let primary = if !primary.is_empty() {
+                    primary
+                } else {
+                    [
+                        "path",
+                        "file_path",
+                        "command",
+                        "query",
+                        "pattern",
+                        "target",
+                        "url",
+                    ]
+                    .iter()
+                    .find_map(|key| args_value.get(key).and_then(Value::as_str))
+                    .map(safe_text)
+                    .or_else(|| {
+                        (name != "write_project")
+                            .then(|| data.get("args").map(|_| safe_text(&args_value.to_string())))
+                            .flatten()
+                    })
+                    .unwrap_or_default()
+                };
+                let preview = text(data, "preview");
+                let body = if !preview.is_empty() {
+                    preview
+                } else if let Some(args) = data.get("args") {
+                    tool_arguments_preview(&name, args)
+                } else {
+                    String::new()
+                };
+                let index = self.card(agent, &name, body, "requested");
+                self.cards[index].primary = primary;
+                if let Some(arguments) = data.get("args") {
+                    self.cards[index].detail = Some(tool_arguments_detail(&name, arguments));
+                    self.cards[index].payload_ref = None;
+                } else {
+                    self.cards[index].payload_ref = event.payload_ref.clone();
+                    if self.cards[index].primary.is_empty() {
+                        self.cards[index].primary = "see details".into();
+                    }
+                }
+                self.tools.insert(key, index);
+            }
+            "tool_started" | "tool_finished" | "tool_result" | "tool_output_delta" => {
+                let index = if let Some(index) = self.tools.get(&key) {
+                    *index
+                } else {
+                    let index =
+                        self.card(agent, &format!("Tool {tool_id}"), String::new(), "unknown");
+                    self.tools.insert(key, index);
+                    index
+                };
+                if kind == "tool_started" {
+                    self.cards[index].status = "running".into();
+                    if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                        row.current_tool = self.cards[index].title.clone();
+                    }
+                } else if kind == "tool_output_delta" {
+                    self.cards[index].body.push_str(&text(data, "chunk"));
+                } else {
+                    self.cards[index].status =
+                        if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                            "failed"
+                        } else {
+                            "done"
+                        }
+                        .into();
+                    self.cards[index].body = text(data, "summary");
+                    if let Some(output) = data.get("output") {
+                        let detail = output
+                            .as_str()
+                            .map(safe_text)
+                            .unwrap_or_else(|| pretty_json(output));
+                        self.cards[index].detail = Some(detail);
+                        self.cards[index].payload_ref = None;
+                    } else if let Some(reference) = &event.payload_ref {
+                        self.cards[index].payload_ref = Some(reference.clone());
+                    }
+                    let mut metadata = Vec::new();
+                    if let Some(code) = data.get("exit_code").and_then(Value::as_i64) {
+                        metadata.push(format!("exit {code}"));
+                    }
+                    if let Some(ms) = data.get("duration_ms").and_then(Value::as_f64) {
+                        metadata.push(format!("{:.1}s", ms / 1000.0));
+                    }
+                    if let Some(stats) = data.get("diff_stats") {
+                        let added = stats.get("added").and_then(Value::as_u64).unwrap_or(0);
+                        let removed = stats.get("removed").and_then(Value::as_u64).unwrap_or(0);
+                        if added > 0 || removed > 0 {
+                            metadata.push(format!("+{added} −{removed}"));
+                        }
+                    }
+                    self.cards[index].metadata = metadata.join(" · ");
+                    if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                        row.current_tool.clear();
+                    }
+                }
+            }
+            "agent_spawned" | "sub_agent_start" | "agent_status" | "agent_finished"
+            | "sub_agent_complete" => {
+                let mut final_report = None;
+                let row = self.agents.iter_mut().find(|a| a.id == agent).unwrap();
+                if kind == "agent_spawned" || kind == "sub_agent_start" {
+                    row.label = format!("{}: {}", text(data, "type"), text(data, "task"));
+                    row.status = "working".into();
+                } else if kind == "agent_status" {
+                    row.status = text(data, "status");
+                    let current_tool_id = text(data, "current_tool_id");
+                    if !current_tool_id.is_empty() {
+                        row.current_tool = self
+                            .tools
+                            .get(&format!("{turn}/{agent}/{current_tool_id}"))
+                            .map(|index| self.cards[*index].title.clone())
+                            .unwrap_or_else(|| "tool running".into());
+                    }
+                    row.elapsed_ms = data.get("elapsed_ms").and_then(Value::as_f64);
+                    row.tokens = data.get("tokens").map(safe_text_json).unwrap_or_default();
+                } else {
+                    row.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                        "failed"
+                    } else {
+                        "done"
+                    }
+                    .into();
+                    if kind == "agent_finished" || kind == "sub_agent_complete" {
+                        let report = text(data, "report");
+                        if !report.is_empty() || event.payload_ref.is_some() {
+                            final_report =
+                                Some((report, row.status.clone(), event.payload_ref.clone()));
+                        }
+                    }
+                }
+                if let Some((report, status, reference)) = final_report {
+                    let index = self.card("main", "Agent report", report, &status);
+                    if !self.cards[index].body.is_empty() {
+                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                    } else {
+                        self.cards[index].payload_ref = reference;
+                    }
+                }
+            }
+            "plan_updated" => {
+                self.plan = data
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|item| {
+                        if let Some(line) = item.as_str() {
+                            safe_text(line)
+                        } else {
+                            format!("[{}] {}", text(item, "state"), text(item, "text"))
+                        }
+                    })
+                    .collect();
+            }
+            "diff" => {
+                let path = text(data, "path");
+                let body = data
+                    .get("hunks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|hunk| {
+                        hunk.get("text")
+                            .and_then(Value::as_str)
+                            .or_else(|| hunk.get("content").and_then(Value::as_str))
+                            .map(safe_text)
+                            .unwrap_or_else(|| safe_text(&hunk.to_string()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let index = self.card(agent, "Diff", body, "done");
+                self.cards[index].primary = path;
+                if !self.cards[index].body.is_empty() {
+                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                } else if let Some(reference) = &event.payload_ref {
+                    self.cards[index].payload_ref = Some(reference.clone());
+                }
+            }
+            "usage_update" | "tokens_used" => {
+                if let Some(value) = data
+                    .get("input_tokens")
+                    .or_else(|| data.get("prompt"))
+                    .and_then(Value::as_u64)
+                {
+                    self.input_tokens = value;
+                }
+                if let Some(value) = data
+                    .get("output_tokens")
+                    .or_else(|| data.get("completion"))
+                    .and_then(Value::as_u64)
+                {
+                    self.output_tokens = value;
+                }
+                if let Some(value) = data.get("cost_usd").and_then(Value::as_f64) {
+                    self.cost = value;
+                }
+                if let Some(value) = data.get("context_used_pct").and_then(Value::as_f64) {
+                    self.context_used_pct = value;
+                }
+            }
+            "notice" => {
+                let cause = text(data, "cause");
+                let next_step = text(data, "next_step");
+                let body = [cause, next_step]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let index = self.card(agent, &text(data, "title"), body, &text(data, "level"));
+                if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
+                    self.cards[index].payload_ref = event.payload_ref.clone();
+                } else {
+                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                }
+                if let Some(retry) = data.get("retry") {
+                    self.cards[index].metadata = format!("retry {}", safe_text_json(retry));
+                }
+            }
+            "command_result" => {
+                let name = text(data, "name");
+                let result = data
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .map(safe_text)
+                    .filter(|result| !result.is_empty())
+                    .unwrap_or_else(|| "(no output)".into());
+                let status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                    "failed"
+                } else {
+                    "done"
+                };
+                let index = self.card(agent, &format!("Command {name}"), result, status);
+                if let Some(reference) = &event.payload_ref {
+                    if data
+                        .get("result")
+                        .and_then(Value::as_str)
+                        .is_some_and(|result| result.len() <= 220)
+                    {
+                        self.cards[index].payload_ref = Some(reference.clone());
+                    } else {
+                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                    }
+                } else {
+                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                }
+                self.cards[index].metadata =
+                    if data.get("added_to_context").and_then(Value::as_bool) == Some(true) {
+                        "added to context".into()
+                    } else {
+                        "display only".into()
+                    };
+            }
+            "approval_required" => {
+                self.approval = Some(Approval {
+                    id: text(data, "apr_id"),
+                    tool: text(data, "name"),
+                    command: data.get("args").map(safe_text_json).unwrap_or_default(),
+                    cwd: text(data, "cwd"),
+                    reason: text(data, "reason"),
+                    payload_ref: event.payload_ref.clone(),
+                });
+                let index = self.card(agent, "Approval", text(data, "reason"), "waiting");
+                if event.payload_ref.is_some() && data.get("args").is_none() {
+                    self.cards[index].payload_ref = event.payload_ref.clone();
+                }
+            }
+            "approval_decided" => {
+                if self
+                    .approval
+                    .as_ref()
+                    .is_some_and(|approval| approval.id == text(data, "apr_id"))
+                {
+                    self.approval = None;
+                }
+            }
+            "turn_ended" | "agent_complete" => {
+                self.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                    "failed"
+                } else {
+                    "complete"
+                }
+                .into();
+                if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
+                    main.status = self.status.clone();
+                }
+                let index = self.card(agent, "Turn", text(data, "summary"), &self.status.clone());
+                if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
+                    self.cards[index].payload_ref = event.payload_ref.clone();
+                } else if data.get("summary").is_some() {
+                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                }
+                let mut metadata = Vec::new();
+                if let Some(ms) = data.get("duration_ms").and_then(Value::as_f64) {
+                    metadata.push(format!("{:.1}s", ms / 1000.0));
+                }
+                if self.cost > 0.0 {
+                    metadata.push(format!("${:.4}", self.cost));
+                }
+                self.cards[index].metadata = metadata.join(" · ");
+            }
+            "artifact_created" => {
+                let index = self.card(
+                    agent,
+                    &text(data, "title"),
+                    text(data, "path"),
+                    &text(data, "kind"),
+                );
+                if let Some(reference) = &event.payload_ref {
+                    self.cards[index].payload_ref = Some(reference.clone());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn transcript(&self) -> Vec<String> {
+        self.cards
+            .iter()
+            .flat_map(|card| {
+                let mut lines = vec![format!(
+                    "[{}] {} ({})",
+                    card.status,
+                    card.title,
+                    safe_text(&card.agent)
+                )];
+                lines.extend(card.body.lines().map(|line| format!("  {line}")));
+                lines.push(String::new());
+                lines
+            })
+            .collect()
+    }
+}
+
+fn safe_text_json(value: &Value) -> String {
+    safe_text(&value.to_string())
+}
+
+fn pretty_json(value: &Value) -> String {
+    safe_text(&serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+}
+
+fn string_arg<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str))
+}
+
+fn sensitive_config_path(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name == ".env" || name.starts_with(".env.")
+}
+
+fn tool_arguments_preview(name: &str, args: &Value) -> String {
+    if string_arg(args, &["file_path", "path"]).is_some_and(sensitive_config_path) {
+        return "content redacted · sensitive config file".into();
+    }
+    if name.eq_ignore_ascii_case("apply_patch")
+        && string_arg(args, &["patch", "content"]).is_some_and(|patch| patch.contains(".env"))
+    {
+        return "patch content redacted · may contain sensitive config".into();
+    }
+    let key = match name.to_ascii_lowercase().as_str() {
+        "write_file" => Some(("content", "content")),
+        "edit_file" | "multi_edit" => Some(("replacement", "replace")),
+        "apply_patch" => Some(("patch", "patch")),
+        _ => None,
+    };
+    let Some((label, first_key)) = key else {
+        if name == "write_project" {
+            if let Some(files) = args.get("files").and_then(Value::as_array) {
+                let names = files
+                    .iter()
+                    .take(2)
+                    .filter_map(|file| string_arg(file, &["path", "file_path"]))
+                    .map(safe_text)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!(
+                    "{} files{}",
+                    files.len(),
+                    if names.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {names}")
+                    }
+                );
+            }
+        }
+        return args
+            .as_object()
+            .map(|_| safe_text(&args.to_string()))
+            .unwrap_or_default();
+    };
+    let content =
+        if name.eq_ignore_ascii_case("edit_file") || name.eq_ignore_ascii_case("multi_edit") {
+            string_arg(args, &["replace", "new_string", "newString"])
+        } else {
+            string_arg(args, &[first_key, "content"])
+        };
+    let Some(content) = content else {
+        return safe_text(&args.to_string());
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let sample = lines
+        .iter()
+        .take(2)
+        .map(|line| middle_preview(line, 72))
+        .collect::<Vec<_>>()
+        .join("\n");
+    safe_text(&format!("{label} · {} lines\n{sample}", lines.len().max(1)))
+}
+
+fn tool_arguments_detail(name: &str, args: &Value) -> String {
+    if string_arg(args, &["file_path", "path"]).is_some_and(sensitive_config_path) {
+        let path = string_arg(args, &["file_path", "path"]).unwrap_or("file");
+        return format!(
+            "{}\n\n[content redacted · sensitive config file]",
+            safe_text(path)
+        );
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "write_file" => {
+            let path = string_arg(args, &["file_path", "path"]).unwrap_or("file");
+            let content = string_arg(args, &["content"]).unwrap_or("(no content)");
+            format!("{}\n\n{}", safe_text(path), safe_text(content))
+        }
+        "edit_file" | "multi_edit" => {
+            let path = string_arg(args, &["file_path", "path"]).unwrap_or("file");
+            let before = string_arg(args, &["search", "old_string", "oldString"]).unwrap_or("");
+            let after = string_arg(args, &["replace", "new_string", "newString"]).unwrap_or("");
+            format!(
+                "{}\n\nOLD\n{}\n\nNEW\n{}",
+                safe_text(path),
+                safe_text(before),
+                safe_text(after)
+            )
+        }
+        "apply_patch" => string_arg(args, &["patch", "content"])
+            .map(|patch| {
+                if patch.contains(".env") {
+                    "[patch content redacted · may contain sensitive config]".into()
+                } else {
+                    safe_text(patch)
+                }
+            })
+            .unwrap_or_else(|| pretty_json(args)),
+        "write_project" => args
+            .get("files")
+            .and_then(Value::as_array)
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|file| {
+                        let path = string_arg(file, &["path", "file_path"]).unwrap_or("file");
+                        if sensitive_config_path(path) {
+                            return format!(
+                                "{}\n\n[content redacted · sensitive config file]",
+                                safe_text(path)
+                            );
+                        }
+                        let content = string_arg(file, &["content"]).unwrap_or("(no content)");
+                        format!("{}\n\n{}", safe_text(path), safe_text(content))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n")
+            })
+            .unwrap_or_else(|| pretty_json(args)),
+        _ => pretty_json(args),
+    }
+}
+
+fn middle_preview(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return safe_text(value);
+    }
+    let left = max_chars.saturating_sub(1) / 2;
+    let right = max_chars.saturating_sub(1) - left;
+    let chars: Vec<char> = value.chars().collect();
+    format!(
+        "{}…{}",
+        chars.iter().take(left).collect::<String>(),
+        chars
+            .iter()
+            .skip(chars.len().saturating_sub(right))
+            .collect::<String>()
+    )
+}

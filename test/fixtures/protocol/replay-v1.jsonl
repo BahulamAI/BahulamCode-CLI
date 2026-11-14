@@ -1,0 +1,5 @@
+{"v": 1, "seq": 1, "ts": "2026-11-14T00:00:00.000Z", "type": "session_started", "session_id": "sess_legacy", "data": {"model": "legacy", "cwd": "/legacy"}}
+{"v": 1, "seq": 2, "ts": "2026-11-14T00:00:00.000Z", "type": "tool_call", "session_id": "sess_legacy", "data": {"tool_id": "old_1", "name": "bash", "args": {"cmd": "echo ok"}}}
+{"v": 1, "seq": 3, "ts": "2026-11-14T00:00:00.000Z", "type": "tool_result", "session_id": "sess_legacy", "data": {"tool_id": "old_1", "ok": true, "summary": "legacy result"}}
+{"v": 1, "seq": 4, "ts": "2026-11-14T00:00:00.000Z", "type": "tokens_used", "session_id": "sess_legacy", "data": {"prompt": 12, "completion": 3}}
+{"v": 1, "seq": 5, "ts": "2026-11-14T00:00:00.000Z", "type": "agent_complete", "session_id": "sess_legacy", "data": {"ok": true, "summary": "legacy complete"}}

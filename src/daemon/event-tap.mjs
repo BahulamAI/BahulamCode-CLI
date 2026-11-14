@@ -18,6 +18,9 @@
  */
 
 import { createEventLog } from '../core/event-log.mjs';
+import { createHash } from 'node:crypto';
+import { toLegacyEvent } from '../protocol/compat.mjs';
+import { isSensitiveConfigPath } from '../core/safety.mjs';
 
 // ── env-var gate ─────────────────────────────────────────────────────
 
@@ -46,7 +49,7 @@ function _openLogFor(sessionId) {
     try { _current.log.close().catch(() => {}); } catch { /* ignore */ }
   }
   const log = createEventLog({ sessionId });
-  _current = { sessionId, log };
+  _current = { sessionId, log, turnId: null };
   return log;
 }
 
@@ -73,125 +76,179 @@ const _broadcasters = [];
 
 /**
  * Register a broadcaster. Returns an unregister function.
- * The broadcaster receives the fully-formed  event AFTER it has
- * been written to the log (so `seq` and `ts` are populated).
+ * The broadcaster receives the exact serialized frame after it is queued for
+ * persistence (flush remains buffered). Existing subscribers get v1; a new
+ * client can request { schemaVersion: 2 }.
  */
-export function registerBroadcaster(fn) {
+export function registerBroadcaster(fn, { schemaVersion = 1 } = {}) {
   if (typeof fn !== 'function') throw new Error('registerBroadcaster: fn must be a function');
-  _broadcasters.push(fn);
+  if (![1, 2].includes(schemaVersion)) throw new Error('Unsupported broadcaster schema version');
+  const subscriber = { fn, schemaVersion };
+  _broadcasters.push(subscriber);
   return () => {
-    const i = _broadcasters.indexOf(fn);
+    const i = _broadcasters.indexOf(subscriber);
     if (i >= 0) _broadcasters.splice(i, 1);
   };
 }
 
 // ── SSE →  event mapping ──────────────────────────────────────
 //
-// Table (protocol spec §5.1). Only events that map to a first-class
-//  type are logged. Everything else (status, thinking with
-// empty text, phase_update, worker_update, etc.) is renderer-transient
-// and doesn't belong in a durable event log.
+// PRD-121 Phase 0. New producer-only types are accepted here, but wiring
+// shell-output/lifecycle/artifact emitters belongs to the live-client phase.
 
-const SSE_TO_PRD092 = Object.freeze({
-  session_info:       'session_started',
-  turn_started:       'turn_started',
-  turn_ended:         'turn_ended',
-  thinking:           'thinking_delta',
-  tool_request:       'tool_call',
-  tool_call:          'tool_call',
-  tool_result:        'tool_result',
-  tool_done:          'tool_result',
-  approval_required:  'approval_required',
-  approval_decided:   'approval_decided',
-  file_diff:          'diff',
-  diff:               'diff',
-  test_result:        'test_result',
-  tokens_used:        'tokens_used',
-  usage_update:       'usage_update',
-  complete:           'agent_complete',
+const SSE_TO_V2 = Object.freeze({
+  session_info: 'session_started', turn_started: 'turn_started', turn_ended: 'turn_ended',
+  content_partial: 'text_delta', content: 'message_end', thinking: 'thinking_delta',
+  tool_request: 'tool_requested', tool_call: 'tool_requested',
+  tool_result: 'tool_finished', tool_done: 'tool_finished',
+  tool_started: 'tool_started', tool_output_delta: 'tool_output_delta',
+  approval_required: 'approval_required', approval_decided: 'approval_decided',
+  sub_agent_start: 'agent_spawned', worker_start: 'agent_spawned',
+  sub_agent_complete: 'agent_finished', worker_done: 'agent_finished',
+  worker_update: 'agent_status', agent_status: 'agent_status',
+  plan: 'plan_updated', plan_created: 'plan_updated', artifact_created: 'artifact_created',
+  file_diff: 'diff', diff: 'diff', test_result: 'test_result',
+  command_result: 'command_result',
+  tokens_used: 'usage_update', usage_update: 'usage_update', complete: 'turn_ended',
+  error: 'notice', reconnecting: 'notice', reconnected: 'notice',
+  reconnect_failed: 'notice', stagnation_detected: 'notice',
 });
 
-// Some SSE event bodies carry more than we want to log. Trim what makes
-// sense per type so we don't bloat the log with, e.g., a 200KB rendered
-// tool output when a summary would do. Everything else round-trips as-is.
-function _projectData(prd092Type, data) {
-  const src = data || {};
-  switch (prd092Type) {
-    case 'tool_call':
-      return {
-        name: src.tool || src.name,
-        tool_id: src.tool_call_id || src.tool_id || src.id,
-        args: src.args || src.tool_input || src.input || {},
-        subagent_id: src.subagent_id || undefined,
-        cwd: src.cwd || undefined,
-      };
-    case 'tool_result':
-      return {
-        tool_id: src.tool_call_id || src.tool_id || src.id,
-        ok: src.error ? false : (src.ok !== false),
-        summary: typeof src.output === 'string'
-          ? src.output.slice(0, 4096)
-          : (src.summary || undefined),
-        duration_ms: src.duration_ms || src.durationMs || undefined,
-        output_truncated: typeof src.output === 'string' && src.output.length > 4096 ? true : undefined,
-      };
+function asText(value) {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value.message === 'string') return value.message;
+  return JSON.stringify(value);
+}
+
+function compactToolPreview(name, args = {}) {
+  const tool = String(name || '').toLowerCase();
+  const filePath = args.file_path || args.path;
+  if (isSensitiveConfigPath(filePath)) return 'content redacted · sensitive config file';
+  if (tool === 'apply_patch' && String(args.patch ?? args.content ?? '').includes('.env')) {
+    return 'patch content redacted · may contain sensitive config';
+  }
+  let label = 'content';
+  let content;
+  if (tool === 'write_file') content = args.content;
+  else if (tool === 'edit_file' || tool === 'multi_edit') {
+    label = 'replacement';
+    content = args.replace ?? args.new_string ?? args.newString;
+  } else if (tool === 'apply_patch') {
+    label = 'patch';
+    content = args.patch ?? args.content;
+  }
+  if (typeof content !== 'string') {
+    if (tool === 'write_project' && Array.isArray(args.files)) {
+      return `${args.files.length} files · ${args.files.slice(0, 2).map(file => {
+        const path = file.path || file.file_path || 'unnamed';
+        return isSensitiveConfigPath(path) ? `${path} [redacted]` : path;
+      }).join(', ')}`;
+    }
+    return '';
+  }
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const sample = lines.slice(0, 2).map(line => line.length > 72 ? `${line.slice(0, 69)}…` : line);
+  const preview = `${label} · ${lines.length} lines\n${sample.join('\n')}`;
+  const bytes = Buffer.from(preview, 'utf8');
+  return bytes.length <= 240 ? preview : `${bytes.subarray(0, 237).toString('utf8')}…`;
+}
+
+function compactToolPrimary(args = {}) {
+  for (const key of ['path', 'file_path', 'command', 'query', 'pattern', 'target', 'url']) {
+    if (typeof args[key] === 'string' && args[key]) return args[key].slice(0, 220);
+  }
+  if (Array.isArray(args.files)) return `${args.files.length} files`;
+  return '';
+}
+
+function project(type, src, identity) {
+  const toolId = src.call_id || src._callId || src.tool_call_id || src.tool_id || src.request_id || src.id || `unattributed:${identity.nextSeq}`;
+  switch (type) {
+    case 'tool_requested': {
+      const name = src.tool || src.name || 'unknown';
+      const args = src.args || src.tool_input || src.input || {};
+      return { name, tool_id: toolId,
+        args, primary: compactToolPrimary(args), preview: compactToolPreview(name, args), cwd: src.cwd,
+        risk_tier: src.risk_tier, reason: src.reason };
+    }
+    case 'tool_finished':
+      return { tool_id: toolId, ok: !src.error && !src.is_error && src.ok !== false && src.success !== false,
+        exit_code: src.exit_code, duration_ms: src.duration_ms ?? src.durationMs,
+        summary: typeof src.output === 'string' ? src.output.slice(0, 220) :
+          (src.summary ? asText(src.summary).slice(0, 220) :
+            (src.output == null ? undefined : JSON.stringify(src.output).slice(0, 220))),
+        output: src.output, diff_stats: src.diff_stats, output_ref: src.output_ref };
+    case 'text_delta':
     case 'thinking_delta':
-      return { chunk: src.message || src.text || '' };
+      return { chunk: asText(src.chunk ?? src.text ?? src.message) || '' };
+    case 'message_end': {
+      const text = asText(src.text || src.content) || '';
+      return { text, final_text_hash: createHash('sha256').update(text).digest('hex') };
+    }
     case 'session_started':
-      return {
-        cwd: src.cwd,
-        model: src.model,
-        product: src.product,
-        session_id_from_backend: src.session_id,
-      };
-    case 'agent_complete':
-      return { ok: src.error == null, summary: src.summary, duration_ms: src.duration_ms };
-    default:
-      return src;
+      return { cwd: src.cwd, model: src.model, product: src.product, session_id_from_backend: src.session_id };
+    case 'turn_ended':
+      return { ok: !src.error && src.ok !== false, summary: asText(src.summary), duration_ms: src.duration_ms };
+    case 'agent_spawned':
+      return { agent_id: identity.agentId, type: src.type || src.worker || src.name || 'agent',
+        task: src.task || src.query || '', model: src.model };
+    case 'agent_finished':
+      return { agent_id: identity.agentId, ok: !src.error && src.ok !== false && src.success !== false,
+        report: asText(src.report || src.summary) || '', tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens,
+        cost_usd: src.cost_usd, error: asText(src.error) };
+    case 'agent_status':
+      return { agent_id: identity.agentId, status: src.status || src.message || 'working',
+        current_tool_id: src.current_tool_id, tokens: src.tokens, elapsed_ms: src.elapsed_ms };
+    case 'plan_updated':
+      return { items: src.items || src.steps || src.plan?.items || [] };
+    case 'usage_update': {
+      const usage = src.usage || src;
+      return { input_tokens: usage.input_tokens ?? usage.prompt_tokens ?? usage.prompt,
+        output_tokens: usage.output_tokens ?? usage.completion_tokens ?? usage.completion,
+        cache_tokens: usage.cache_tokens ?? usage.cached_tokens ?? usage.cached,
+        context_used_pct: usage.context_used_pct, cost_usd: usage.cost_usd ?? usage.total_cost,
+        per_agent: usage.per_agent || {} };
+    }
+    case 'notice':
+      return { level: identity.sourceType === 'error' || identity.sourceType === 'reconnect_failed' ? 'error' : 'info',
+        title: asText(src.message || src.error) || identity.sourceType, cause: asText(src.cause),
+        next_step: src.next_step || 'Use /resume to continue or inspect the session log.', retry: src.retry };
+    case 'command_result':
+      return { name: asText(src.name) || 'command', added_to_context: false,
+        result: (asText(src.result) || '(no output)').slice(0, 220), ok: src.ok !== false };
+    default: return src;
   }
 }
 
-// ── the tap ──────────────────────────────────────────────────────────
-
-/**
- * Tap one SSE event to the  event log.
- *
- * @param {{type: string, data?: object}} event  the SSE frame from stream-client
- * @param {object} opts
- * @param {string} opts.sessionId  from session.id — required for log routing
- * @param {string} [opts.turnId]   optional; stamped on turn-scoped events
- *
- * Failure modes are ALL silent — a broken tap must never affect the
- * user-facing render path. If the env var isn't set or sessionId is
- * missing we skip; if the file write throws internally, event-log.mjs
- * logs to stderr and drops the event.
- */
+/** Read-only SSE tap. v2 is durable; existing broadcasters retain v1 by default. */
 export function tapSseEvent(event, { sessionId, turnId } = {}) {
-  if (!_enabled()) return;
-  if (!event || !event.type || !sessionId) return;
-  const prd092Type = SSE_TO_PRD092[event.type];
-  if (!prd092Type) return;
-  const log = _openLogFor(sessionId);
-  const data = _projectData(prd092Type, event.data);
-  let seq;
+  if (!_enabled() || !event?.type || !sessionId) return;
+  const type = SSE_TO_V2[event.type];
+  if (!type) return;
   try {
-    seq = log.writeEvent(prd092Type, data, turnId ? { turnId } : undefined);
+    const log = _openLogFor(sessionId);
+    const src = event.data || {};
+    const scoped = type !== 'session_started';
+    if (scoped) _current.turnId = turnId || src.turn_id || _current.turnId || `turn_${log.currentSeq() + 1}`;
+    const agentEvent = type.startsWith('agent_');
+    const agentId = src.run_id || src.sub_agent_run_id || src.agent_id || src.subagent_id || src.sub_agent_id ||
+      (agentEvent ? src.worker || src.name || `unattributed-agent:${log.currentSeq() + 1}` :
+        (src.sub_agent || src.internal ? `unattributed-agent:${log.currentSeq() + 1}` : 'main'));
+    const parentAgentId = agentId !== 'main' ? src.parent_agent_id || src.parent_run_id || 'main' : undefined;
+    const data = project(type, src, { agentId, nextSeq: log.currentSeq() + 1, sourceType: event.type });
+    const wireEvent = log.appendEvent(type, data, {
+      turnId: scoped ? _current.turnId : null, agentId, parentAgentId,
+    });
+    if (type === 'turn_ended') _current.turnId = null;
+    for (const { fn, schemaVersion } of _broadcasters) {
+      try {
+        const frame = schemaVersion === 2 ? wireEvent : toLegacyEvent(wireEvent);
+        if (frame) fn(frame);
+      }
+      catch (err) { try { process.stderr.write(`[event-tap] broadcaster failed: ${err.message}\n`); } catch {} }
+    }
   } catch (err) {
     try { process.stderr.write(`[event-tap] writeEvent failed: ${err.message}\n`); } catch {}
-    return;
-  }
-  if (_broadcasters.length === 0) return;
-  const wireEvent = {
-    seq,
-    ts: new Date().toISOString(),
-    type: prd092Type,
-    session_id: sessionId,
-    v: 1,
-    ...(turnId ? { turn_id: turnId } : {}),
-    data,
-  };
-  for (const fn of _broadcasters) {
-    try { fn(wireEvent); }
-    catch (err) { try { process.stderr.write(`[event-tap] broadcaster failed: ${err.message}\n`); } catch {} }
   }
 }

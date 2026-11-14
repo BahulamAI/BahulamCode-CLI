@@ -1,0 +1,12 @@
+{"type": "hello", "data": {"client": "example", "version": "example", "last_seq": 1, "capabilities": {}}}
+{"type": "prompt", "data": {"text": "example", "attachments": []}}
+{"type": "approve", "data": {"apr_id": "example", "scope": "example", "instruction": "example"}}
+{"type": "deny", "data": {"apr_id": "example", "scope": "example", "instruction": "example"}}
+{"type": "interrupt", "data": {"agent_id": "example"}}
+{"type": "set_mode", "data": {"permission_mode": "example"}}
+{"type": "switch_model", "data": {"role": "example", "model": "example"}}
+{"type": "rewind", "data": {"to_turn_id": "example"}}
+{"type": "background", "data": {"tool_id": "example"}}
+{"type": "open_item", "data": {"item_id": "example", "target": "example"}}
+{"type": "run_slash", "data": {"name": "example", "args": []}}
+{"type": "bye", "data": {}}

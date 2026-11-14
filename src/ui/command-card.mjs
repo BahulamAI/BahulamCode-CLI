@@ -59,6 +59,27 @@ export function commandRuns(command) {
   });
 }
 
+function compactDirectory(directory, cwd = process.cwd()) {
+  const value = String(directory || '');
+  if (!value) return '';
+  try {
+    const resolved = path.resolve(value);
+    const current = path.resolve(cwd || process.cwd());
+    if (resolved === current) return '.';
+    const relative = path.relative(current, resolved);
+    if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+      return relative;
+    }
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    if (home && (resolved === home || resolved.startsWith(`${home}${path.sep}`))) {
+      return `~${resolved.slice(home.length)}`;
+    }
+    return `…/${path.basename(path.dirname(resolved))}/${path.basename(resolved)}`;
+  } catch {
+    return value;
+  }
+}
+
 export function renderCommandHead(args = {}, { columns = term().columns, indent = '  ', cwd, source = '', marker = '' } = {}) {
   const command = String(args.command ?? args.cmd ?? '');
   const explicitCwd = args.cwd || args.working_directory;
@@ -78,12 +99,12 @@ export function renderCommandHead(args = {}, { columns = term().columns, indent 
     out.push(...wrapRuns(commandRuns(explicitCwd ? command : display.command), { columns, indent: bodyIndent, first: paint.text.muted('$ '), rest: paint.text.muted(glyph('↳ ', '> ')) }));
   }
   // Keep an explicit leading cd visible when a separate launch directory is supplied.
-  const directory = explicitCwd || display.cwdLabel || cwd;
+  const directory = compactDirectory(explicitCwd || display.cwdLabel || cwd);
   if (directory) out.push(wrapCode('cwd  ' + directory, paint.text.muted, { columns, indent: bodyIndent }));
   return out.join('\n');
 }
 
-function outputSection(label, text, args, { columns, indent, full = false, error = false } = {}) {
+function outputSection(label, text, args, { columns, indent, full = false, error = false, showLabel = true } = {}) {
   if (!text) return '';
   // Align output under the record gutter so prose, rows and truncation hints
   // share one left edge instead of each section inventing its own indent.
@@ -91,7 +112,7 @@ function outputSection(label, text, args, { columns, indent, full = false, error
   const plain = stripSequences(String(text)).replace(/\r\n/g, '\n');
   const command = shellCommandDisplay(args.command || args.cmd || '').command;
   const gitDiff = /^\s*git\s+(?:diff|show)\b/.test(command) && /^(?:diff --git |@@ |[+-])/m.test(plain);
-  const out = [wrapCode(label, paint.text.muted, { columns, indent: gutter })];
+  const out = showLabel ? [wrapCode(label, paint.text.muted, { columns, indent: gutter })] : [];
   const body = gutter + '  ';
   if (gitDiff && !error) {
     out.push(renderUnifiedDiff(plain, { columns, indent: body, maxLines: full ? Infinity : 8 }));
@@ -101,8 +122,11 @@ function outputSection(label, text, args, { columns, indent, full = false, error
     const configured = Number.parseInt(process.env.BAHULAM_SHELL_PREVIEW_ROWS, 10);
     const previewCount = Number.isFinite(configured) && configured > 0 ? configured : /^\s*git\s+(?:status|diff|show)\b/.test(command) ? 8 : 2;
     const visible = full ? lines : lines.slice(0, previewCount);
-    for (const line of visible) out.push(wrapCode(line, error ? paint.state.danger : paint.text.primary, { columns, indent: body }));
-    if (visible.length < lines.length) out.push(wrapCode(glyph('… ', '... ') + (lines.length - visible.length) + ' more rows · F2 or /last', paint.text.muted, { columns, indent: body }));
+    for (const line of visible) {
+      const errorLine = error || /^\s*(?:error|fatal|exception)\b/i.test(line);
+      out.push(wrapCode(line, errorLine ? paint.state.danger : paint.text.muted, { columns, indent: body }));
+    }
+    if (visible.length < lines.length) out.push(wrapCode(glyph('… ', '... ') + (lines.length - visible.length) + ' more rows · F2 details or /last', paint.text.muted, { columns, indent: body }));
   }
   return out.join('\n');
 }
@@ -117,7 +141,10 @@ export function renderCommandResult(result = {}, { args = {}, columns = term().c
   const structuredSummary = summary && /^(?:json\b|.+\bin sync\b|.+\bout of sync\b)/.test(summary.text || '');
   if (structuredSummary) out.push(wrapCode(summary.text, paint.text.muted, { columns, indent }));
   if (result.error && !String(fullOutput).includes(result.error) && !String(stderr).includes(result.error)) out.push(wrapCode(result.error, paint.state.danger, { columns, indent }));
-  if (fullOutput && (!structuredSummary || full)) out.push(outputSection('stdout', fullOutput, args, { columns, indent, full }));
+  if (fullOutput && (!structuredSummary || full)) {
+    const showLabel = Boolean(stderr) || full;
+    out.push(outputSection(showLabel ? 'stdout' : 'result', fullOutput, args, { columns, indent, full, showLabel }));
+  }
   else if (fullOutput && structuredSummary) out.push(wrapCode('full output  F2 or /last', paint.text.muted, { columns, indent: indent + '  ' }));
   if (stderr) out.push(outputSection('stderr', stderr, args, { columns, indent, full, error: true }));
   if (!fullOutput && !stderr && result.message) out.push(wrapCode(result.message, paint.text.primary, { columns, indent }));

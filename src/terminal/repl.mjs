@@ -29,11 +29,13 @@ import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { isSensitiveConfigPath } from '../core/safety.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
 // /v1/agent/turn instead of the local bundled runtime. Falls back to
@@ -2071,6 +2073,13 @@ function flushFoldedSubAgentTools(key = null) {
   flushOneFoldedSubAgentTools(fold);
 }
 
+// Set while the REPL is active so local socket/remote terminal clients can
+// submit prompts through the same serial queue as readline.
+let _submitExternalPrompt = null;
+let _rustTuiActive = false;
+let _rustTuiHost = null;
+let _rustTuiOutputCapture = null;
+
 function renderEvent(event) {
   const { type, data } = event;
 
@@ -2693,8 +2702,10 @@ function renderEvent(event) {
                     try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {}
                   },
                   send_message: async (_payload, _attachId) => {
-                    // Slice C follow-up. Requires plumbing into the turn
-                    // handler; enqueued as a TODO for the daemon slice.
+                    const instruction = String(_payload?.text ?? _payload?.instruction ?? '').trim();
+                    if (!instruction) throw new Error('send_message requires non-empty text');
+                    if (!_submitExternalPrompt) throw new Error('terminal input is not ready');
+                    _submitExternalPrompt(instruction);
                   },
                 }
               });
@@ -2731,6 +2742,7 @@ function renderEvent(event) {
                   approval.check = (tool, args, req, ctx) => interceptApproval(orig, {
                     tool, args, req, ctx,
                     sessionId: _sid,
+                    remoteOnly: _rustTuiActive,
                     emit: (type, data) => {
                       try { tapSseEvent({ type, data }, { sessionId: _sid }); }
                       catch { /* never blocks approval */ }
@@ -2757,7 +2769,12 @@ function renderEvent(event) {
                       approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
                       deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
                       interrupt: async () => { try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {} },
-                      send_message: async (_p, _a) => { /* Slice C follow-up */ },
+                      send_message: async (payload, _attachId) => {
+                        const instruction = String(payload?.text ?? payload?.instruction ?? '').trim();
+                        if (!instruction) throw new Error('send_message requires non-empty text');
+                        if (!_submitExternalPrompt) throw new Error('terminal input is not ready');
+                        _submitExternalPrompt(instruction);
+                      },
                     },
                   });
                   session._prd092RelayBridge = bridge;
@@ -5308,6 +5325,11 @@ export async function startTerminalRepl() {
   }
 
   function promptInputLine() {
+    if (_rustTuiActive) {
+      inputActive = false;
+      rl.pause();
+      return;
+    }
     // When the fixed dock is active, readline should own only the input
     // buffer, not the visual prompt. If readline paints the prompt itself,
     // long wrapped input can leave a stale duplicate row inside the dock.
@@ -5319,6 +5341,7 @@ export async function startTerminalRepl() {
   }
 
   function printSubmittedInput(input) {
+    if (_rustTuiActive) return;
     if (!isInputDockMounted()) {
       printInputBottomRule();
       runtime.lastRenderedBlock = 'user';
@@ -5336,6 +5359,7 @@ export async function startTerminalRepl() {
 
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
+    if (_rustTuiActive) return;
     if (isInputDockMounted()) {
       prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() });
       promptInputLine();
@@ -5418,6 +5442,136 @@ export async function startTerminalRepl() {
     process.stderr.write(`  ${c.red('Instruction failed: ' + error.message)}\n`);
     showPrompt();
   });
+  _submitExternalPrompt = instruction => queueOrRunLine(instruction);
+  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) {
+    let restoreStderr = null;
+    let restoreStdout = null;
+    try {
+      restoreStderr = process.stderr.write.bind(process.stderr);
+      restoreStdout = process.stdout.write.bind(process.stdout);
+      const screenWrite = original => (chunk, encoding, callback) => {
+        if (!_rustTuiActive) return original(chunk, encoding, callback);
+        if (_rustTuiOutputCapture) {
+          const text = Buffer.isBuffer(chunk)
+            ? chunk.toString(typeof encoding === 'string' ? encoding : undefined)
+            : String(chunk);
+          const remaining = 65_536 - _rustTuiOutputCapture.output.length;
+          if (remaining > 0) _rustTuiOutputCapture.output += text.slice(0, remaining);
+          if (text.length > remaining) _rustTuiOutputCapture.truncated = true;
+          const done = typeof encoding === 'function' ? encoding : callback;
+          if (typeof done === 'function') done();
+        } else {
+          const done = typeof encoding === 'function' ? encoding : callback;
+          if (typeof done === 'function') done();
+        }
+        return true;
+      };
+      process.stderr.write = screenWrite(restoreStderr);
+      process.stdout.write = screenWrite(restoreStdout);
+      _rustTuiHost = startRustTuiHost({
+        onCommand: async command => {
+          const data = command?.data || {};
+          switch (command?.type) {
+            case 'prompt': {
+              const instruction = String(data.text || '').trim();
+              if (instruction) _submitExternalPrompt?.(instruction);
+              break;
+            }
+            case 'interrupt':
+              streamClient?.cancel?.();
+              break;
+            case 'approve':
+              resolvePending('approve', data.apr_id, 'rust-tui', data.instruction);
+              break;
+            case 'deny':
+              resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
+              break;
+            case 'show_details': {
+              const payloadRef = String(data.payload_ref || '');
+              const sendDetail = detail => _rustTuiHost?.send({
+                v: 2, seq: 0, ts: new Date().toISOString(), type: 'detail_loaded',
+                session_id: session.id, agent_id: 'main',
+                data: { payload_ref: payloadRef, ...detail },
+              });
+              try {
+                if (!/^payloads\/event-[1-9]\d*\.json$/.test(payloadRef)) {
+                  throw new Error('invalid session payload reference');
+                }
+                const { daemonSessionDir } = await import('../core/paths.mjs');
+                const sessionDir = fs.realpathSync(daemonSessionDir(session.id));
+                const payloadPath = fs.realpathSync(path.join(sessionDir, payloadRef));
+                if (!payloadPath.startsWith(`${sessionDir}${path.sep}`)) {
+                  throw new Error('payload path is outside this session');
+                }
+                const size = fs.statSync(payloadPath).size;
+                if (size > 64 * 1024 * 1024) throw new Error('session payload exceeds 64 MiB');
+                const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+                let detail;
+                if (payload.name && payload.args && typeof payload.args === 'object') {
+                  const args = payload.args;
+                  const tool = String(payload.name).toLowerCase();
+                  const filePath = args.file_path || args.path;
+                  if (isSensitiveConfigPath(filePath)) {
+                    detail = `${filePath}\n\n[content redacted · sensitive config file]`;
+                  } else if (tool === 'write_file') {
+                    detail = `${filePath || 'file'}\n\n${args.content ?? '(no content)'}`;
+                  } else if (tool === 'edit_file' || tool === 'multi_edit') {
+                    detail = `${filePath || 'file'}\n\nOLD\n${args.search ?? args.old_string ?? args.oldString ?? ''}\n\nNEW\n${args.replace ?? args.new_string ?? args.newString ?? ''}`;
+                  } else if (tool === 'apply_patch') {
+                    const patch = String(args.patch ?? args.content ?? '');
+                    detail = /(?:^|[/\\])\.env(?:\.|\s|$)/m.test(patch)
+                      ? '[patch content redacted · may contain sensitive config]'
+                      : patch;
+                  } else if (tool === 'write_project' && Array.isArray(args.files)) {
+                    detail = args.files.map(file => {
+                      const filePath = file.path || file.file_path || 'file';
+                      return isSensitiveConfigPath(filePath)
+                        ? `${filePath}\n\n[content redacted · sensitive config file]`
+                        : `${filePath}\n\n${file.content ?? '(no content)'}`;
+                    }).join('\n\n---\n\n');
+                  }
+                }
+                if (detail == null) {
+                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.hunks ?? payload.args ?? payload.summary ?? payload;
+                  detail = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+                }
+                const bytes = Buffer.from(detail, 'utf8');
+                const displayLimit = 2 * 1024 * 1024;
+                if (bytes.length > displayLimit) {
+                  detail = `${bytes.subarray(0, displayLimit).toString('utf8')}\n… details truncated at 2 MiB`;
+                }
+                sendDetail({ detail });
+              } catch (error) {
+                sendDetail({ error: error.message });
+              }
+              break;
+            }
+            case 'bye':
+              _rustTuiHost?.close();
+              break;
+            default:
+              throw new Error(`unsupported command ${String(command?.type)}`);
+          }
+        },
+        onExit: () => {
+          _rustTuiActive = false;
+          process.stderr.write = restoreStderr;
+          process.stdout.write = restoreStdout;
+          _rustTuiOutputCapture = null;
+          _rustTuiHost = null;
+          rl.resume();
+          showPrompt();
+        },
+      });
+      _rustTuiActive = true;
+      inputActive = false;
+      rl.pause();
+    } catch (error) {
+      if (restoreStderr) process.stderr.write = restoreStderr;
+      if (restoreStdout) process.stdout.write = restoreStdout;
+      process.stderr.write(`  ${c.yellow(`Rust terminal unavailable: ${error.message}; using Node terminal.`)}\n`);
+    }
+  }
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
@@ -5545,6 +5699,25 @@ export async function startTerminalRepl() {
 
     // Slash commands
     if (!followupId && input.startsWith('/')) {
+      if (_rustTuiActive) {
+        const capture = { output: '', truncated: false };
+        let ok = true;
+        _rustTuiOutputCapture = capture;
+        try {
+          await handleCommand(input, ctx);
+        } catch (error) {
+          ok = false;
+          capture.output += `${capture.output ? '\n' : ''}${error?.message || String(error)}`;
+        } finally {
+          _rustTuiOutputCapture = null;
+        }
+        const result = `${capture.output.trim()}${capture.truncated ? '\n… output truncated at 64 KiB' : ''}`;
+        tapSseEvent({
+          type: 'command_result',
+          data: { name: input.split(/\s+/).slice(0, 2).join(' '), result, ok, added_to_context: false },
+        }, { sessionId: session.id });
+        return;
+      }
       await handleCommand(input, ctx);
       showPrompt();
       return;
@@ -6393,6 +6566,10 @@ export async function startTerminalRepl() {
   }
 
   rl.on('close', async () => {
+    _rustTuiHost?.close();
+    _rustTuiHost = null;
+    _rustTuiActive = false;
+    _submitExternalPrompt = null;
     clearSlashHint({ restoreCursor: false });
     inputActive = false;
     stopSpinner();

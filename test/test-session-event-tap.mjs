@@ -63,14 +63,15 @@ await closeActiveEventLog();
 
 const events = await readAllEvents({ sessionId });
 assert(events.length === 4, `4 events written (got ${events.length})`);
-assert(events[0].type === 'tool_call' && events[0].data.name === 'bash', 'tool_request → tool_call with projected data');
+assert(events[0].type === 'tool_requested' && events[0].data.name === 'bash', 'tool_request → tool_requested with projected data');
 assert(events[0].data.tool_id === 'tc_1', 'tool_id projected from tool_call_id');
-assert(events[1].type === 'tool_result' && events[1].data.summary === 'file1\nfile2', 'tool_result projection');
+assert(events[1].type === 'tool_finished' && events[1].data.summary === 'file1\nfile2', 'tool_result projection');
 assert(events[1].data.duration_ms === 42, 'duration_ms preserved');
 assert(events[2].type === 'approval_required' && events[2].data.apr_id === 'apr_1', 'approval_required passthrough');
-assert(events[3].type === 'agent_complete' && events[3].data.ok === true, 'complete → agent_complete');
+assert(events[3].type === 'turn_ended' && events[3].data.ok === true, 'complete → turn_ended');
 assert(events[0].turn_id === 't1', 'turn_id stamped from opts');
-assert(events[2].turn_id === undefined, 'turn_id absent when not provided');
+assert(events[2].turn_id === 't1', 'approval inherits active turn when not provided');
+assert(events.every(e => e.v === 2 && e.agent_id && e.id), 'v2 identity on every event');
 
 // 3. Session id change closes old and opens new.
 const sessionId2 = mintSessionId();

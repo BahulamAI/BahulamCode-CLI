@@ -550,6 +550,7 @@ async function main() {
     return;
   }
 
+  if (process.env.BAHULAM_TUI === 'rust') process.env.BAHULAM_DAEMON_EVENTLOG = '1';
   await startTerminalRepl();
 }
 

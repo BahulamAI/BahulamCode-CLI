@@ -1,0 +1,1276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bahulam.ai/schemas/session-events-v2.json",
+  "title": "Bahulam session protocol v2",
+  "type": "object",
+  "properties": {
+    "v": {
+      "type": "integer",
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ts": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "parent_agent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    },
+    "payload_ref": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "v",
+    "seq",
+    "ts",
+    "type",
+    "session_id",
+    "data"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "turn_id",
+          "agent_id",
+          "id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "session_started"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SessionStartedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "turn_started"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TurnStartedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "turn_ended"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TurnEndedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "text_delta"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TextDeltaData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "thinking_delta"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ThinkingDeltaData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "message_end"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/MessageEndData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "tool_requested"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolRequestedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "approval_required"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ApprovalRequiredData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "approval_decided"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ApprovalDecidedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "tool_started"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolStartedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "tool_output_delta"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolOutputDeltaData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "tool_finished"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolFinishedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "agent_spawned"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/AgentSpawnedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "agent_status"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/AgentStatusData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "agent_finished"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/AgentFinishedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "plan_updated"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/PlanUpdatedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "artifact_created"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ArtifactCreatedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "usage_update"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/UsageUpdateData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "notice"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NoticeData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "command_result"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/CommandResultData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "diff"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/DiffData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "v": {
+            "const": 2
+          },
+          "type": {
+            "const": "test_result"
+          }
+        },
+        "not": {
+          "required": [
+            "payload_ref"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TestResultData"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true,
+  "x-event-payloads": {
+    "session_started": "SessionStartedData",
+    "turn_started": "TurnStartedData",
+    "turn_ended": "TurnEndedData",
+    "text_delta": "TextDeltaData",
+    "thinking_delta": "ThinkingDeltaData",
+    "message_end": "MessageEndData",
+    "tool_requested": "ToolRequestedData",
+    "approval_required": "ApprovalRequiredData",
+    "approval_decided": "ApprovalDecidedData",
+    "tool_started": "ToolStartedData",
+    "tool_output_delta": "ToolOutputDeltaData",
+    "tool_finished": "ToolFinishedData",
+    "agent_spawned": "AgentSpawnedData",
+    "agent_status": "AgentStatusData",
+    "agent_finished": "AgentFinishedData",
+    "plan_updated": "PlanUpdatedData",
+    "artifact_created": "ArtifactCreatedData",
+    "usage_update": "UsageUpdateData",
+    "notice": "NoticeData",
+    "command_result": "CommandResultData",
+    "diff": "DiffData",
+    "test_result": "TestResultData"
+  },
+  "x-command-payloads": {
+    "hello": "HelloCommand",
+    "prompt": "PromptCommand",
+    "approve": "ApproveCommand",
+    "deny": "DenyCommand",
+    "interrupt": "InterruptCommand",
+    "set_mode": "SetModeCommand",
+    "switch_model": "SwitchModelCommand",
+    "rewind": "RewindCommand",
+    "background": "BackgroundCommand",
+    "open_item": "OpenItemCommand",
+    "run_slash": "RunSlashCommand",
+    "bye": "ByeCommand"
+  },
+  "$defs": {
+    "SessionStartedData": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "product": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TurnStartedData": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TurnEndedData": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "number"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TextDeltaData": {
+      "type": "object",
+      "properties": {
+        "chunk": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chunk"
+      ],
+      "additionalProperties": true
+    },
+    "ThinkingDeltaData": {
+      "type": "object",
+      "properties": {
+        "chunk": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chunk"
+      ],
+      "additionalProperties": true
+    },
+    "MessageEndData": {
+      "type": "object",
+      "properties": {
+        "final_text_hash": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "final_text_hash"
+      ],
+      "additionalProperties": true
+    },
+    "ToolRequestedData": {
+      "type": "object",
+      "properties": {
+        "tool_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "risk_tier": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "name"
+      ],
+      "additionalProperties": true
+    },
+    "ApprovalRequiredData": {
+      "type": "object",
+      "properties": {
+        "apr_id": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "risk_tier": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "apr_id"
+      ],
+      "additionalProperties": true
+    },
+    "ApprovalDecidedData": {
+      "type": "object",
+      "properties": {
+        "apr_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "apr_id",
+        "decision"
+      ],
+      "additionalProperties": true
+    },
+    "ToolStartedData": {
+      "type": "object",
+      "properties": {
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id"
+      ],
+      "additionalProperties": true
+    },
+    "ToolOutputDeltaData": {
+      "type": "object",
+      "properties": {
+        "tool_id": {
+          "type": "string"
+        },
+        "stream": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "stream",
+        "chunk"
+      ],
+      "additionalProperties": true
+    },
+    "ToolFinishedData": {
+      "type": "object",
+      "properties": {
+        "tool_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "number"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "diff_stats": {
+          "type": "object"
+        },
+        "hidden_lines": {
+          "type": "integer"
+        },
+        "output_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "ok"
+      ],
+      "additionalProperties": true
+    },
+    "AgentSpawnedData": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "additionalProperties": true
+    },
+    "AgentStatusData": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "current_tool_id": {
+          "type": "string"
+        },
+        "tokens": {
+          "type": "object"
+        },
+        "elapsed_ms": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "agent_id",
+        "status"
+      ],
+      "additionalProperties": true
+    },
+    "AgentFinishedData": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "report": {
+          "type": "string"
+        },
+        "tokens": {
+          "type": "object"
+        },
+        "cost_usd": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "ok"
+      ],
+      "additionalProperties": true
+    },
+    "PlanUpdatedData": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": true
+    },
+    "ArtifactCreatedData": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "mime": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "pages": {
+          "type": "integer"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "open_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "kind",
+        "title"
+      ],
+      "additionalProperties": true
+    },
+    "UsageUpdateData": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": "number"
+        },
+        "output_tokens": {
+          "type": "number"
+        },
+        "cache_tokens": {
+          "type": "number"
+        },
+        "context_used_pct": {
+          "type": "number"
+        },
+        "cost_usd": {
+          "type": "number"
+        },
+        "per_agent": {
+          "type": "object"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "NoticeData": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "cause": {
+          "type": "string"
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "retry": {
+          "type": "object"
+        },
+        "stack_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "title"
+      ],
+      "additionalProperties": true
+    },
+    "CommandResultData": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "added_to_context": {
+          "type": "boolean"
+        },
+        "result": {}
+      },
+      "required": [
+        "name",
+        "added_to_context"
+      ],
+      "additionalProperties": true
+    },
+    "DiffData": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "hunks": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TestResultData": {
+      "type": "object",
+      "properties": {
+        "suite": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "HelloCommand": {
+      "type": "object",
+      "properties": {
+        "client": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "last_seq": {
+          "type": "integer"
+        },
+        "capabilities": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "client",
+        "version",
+        "last_seq"
+      ],
+      "additionalProperties": true
+    },
+    "PromptCommand": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "ApproveCommand": {
+      "type": "object",
+      "properties": {
+        "apr_id": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "instruction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "apr_id"
+      ],
+      "additionalProperties": true
+    },
+    "DenyCommand": {
+      "type": "object",
+      "properties": {
+        "apr_id": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "instruction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "apr_id"
+      ],
+      "additionalProperties": true
+    },
+    "InterruptCommand": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "SetModeCommand": {
+      "type": "object",
+      "properties": {
+        "permission_mode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "permission_mode"
+      ],
+      "additionalProperties": true
+    },
+    "SwitchModelCommand": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "model"
+      ],
+      "additionalProperties": true
+    },
+    "RewindCommand": {
+      "type": "object",
+      "properties": {
+        "to_turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to_turn_id"
+      ],
+      "additionalProperties": true
+    },
+    "BackgroundCommand": {
+      "type": "object",
+      "properties": {
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id"
+      ],
+      "additionalProperties": true
+    },
+    "OpenItemCommand": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "target"
+      ],
+      "additionalProperties": true
+    },
+    "RunSlashCommand": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": true
+    },
+    "ByeCommand": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+    }
+  },
+  "description": "PRD-121 Phase 0 contract candidate. v1 readable; v2 requires identity fields. Known payloads are defined in $defs; payload_ref points to the complete data object when it exceeds 4096 UTF-8 bytes."
+}
