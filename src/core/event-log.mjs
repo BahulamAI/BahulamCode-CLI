@@ -132,8 +132,8 @@ export function createEventLog({
       // Keep bounded scalar metadata for cards; the complete payload is available on expand.
       payload = Object.fromEntries(Object.entries(payload).filter(([key, value]) =>
         key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
-          (typeof value === 'string' && Buffer.byteLength(value) <= 256))));
-      if (Buffer.byteLength(JSON.stringify(payload)) > 2048) payload = {};
+          (typeof value === 'string' && Buffer.byteLength(value) <= (key === 'preview' ? 2400 : 256)))));
+      if (Buffer.byteLength(JSON.stringify(payload)) > 3072) payload = {};
     }
     const evt = {
       seq: nextSeq,

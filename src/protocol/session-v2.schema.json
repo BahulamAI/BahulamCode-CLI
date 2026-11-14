@@ -855,6 +855,9 @@
         "summary": {
           "type": "string"
         },
+        "preview": {
+          "type": "string"
+        },
         "diff_stats": {
           "type": "object"
         },

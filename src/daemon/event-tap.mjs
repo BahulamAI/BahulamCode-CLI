@@ -121,8 +121,8 @@ function retainTransientPayload(ref, serialized) {
 function boundedMetadata(data) {
   const safe = Object.fromEntries(Object.entries(data).filter(([key, value]) =>
     key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
-      (typeof value === 'string' && Buffer.byteLength(value) <= 256))));
-  return Buffer.byteLength(JSON.stringify(safe)) <= 2048 ? safe : {};
+      (typeof value === 'string' && Buffer.byteLength(value) <= (key === 'preview' ? 2400 : 256)))));
+  return Buffer.byteLength(JSON.stringify(safe)) <= 3072 ? safe : {};
 }
 
 // ── SSE →  event mapping ──────────────────────────────────────
@@ -153,6 +153,38 @@ function asText(value) {
   if (typeof value === 'string') return value;
   if (typeof value.message === 'string') return value.message;
   return JSON.stringify(value);
+}
+
+function truncateUtf8(value, maxBytes, fromEnd = false) {
+  const chars = Array.from(String(value));
+  const kept = [];
+  let bytes = 0;
+  const ordered = fromEnd ? chars.reverse() : chars;
+  for (const char of ordered) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > maxBytes) break;
+    kept.push(char);
+    bytes += size;
+  }
+  return fromEnd ? kept.reverse().join('') : kept.join('');
+}
+
+function toolOutputPreview(output, ok) {
+  const rows = String(output).replace(/\r\n?/g, '\n').split('\n');
+  if (rows.at(-1) === '') rows.pop();
+  const chosen = ok ? rows.slice(0, 3) : rows.slice(-20);
+  const scan = ok ? chosen : chosen.slice().reverse();
+  const kept = [];
+  let remaining = 2400;
+  for (const row of scan) {
+    if (remaining <= 0) break;
+    const separator = kept.length ? 1 : 0;
+    const text = truncateUtf8(row, remaining - separator, !ok);
+    if (!text && row) break;
+    kept.push(text);
+    remaining -= Buffer.byteLength(text) + separator;
+  }
+  return (ok ? kept : kept.reverse()).join('\n');
 }
 
 function compactToolPreview(name, args = {}) {
@@ -206,13 +238,19 @@ function project(type, src, identity) {
         args, primary: compactToolPrimary(args), preview: compactToolPreview(name, args), cwd: src.cwd,
         risk_tier: src.risk_tier, reason: src.reason };
     }
-    case 'tool_finished':
-      return { tool_id: toolId, ok: !src.error && !src.is_error && src.ok !== false && src.success !== false,
+    case 'tool_finished': {
+      const ok = !src.error && !src.is_error && src.ok !== false && src.success !== false &&
+        !(src.exit_code != null && Number(src.exit_code) !== 0);
+      return { tool_id: toolId, ok,
         exit_code: src.exit_code, duration_ms: src.duration_ms ?? src.durationMs,
         summary: typeof src.output === 'string' ? src.output.slice(0, 220) :
           (src.summary ? asText(src.summary).slice(0, 220) :
-            (src.output == null ? undefined : JSON.stringify(src.output).slice(0, 220))),
+            (src.output == null ? asText(src.error)?.slice(0, 220) : JSON.stringify(src.output).slice(0, 220))),
+        preview: typeof src.output === 'string' ? toolOutputPreview(src.output, ok) :
+          (src.summary ? truncateUtf8(asText(src.summary), 2400) :
+            (src.error ? truncateUtf8(asText(src.error), 2400, !ok) : undefined)),
         output: src.output, diff_stats: src.diff_stats, output_ref: src.output_ref };
+    }
     case 'text_delta':
     case 'thinking_delta':
       return { chunk: asText(src.chunk ?? src.text ?? src.message) || '' };

@@ -347,7 +347,11 @@ impl Model {
                             "done"
                         }
                         .into();
-                    self.cards[index].body = text(data, "summary");
+                    self.cards[index].body = if data.get("preview").is_some() {
+                        text(data, "preview")
+                    } else {
+                        text(data, "summary")
+                    };
                     if let Some(output) = data.get("output") {
                         let detail = output
                             .as_str()

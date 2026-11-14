@@ -116,6 +116,8 @@ pub struct ToolFinishedData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_stats: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_lines: Option<i64>,

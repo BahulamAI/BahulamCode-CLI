@@ -89,7 +89,7 @@ semantics, before Phase 1 begins.
 
 | Area | This slice | Production target in subsequent phases |
 | --- | --- | --- |
-| Tool calls/results | Uniform status cards, primary argument, duration/exit metadata, bounded previews, lazy full-payload loading and a keyboard-accessible `+ Show details` view | Read-only grouping, background tasks, structured JSON/table previews, mouse-click actions |
+| Tool calls/results | Uniform status cards, primary argument, duration/exit metadata, first 3 output rows on success, last 20 rows on failure, lazy full-payload loading and a keyboard-accessible `+ Show details` view | Read-only grouping, background tasks, structured JSON/table previews, mouse-click actions |
 | Messages | Stream reconstruction, final-text reconciliation, Markdown blocks, basic code coloring and full-message detail view | Incremental parsing, word-level diff, copy actions, measured 50–100 ms coalescing |
 | Agents | Stable run attribution, parent-aware rows, status/current tool/tokens/elapsed, transcript drill-in, hidden internals by default, final report card | Full failure detail, agent-scoped stop/approval, per-agent cost and comprehensive end-of-turn summary |
 | Plan/status | Pinned checklist and model/directory/context/cost/usage segments | Permission mode, git branch, background-task segments and context-aware idle visibility |
@@ -110,7 +110,9 @@ is an integration slice, not a claim of full UI parity or production readiness.
 Slash commands use Node's existing dispatcher; while the Rust screen owns the
 terminal, their stdout/stderr is captured and returned as a display-only
 `command_result` card (capped at 64 KiB) instead of disappearing behind the
-screen's terminal-write suppression.
+screen's terminal-write suppression. The live Rust subscriber receives events
+without requiring disk event logging; large display payloads stay in a bounded
+process-local detail store and are released when the client disconnects.
 
 The integrated prototype does not yet meet the complete production UI guide.
 It now has a deliberate visual system (semantic dark/light/high-contrast/ANSI

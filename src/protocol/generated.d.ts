@@ -74,6 +74,7 @@ export interface ToolFinishedData {
   exit_code?: number;
   duration_ms?: number;
   summary?: string;
+  preview?: string;
   diff_stats?: Record<string, unknown>;
   hidden_lines?: number;
   output_ref?: string;
