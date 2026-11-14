@@ -66,7 +66,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--watch" => watch = true,
             "--stdio" => stdio = true,
             "--help" | "-h" => {
-                println!("bahulam-tui --replay events.jsonl [--watch] [--plain]\n--watch refreshes an active session log; enable BAHULAM_DAEMON_EVENTLOG=1 on the CLI.");
+                println!(
+                    "Bahulam Rust terminal client\n\n\
+                     USAGE:\n\
+                     \x20 bahulam-tui --replay <events.jsonl> [--watch] [--plain]\n\
+                     \x20 bahulam-tui --help | --version\n\n\
+                     OPTIONS:\n\
+                     \x20 --replay <path>  Render one recorded session\n\
+                     \x20 --watch          Follow an active events.jsonl file (requires --replay)\n\
+                     \x20 --plain          Print replay output without taking over the terminal\n\
+                     \x20 -h, --help       Show this help\n\
+                     \x20 --version        Show the client version\n\n\
+                     INTERNAL:\n\
+                     \x20 --stdio          Live Node-hosted mode; started by Bahulam Code\n\n\
+                     Examples:\n\
+                     \x20 bahulam-tui --replay ~/.bahulam/sessions/<id>/events.jsonl\n\
+                     \x20 BAHULAM_DAEMON_EVENTLOG=1 bahulam\n\
+                     \x20 bahulam-tui --replay ~/.bahulam/sessions/<id>/events.jsonl --watch"
+                );
                 return Ok(());
             }
             "--version" => {
@@ -76,8 +93,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("Unknown option: {arg}. Use --help.").into()),
         }
     }
+    if stdio && (file.is_some() || watch || plain) {
+        return Err("--stdio is an internal live mode and cannot be combined with --replay, --watch, or --plain.".into());
+    }
+    if watch && file.is_none() {
+        return Err("--watch requires --replay <events.jsonl>. See --help.".into());
+    }
+    if plain && file.is_none() {
+        return Err("--plain requires --replay <events.jsonl>. See --help.".into());
+    }
     if !stdio && file.is_none() {
-        return Err("Use --replay <events.jsonl> or --stdio. See --help.".into());
+        return Err(
+            "Use --replay <events.jsonl>. Live mode is launched by Bahulam Code. See --help."
+                .into(),
+        );
     }
     let mut initial = if let Some(file) = &file {
         replay(file)?
