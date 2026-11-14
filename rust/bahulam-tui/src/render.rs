@@ -259,51 +259,70 @@ pub fn draw_with_input(
             )));
         }
     } else {
-        let mut agents: Vec<Line> = model
-            .agents
-            .iter()
-            .take(8)
-            .enumerate()
-            .map(|(index, agent)| {
-                let (glyph, color) = agent_state(&agent.status, p);
-                let elapsed = agent.elapsed_ms.map(|ms| format!("{:.0}s", ms / 1000.0));
-                let detail = [
-                    (!agent.current_tool.is_empty()).then(|| safe_text(&agent.current_tool)),
-                    elapsed,
-                    (!agent.tokens.is_empty()).then(|| format!("{} tok", safe_text(&agent.tokens))),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ");
-                let tree = if agent.id == "main" {
-                    ""
-                } else if agent.parent.as_deref() == Some("main") {
-                    "├ "
-                } else {
-                    "└ "
-                };
-                Line::from(vec![
-                    Span::styled(format!("{tree}{glyph} "), Style::default().fg(color)),
-                    Span::styled(
-                        middle_ellipsis(&safe_text(&agent.label), 24),
-                        Style::default().fg(agent_identity_color(&agent.id, p)),
-                    ),
-                    Span::styled(
-                        format!("  {}{}", safe_text(&agent.status), detail),
-                        Style::default().fg(p.muted),
-                    ),
-                ])
-                .style(if focused_agent == Some(index) {
-                    Style::default().bg(p.border)
-                } else {
-                    Style::default()
-                })
-            })
-            .collect();
-        if model.agents.len() > 8 {
+        let agent_start = if model.agents.len() > 8 {
+            focused_agent
+                .unwrap_or(0)
+                .min(model.agents.len().saturating_sub(1))
+                .saturating_sub(7)
+        } else {
+            0
+        };
+        let agent_end = (agent_start + 8).min(model.agents.len());
+        let mut agents = Vec::new();
+        if agent_start > 0 {
             agents.push(Line::from(Span::styled(
-                format!("  +{} more", model.agents.len() - 8),
+                format!("  ↑ {} earlier", agent_start),
+                Style::default().fg(p.muted),
+            )));
+        }
+        agents.extend(
+            model
+                .agents
+                .iter()
+                .enumerate()
+                .skip(agent_start)
+                .take(8)
+                .map(|(index, agent)| {
+                    let (glyph, color) = agent_state(&agent.status, p);
+                    let elapsed = agent.elapsed_ms.map(|ms| format!("{:.0}s", ms / 1000.0));
+                    let detail = [
+                        (!agent.current_tool.is_empty()).then(|| safe_text(&agent.current_tool)),
+                        elapsed,
+                        (!agent.tokens.is_empty())
+                            .then(|| format!("{} tok", safe_text(&agent.tokens))),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    let tree = if agent.id == "main" {
+                        ""
+                    } else if agent.parent.as_deref() == Some("main") {
+                        "├ "
+                    } else {
+                        "└ "
+                    };
+                    Line::from(vec![
+                        Span::styled(format!("{tree}{glyph} "), Style::default().fg(color)),
+                        Span::styled(
+                            middle_ellipsis(&safe_text(&agent.label), 24),
+                            Style::default().fg(agent_identity_color(&agent.id, p)),
+                        ),
+                        Span::styled(
+                            format!("  {}{}", safe_text(&agent.status), detail),
+                            Style::default().fg(p.muted),
+                        ),
+                    ])
+                    .style(if focused_agent == Some(index) {
+                        Style::default().bg(p.border)
+                    } else {
+                        Style::default()
+                    })
+                }),
+        );
+        if agent_end < model.agents.len() {
+            agents.push(Line::from(Span::styled(
+                format!("  +{} more", model.agents.len() - agent_end),
                 Style::default().fg(p.muted),
             )));
         }
