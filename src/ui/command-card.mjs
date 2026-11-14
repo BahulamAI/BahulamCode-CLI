@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { paint } from './palette.mjs';
 import { term } from './term.mjs';
-import { glyph } from './chrome.mjs';
+import { glyph, recordHead, recordNote } from './chrome.mjs';
 import { wrapCode, wrapRuns } from './code-layout.mjs';
 import { stripSequences } from './render-queue.mjs';
 import { shellCommandDisplay, shellCommandProfile } from '../terminal/tool-display.mjs';
@@ -40,8 +40,6 @@ export function commandStatus(result, durationMs) {
   return { text, tone };
 }
 
-const statusPaint = tone => tone === 'danger' ? paint.state.danger : tone === 'success' ? paint.state.success
-  : tone === 'warn' ? paint.state.warn : tone === 'active' ? paint.brand.primary : paint.text.muted;
 
 export function commandRuns(command) {
   // A display lexer, not a shell parser. Tokenization must preserve every byte.
@@ -61,19 +59,21 @@ export function commandRuns(command) {
   });
 }
 
-export function renderCommandHead(args = {}, { columns = term().columns, indent = '  ', cwd, source = '' } = {}) {
+export function renderCommandHead(args = {}, { columns = term().columns, indent = '  ', cwd, source = '', marker = '' } = {}) {
   const command = String(args.command ?? args.cmd ?? '');
   const explicitCwd = args.cwd || args.working_directory;
   const launchCwd = explicitCwd || cwd;
   const profile = shellCommandProfile(command, { cwd: launchCwd });
   const display = shellCommandDisplay(command, { cwd: launchCwd });
-  const out = [wrapCode('Command' + glyph(' · ', ' / ') + 'shell' + (source ? glyph(' · ', ' / ') + source : ''),
-    text => paint.bold(paint.brand.primary(text)), { columns, indent })];
+  // "Running" matches the present-progressive verb used for every other tool
+  // row (Reading / Editing / Searching files). The `$ command` line below
+  // already says this is a shell, so it is not repeated in the detail.
+  const out = [recordHead('Running', source, { columns, indent, marker })];
   const bodyIndent = indent + '  ';
   if (profile.compact) {
     out.push(wrapCode(profile.kind + glyph(' · ', ' / ') + profile.commandLineCount + ' lines', paint.text.primary, { columns, indent: bodyIndent }));
-    if (profile.preview) out.push(wrapCode('preview: ' + profile.preview, paint.text.muted, { columns, indent: bodyIndent }));
-    out.push(wrapCode('Full command: F2 or /last', paint.text.muted, { columns, indent: bodyIndent }));
+    if (profile.preview) out.push(wrapCode('preview  ' + profile.preview, paint.text.muted, { columns, indent: bodyIndent }));
+    out.push(wrapCode('full command  F2 or /last', paint.text.muted, { columns, indent: bodyIndent }));
   } else {
     out.push(...wrapRuns(commandRuns(explicitCwd ? command : display.command), { columns, indent: bodyIndent, first: paint.text.muted('$ '), rest: paint.text.muted(glyph('↳ ', '> ')) }));
   }
@@ -85,28 +85,31 @@ export function renderCommandHead(args = {}, { columns = term().columns, indent 
 
 function outputSection(label, text, args, { columns, indent, full = false, error = false } = {}) {
   if (!text) return '';
+  // Align output under the record gutter so prose, rows and truncation hints
+  // share one left edge instead of each section inventing its own indent.
+  const gutter = indent + '  ';
   const plain = stripSequences(String(text)).replace(/\r\n/g, '\n');
   const command = shellCommandDisplay(args.command || args.cmd || '').command;
   const gitDiff = /^\s*git\s+(?:diff|show)\b/.test(command) && /^(?:diff --git |@@ |[+-])/m.test(plain);
-  const out = [wrapCode(label, paint.text.muted, { columns, indent })];
-  indent += '  ';
+  const out = [wrapCode(label, paint.text.muted, { columns, indent: gutter })];
+  const body = gutter + '  ';
   if (gitDiff && !error) {
-    out.push(renderUnifiedDiff(plain, { columns, indent, maxLines: full ? Infinity : 8 }));
+    out.push(renderUnifiedDiff(plain, { columns, indent: body, maxLines: full ? Infinity : 8 }));
   } else {
     const lines = plain.split('\n');
     if (lines.at(-1) === '') lines.pop();
     const configured = Number.parseInt(process.env.BAHULAM_SHELL_PREVIEW_ROWS, 10);
     const previewCount = Number.isFinite(configured) && configured > 0 ? configured : /^\s*git\s+(?:status|diff|show)\b/.test(command) ? 8 : 2;
     const visible = full ? lines : lines.slice(0, previewCount);
-    for (const line of visible) out.push(wrapCode(line, error ? paint.state.danger : paint.text.primary, { columns, indent }));
-    if (visible.length < lines.length) out.push(wrapCode(glyph('… ', '... ') + (lines.length - visible.length) + ' more rows · F2 or /last', paint.text.muted, { columns, indent }));
+    for (const line of visible) out.push(wrapCode(line, error ? paint.state.danger : paint.text.primary, { columns, indent: body }));
+    if (visible.length < lines.length) out.push(wrapCode(glyph('… ', '... ') + (lines.length - visible.length) + ' more rows · F2 or /last', paint.text.muted, { columns, indent: body }));
   }
   return out.join('\n');
 }
 
 export function renderCommandResult(result = {}, { args = {}, columns = term().columns, indent = '  ', durationMs, full = false, summary } = {}) {
   const state = commandStatus(result, durationMs);
-  const out = [wrapCode('result ' + glyph('— ', '- ') + state.text, statusPaint(state.tone), { columns, indent })];
+  const out = [recordNote(state.text, { columns, indent, tone: state.tone })];
   result ||= {};
   const stdout = result.stdout ?? result.output_preview ?? result.output ?? '';
   const fullOutput = full ? result.stdout ?? result.output ?? stdout : stdout;
@@ -115,7 +118,7 @@ export function renderCommandResult(result = {}, { args = {}, columns = term().c
   if (structuredSummary) out.push(wrapCode(summary.text, paint.text.muted, { columns, indent }));
   if (result.error && !String(fullOutput).includes(result.error) && !String(stderr).includes(result.error)) out.push(wrapCode(result.error, paint.state.danger, { columns, indent }));
   if (fullOutput && (!structuredSummary || full)) out.push(outputSection('stdout', fullOutput, args, { columns, indent, full }));
-  else if (fullOutput && structuredSummary) out.push(wrapCode('Full output: F2 or /last', paint.text.muted, { columns, indent }));
+  else if (fullOutput && structuredSummary) out.push(wrapCode('full output  F2 or /last', paint.text.muted, { columns, indent: indent + '  ' }));
   if (stderr) out.push(outputSection('stderr', stderr, args, { columns, indent, full, error: true }));
   if (!fullOutput && !stderr && result.message) out.push(wrapCode(result.message, paint.text.primary, { columns, indent }));
   return out.filter(Boolean).join('\n');
@@ -123,12 +126,11 @@ export function renderCommandResult(result = {}, { args = {}, columns = term().c
 
 export function renderCommandDetails(card, { columns = term().columns, indent = '  ' } = {}) {
   const command = String(card.args?.command ?? card.args?.cmd ?? '');
-  const out = [wrapCode('Command details' + (card.source ? glyph(' · ', ' / ') + card.source : ''),
-    text => paint.bold(paint.brand.primary(text)), { columns, indent })];
+  const out = [recordHead('Details', card.source || 'command', { columns, indent })];
   const cwd = card.args?.cwd || card.args?.working_directory || card.cwd;
   if (cwd) out.push(wrapCode('cwd  ' + cwd, paint.text.muted, { columns, indent }));
   if (command) {
-    out.push(wrapCode(command.includes('\n') ? 'Full command / script' : 'Full command', paint.text.muted, { columns, indent }));
+    out.push(wrapCode(command.includes('\n') ? 'full command / script' : 'full command', paint.text.muted, { columns, indent }));
     // Preserve all physical lines including the final newline, heredoc delimiter
     // and everything after it. Never rewrite the command before displaying it.
     const lines = command.split('\n'), digits = String(lines.length).length;

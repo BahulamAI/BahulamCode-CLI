@@ -140,7 +140,12 @@ test('renders tool_done (verbose)', () => {
     capture();
     f.render({ type: 'tool_done', data: { tool: 'read_file', duration_ms: 50 } });
     restore();
-    assert.ok(captured.includes('done'));
+    // Every completion emits exactly one outcome line in the shared gutter —
+    // read_file used to print nothing at all on success, leaving a head with
+    // no result.
+    const lines = captured.trim().split('\n');
+    assert.strictEqual(lines.length, 1, captured);
+    assert.ok(lines[0].trimStart().startsWith('⎿'), captured);
 });
 
 test('renders phase_update with icons', () => {

@@ -149,7 +149,7 @@ try {
     const liveCommand = 'npm test --reporter=dot --grep=authorization --runInBand';
     renderToolCall({ call_id: 'live-card', tool: 'shell', args: { command: liveCommand, cwd: '/work/app' }, _plugin: 'reviewer' });
     renderToolResult({ call_id: 'live-card', tool: 'shell', success: true, exit_code: 0, output: '12 tests passed', duration_ms: 1200 });
-    assert.match(live, /Command/);
+    assert.match(live, /Running/);
     assert.match(live, /plugin reviewer/);
     assert.match(live, /exit 0/);
     assert.match(live, /12 tests passed/);

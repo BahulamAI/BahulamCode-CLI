@@ -253,8 +253,8 @@ test('renders shell commands with semantic syntax colors', () => {
 test('long shell tool heads wrap without hiding command text', () => {
   const command = 'cd "/Users/sree/Sites/Tarang Orca/appstak-platform" && pnpm run dev 2>&1 | head -80';
   const rendered = stripAnsi(formatCardHead('shell', { command }, { columns: 58, cwd: '/tmp' }));
-  assert.ok(rendered.includes('Command · shell'));
-  assert.ok(rendered.includes('Command'));
+  assert.ok(rendered.includes('Running'));
+  assert.ok(!rendered.includes('shell\n$'));
   assert.ok(rendered.includes('$'));
   assert.ok(rendered.includes('appstak-platform'));
   assert.ok(rendered.includes('pnpm run dev'));
@@ -265,8 +265,8 @@ test('long shell tool heads wrap without hiding command text', () => {
 
   const azCommand = 'az network nsg create -g AZ-RG-CODEKEPLER-prod-v2 -n codekepler-microvm-prod-02 --location eastus --tags environment=prod service=microvm';
   const azRendered = stripAnsi(formatCardHead('shell', { command: azCommand }, { columns: 80, cwd: '/tmp' }));
-  assert.ok(azRendered.includes('Command · shell'));
-  assert.ok(azRendered.includes('Command'));
+  assert.ok(azRendered.includes('Running'));
+  assert.ok(!azRendered.includes('shell\n$'));
   assert.ok(azRendered.includes('$ az network nsg create'));
   assert.ok(azRendered.includes('az network nsg create'));
   assert.ok(azRendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
@@ -283,7 +283,7 @@ test('long shell tool heads wrap without hiding command text', () => {
     cwd: '/tmp',
   }));
   assert.ok(full.includes('2>&1 | head -80'));
-  assert.ok(full.includes('result —'));
+  assert.ok(full.includes('completed'));
   assert.ok(full.includes('ready'));
 
   const observed = stripAnsi(formatCard({
@@ -345,9 +345,9 @@ test('multiline shell commands compact instead of leaking left-aligned lines', (
 
   assert.ok(lines.length >= 3 && lines.length <= 6);
   assert.ok(rendered.includes('shell script'));
-  assert.ok(rendered.includes('Full command: F2 or /last'));
+  assert.ok(rendered.includes('full command  F2 or /last'));
   assert.ok(!rendered.includes('\ngrep -n'));
-  assert.ok(lines[0].trimStart().startsWith('Command ·'));
+  assert.ok(lines[0].trimStart().startsWith('Running'));
 });
 
 test('shell card compacts generated scripts and detail exposes command output', () => {
@@ -365,12 +365,12 @@ test('shell card compacts generated scripts and detail exposes command output', 
 
   const head = stripAnsi(formatCardHead('shell', { command }, { columns: 120, cwd: process.cwd() }));
   assert.ok(head.includes('python script'));
-  assert.ok(head.includes('preview: from pathlib import…'));
-  assert.ok(head.includes('Full command: F2 or /last'));
+  assert.ok(head.includes('preview  from pathlib import…'));
+  assert.ok(head.includes('full command  F2 or /last'));
   assert.ok(!head.includes('Path("out.txt")'));
   const narrowHead = stripAnsi(formatCardHead('shell', { command }, { columns: 80, cwd: process.cwd() }));
   assert.ok(narrowHead.includes('python script'));
-  assert.ok(narrowHead.includes('preview: from pathlib import…'));
+  assert.ok(narrowHead.includes('preview  from pathlib import…'));
   assert.ok(!narrowHead.includes('Path("out.txt")'));
 
   const detail = stripAnsi(detailFor({
@@ -647,7 +647,7 @@ test('legacy formatter wraps full shell commands without ellipsis', () => {
     process.stderr.write = originalWrite;
   }
   const rendered = stripAnsi(output);
-  assert.ok(rendered.includes('Command'));
+  assert.ok(rendered.includes('Running'));
   assert.ok(rendered.includes('az network nsg create'));
   assert.ok(rendered.includes('AZ-RG-CODEKEPLER-prod-v2'));
   assert.ok(rendered.includes('codekepler-microvm-prod-02'));
