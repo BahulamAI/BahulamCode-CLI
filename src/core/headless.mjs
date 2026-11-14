@@ -550,7 +550,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                     sessionId: _sid,
                                     meta: {
                                         cwd: process.cwd(),
-                                        model: options.model || null,
+                                        model: model || null,
                                         pid: process.pid,
                                         sock_path: server.sockPath,
                                         opened_at: new Date().toISOString(),
@@ -576,7 +576,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                     sessionId: _sid,
                                     token: creds.token,
                                     cwd: process.cwd(),
-                                    model: options.model || null,
+                                    model: model || null,
                                     status: 'running',
                                 }).catch(() => {});
                             } catch { /* silent */ }
@@ -797,7 +797,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                     sessionId: currentSessionId,
                     token: creds.token,
                     cwd: process.cwd(),
-                    model: options.model || null,
+                    model: model || null,
                     status: 'idle',
                 }).catch(() => {});
             } catch { /* silent */ }

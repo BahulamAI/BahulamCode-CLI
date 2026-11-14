@@ -9,6 +9,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import * as url from 'node:url';
 
@@ -18,6 +19,7 @@ const root = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
 const unitOnly = args.includes('--unit');
 const integrationOnly = args.includes('--integration');
+const runAll = args.includes('--all');
 
 const env = {
     ...process.env,
@@ -106,7 +108,37 @@ const INTEGRATION_TESTS = [
 // Integration tests require daemon modules and are opt-in.
 const toRun = integrationOnly
     ? INTEGRATION_TESTS
-    : [...UNIT_TESTS];
+    : runAll
+        ? [...UNIT_TESTS, ...INTEGRATION_TESTS]
+        : [...UNIT_TESTS];
+
+// ── Syntax preflight ─────────────────────────────────────────────────────────
+// A file that cannot parse is a silent production outage: dynamic import()
+// throws at call time, so a whole feature disappears instead of failing loudly.
+// Parse every source file before running any test.
+function collectMjs(dir, out = []) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) collectMjs(full, out);
+        else if (entry.name.endsWith('.mjs')) out.push(full);
+    }
+    return out;
+}
+
+const syntaxFailures = [];
+for (const file of collectMjs(path.join(root, 'src'))) {
+    const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf-8' });
+    if (check.status !== 0) syntaxFailures.push({ file, stderr: check.stderr || '' });
+}
+
+if (syntaxFailures.length > 0) {
+    console.error(`\n✗ Syntax preflight failed for ${syntaxFailures.length} file(s):\n`);
+    for (const { file, stderr } of syntaxFailures) {
+        console.error(`  ${path.relative(root, file)}`);
+        console.error(stderr.split('\n').slice(0, 3).map((l) => `    ${l}`).join('\n'));
+    }
+    process.exit(1);
+}
 
 let totalPassed = 0;
 let totalFailed = 0;
