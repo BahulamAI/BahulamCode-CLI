@@ -335,6 +335,16 @@ impl Model {
                             self.apply(&envelope)?;
                         }
                     } else {
+                        if item.get("kind").and_then(Value::as_str) == Some("notice") {
+                            let title = text(item, "title");
+                            let content = item
+                                .get("content")
+                                .map(display_message_content)
+                                .unwrap_or_default();
+                            let index = self.card("main", &title, content, "info");
+                            self.cards[index].detail = Some(self.cards[index].body.clone());
+                            continue;
+                        }
                         let role = text(item, "role");
                         let content = item
                             .get("content")

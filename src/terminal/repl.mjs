@@ -4938,15 +4938,22 @@ export async function startTerminalRepl() {
     session.rustSnapshotItems = (() => {
       if (historyMode === 'summary') return richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
       const replayStartOrder = replayStartOrderForMode(displayHistory, historyMode);
-      const replay = filterResumeReplayEvents(detail.replayEvents || []).filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
+      const replay = filterResumeReplayEvents(detail.replayEvents || [])
+        .filter(item => !['resume_summary', 'resume_context'].includes(item?.event?.type))
+        .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
       const users = displayHistory.filter(message => message.role === 'user').filter(message => replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+      const checkpointCount = Number(detail.meta?.resumeSummary?.sourceMessageCount) || richHistory.summaryCheckpointMessageCount;
+      const checkpointCard = historyMode === 'full' && richHistory.priorSummary
+        ? [{ kind: 'notice', title: `Earlier transcript summary · ${checkpointCount} messages`, content: `${richHistory.priorSummary}\n\n[The original entries covered by this checkpoint are not present in the local transcript.]` }]
+        : [];
       if (replay.length) {
-        const prefix = historyMode.startsWith('tail-') && richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
+        const prefix = historyMode === 'full' ? checkpointCard
+          : richHistory.summary ? [{ kind: 'notice', title: 'Resume continuity summary', content: richHistory.summary }] : [];
         return [...prefix, ...mergeResumeReplayItems(users, replay).map(item => item.kind === 'user'
           ? { kind: 'message', role: 'user', content: item.message.content }
           : { kind: 'event', event: item.event.event })];
       }
-      return displayHistory.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }));
+      return [...checkpointCard, ...displayHistory.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }))];
     })();
     recoveredFollowups = richHistory.pendingFollowups || [];
     if (recoveredFollowups.length) {
@@ -5044,7 +5051,7 @@ export async function startTerminalRepl() {
         ].filter(Boolean).join(' · ');
         process.stderr.write(wrapCode(status, paint.brand.primary, { indent: '  ' }) + '\n');
         for (const failure of resumed.hydrationFailures || []) process.stderr.write(wrapCode('Could not restore project path: ' + failure, paint.state.warn, { indent: '  ' }) + '\n');
-        renderResumePreview(resumed, { renderEvent, previewOnly: true });
+      if (!_rustTuiActive) renderResumePreview(resumed, { renderEvent, previewOnly: true });
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }

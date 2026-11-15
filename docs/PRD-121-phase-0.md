@@ -130,6 +130,10 @@ also supplies keyboard-driven pickers for resume, model role/model selection,
 login confirmation and session approval grants; command behavior still runs in
 the TypeScript REPL. Command completion is supplied by the TypeScript command
 catalog. `/clear`, `/new`, resume and model changes refresh Rust view state.
+In Rust mode, resume no longer adds the TypeScript one-entry preview as a
+command-result card. If earlier raw entries were compacted, the saved summary
+checkpoint appears as an expandable transcript card; the client cannot restore
+original message details that are absent from the local transcript.
 In the full-screen view, Tab focuses the agent panel, Up/Down selects an agent,
 and Enter opens that agent's transcript. Ctrl+N/P navigates only that transcript's
 cards; Enter opens the selected tool's complete details, and Esc returns to the
