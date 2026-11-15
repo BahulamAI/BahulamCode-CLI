@@ -182,7 +182,7 @@ export function filterResumeReplayEvents(events = []) {
   });
 }
 
-export function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
+export function mergeResumeReplayItems(userTurns = [], replayEvents = [], transcriptMessages = []) {
   const items = [];
   let order = 0;
   for (const message of userTurns) {
@@ -201,6 +201,15 @@ export function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
       fileOrder: Number.isFinite(Number(event.order)) ? Number(event.order) : null,
       order: order++,
       time: Date.parse(event.timestamp || '') || 0,
+    });
+  }
+  for (const message of transcriptMessages) {
+    items.push({
+      kind: 'history',
+      message,
+      fileOrder: Number.isFinite(Number(message.order)) ? Number(message.order) : null,
+      order: order++,
+      time: Date.parse(message.timestamp || '') || 0,
     });
   }
   return items.sort((a, b) => {
@@ -314,7 +323,7 @@ export function historyRoleLabel(role) {
 export function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation', preserveWhitespace = false } = {}) {
   const shown = limit === Infinity ? entries : entries.slice(-limit);
   const count = shown.length + (shown.length === entries.length ? '' : ' of ' + entries.length);
-  process.stderr.write('\n' + wrapCode(title + ' (' + count + ' entries)', paint.brand.primary, { indent: '  ' }) + '\n');
+  if (title) process.stderr.write('\n' + wrapCode(title + ' (' + count + ' entries)', paint.brand.primary, { indent: '  ' }) + '\n');
   for (const msg of shown) {
     const raw = String(msg.content || '');
     const content = preserveWhitespace ? raw.replace(/\r\n?/g, '\n').trimEnd() : raw.replace(/\s+/g, ' ').trim();

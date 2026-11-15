@@ -35,6 +35,7 @@ pub struct Approval {
 }
 #[derive(Debug, Default)]
 pub struct Model {
+    pub transcript_revision: u64,
     pub session: String,
     pub cwd: String,
     pub model: String,
@@ -222,7 +223,8 @@ impl Model {
 
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
         if event.r#type == "transcript_snapshot" {
-            if event.data.get("replace").and_then(Value::as_bool) != Some(false) {
+            let replace = event.data.get("replace").and_then(Value::as_bool) != Some(false);
+            if replace {
                 self.cards.clear();
                 self.agents.clear();
                 self.plan.clear();
@@ -230,6 +232,7 @@ impl Model {
                 self.messages.clear();
                 self.approval = None;
                 self.last_seq = 0;
+                self.transcript_revision = self.transcript_revision.wrapping_add(1);
             }
             self.session = event.session_id.clone();
             self.cwd = text(&event.data, "cwd");

@@ -1,7 +1,10 @@
 use bahulam_tui::{model::safe_text, render::draw_with_input, replay};
 use crossterm::{
     cursor::Show,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     style::ResetColor,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -23,7 +26,31 @@ use unicode_segmentation::UnicodeSegmentation;
 
 fn restore() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, ResetColor, Show);
+    let _ = execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        ResetColor,
+        Show
+    );
+}
+
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|ch| *ch == '\n' || *ch == '\t' || !ch.is_control())
+        .collect()
+}
+
+fn insert_paste(input: &mut String, cursor: &mut usize, text: &str) {
+    let pasted = normalize_paste(text);
+    if pasted.is_empty() {
+        return;
+    }
+    let at = (*cursor).min(input.len());
+    input.insert_str(at, &pasted);
+    *cursor = at + pasted.len();
 }
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -174,10 +201,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }));
     enable_raw_mode()?;
     let _guard = TerminalGuard;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut scroll: u16 = 0;
     let mut follow = stdio;
+    let mut seen_transcript_revision = model
+        .lock()
+        .map(|state| state.transcript_revision)
+        .unwrap_or_default();
     let mut last_refresh = std::time::Instant::now();
     let mut input = String::new();
     let mut cursor = 0usize;
@@ -195,6 +226,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if stdio && !core_connected.load(Ordering::Acquire) {
             break;
+        }
+        if let Ok(state) = model.lock() {
+            if state.transcript_revision != seen_transcript_revision {
+                seen_transcript_revision = state.transcript_revision;
+                scroll = 0;
+                follow = true;
+                focused_card = state.cards.len().saturating_sub(1);
+                agent_filter = None;
+                detail_card = None;
+                detail_scroll = 0;
+                focus_panel = 0;
+            }
         }
         if watch && !stdio && last_refresh.elapsed() >= Duration::from_millis(100) {
             if let Some(file) = &file {
@@ -661,6 +704,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {}
                 },
+                Event::Paste(text) if focus_panel == 0 => {
+                    let can_paste = model
+                        .lock()
+                        .map(|state| state.interaction.is_none() && state.approval.is_none())
+                        .unwrap_or(false);
+                    if can_paste {
+                        insert_paste(&mut input, &mut cursor, &text);
+                    }
+                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -692,6 +744,28 @@ fn write_command(
         writer.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{insert_paste, normalize_paste};
+
+    #[test]
+    fn paste_normalizes_newlines_and_drops_terminal_controls() {
+        assert_eq!(
+            normalize_paste("one\r\ntwo\rthree\u{1b}[31m"),
+            "one\ntwo\nthree[31m"
+        );
+    }
+
+    #[test]
+    fn paste_inserts_once_at_the_cursor_and_preserves_multiline_text() {
+        let mut input = "abef".to_owned();
+        let mut cursor = 2;
+        insert_paste(&mut input, &mut cursor, "cd\n界");
+        assert_eq!(input, "abcd\n界ef");
+        assert_eq!(cursor, "abcd\n界".len());
+    }
 }
 
 fn main() {

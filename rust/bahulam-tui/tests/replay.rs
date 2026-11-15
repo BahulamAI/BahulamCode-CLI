@@ -124,7 +124,6 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             for expected in [
-                "Bahulam",
                 "Agents",
                 "Plan",
                 "Agent report",
@@ -177,6 +176,170 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
             );
         }
     }
+}
+
+#[test]
+fn tool_results_are_compact_and_status_color_does_not_tint_the_tool_name() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "tool_requested",
+            "main",
+            json!({"name":"Bash", "tool_id":"run-1", "args":{"command":"cargo test"}}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "tool_finished",
+            "main",
+            json!({
+                "tool_id":"run-1",
+                "ok":true,
+                "preview":"preview line one\npreview line two\npreview line three\npreview line four",
+                "output":"full result line one\nfull result line two\nfull result line three\nfull result line four\nfull result line five"
+            }),
+        ))
+        .unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_with_input(
+                frame,
+                &model,
+                u16::MAX,
+                false,
+                "dark",
+                "",
+                0,
+                &HashSet::new(),
+                Some(0),
+                false,
+                None,
+                None,
+                0,
+                None,
+                0,
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let all_text = buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(all_text.contains("Bash"));
+    assert!(all_text.contains("preview line one"));
+    assert!(all_text.contains("preview line two"));
+    assert!(!all_text.contains("preview line three"));
+    assert!(!all_text.contains("full result line one"));
+    assert!(all_text.contains("Show details"));
+
+    let width = buffer.area.width as usize;
+    let tool_row = buffer
+        .content
+        .chunks(width)
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Bash")
+        })
+        .unwrap();
+    let row_text = tool_row
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    let tool_name = row_text.find("Bash").unwrap();
+    let done_status = row_text.find("done").unwrap();
+    if std::env::var_os("NO_COLOR").is_some() {
+        assert_eq!(
+            tool_row[tool_name].style().fg,
+            Some(ratatui::style::Color::Reset)
+        );
+        assert_eq!(
+            tool_row[done_status].style().fg,
+            Some(ratatui::style::Color::Reset)
+        );
+    } else {
+        assert_eq!(
+            tool_row[tool_name].style().fg,
+            Some(ratatui::style::Color::Rgb(215, 222, 232))
+        );
+        assert_eq!(
+            tool_row[done_status].style().fg,
+            Some(ratatui::style::Color::Rgb(114, 184, 148))
+        );
+    }
+}
+
+#[test]
+fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
+    let mut model = Model::default();
+    model.status = "Ready".into();
+    model.input_tokens = 100;
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_with_input(
+                frame,
+                &model,
+                u16::MAX,
+                true,
+                "dark",
+                "draft",
+                5,
+                &HashSet::new(),
+                None,
+                true,
+                None,
+                None,
+                0,
+                None,
+                0,
+            )
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let all_text = buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(all_text.contains("Message"));
+    assert!(all_text.contains("Ready"));
+    assert!(all_text.contains("100 in · 0 out"));
+    assert!(all_text.contains("Enter send · Ctrl+J new line"));
+
+    let width = buffer.area.width as usize;
+    let input_row = buffer
+        .content
+        .chunks(width)
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("draft")
+        })
+        .unwrap();
+    let row_text = input_row
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    let draft_column = row_text.find("draft").unwrap();
+    let expected_background = if std::env::var_os("NO_COLOR").is_some() {
+        ratatui::style::Color::Reset
+    } else {
+        ratatui::style::Color::Rgb(28, 38, 51)
+    };
+    assert_eq!(
+        input_row[draft_column].style().bg,
+        Some(expected_background)
+    );
 }
 
 #[test]

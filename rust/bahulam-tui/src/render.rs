@@ -16,10 +16,14 @@ struct Palette {
     text: Color,
     muted: Color,
     border: Color,
+    selection: Color,
+    input_bg: Color,
+    info: Color,
     success: Color,
     warning: Color,
     danger: Color,
     code: Color,
+    agent_colors: [Color; 5],
 }
 
 fn palette(theme: &str) -> Palette {
@@ -29,52 +33,96 @@ fn palette(theme: &str) -> Palette {
             text: Color::Reset,
             muted: Color::Reset,
             border: Color::Reset,
+            selection: Color::Reset,
+            input_bg: Color::Reset,
+            info: Color::Reset,
             success: Color::Reset,
             warning: Color::Reset,
             danger: Color::Reset,
             code: Color::Reset,
+            agent_colors: [Color::Reset; 5],
         };
     }
     match theme {
         "light" => Palette {
-            accent: Color::Blue,
-            text: Color::Black,
-            muted: Color::DarkGray,
-            border: Color::Gray,
-            success: Color::Green,
-            warning: Color::Yellow,
-            danger: Color::Red,
-            code: Color::Blue,
+            accent: Color::Rgb(49, 91, 154),
+            text: Color::Rgb(32, 42, 56),
+            muted: Color::Rgb(82, 98, 118),
+            border: Color::Rgb(195, 205, 217),
+            selection: Color::Rgb(226, 235, 246),
+            input_bg: Color::Rgb(242, 246, 251),
+            info: Color::Rgb(49, 91, 154),
+            success: Color::Rgb(35, 114, 76),
+            warning: Color::Rgb(132, 82, 0),
+            danger: Color::Rgb(165, 42, 50),
+            code: Color::Rgb(98, 79, 136),
+            agent_colors: [
+                Color::Rgb(49, 91, 154),
+                Color::Rgb(113, 80, 155),
+                Color::Rgb(144, 85, 44),
+                Color::Rgb(35, 108, 104),
+                Color::Rgb(150, 61, 87),
+            ],
         },
         "high-contrast" => Palette {
             accent: Color::Cyan,
             text: Color::White,
-            muted: Color::Gray,
-            border: Color::White,
+            muted: Color::Rgb(220, 230, 242),
+            border: Color::Gray,
+            selection: Color::Rgb(0, 54, 112),
+            input_bg: Color::Rgb(0, 0, 0),
+            info: Color::Cyan,
             success: Color::Green,
             warning: Color::Yellow,
             danger: Color::Red,
             code: Color::Cyan,
+            agent_colors: [
+                Color::Cyan,
+                Color::Magenta,
+                Color::Yellow,
+                Color::Green,
+                Color::White,
+            ],
         },
         "ansi" => Palette {
             accent: Color::Cyan,
             text: Color::Reset,
             muted: Color::DarkGray,
             border: Color::DarkGray,
+            selection: Color::Blue,
+            input_bg: Color::Reset,
+            info: Color::Cyan,
             success: Color::Green,
             warning: Color::Yellow,
             danger: Color::Red,
             code: Color::Blue,
+            agent_colors: [
+                Color::Cyan,
+                Color::Magenta,
+                Color::Yellow,
+                Color::Green,
+                Color::Blue,
+            ],
         },
         _ => Palette {
-            accent: Color::Rgb(106, 176, 220),
-            text: Color::Rgb(220, 226, 234),
-            muted: Color::Rgb(160, 170, 181),
-            border: Color::Rgb(53, 64, 78),
-            success: Color::Rgb(105, 190, 142),
-            warning: Color::Rgb(224, 185, 102),
-            danger: Color::Rgb(225, 115, 115),
-            code: Color::Rgb(164, 190, 140),
+            accent: Color::Rgb(120, 166, 232),
+            text: Color::Rgb(215, 222, 232),
+            muted: Color::Rgb(153, 165, 178),
+            border: Color::Rgb(57, 69, 82),
+            selection: Color::Rgb(43, 61, 84),
+            input_bg: Color::Rgb(28, 38, 51),
+            info: Color::Rgb(120, 166, 232),
+            success: Color::Rgb(114, 184, 148),
+            warning: Color::Rgb(216, 173, 99),
+            danger: Color::Rgb(216, 121, 121),
+            code: Color::Rgb(181, 193, 210),
+            agent_colors: [
+                Color::Rgb(120, 166, 232),
+                Color::Rgb(182, 147, 214),
+                Color::Rgb(214, 154, 112),
+                Color::Rgb(106, 183, 167),
+                Color::Rgb(207, 141, 159),
+            ],
         },
     }
 }
@@ -122,7 +170,7 @@ pub fn draw_with_input(
     let prompt_height = if model.approval.is_some() {
         7.min(area.height.saturating_sub(12).max(4))
     } else if input.contains('\n') {
-        (input.lines().count() as u16 + 3)
+        (input.split('\n').count() as u16 + 3)
             .clamp(5, 8)
             .min(area.height.saturating_sub(12).max(4))
     } else {
@@ -135,6 +183,7 @@ pub fn draw_with_input(
             Constraint::Min(3),
             Constraint::Length(6),
             Constraint::Length(prompt_height),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(area);
@@ -314,7 +363,7 @@ pub fn draw_with_input(
                         ),
                     ])
                     .style(if focused_agent == Some(index) {
-                        Style::default().bg(p.border)
+                        Style::default().bg(p.selection)
                     } else {
                         Style::default()
                     })
@@ -395,21 +444,39 @@ pub fn draw_with_input(
             )),
         ]
     } else {
-        let value = if input.is_empty() {
-            "Ask Bahulam to change or explain your code"
+        if input.is_empty() {
+            vec![Line::from(vec![
+                Span::styled(
+                    "› ",
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Ask Bahulam to change or explain your code",
+                    Style::default().fg(p.muted),
+                ),
+            ])]
         } else {
             input
-        };
-        vec![Line::from(vec![
-            Span::styled(
-                "› ",
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                safe_text(value),
-                Style::default().fg(if input.is_empty() { p.muted } else { p.text }),
-            ),
-        ])]
+                .split('\n')
+                .enumerate()
+                .map(|(index, line)| {
+                    let gutter = if index == 0 { "› " } else { "  │ " };
+                    Line::from(vec![
+                        Span::styled(
+                            gutter,
+                            Style::default()
+                                .fg(if index == 0 { p.accent } else { p.border })
+                                .add_modifier(if index == 0 {
+                                    Modifier::BOLD
+                                } else {
+                                    Modifier::empty()
+                                }),
+                        ),
+                        Span::styled(safe_text(line), Style::default().fg(p.text)),
+                    ])
+                })
+                .collect()
+        }
     };
     if model.approval.is_none() && input.trim_start().starts_with('/') {
         let prefix = input.trim();
@@ -427,37 +494,62 @@ pub fn draw_with_input(
             )));
         }
     }
+    let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
+    let input_lines: Vec<&str> = input.split('\n').collect();
+    let suggestion_rows = prompt.len().saturating_sub(input_lines.len()) as u16;
+    let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
+    let input_width = rows[3].width.saturating_sub(2).max(1) as usize;
+    let cursor_line_index = input[..cursor.min(input.len())].matches('\n').count();
+    let cursor_line = input[..cursor.min(input.len())]
+        .rsplit('\n')
+        .next()
+        .unwrap_or("");
+    let cursor_gutter_width = if cursor_line_index == 0 { 2 } else { 4 };
+    let cursor_column = cursor_gutter_width + UnicodeWidthStr::width(cursor_line);
+    let mut cursor_row = 0usize;
+    for (index, line) in input_lines.iter().enumerate().take(cursor_line_index + 1) {
+        let gutter = if index == 0 { 2 } else { 4 };
+        if index == cursor_line_index {
+            cursor_row += (gutter + UnicodeWidthStr::width(cursor_line)) / input_width;
+        } else {
+            let line_width = gutter + UnicodeWidthStr::width(*line);
+            cursor_row += line_width.max(1).div_ceil(input_width);
+        }
+    }
+    let prompt_scroll = cursor_row.saturating_sub(prompt_visible_rows.saturating_sub(1) as usize);
     frame.render_widget(
-        Paragraph::new(prompt).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(if model.approval.is_some() {
-                    p.warning
-                } else if interactive && focus_panel == 0 {
-                    p.accent
-                } else {
-                    p.accent
-                }))
-                .title(if model.approval.is_some() {
-                    " Permission needed "
-                } else if interactive {
-                    " Message  ·  Enter to send · Ctrl+J for a new line "
-                } else {
-                    " Prompt "
-                }),
-        ),
+        Paragraph::new(prompt)
+            .style(Style::default().bg(p.input_bg))
+            .wrap(Wrap { trim: true })
+            .scroll((prompt_scroll.min(u16::MAX as usize) as u16, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if model.approval.is_some() {
+                        p.warning
+                    } else if interactive && focus_panel == 0 {
+                        p.accent
+                    } else {
+                        p.border
+                    }))
+                    .title(if model.approval.is_some() {
+                        " Permission needed "
+                    } else if interactive {
+                        " Message  ·  Enter to send · Ctrl+J for a new line "
+                    } else {
+                        " Prompt "
+                    }),
+            ),
         rows[3],
     );
     if interactive && focus_panel == 0 && detail_card.is_none() && model.approval.is_none() {
-        let before = &input[..cursor.min(input.len())];
-        let line = before.rsplit('\n').next().unwrap_or("");
-        let row_offset = before.matches('\n').count() as u16;
-        let col_offset = UnicodeWidthStr::width(line) as u16;
+        let row_offset = cursor_row.saturating_sub(prompt_scroll) as u16;
+        let col_offset = cursor_column % input_width;
         frame.set_cursor_position(Position::new(
             rows[3]
                 .x
-                .saturating_add(3)
-                .saturating_add(col_offset)
+                .saturating_add(1)
+                .saturating_add(col_offset.min(u16::MAX as usize) as u16)
                 .min(rows[3].right().saturating_sub(1)),
             rows[3]
                 .y
@@ -467,32 +559,34 @@ pub fn draw_with_input(
         ));
     }
 
-    let focus_name = match focus_panel {
-        1 => "transcript",
-        2 => "agents",
-        _ => "prompt",
-    };
     let shortcuts = if interactive && agent_filter.is_some() {
-        "Ctrl+N/P tool · Enter details · Esc main · Ctrl+O all".to_owned()
+        "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
-        "↑↓ select agent · Enter transcript · Tab panel · Ctrl+Q exit".to_owned()
+        "↑↓ select agent · Enter transcript · Tab input · Ctrl+Q quit".to_owned()
+    } else if interactive && focus_panel == 1 {
+        "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        format!("Tab {focus_name} · Ctrl+N/P card · Enter open · Ctrl+O all · Ctrl+Q exit")
+        "Enter send · Ctrl+J new line · Tab transcript · / commands · Ctrl+Q quit".to_owned()
     } else {
-        "↑↓ scroll · Enter expand · Ctrl+O all · q exit".to_owned()
+        "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };
-    let status = format!(
-        " {}  {} in · {} out  ·  ctx {:.0}%  ·  ${:.4}  ·  {} ",
-        safe_text(&model.status),
-        model.input_tokens,
-        model.output_tokens,
-        model.context_used_pct,
-        model.cost,
-        shortcuts
+    let state = safe_text(&model.status);
+    let metrics = format!(
+        "{} in · {} out · ctx {:.0}% · ${:.4}",
+        model.input_tokens, model.output_tokens, model.context_used_pct, model.cost
     );
     frame.render_widget(
-        Paragraph::new(status).style(Style::default().fg(p.muted)),
+        Paragraph::new(Line::from(vec![
+            Span::styled("● ", Style::default().fg(p.info)),
+            Span::styled(state, Style::default().fg(p.text)),
+            Span::styled(format!("  ·  {metrics}"), Style::default().fg(p.muted)),
+        ])),
         rows[4],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("  {shortcuts}"))
+            .style(Style::default().fg(p.muted).add_modifier(Modifier::DIM)),
+        rows[5],
     );
     if let Some(interaction) = &model.interaction {
         let width = area.width.saturating_sub(2).min(88).max(1);
@@ -583,7 +677,7 @@ fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatu
 
 fn agent_state(status: &str, p: Palette) -> (&'static str, Color) {
     match status {
-        "working" | "running" => ("◐", p.warning),
+        "working" | "running" => ("◐", p.info),
         "failed" => ("✗", p.danger),
         "done" | "complete" => ("✓", p.success),
         _ => ("○", p.muted),
@@ -597,11 +691,7 @@ fn agent_identity_color(agent: &str, p: Palette) -> Color {
     let hash = agent.bytes().fold(0usize, |value, byte| {
         value.wrapping_mul(31).wrapping_add(byte as usize)
     });
-    match hash % 3 {
-        0 => p.accent,
-        1 => p.success,
-        _ => p.code,
-    }
+    p.agent_colors[hash % p.agent_colors.len()]
 }
 
 fn plan_line(item: &str, p: Palette) -> Line<'static> {
@@ -713,7 +803,7 @@ fn card_lines(
 ) -> Vec<Line<'static>> {
     let (glyph, color) = match card.status.as_str() {
         "requested" | "queued" => ("○", p.muted),
-        "running" | "streaming" | "working" => ("◐", p.warning),
+        "running" | "streaming" | "working" => ("◐", p.info),
         "waiting" => ("?", p.warning),
         "failed" | "error" => ("✗", p.danger),
         "denied" | "cancelled" => ("⊘", p.muted),
@@ -732,7 +822,7 @@ fn card_lines(
         glyph
     };
     let display_title = if card.title == "Assistant" {
-        "Bahulam"
+        ""
     } else if let Some(agent) = agent_message {
         agent
     } else if is_user {
@@ -747,14 +837,14 @@ fn card_lines(
     } else {
         &card.status
     };
-    let color = if card.title == "Assistant" {
+    let identity_color = if card.title == "Assistant" {
         p.accent
     } else if is_assistant {
         agent_identity_color(&card.agent, p)
     } else if is_user {
         p.text
     } else {
-        color
+        p.text
     };
     let metadata_width = UnicodeWidthStr::width(card.metadata.as_str()).min(18);
     let fixed_width = 3 + 12 + 1 + card.status.len().min(9) + metadata_width + 5;
@@ -771,16 +861,30 @@ fn card_lines(
             .saturating_sub(fixed_width + UnicodeWidthStr::width(primary.as_str()))
             .max(2)
     };
-    let heading = format!(
-        "{focus}{glyph} {:<12} {:<9} {}{}{}",
-        safe_text(display_title),
-        safe_text(display_status),
-        primary,
-        " ".repeat(gap),
-        metadata
-    );
-    let mut lines =
-        vec![Line::from(heading).style(Style::default().fg(color).add_modifier(Modifier::BOLD))];
+    let mut heading = vec![Span::styled(
+        format!("{focus}{glyph} "),
+        Style::default().fg(color),
+    )];
+    if !is_assistant {
+        heading.push(Span::styled(
+            format!("{:<12} ", safe_text(display_title)),
+            Style::default()
+                .fg(identity_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+        heading.push(Span::styled(
+            format!("{:<9} ", safe_text(display_status)),
+            Style::default().fg(color),
+        ));
+    }
+    if !primary.is_empty() {
+        heading.push(Span::styled(primary, Style::default().fg(p.muted)));
+    }
+    heading.push(Span::raw(" ".repeat(gap)));
+    if !metadata.is_empty() {
+        heading.push(Span::styled(metadata, Style::default().fg(p.muted)));
+    }
+    let mut lines = vec![Line::from(heading)];
     if budget <= 1 {
         return lines;
     }
@@ -808,9 +912,10 @@ fn card_lines(
         usize::MAX
     } else {
         match card.status.as_str() {
-            "running" | "streaming" => 5,
-            "failed" | "error" => 20,
-            _ => 3,
+            "running" | "streaming" => 2,
+            "failed" | "error" => 4,
+            "requested" | "queued" => 1,
+            _ => 2,
         }
     };
     let is_expanded = expanded.contains(&index);

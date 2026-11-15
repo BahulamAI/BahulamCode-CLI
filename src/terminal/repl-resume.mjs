@@ -477,7 +477,11 @@ export function renderResumePreview(resumed, ctx = {}) {
     const userTurns = (resumed.history || [])
       .filter(m => m.role === 'user')
       .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
-    const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
+    const hasDurableFallback = replayEvents.some(item => item?.source === 'durable');
+    const transcriptMessages = hasDurableFallback
+      ? historyForMode.filter(message => message.role !== 'user')
+      : [];
+    const replayItems = mergeResumeReplayItems(userTurns, replayEvents, transcriptMessages);
     const replayTitle = tailTurns ? `Last ${tailTurns} Turns Replay` : 'Replayed Live Session Events';
     process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
@@ -494,6 +498,18 @@ export function renderResumePreview(resumed, ctx = {}) {
           stopSpinner();
           const content = String(item.message.content || '').replace(/\s+/g, ' ').trim();
           process.stderr.write(`\n  ${historyRoleLabel('user')}: ${content}\n`);
+          continue;
+        }
+        if (item.kind === 'history') {
+          flushContent();
+          stopSpinner();
+          const message = item.message;
+          renderHistoryEntries([message], {
+            limit: Infinity,
+            maxChars: Infinity,
+            preserveWhitespace: true,
+            title: null,
+          });
           continue;
         }
         renderEvent(item.event.event);

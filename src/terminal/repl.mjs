@@ -4962,9 +4962,14 @@ export async function startTerminalRepl() {
         : [];
       if (replay.length) {
         const prefix = historyMode === 'full' ? checkpointCard : continuityCard;
-        return [...prefix, ...mergeResumeReplayItems(users, replay).map(item => item.kind === 'user'
-          ? { kind: 'message', role: 'user', content: item.message.content }
-          : { kind: 'event', event: item.event.event })];
+        const transcriptMessages = replay.some(item => item?.source === 'durable')
+          ? historyForMode.filter(message => message.role !== 'user')
+          : [];
+        return [...prefix, ...mergeResumeReplayItems(users, replay, transcriptMessages).map(item => {
+          if (item.kind === 'user') return { kind: 'message', role: 'user', content: item.message.content };
+          if (item.kind === 'history') return { kind: 'message', role: item.message.role || 'assistant', content: item.message.content ?? '' };
+          return { kind: 'event', event: item.event.event };
+        })];
       }
       return [...(historyMode === 'full' ? checkpointCard : continuityCard), ...historyItems];
     })();
@@ -5911,7 +5916,6 @@ export async function startTerminalRepl() {
     if (!followupId && input.startsWith('/')) {
       if (_rustTuiActive) {
         const capture = { output: '', truncated: false };
-        const historyBeforeCommand = session.history;
         let ok = true;
         _rustTuiOutputCapture = capture;
         try {
@@ -5927,7 +5931,7 @@ export async function startTerminalRepl() {
         const commandArg = input.trim().split(/\s+/)[1]?.toLowerCase() || '';
         if (['/new', '/clear'].includes(command)) {
           await sendRustTranscriptSnapshot(command === '/new' ? 'new session' : 'cleared');
-        } else if (command === '/resume' && session.history !== historyBeforeCommand) {
+        } else if (command === '/resume') {
           await sendRustTranscriptSnapshot(session.historyMode || 'current');
         } else if (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg)) {
           sendRustSessionState();

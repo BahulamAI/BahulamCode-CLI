@@ -547,6 +547,7 @@ export async function getSessionDetail(sessionId, options = {}) {
       const durableEvents = await readAllEvents({ sessionId: file.sessionId });
       replayEvents.push(...durableEvents.map(event => ({
         timestamp: event.ts || null,
+        source: 'durable',
         event,
       })));
     } catch {}
