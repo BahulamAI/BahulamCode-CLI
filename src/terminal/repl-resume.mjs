@@ -458,9 +458,21 @@ export function renderResumePreview(resumed, ctx = {}) {
     process.stderr.write('\n');
   }
 
-  if (resumed.replayEvents?.length) {
-    const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
-    const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
+  if (resumed.historyMode === 'full' && resumed.priorSummary) {
+    const count = Number(resumed.checkpointSourceMessageCount) || 0;
+    process.stderr.write(`\n  ${c.bold(`Earlier transcript summary${count ? ` · ${count} messages` : ''}`)}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.priorSummary.split('\n')) process.stderr.write(`  ${c.dim(line)}\n`);
+    process.stderr.write(`  ${c.dim('[The source messages covered by this checkpoint are not present in the local transcript.]')}\n\n`);
+  }
+
+  const replaySource = filterResumeReplayEvents(resumed.replayEvents || [])
+    .filter(item => !['resume_summary', 'resume_context'].includes(item?.event?.type));
+  const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
+  const historyForMode = (resumed.history || []).filter(message =>
+    replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+  if (replaySource.length) {
+    const replayEvents = replaySource
       .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
     const userTurns = (resumed.history || [])
       .filter(m => m.role === 'user')
@@ -498,10 +510,11 @@ export function renderResumePreview(resumed, ctx = {}) {
     return;
   }
 
-  if (resumed.history?.length) {
-    renderHistoryEntries(resumed.history, {
+  if (historyForMode.length) {
+    renderHistoryEntries(historyForMode, {
       limit: Infinity,
-      maxChars: 220,
+      maxChars: Infinity,
+      preserveWhitespace: true,
       title: tailTurns ? `Last ${tailTurns} Turns` : 'Replayed Session History',
     });
   }

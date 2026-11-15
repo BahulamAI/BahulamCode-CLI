@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { bahulamHome } from './paths.mjs';
+import { readAllEvents } from './event-log.mjs';
 import { followupsFromTranscript } from './followups.mjs';
 
 const BAHULAM_DIR = bahulamHome();
@@ -536,6 +537,20 @@ export async function getSessionDetail(sessionId, options = {}) {
   }
 
   const meta = await parseSessionMeta(file.filePath);
+  // The daemon's durable event log can contain live activity that predates
+  // transcript event persistence. Prefer transcript events when they include
+  // real activity; otherwise use the event log as the available replay source.
+  const hasTranscriptActivity = replayEvents.some(item =>
+    !['resume_summary', 'resume_context', 'status', 'session_info', 'complete', 'resumed', 'paused', 'session_started', 'session_state'].includes(item?.event?.type));
+  if (!hasTranscriptActivity) {
+    try {
+      const durableEvents = await readAllEvents({ sessionId: file.sessionId });
+      replayEvents.push(...durableEvents.map(event => ({
+        timestamp: event.ts || null,
+        event,
+      })));
+    } catch {}
+  }
   return {
     sessionId: file.sessionId,
     slug: file.slug,
@@ -628,18 +643,21 @@ export function buildResumeHistory(detail, mode = 'compact') {
       const results = entryToolResults(entry);
       for (const result of results) {
         toolResults++;
-        const content = truncateText(result.content, 1200);
-        const label = `[tool_result] ${result.tool_use_id || 'tool'}${result.is_error ? ' (error)' : ''}: ${content}`;
+        const rawContent = typeof result.content === 'string'
+          ? result.content
+          : (result.content == null ? '' : JSON.stringify(result.content));
+        const content = truncateText(rawContent, 1200);
+        const prefix = `[tool_result] ${result.tool_use_id || 'tool'}${result.is_error ? ' (error)' : ''}: `;
         displayHistory.push({
           role: 'tool',
-          content: label,
+          content: `${prefix}${rawContent}`,
           timestamp: entry.timestamp,
           order: entry.order,
           tool: result.tool_use_id || 'tool',
           kind: 'result',
         });
-        fullAgentHistory.push({ role: 'user', content: label });
-        if (importantResults.length < 12 && content) importantResults.push(label);
+        fullAgentHistory.push({ role: 'user', content: `${prefix}${content}` });
+        if (importantResults.length < 12 && content) importantResults.push(`${prefix}${content}`);
       }
     }
   }

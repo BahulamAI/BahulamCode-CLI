@@ -4456,13 +4456,14 @@ async function handleCommand(input, ctx) {
       }
 
       // 4. Report — succinct honest single line, then optional hydration warning.
-      const toolSummary = resumed.stats && resumed.stats.toolCalls
-        ? `${resumed.stats.toolCalls} tool calls`
-        : `${resumed.messages} msgs`;
+      const toolSummary = `${resumed.stats?.toolCalls || 0} tool calls`;
+      const checkpointLabel = resumed.checkpointSourceMessageCount
+        ? ` · ${resumed.checkpointSourceMessageCount} earlier messages summarized`
+        : '';
       const summaryLabel = mode !== 'full' && resumed.summarySource
         ? ` · summary: ${resumed.summarySource}`
         : '';
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary}${checkpointLabel} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
       if (resumed.summaryWarning) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — using local summary (${resumed.summaryWarning})`)}\n`);
       }
@@ -4475,8 +4476,9 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      // Display is bounded independently from the selected agent history mode.
-      renderResumePreview(resumed, { renderEvent, previewOnly: true, startup: true });
+      // Rust displays the selected transcript snapshot in its transcript pane.
+      // The inline TypeScript client replays all locally available history.
+      if (!_rustTuiActive) renderResumePreview(resumed, { renderEvent });
       return;
     }
 
@@ -4942,18 +4944,29 @@ export async function startTerminalRepl() {
         .filter(item => !['resume_summary', 'resume_context'].includes(item?.event?.type))
         .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
       const users = displayHistory.filter(message => message.role === 'user').filter(message => replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+      const checkpointEvent = (detail.replayEvents || []).filter(item => item?.event?.type === 'resume_summary')
+        .sort((a, b) => Number(b.order || 0) - Number(a.order || 0))[0];
+      const checkpointOrder = Number(checkpointEvent?.order);
+      const historyStartOrder = historyMode === 'checkpoint-full' && Number.isFinite(checkpointOrder)
+        ? checkpointOrder + 1
+        : replayStartOrder;
+      const historyForMode = displayHistory.filter(message =>
+        historyStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= historyStartOrder);
+      const historyItems = historyForMode.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }));
       const checkpointCount = Number(detail.meta?.resumeSummary?.sourceMessageCount) || richHistory.summaryCheckpointMessageCount;
       const checkpointCard = historyMode === 'full' && richHistory.priorSummary
         ? [{ kind: 'notice', title: `Earlier transcript summary · ${checkpointCount} messages`, content: `${richHistory.priorSummary}\n\n[The original entries covered by this checkpoint are not present in the local transcript.]` }]
         : [];
+      const continuityCard = historyMode !== 'full' && richHistory.summary
+        ? [{ kind: 'notice', title: 'Resume continuity summary', content: richHistory.summary }]
+        : [];
       if (replay.length) {
-        const prefix = historyMode === 'full' ? checkpointCard
-          : richHistory.summary ? [{ kind: 'notice', title: 'Resume continuity summary', content: richHistory.summary }] : [];
+        const prefix = historyMode === 'full' ? checkpointCard : continuityCard;
         return [...prefix, ...mergeResumeReplayItems(users, replay).map(item => item.kind === 'user'
           ? { kind: 'message', role: 'user', content: item.message.content }
           : { kind: 'event', event: item.event.event })];
       }
-      return [...checkpointCard, ...displayHistory.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }))];
+      return [...(historyMode === 'full' ? checkpointCard : continuityCard), ...historyItems];
     })();
     recoveredFollowups = richHistory.pendingFollowups || [];
     if (recoveredFollowups.length) {
@@ -4991,6 +5004,8 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || '',
       historyMode,
       summary: richHistory.summary || '',
+      priorSummary: richHistory.priorSummary || '',
+      checkpointSourceMessageCount: Number(detail.meta?.resumeSummary?.sourceMessageCount) || richHistory.summaryCheckpointMessageCount || 0,
       summarySource,
       summaryWarning,
       history: displayHistory,
@@ -5051,7 +5066,7 @@ export async function startTerminalRepl() {
         ].filter(Boolean).join(' · ');
         process.stderr.write(wrapCode(status, paint.brand.primary, { indent: '  ' }) + '\n');
         for (const failure of resumed.hydrationFailures || []) process.stderr.write(wrapCode('Could not restore project path: ' + failure, paint.state.warn, { indent: '  ' }) + '\n');
-      if (!_rustTuiActive) renderResumePreview(resumed, { renderEvent, previewOnly: true });
+        renderResumePreview(resumed, { renderEvent, previewOnly: true });
       } else {
         process.stderr.write(`  ${c.yellow('!')} ${c.dim(resumed.reason || 'No conversation found for session ' + lastSession.sessionId)}\n`);
       }
