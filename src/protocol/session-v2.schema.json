@@ -625,6 +625,10 @@
     "usage_update": "UsageUpdateData",
     "notice": "NoticeData",
     "command_result": "CommandResultData",
+    "transcript_snapshot": "TranscriptSnapshotData",
+    "session_state": "SessionStateData",
+    "command_catalog": "CommandCatalogData",
+    "interaction_requested": "InteractionRequestedData",
     "diff": "DiffData",
     "test_result": "TestResultData"
   },
@@ -640,6 +644,7 @@
     "background": "BackgroundCommand",
     "open_item": "OpenItemCommand",
     "run_slash": "RunSlashCommand",
+    "interaction_response": "InteractionResponseCommand",
     "bye": "ByeCommand"
   },
   "$defs": {
@@ -1061,12 +1066,49 @@
         "added_to_context": {
           "type": "boolean"
         },
-        "result": {}
+        "result": {},
+        "output": {"type": "string"},
+        "ok": {"type": "boolean"}
       },
       "required": [
         "name",
         "added_to_context"
       ],
+      "additionalProperties": true
+    },
+    "TranscriptSnapshotData": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string"},
+        "items": {"type": "array", "items": {}},
+        "cwd": {"type": "string"},
+        "model": {"type": "string"},
+        "replace": {"type": "boolean"}
+      },
+      "required": ["mode", "items"],
+      "additionalProperties": true
+    },
+    "SessionStateData": {
+      "type": "object",
+      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "status": {"type": "string"}},
+      "required": [],
+      "additionalProperties": true
+    },
+    "CommandCatalogData": {
+      "type": "object",
+      "properties": {"commands": {"type": "array", "items": {}}},
+      "required": ["commands"],
+      "additionalProperties": true
+    },
+    "InteractionRequestedData": {
+      "type": "object",
+      "properties": {
+        "request_id": {"type": "string"},
+        "title": {"type": "string"},
+        "message": {"type": "string"},
+        "options": {"type": "array", "items": {}}
+      },
+      "required": ["request_id", "title", "options"],
       "additionalProperties": true
     },
     "DiffData": {
@@ -1266,6 +1308,12 @@
       "required": [
         "name"
       ],
+      "additionalProperties": true
+    },
+    "InteractionResponseCommand": {
+      "type": "object",
+      "properties": {"request_id": {"type": "string"}, "value": {"type": "string"}, "cancelled": {"type": "boolean"}},
+      "required": ["request_id", "cancelled"],
       "additionalProperties": true
     },
     "ByeCommand": {

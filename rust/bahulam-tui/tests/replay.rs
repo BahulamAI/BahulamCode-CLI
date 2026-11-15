@@ -1,12 +1,12 @@
 use bahulam_tui::{
     model::{safe_text, Model},
     protocol::{EventEnvelope, EVENT_TYPES},
-    render::draw,
+    render::{draw, draw_with_input},
     replay,
 };
 use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -127,15 +127,54 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
                 "Bahulam",
                 "Agents",
                 "Plan",
-                "read_file",
+                "Agent report",
                 "Read source",
-                "120 in / 35 out",
+                "120 in · 35 out",
             ] {
                 assert!(
                     text.contains(expected),
                     "missing {expected} at {width}x{height}"
                 );
             }
+            // Sub-agent internals stay out of the main conversation; the
+            // reviewer's own transcript is where its tool card appears.
+            assert!(
+                !text.contains("read_file"),
+                "sub-agent tool leaked into the main view at {width}x{height}"
+            );
+            let mut filtered = Terminal::new(TestBackend::new(width, height)).unwrap();
+            filtered
+                .draw(|frame| {
+                    draw_with_input(
+                        frame,
+                        &model,
+                        u16::MAX,
+                        false,
+                        "dark",
+                        "",
+                        0,
+                        &HashSet::new(),
+                        None,
+                        false,
+                        Some("reviewer"),
+                        None,
+                        1,
+                        None,
+                        0,
+                    )
+                })
+                .unwrap();
+            let filtered_text = filtered
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                filtered_text.contains("read_file"),
+                "missing read_file in the reviewer transcript at {width}x{height}"
+            );
         }
     }
 }

@@ -26,6 +26,7 @@ export const COMMANDS = {
   '/diff':        'Git diff',
   '/cost':        'Show session cost',
   '/model':       'Show or set session model overrides',
+  '/models':      'Alias of /model list',
   '/attach':      'Attach image path or clipboard image to next prompt',
   '/attachments': 'List or clear pending image attachments',
   '/history':     'Show conversation',
@@ -274,6 +275,7 @@ export function normalizeCommandInput(input) {
   const parts = String(input || '').trim().split(/\s+/).filter(Boolean);
   const rawCmd = (parts[0] || '').toLowerCase();
   const restParts = parts.slice(1);
+  if (rawCmd === '/models') return { cmd: '/model', rest: `list ${restParts.join(' ')}`.trim(), rawCmd, aliasTarget: '/model list' };
   const sub = (restParts[0] || '').toLowerCase();
   const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
   if (namespaced) {

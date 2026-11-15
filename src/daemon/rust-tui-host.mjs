@@ -47,7 +47,13 @@ export function startRustTuiHost({ onCommand, onExit } = {}) {
   return {
     child,
     send(event) {
-      if (!closed && events.writable) events.write(`${JSON.stringify(event)}\n`);
+      if (closed || !events.writable) return Promise.resolve(false);
+      if (events.write(`${JSON.stringify(event)}\n`)) return Promise.resolve(true);
+      return new Promise(resolve => {
+        const done = () => { events.removeListener('drain', done); events.removeListener('close', done); resolve(!closed); };
+        events.once('drain', done);
+        events.once('close', done);
+      });
     },
     close() {
       closed = true;

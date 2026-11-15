@@ -85,6 +85,7 @@ import {
   MODEL_CATEGORY_ORDER,
   formatCategoryBadge,
   formatCategoryHeading,
+  isImageGenerationModel,
   modelCategory,
   modelDisplayCategory,
   modelMatchesCatalogFilter,
@@ -704,6 +705,31 @@ const MODEL_FORM_ROLES = ['reasoning', 'fast', 'explore', 'plan'];
 const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
+  if (_rustTuiActive) {
+    const catalog = await fetchModelCatalog(ctx) || [];
+    const roles = [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES];
+    const role = await rustTuiChoose('Choose model role', roles.map(key => ({
+      value: key, label: `${MODEL_ROLE_LABELS[key] || key}${session.modelOverrides?.[key] ? ` · ${session.modelOverrides[key]}` : ''}`,
+    })), 'Select a role to update its session override.');
+    if (!role) return;
+    let available = catalog.filter(row => row?.id && (['image_analysis', 'image_generation'].includes(role)
+      ? modelCategory(row) === 'image' || modelCategory(row) === 'multimodal'
+      : ['text', 'chat', 'multimodal'].includes(modelCategory(row))));
+    if (role === 'image_generation') available = available.filter(row => isImageGenerationModel(row));
+    else if (role === 'image_analysis') available = available.filter(row => !isImageGenerationModel(row));
+    const currentOverride = session.modelOverrides?.[role];
+    const options = [
+      { value: '__default__', label: 'Backend default' },
+      ...available.map(row => ({ value: row.id, label: `${row.id}${row.provider ? ` · ${row.provider}` : ''}` })),
+      ...(currentOverride && !available.some(row => row.id === currentOverride)
+        ? [{ value: currentOverride, label: `${currentOverride} · current custom override` }]
+        : []),
+    ];
+    const selected = await rustTuiChoose(`Choose ${MODEL_ROLE_LABELS[role] || role} model`, options, 'The selection applies to this session.');
+    if (!selected) return;
+    await handleModelCommand(selected === '__default__' ? `clear ${role}` : `${role} ${selected}`, ctx);
+    return;
+  }
   const limits = session.modelLimits || {};
   const subAgentModels = session.subAgentModels || {};
   const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
@@ -941,6 +967,13 @@ async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
   if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false') {
     return true;
   }
+  if (_rustTuiActive) {
+    const choice = await rustTuiChoose('Confirm image upload', [
+      { value: 'yes', label: 'Upload image for vision analysis' },
+      { value: 'no', label: 'Cancel upload' },
+    ], attachments.map(item => item.name).join(', '));
+    return choice === 'yes';
+  }
   if (!ctx?._rl || !process.stdin.isTTY) return false;
   const names = attachments.map(a => a.name).join(', ');
   return await new Promise(resolve => {
@@ -1174,6 +1207,14 @@ async function handleSkillsCommand(rest = '', ctx) {
       process.stderr.write(`  ${c.dim('Install one:')} ${c.brand('/skills install https://github.com/<user>/<repo>')}\n`);
       return;
     }
+    if (_rustTuiActive) {
+      const selected = await rustTuiChoose('Installed skills', [
+        ...skills.map(skill => ({ value: skill.name, label: `${skill.name} · ${skill.description || skill.source || 'installed'}` })),
+        { value: 'close', label: 'Close' },
+      ], 'Choose a skill to inspect.');
+      if (!selected || selected === 'close') return;
+      return handleSkillsCommand(`view ${selected}`, ctx);
+    }
     const rl = ctx?.rl || null;
     const choice = await openSkillsPicker({ rl, skills });
     if (!choice) {
@@ -1317,6 +1358,8 @@ const MODEL_COMMAND_COMPLETIONS = [
 function slashCompletionDescription(command) {
   const modelHint = MODEL_COMMAND_COMPLETIONS.find(item => item.command === command);
   if (modelHint) return modelHint.description;
+  const helpHint = HELP_GROUPS.flatMap(group => group.commands).find(([name]) => name === command);
+  if (helpHint) return helpHint[1];
   return COMMANDS[command] || (command === '/quit' ? 'Exit CLI' : '');
 }
 
@@ -2079,6 +2122,52 @@ let _submitExternalPrompt = null;
 let _rustTuiActive = false;
 let _rustTuiHost = null;
 let _rustTuiOutputCapture = null;
+let _rustTuiEnsureSessionId = null;
+const _rustTuiInteractions = new Map();
+let _rustTuiInteractionSeq = 0;
+
+function rustTuiChoose(title, options, message = '') {
+  if (!_rustTuiActive || !_rustTuiHost) return Promise.resolve(null);
+  const requestId = `interaction-${Date.now()}-${++_rustTuiInteractionSeq}`;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { _rustTuiInteractions.delete(requestId); resolve(null); }, 5 * 60_000);
+    _rustTuiInteractions.set(requestId, value => { clearTimeout(timer); resolve(value); });
+    const sessionId = session.id || _rustTuiEnsureSessionId?.();
+    if (!sessionId) { _rustTuiInteractions.delete(requestId); clearTimeout(timer); resolve(null); return; }
+    if (!session.id) session.id = sessionId;
+    _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'interaction_requested', session_id: sessionId,
+      agent_id: 'main', data: { request_id: requestId, title, message, options: options.map(option => ({ label: String(option.label), value: String(option.value) })) } });
+  });
+}
+
+async function sendRustTranscriptSnapshot(mode = 'current') {
+  if (!_rustTuiActive || !_rustTuiHost) return;
+  const sessionId = session.id || _rustTuiEnsureSessionId?.();
+  if (!sessionId) return;
+  if (!session.id) session.id = sessionId;
+  const modeLabel = mode === 'current' ? mode : resumeModeLabel(mode);
+  const items = session.rustSnapshotItems || (session.history || []).map(item => ({
+    kind: 'message',
+    role: item?.role || 'assistant',
+    content: item?.content ?? item?.text ?? '',
+  }));
+  const chunks = [];
+  for (let offset = 0; offset < items.length; offset += 32) chunks.push(items.slice(offset, offset + 32));
+  if (!chunks.length) chunks.push([]);
+  for (let index = 0; index < chunks.length; index++) {
+    await _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'transcript_snapshot', session_id: sessionId,
+      agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: index === 0, items: chunks[index] } });
+  }
+}
+
+function sendRustSessionState() {
+  if (!_rustTuiActive || !_rustTuiHost) return;
+  const sessionId = session.id || _rustTuiEnsureSessionId?.();
+  if (!sessionId) return;
+  if (!session.id) session.id = sessionId;
+  _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', status: session.model || 'ready' } });
+}
 
 function renderEvent(event) {
   const { type, data } = event;
@@ -3610,6 +3699,13 @@ async function handleCommand(input, ctx) {
       return;
     }
     case '/login':
+      if (_rustTuiActive) {
+        const proceed = await rustTuiChoose('Sign in to Bahulam', [
+          { value: 'continue', label: 'Continue with browser sign-in' },
+          { value: 'cancel', label: 'Cancel' },
+        ], 'The existing TypeScript auth flow will open the browser and save credentials.');
+        if (proceed !== 'continue') return;
+      }
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
       telemetry.track('login_shown', { method: 'repl_command' });
       try {
@@ -4068,6 +4164,7 @@ async function handleCommand(input, ctx) {
 
     case '/clear':
       session.history.length = 0;
+      session.rustSnapshotItems = [];
       session.agentHistory.length = 0;
       session.toolCalls = 0;
       session.subAgentToolCalls = 0;
@@ -4161,6 +4258,23 @@ async function handleCommand(input, ctx) {
     case '/approvals': {
       const parts = (rest || '').trim().split(/\s+/).filter(Boolean);
       const action = (parts[0] || 'list').toLowerCase();
+      if (_rustTuiActive && action === 'list' && !ctx._rustSkipApprovalPicker) {
+        const summary = ctx.approval.getSummary();
+        const current = summary.autoApprovedTypes || [];
+        const options = [
+          { value: 'show', label: `View grants · ${current.length ? current.join(', ') : 'none'}` },
+          ...['shell', 'read_file', 'write_file', 'edit_file', 'apply_patch'].filter(tool => !current.includes(tool)).map(tool => ({ value: `allow:${tool}`, label: `Allow ${tool} for this session` })),
+          ...(current.length ? current.map(tool => ({ value: `remove:${tool}`, label: `Remove ${tool} grant` })) : []),
+          { value: 'clear', label: 'Clear all session grants' },
+          { value: 'cancel', label: 'Close' },
+        ];
+        const selected = await rustTuiChoose('Manage session approvals', options, `Mode: ${ctx.approval.getModeLabel()}. Dangerous tiers still prompt.`);
+        if (!selected || selected === 'cancel') return;
+        if (selected === 'show') return handleCommand('/approvals list', { ...ctx, _rustSkipApprovalPicker: true });
+        if (selected === 'clear') return handleCommand('/approvals clear', ctx);
+        if (selected.startsWith('allow:')) return handleCommand(`/approvals allow ${selected.slice(6)}`, ctx);
+        if (selected.startsWith('remove:')) return handleCommand(`/approvals remove ${selected.slice(7)}`, ctx);
+      }
       if (action === 'clear') {
         const wasActive = ctx.approval.revoke();
         process.stderr.write(wasActive
@@ -4240,6 +4354,14 @@ async function handleCommand(input, ctx) {
           return;
         }
       } else {
+        if (_rustTuiActive) {
+          const choice = await rustTuiChoose('Resume a session', resumable.map(item => ({
+            value: item.sessionId,
+            label: `${item.project || '(unknown)'} · ${item.messageCount} msgs · ${formatResumeContextStatus(item).replace(/\x1b\[[0-9;]*m/g, '')} · ${oneLineInstruction(item.instruction, 44)}`,
+          })), 'Choose a saved transcript.');
+          if (!choice) { process.stderr.write(`  ${c.dim('Cancelled.')}\n`); return; }
+          picked = resumable.find(item => item.sessionId === choice) || null;
+        }
         while (!picked) {
           const pickResult = await pickResumableSession(resumable, ctx);
           if (!pickResult) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
@@ -4291,6 +4413,15 @@ async function handleCommand(input, ctx) {
         decision.resumeSummary = picked.resumeSummary || null;
         if (decision.mode === 'full') {
           mode = 'full';
+        } else if (_rustTuiActive) {
+          const choices = [
+            { value: 'full', label: 'Full transcript' },
+            { value: 'summary', label: 'Summary only' },
+            { value: 'tail-10', label: 'Summary + last 10 turns' },
+            { value: 'tail-20', label: 'Summary + last 20 turns' },
+          ].filter(option => option.value !== 'full' || decision.mode !== 'no-full-allowed');
+          mode = await rustTuiChoose('Choose resume history', choices, 'This controls both the displayed transcript and agent context.');
+          if (!mode) return;
         } else {
           // Yield before attaching the overlay listener — same race guard as
           // the preview branch above. Prevents a queued Enter from the picker
@@ -4598,6 +4729,8 @@ export async function startTerminalRepl() {
 
     Object.assign(session, {
       id: null,
+      historyMode: 'current',
+      rustSnapshotItems: [],
       startTime: Date.now(),
       inputTokens: 0,
       outputTokens: 0,
@@ -4802,6 +4935,19 @@ export async function startTerminalRepl() {
     onProgress('preparing replay', 92);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
+    session.rustSnapshotItems = (() => {
+      if (historyMode === 'summary') return richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
+      const replayStartOrder = replayStartOrderForMode(displayHistory, historyMode);
+      const replay = filterResumeReplayEvents(detail.replayEvents || []).filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
+      const users = displayHistory.filter(message => message.role === 'user').filter(message => replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+      if (replay.length) {
+        const prefix = historyMode.startsWith('tail-') && richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
+        return [...prefix, ...mergeResumeReplayItems(users, replay).map(item => item.kind === 'user'
+          ? { kind: 'message', role: 'user', content: item.message.content }
+          : { kind: 'event', event: item.event.event })];
+      }
+      return displayHistory.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }));
+    })();
     recoveredFollowups = richHistory.pendingFollowups || [];
     if (recoveredFollowups.length) {
       process.stderr.write(`  ${c.dim(`${recoveredFollowups.length} saved follow-up(s) recovered; continuing as separate turns.`)}\n`);
@@ -4810,6 +4956,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.yellow('Some follow-ups have uncertain or interrupted delivery. Review /history before retrying; they will not run automatically.')}\n`);
     }
     session.id = sessionId;
+    session.historyMode = historyMode;
     session.turns = displayHistory.filter(m => m.role === 'user').length;
     session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
 
@@ -4879,6 +5026,7 @@ export async function startTerminalRepl() {
   }
   // ── Resume previous session ──
   let resumedAtStartup = false;
+  let startupResumeMode = 'current';
   if (cliArgs.resume) {
     const lastSession = cliArgs.resumeSessionId
         ? { sessionId: cliArgs.resumeSessionId }
@@ -4888,6 +5036,7 @@ export async function startTerminalRepl() {
       const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
       if (resumed.ok) {
         resumedAtStartup = true;
+        startupResumeMode = resumed.historyMode || 'full';
         const status = ['Resumed session: ' + messageCountLabel(resumed.messages),
           'project ' + path.basename(safeCwd()), 'agent ' + resumed.historyMode,
           resumed.switchedProject ? 'cwd restored' : '',
@@ -5447,6 +5596,12 @@ export async function startTerminalRepl() {
     let restoreStderr = null;
     let restoreStdout = null;
     try {
+      // The Rust child owns the whole terminal. The dock's scroll region and
+      // its 1 Hz metadata repaint go through the render queue's raw channel,
+      // which was bound before the write patch below and would paint through
+      // the alternate screen. Give the terminal back before the child starts.
+      if (_dockTickTimer) { clearInterval(_dockTickTimer); _dockTickTimer = null; }
+      if (isInputDockMounted()) unmountInputDock();
       restoreStderr = process.stderr.write.bind(process.stderr);
       restoreStdout = process.stdout.write.bind(process.stdout);
       const screenWrite = original => (chunk, encoding, callback) => {
@@ -5455,7 +5610,7 @@ export async function startTerminalRepl() {
           const text = Buffer.isBuffer(chunk)
             ? chunk.toString(typeof encoding === 'string' ? encoding : undefined)
             : String(chunk);
-          const remaining = 65_536 - _rustTuiOutputCapture.output.length;
+          const remaining = 1_048_576 - _rustTuiOutputCapture.output.length;
           if (remaining > 0) _rustTuiOutputCapture.output += text.slice(0, remaining);
           if (text.length > remaining) _rustTuiOutputCapture.truncated = true;
           const done = typeof encoding === 'function' ? encoding : callback;
@@ -5468,6 +5623,11 @@ export async function startTerminalRepl() {
       };
       process.stderr.write = screenWrite(restoreStderr);
       process.stdout.write = screenWrite(restoreStdout);
+      _rustTuiEnsureSessionId = () => {
+        const id = session.id || jsonlWriter.ensureSessionId();
+        if (!session.id) session.id = id;
+        return id;
+      };
       _rustTuiHost = startRustTuiHost({
         onCommand: async command => {
           const data = command?.data || {};
@@ -5486,10 +5646,16 @@ export async function startTerminalRepl() {
             case 'deny':
               resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
               break;
+            case 'interaction_response': {
+              const id = String(data.request_id || '');
+              const complete = _rustTuiInteractions.get(id);
+              if (complete) { _rustTuiInteractions.delete(id); complete(data.cancelled ? null : (data.value ?? null)); }
+              break;
+            }
             case 'show_details': {
               const payloadRef = String(data.payload_ref || '');
               const sendDetail = detail => _rustTuiHost?.send({
-                v: 2, seq: 0, ts: new Date().toISOString(), type: 'detail_loaded',
+                v: 2, seq: 1, ts: new Date().toISOString(), type: 'detail_loaded',
                 session_id: session.id, agent_id: 'main',
                 data: { payload_ref: payloadRef, ...detail },
               });
@@ -5561,18 +5727,34 @@ export async function startTerminalRepl() {
         },
         onExit: () => {
           _rustTuiActive = false;
+          ctx._rustChoose = null;
+          _rustTuiEnsureSessionId = null;
           process.stderr.write = restoreStderr;
           process.stdout.write = restoreStdout;
           _rustTuiOutputCapture = null;
           _rustTuiHost = null;
+          for (const [id, complete] of _rustTuiInteractions) { _rustTuiInteractions.delete(id); complete(null); }
+          // The child disabled raw mode on its way out; readline needs it back.
+          try { if (process.stdin.isTTY) process.stdin.setRawMode(true); } catch {}
           rl.resume();
           showPrompt();
         },
       });
       _rustTuiActive = true;
+      ctx._rustChoose = rustTuiChoose;
       inputActive = false;
       rl.pause();
+      const rustSessionId = session.id || jsonlWriter.ensureSessionId();
+      if (!session.id) session.id = rustSessionId;
+      const rustCompletions = [...new Set([
+        ...commandCompletions('/'),
+        ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
+      ])].sort();
+      _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
+        data: { commands: rustCompletions.map(name => ({ name, description: slashCompletionDescription(name) })) } });
+      await sendRustTranscriptSnapshot(startupResumeMode);
     } catch (error) {
+      _rustTuiEnsureSessionId = null;
       if (restoreStderr) process.stderr.write = restoreStderr;
       if (restoreStdout) process.stdout.write = restoreStdout;
       process.stderr.write(`  ${c.yellow(`Rust terminal unavailable: ${error.message}; using Node terminal.`)}\n`);
@@ -5707,6 +5889,7 @@ export async function startTerminalRepl() {
     if (!followupId && input.startsWith('/')) {
       if (_rustTuiActive) {
         const capture = { output: '', truncated: false };
+        const historyBeforeCommand = session.history;
         let ok = true;
         _rustTuiOutputCapture = capture;
         try {
@@ -5717,10 +5900,26 @@ export async function startTerminalRepl() {
         } finally {
           _rustTuiOutputCapture = null;
         }
-        const result = `${capture.output.trim()}${capture.truncated ? '\n… output truncated at 64 KiB' : ''}`;
+        const result = `${capture.output.trim()}${capture.truncated ? '\n… output truncated at 1 MiB' : ''}`;
+        const command = input.trim().split(/\s+/)[0]?.toLowerCase();
+        const commandArg = input.trim().split(/\s+/)[1]?.toLowerCase() || '';
+        if (['/new', '/clear'].includes(command)) {
+          await sendRustTranscriptSnapshot(command === '/new' ? 'new session' : 'cleared');
+        } else if (command === '/resume' && session.history !== historyBeforeCommand) {
+          await sendRustTranscriptSnapshot(session.historyMode || 'current');
+        } else if (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg)) {
+          sendRustSessionState();
+        }
+        const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
+        const preview = previewLines.slice(0, 8).join('\n').slice(0, 1200) +
+          (previewLines.length > 8 || result.length > 1200 ? '\n… open details for full output' : '');
+        // Before the first turn there is no session id yet and the tap would
+        // drop the frame, leaving /help with no visible result.
+        jsonlWriter.ensureSessionId();
+        if (!session.id) session.id = jsonlWriter.sessionId;
         tapSseEvent({
           type: 'command_result',
-          data: { name: input.split(/\s+/).slice(0, 2).join(' '), result, ok, added_to_context: false },
+          data: { name: input.split(/\s+/).slice(0, 2).join(' '), result: preview || '(no output)', output: result || '(no output)', ok, added_to_context: false },
         }, { sessionId: session.id });
         return;
       }
@@ -5938,6 +6137,9 @@ export async function startTerminalRepl() {
     jsonlWriter.ensureSessionId();
     if (!session.id) session.id = jsonlWriter.sessionId;
     if (!client.sessionId) client.sessionId = session.id;
+    // The backend never emits turn_started; the prompt only reaches the event
+    // stream (and the Rust transcript) if the REPL records it here.
+    tapSseEvent({ type: 'turn_started', data: { text: input } }, { sessionId: session.id });
     writeCurrentUserTurn();
     if (followupId) await jsonlWriter.persistFollowup({ id: followupId, instruction: input, status: 'started' });
 
@@ -6104,7 +6306,9 @@ export async function startTerminalRepl() {
       return true;
     }
 
-    if (process.stdin.isTTY) {
+    // While the Rust client owns the terminal it also owns stdin; reading
+    // here would race it for every keystroke (Esc, Ctrl+C, follow-up text).
+    if (process.stdin.isTTY && !_rustTuiActive) {
       rl.pause();
       const wasRaw = process.stdin.isRaw;
       process.stdin.setRawMode(true);
@@ -6465,6 +6669,14 @@ export async function startTerminalRepl() {
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
         // No-op otherwise; zero effect on the render path either way.
         tapSseEvent(event, { sessionId: session.id });
+        // Local execution begins as soon as the request is rendered; mark the
+        // card running so the client can show elapsed time and the agent's
+        // current tool. Attribution fields ride along so it lands on the same
+        // row as the request; arguments do not need to travel twice.
+        if (event.type === 'tool_call' || event.type === 'tool_request') {
+          const { args: _args, tool_input: _ti, input: _in, ...started } = event.data || {};
+          tapSseEvent({ type: 'tool_started', data: started }, { sessionId: session.id });
+        }
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,

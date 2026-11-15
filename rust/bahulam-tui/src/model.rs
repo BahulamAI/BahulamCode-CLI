@@ -49,8 +49,23 @@ pub struct Model {
     pub status: String,
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
+    pub command_catalog: Vec<(String, String)>,
+    pub interaction: Option<Interaction>,
     tools: HashMap<String, usize>,
     messages: HashMap<String, usize>,
+}
+#[derive(Debug, Clone)]
+pub struct InteractionOption {
+    pub label: String,
+    pub value: String,
+}
+#[derive(Debug, Clone)]
+pub struct Interaction {
+    pub request_id: String,
+    pub title: String,
+    pub message: String,
+    pub options: Vec<InteractionOption>,
+    pub selected: usize,
 }
 
 fn text(data: &Value, key: &str) -> String {
@@ -58,6 +73,24 @@ fn text(data: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .map(safe_text)
         .unwrap_or_default()
+}
+
+fn display_message_content(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return safe_text(text);
+    }
+    if let Some(parts) = value.as_array() {
+        return parts
+            .iter()
+            .filter_map(|part| {
+                part.as_str()
+                    .map(safe_text)
+                    .or_else(|| part.get("text").and_then(Value::as_str).map(safe_text))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    safe_text(&value.to_string())
 }
 
 pub fn known_event(kind: &str) -> bool {
@@ -188,6 +221,193 @@ impl Model {
     }
 
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
+        if event.r#type == "transcript_snapshot" {
+            if event.data.get("replace").and_then(Value::as_bool) != Some(false) {
+                self.cards.clear();
+                self.agents.clear();
+                self.plan.clear();
+                self.tools.clear();
+                self.messages.clear();
+                self.approval = None;
+                self.last_seq = 0;
+            }
+            self.session = event.session_id.clone();
+            self.cwd = text(&event.data, "cwd");
+            self.model = text(&event.data, "model");
+            self.status = format!("Resumed · {}", text(&event.data, "mode"));
+            self.card(
+                "main",
+                "Session",
+                format!("Transcript loaded · mode: {}", text(&event.data, "mode")),
+                "ready",
+            );
+            if let Some(items) = event.data.get("items").and_then(Value::as_array) {
+                let mut seq = 0i64;
+                for item in items {
+                    if item.get("kind").and_then(Value::as_str) == Some("event") {
+                        if let Some(historical) = item.get("event").cloned() {
+                            let raw_kind =
+                                historical.get("type").and_then(Value::as_str).unwrap_or("");
+                            let kind = match raw_kind {
+                                "content_partial" => "text_delta",
+                                "content" => "message_end",
+                                "tool_request" => "tool_requested",
+                                "tool_done" => "tool_finished",
+                                "sub_agent_start" | "worker_start" => "agent_spawned",
+                                "sub_agent_complete" | "worker_done" => "agent_finished",
+                                "plan" | "plan_created" => "plan_updated",
+                                "complete" => "turn_ended",
+                                other => other,
+                            };
+                            seq += 1;
+                            let mut data = historical
+                                .get("data")
+                                .cloned()
+                                .unwrap_or(Value::Object(Default::default()));
+                            if let Some(object) = data.as_object_mut() {
+                                for (target, sources) in [
+                                    ("tool_id", &["call_id", "tool_call_id", "id"][..]),
+                                    ("name", &["tool"][..]),
+                                    ("args", &["tool_input", "input"][..]),
+                                    ("chunk", &["text"][..]),
+                                    ("text", &["content"][..]),
+                                    ("summary", &["output", "result"][..]),
+                                ] {
+                                    if !object.contains_key(target) {
+                                        if let Some(value) =
+                                            sources.iter().find_map(|key| object.get(*key).cloned())
+                                        {
+                                            object.insert(target.to_owned(), value);
+                                        }
+                                    }
+                                }
+                                if !object.contains_key("ok")
+                                    && (object.contains_key("error")
+                                        || object.get("is_error").and_then(Value::as_bool)
+                                            == Some(true))
+                                {
+                                    object.insert("ok".into(), Value::Bool(false));
+                                }
+                                if kind == "message_end"
+                                    && object.get("text").is_some_and(Value::is_array)
+                                {
+                                    let content = object
+                                        .get("text")
+                                        .map(display_message_content)
+                                        .unwrap_or_default();
+                                    object.insert("text".into(), Value::String(content));
+                                }
+                            }
+                            let agent = historical
+                                .get("agent_id")
+                                .or_else(|| data.get("subagent_id"))
+                                .or_else(|| data.get("sub_agent_run_id"))
+                                .or_else(|| data.get("run_id"))
+                                .or_else(|| data.get("worker"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("main")
+                                .to_owned();
+                            let turn = historical
+                                .get("turn_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| "resume-history".into());
+                            let envelope = EventEnvelope {
+                                v: 2,
+                                seq,
+                                ts: historical
+                                    .get("ts")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                r#type: kind.to_owned(),
+                                session_id: event.session_id.clone(),
+                                turn_id: Some(turn),
+                                agent_id: Some(agent),
+                                parent_agent_id: None,
+                                id: Some(format!("{}:resume:{seq}", event.session_id)),
+                                data,
+                                payload_ref: historical
+                                    .get("payload_ref")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            };
+                            self.apply(&envelope)?;
+                        }
+                    } else {
+                        let role = text(item, "role");
+                        let content = item
+                            .get("content")
+                            .map(display_message_content)
+                            .unwrap_or_default();
+                        if content.trim().is_empty() {
+                            continue;
+                        }
+                        let title = match role.as_str() {
+                            "user" => "Prompt",
+                            "assistant" => "Assistant",
+                            other => other,
+                        };
+                        let index = self.card("main", title, content, "done");
+                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                    }
+                }
+            }
+            self.cwd = text(&event.data, "cwd");
+            self.model = text(&event.data, "model");
+            self.last_seq = 0;
+            return Ok(());
+        }
+        if event.r#type == "command_catalog" {
+            self.command_catalog = event
+                .data
+                .get("commands")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|row| {
+                    Some((
+                        row.get("name")?.as_str()?.to_owned(),
+                        row.get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    ))
+                })
+                .collect();
+            return Ok(());
+        }
+        if event.r#type == "session_state" {
+            self.cwd = text(&event.data, "cwd");
+            self.model = text(&event.data, "model");
+            if !text(&event.data, "status").is_empty() {
+                self.status = text(&event.data, "status");
+            }
+            return Ok(());
+        }
+        if event.r#type == "interaction_requested" {
+            let options = event
+                .data
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|row| {
+                    Some(InteractionOption {
+                        label: safe_text(row.get("label")?.as_str()?),
+                        value: row.get("value")?.as_str()?.to_owned(),
+                    })
+                })
+                .collect();
+            self.interaction = Some(Interaction {
+                request_id: text(&event.data, "request_id"),
+                title: text(&event.data, "title"),
+                message: text(&event.data, "message"),
+                options,
+                selected: 0,
+            });
+            return Ok(());
+        }
         if event.r#type == "detail_loaded" {
             let reference = text(&event.data, "payload_ref");
             let detail = text(&event.data, "detail");
@@ -541,17 +761,14 @@ impl Model {
                 };
                 let index = self.card(agent, &format!("Command {name}"), result, status);
                 if let Some(reference) = &event.payload_ref {
-                    if data
-                        .get("result")
-                        .and_then(Value::as_str)
-                        .is_some_and(|result| result.len() <= 220)
-                    {
-                        self.cards[index].payload_ref = Some(reference.clone());
-                    } else {
-                        self.cards[index].detail = Some(self.cards[index].body.clone());
-                    }
+                    self.cards[index].payload_ref = Some(reference.clone());
                 } else {
-                    self.cards[index].detail = Some(self.cards[index].body.clone());
+                    self.cards[index].detail = Some(
+                        data.get("output")
+                            .and_then(Value::as_str)
+                            .map(safe_text)
+                            .unwrap_or_else(|| self.cards[index].body.clone()),
+                    );
                 }
                 self.cards[index].metadata =
                     if data.get("added_to_context").and_then(Value::as_bool) == Some(true) {

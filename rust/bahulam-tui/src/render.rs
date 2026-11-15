@@ -357,7 +357,7 @@ pub fn draw_with_input(
         rows[2],
     );
 
-    let prompt = if let Some(approval) = &model.approval {
+    let mut prompt = if let Some(approval) = &model.approval {
         vec![
             Line::from(vec![
                 Span::styled(
@@ -411,6 +411,22 @@ pub fn draw_with_input(
             ),
         ])]
     };
+    if model.approval.is_none() && input.trim_start().starts_with('/') {
+        let prefix = input.trim();
+        let suggestions = model
+            .command_catalog
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .take(3)
+            .map(|(name, description)| format!("{name}  {description}"))
+            .collect::<Vec<_>>();
+        if !suggestions.is_empty() {
+            prompt.push(Line::from(Span::styled(
+                format!("  {}", suggestions.join("   ·   ")),
+                Style::default().fg(p.muted),
+            )));
+        }
+    }
     frame.render_widget(
         Paragraph::new(prompt).wrap(Wrap { trim: true }).block(
             Block::default()
@@ -478,6 +494,91 @@ pub fn draw_with_input(
         Paragraph::new(status).style(Style::default().fg(p.muted)),
         rows[4],
     );
+    if let Some(interaction) = &model.interaction {
+        let width = area.width.saturating_sub(2).min(88).max(1);
+        let height = (interaction.options.len().min(12) as u16 + 6)
+            .min(area.height.saturating_sub(2))
+            .max(1);
+        let popup = centered_rect(width, height, area);
+        frame.render_widget(ratatui::widgets::Clear, popup);
+        let mut lines = vec![Line::from(Span::styled(
+            safe_text(&interaction.title),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ))];
+        if !interaction.message.is_empty() {
+            lines.push(Line::from(Span::styled(
+                safe_text(&interaction.message),
+                Style::default().fg(p.muted),
+            )));
+        }
+        lines.push(Line::from(""));
+        let visible = 12usize.min(interaction.options.len());
+        let start = interaction
+            .selected
+            .saturating_sub(visible.saturating_sub(1))
+            .min(interaction.options.len().saturating_sub(visible));
+        if start > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("↑ {} earlier", start),
+                Style::default().fg(p.muted),
+            )));
+        }
+        let selected = interaction
+            .options
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+            .map(|(index, option)| {
+                Line::from(Span::styled(
+                    format!(
+                        "{} {}",
+                        if index == interaction.selected {
+                            "›"
+                        } else {
+                            " "
+                        },
+                        safe_text(&option.label)
+                    ),
+                    if index == interaction.selected {
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(p.text)
+                    },
+                ))
+            });
+        lines.extend(selected);
+        if start + visible < interaction.options.len() {
+            lines.push(Line::from(Span::styled(
+                format!("↓ {} more", interaction.options.len() - start - visible),
+                Style::default().fg(p.muted),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "↑↓ select · Enter confirm · Esc cancel",
+            Style::default().fg(p.muted),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(p.accent))
+                        .title(" Choose "),
+                )
+                .wrap(Wrap { trim: true }),
+            popup,
+        );
+    }
+}
+
+fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }
 
 fn agent_state(status: &str, p: Palette) -> (&'static str, Color) {
@@ -699,25 +800,38 @@ fn card_lines(
                 .lines()
                 .any(|line| UnicodeWidthStr::width(line) > content_width)
         });
-    let limit = match card.status.as_str() {
-        "running" | "streaming" => 5,
-        "failed" | "error" => 20,
-        _ => 3,
+    // Spoken text (user prompt, agent reply) is prose: it is never previewed
+    // or ellipsized, only bounded by the viewport. Tool cards keep the
+    // quiet-by-default preview.
+    let is_message = is_assistant || is_user;
+    let limit = if is_message {
+        usize::MAX
+    } else {
+        match card.status.as_str() {
+            "running" | "streaming" => 5,
+            "failed" | "error" => 20,
+            _ => 3,
+        }
     };
     let is_expanded = expanded.contains(&index);
-    let has_more =
-        card.payload_ref.is_some() || total > limit || details_total > limit || long_line;
+    let has_more = if is_message {
+        card.payload_ref.is_some() && card.detail.is_none()
+    } else {
+        card.payload_ref.is_some() || total > limit || details_total > limit || long_line
+    };
     let body_room = budget
         .saturating_sub(1)
         .saturating_sub(usize::from(has_more));
-    let show = if is_expanded {
+    let show = if is_expanded || is_message {
         body_room.min(total)
     } else {
         limit.min(body_room).min(total)
     };
     let failure_tail =
         matches!(card.status.as_str(), "failed" | "error") && !expanded.contains(&index);
-    let selected_lines: Vec<&str> = if failure_tail {
+    // A reply that is still streaming shows its newest lines, not its first.
+    let tail = failure_tail || (is_assistant && card.status == "streaming");
+    let selected_lines: Vec<&str> = if tail {
         card.body
             .lines()
             .rev()
@@ -729,10 +843,31 @@ fn card_lines(
     } else {
         card.body.lines().take(show).collect()
     };
-    let body_lines: Vec<String> = selected_lines
-        .iter()
-        .map(|line| middle_ellipsis(line, content_width))
-        .collect();
+    let body_lines: Vec<String> = if is_message {
+        // Message lines get a 4-column speaker gutter plus the 3-column
+        // markdown indent; wrap to what remains so the paragraph widget
+        // never re-wraps and pushes the newest line out of the viewport.
+        let wrap_width = content_width.saturating_sub(3).max(8);
+        let mut wrapped = Vec::new();
+        let mut in_code = false;
+        for line in &selected_lines {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                wrapped.push((*line).to_owned());
+                continue;
+            }
+            wrapped.extend(wrap_text(line, wrap_width, in_code));
+        }
+        if tail && wrapped.len() > body_room {
+            wrapped.drain(..wrapped.len() - body_room);
+        }
+        wrapped
+    } else {
+        selected_lines
+            .iter()
+            .map(|line| middle_ellipsis(line, content_width))
+            .collect()
+    };
     let markdown_lines: Vec<&str> = body_lines.iter().map(String::as_str).collect();
     let body_palette = if is_assistant || is_user {
         p
@@ -776,13 +911,63 @@ fn card_lines(
                 Span::raw("")
             },
         ]));
-    } else if total > show && lines.len() < budget {
+    } else if total > show && lines.len() < budget && !(is_message && tail) {
         lines.push(
             Line::from(format!("   … {} more lines", total - show))
                 .style(Style::default().fg(p.muted)),
         );
     }
     lines
+}
+
+/// Word-wrap one logical line to `width` display cells. Code lines break at
+/// the cell boundary so indentation and alignment survive; prose breaks at
+/// whitespace, and a single word wider than the line is split by grapheme.
+fn wrap_text(line: &str, width: usize, hard: bool) -> Vec<String> {
+    let width = width.max(1);
+    if UnicodeWidthStr::width(line) <= width {
+        return vec![line.to_owned()];
+    }
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let push_word = |rows: &mut Vec<String>, current: &mut String, word: &str| {
+        if UnicodeWidthStr::width(word) <= width {
+            if !current.is_empty() {
+                rows.push(std::mem::take(current));
+            }
+            current.push_str(word);
+            return;
+        }
+        for grapheme in word.graphemes(true) {
+            let glyph = UnicodeWidthStr::width(grapheme);
+            if UnicodeWidthStr::width(current.as_str()) + glyph > width && !current.is_empty() {
+                rows.push(std::mem::take(current));
+            }
+            current.push_str(grapheme);
+        }
+    };
+    if hard {
+        push_word(&mut rows, &mut current, line);
+    } else {
+        for word in line.split(' ') {
+            if current.is_empty() {
+                push_word(&mut rows, &mut current, word);
+                continue;
+            }
+            let candidate_width =
+                UnicodeWidthStr::width(current.as_str()) + 1 + UnicodeWidthStr::width(word);
+            if candidate_width <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                push_word(&mut rows, &mut current, word);
+            }
+        }
+    }
+    if !current.is_empty() || rows.is_empty() {
+        rows.push(current);
+    }
+    rows
 }
 
 fn middle_ellipsis(value: &str, max_width: usize) -> String {

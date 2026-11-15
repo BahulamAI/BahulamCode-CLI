@@ -107,12 +107,29 @@ tools and approvals; the Rust child owns the TTY, draws the view, and sends
 prompts/decisions over inherited file descriptors 3 (events into Rust) and 4
 (commands back to Node). Build the local binary with `npm run tui:build`. This
 is an integration slice, not a claim of full UI parity or production readiness.
+While the Rust child runs, Node gives up the terminal completely: the fixed input
+dock is unmounted (its scroll region and 1 Hz metadata repaint would otherwise
+paint through the alternate screen) and the execution-time raw stdin reader stays
+off so the two processes never race for keystrokes. In live mode Esc interrupts
+the running turn, one Ctrl+C clears the prompt and interrupts, a second Ctrl+C
+within two seconds quits, and Ctrl+Q quits; Esc only exits in replay mode. The
+REPL records `turn_started` with the prompt text and a `tool_started` frame per
+tool request, since the backend emits neither, so the transcript shows the user's
+own message and tool cards move through a running state.
 Slash commands use Node's existing dispatcher; while the Rust screen owns the
 terminal, their stdout/stderr is captured and returned as a display-only
-`command_result` card (capped at 64 KiB) instead of disappearing behind the
+`command_result` card (capped at 1 MiB) instead of disappearing behind the
 screen's terminal-write suppression. The live Rust subscriber receives events
 without requiring disk event logging; large display payloads stay in a bounded
 process-local detail store and are released when the client disconnects.
+Startup resume and `/resume` now send a selected-mode transcript snapshot to
+Rust, including ordered replay events where available. Long slash-command
+output keeps a compact preview and opens the captured output from the existing
+details view. `/models` aliases the canonical Node `/model list` handler. Rust
+also supplies keyboard-driven pickers for resume, model role/model selection,
+login confirmation and session approval grants; command behavior still runs in
+the TypeScript REPL. Command completion is supplied by the TypeScript command
+catalog. `/clear`, `/new`, resume and model changes refresh Rust view state.
 In the full-screen view, Tab focuses the agent panel, Up/Down selects an agent,
 and Enter opens that agent's transcript. Ctrl+N/P navigates only that transcript's
 cards; Enter opens the selected tool's complete details, and Esc returns to the

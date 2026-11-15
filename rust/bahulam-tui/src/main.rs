@@ -189,6 +189,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut agent_filter: Option<String> = None;
     let mut detail_card: Option<usize> = None;
     let mut detail_scroll = 0u16;
+    // Live mode: one Ctrl+C interrupts the agent, a second within two
+    // seconds quits. One accidental press never ends the session.
+    let mut last_ctrl_c: Option<std::time::Instant> = None;
     loop {
         if stdio && !core_connected.load(Ordering::Acquire) {
             break;
@@ -234,10 +237,65 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         })?;
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && model.lock().ok().is_some_and(|m| m.interaction.is_some()) =>
+                {
+                    let response = match key.code {
+                        KeyCode::Up => {
+                            if let Ok(mut m) = model.lock() {
+                                if let Some(menu) = m.interaction.as_mut() {
+                                    menu.selected = menu.selected.saturating_sub(1);
+                                }
+                            }
+                            None
+                        }
+                        KeyCode::Down => {
+                            if let Ok(mut m) = model.lock() {
+                                if let Some(menu) = m.interaction.as_mut() {
+                                    menu.selected = (menu.selected + 1)
+                                        .min(menu.options.len().saturating_sub(1));
+                                }
+                            }
+                            None
+                        }
+                        KeyCode::Enter => model
+                            .lock()
+                            .ok()
+                            .and_then(|mut m| m.interaction.take())
+                            .map(|menu| {
+                                let value =
+                                    menu.options.get(menu.selected).map(|o| o.value.clone());
+                                (menu.request_id, value, false)
+                            }),
+                        KeyCode::Esc => model
+                            .lock()
+                            .ok()
+                            .and_then(|mut m| m.interaction.take())
+                            .map(|menu| (menu.request_id, None, true)),
+                        _ => None,
+                    };
+                    if let Some((request_id, value, cancelled)) = response {
+                        write_command(
+                            &command_writer,
+                            serde_json::json!({"type":"interaction_response","data":{"request_id":request_id,"value":value,"cancelled":cancelled}}),
+                        )?;
+                    }
+                }
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('c')
                         if key.modifiers.contains(KeyModifiers::CONTROL) && stdio =>
                     {
+                        let now = std::time::Instant::now();
+                        if last_ctrl_c
+                            .is_some_and(|at| now.duration_since(at) < Duration::from_secs(2))
+                        {
+                            write_command(&command_writer, serde_json::json!({"type":"bye"}))?;
+                            break;
+                        }
+                        last_ctrl_c = Some(now);
+                        input.clear();
+                        cursor = 0;
                         write_command(&command_writer, serde_json::json!({"type":"interrupt"}))?;
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -254,7 +312,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         follow = true;
                     }
                     KeyCode::Esc if focus_panel != 0 => focus_panel = 0,
+                    // Live mode: Esc interrupts the running turn; it never
+                    // tears down the screen. Ctrl+Q or Ctrl+C twice exits.
+                    KeyCode::Esc if stdio => {
+                        write_command(&command_writer, serde_json::json!({"type":"interrupt"}))?;
+                    }
                     KeyCode::Esc => break,
+                    KeyCode::Tab
+                        if stdio && focus_panel == 0 && input.trim_start().starts_with('/') =>
+                    {
+                        let prefix = input.trim();
+                        let completion = model.lock().ok().and_then(|m| {
+                            m.command_catalog
+                                .iter()
+                                .map(|(name, _)| name)
+                                .filter(|name| name.starts_with(prefix) && name.as_str() != prefix)
+                                .min_by_key(|name| {
+                                    (!name.starts_with(&format!("{prefix} ")), name.len())
+                                })
+                                .cloned()
+                        });
+                        if let Some(completion) = completion {
+                            input = completion;
+                            cursor = input.len();
+                        }
+                    }
                     KeyCode::Tab => focus_panel = (focus_panel + 1) % 3,
                     KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);

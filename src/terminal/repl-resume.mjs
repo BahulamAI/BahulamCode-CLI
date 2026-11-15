@@ -350,6 +350,13 @@ export async function previewResumeSession(session, ctx) {
  * elsewhere. Returns 'switch' | 'stay' | 'cancel'.
  */
 export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
+  if (typeof ctx?._rustChoose === 'function') {
+    return await ctx._rustChoose('Resume from another project', [
+      { value: 'switch', label: `Switch to ${savedPath}` },
+      { value: 'stay', label: `Stay in ${currentPath}` },
+      { value: 'cancel', label: 'Cancel resume' },
+    ], 'The saved session belongs to a different project directory.') || 'cancel';
+  }
   if (!process.stdin.isTTY) return 'switch';
   const frame = [
     `  ${c.dim('This session lives in another repo:')}`,

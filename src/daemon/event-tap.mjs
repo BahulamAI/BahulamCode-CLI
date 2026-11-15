@@ -121,7 +121,7 @@ function retainTransientPayload(ref, serialized) {
 function boundedMetadata(data) {
   const safe = Object.fromEntries(Object.entries(data).filter(([key, value]) =>
     key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
-      (typeof value === 'string' && Buffer.byteLength(value) <= (key === 'preview' ? 2400 : 256)))));
+      (typeof value === 'string' && Buffer.byteLength(value) <= (['preview', 'result'].includes(key) ? 2400 : 256)))));
   return Buffer.byteLength(JSON.stringify(safe)) <= 3072 ? safe : {};
 }
 
@@ -238,6 +238,10 @@ function project(type, src, identity) {
         args, primary: compactToolPrimary(args), preview: compactToolPreview(name, args), cwd: src.cwd,
         risk_tier: src.risk_tier, reason: src.reason };
     }
+    case 'tool_started':
+      return { tool_id: toolId };
+    case 'tool_output_delta':
+      return { tool_id: toolId, stream: src.stream === 'stderr' ? 'stderr' : 'stdout', chunk: asText(src.chunk ?? src.text) || '' };
     case 'tool_finished': {
       const ok = !src.error && !src.is_error && src.ok !== false && src.success !== false &&
         !(src.exit_code != null && Number(src.exit_code) !== 0);
@@ -293,7 +297,8 @@ function project(type, src, identity) {
         next_step: src.next_step || 'Use /resume to continue or inspect the session log.', retry: src.retry };
     case 'command_result':
       return { name: asText(src.name) || 'command', added_to_context: false,
-        result: (asText(src.result) || '(no output)').slice(0, 220), ok: src.ok !== false };
+        result: (asText(src.preview ?? src.result) || '(no output)').slice(0, 1200),
+        output: asText(src.output ?? src.result) || '(no output)', ok: src.ok !== false };
     default: return src;
   }
 }
