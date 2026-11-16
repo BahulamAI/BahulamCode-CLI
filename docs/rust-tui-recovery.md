@@ -700,3 +700,18 @@ approval/full-message, four-size resize, scrolling and picker PTY regressions.
 Protocol generation and request/cache invariance checks pass. Idle rendering still
 produces zero writes (approximately 481 ms first page-back, 18 ms warm page-back,
 119 ms command response locally). Live emulator acceptance remains required.
+
+### Details return hint and palette follow-up
+
+Details now end with `Esc to return to the conversation`, including empty/loading
+results, and retain an always-visible Esc hint in the bottom shortcut row. Agent
+reply gutters retain their indentation but no longer draw a vertical bar. The
+accepted spacing between cards and around input remains unchanged.
+
+Rust now uses neutral text for Markdown headings, plan/picker titles and code
+identifiers; muted bullets; cyan for details actions, inline code and code
+keywords; green for strings/success, amber for literals/warnings, and red for
+errors/removals. Purple remains on branding and focus/selection accents rather
+than coloring most code and headings. This reassigns Rust's use of existing
+shared light/dark tokens; Node's palette and renderer are unchanged. Existing
+color-depth conversion and no-color behavior remain in place.

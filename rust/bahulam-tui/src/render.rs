@@ -157,7 +157,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             (&mut p.success, "state.success"),
             (&mut p.warning, "state.warn"),
             (&mut p.danger, "state.danger"),
-            (&mut p.code, "syntax.keyword"),
+            (&mut p.code, "syntax.string"),
         ] {
             if let Some(value) = token_color(&values[name], level) {
                 *color = value;
@@ -702,7 +702,7 @@ pub fn draw_with_view(
     if compact {
         plan_and_agents.push(Line::from(Span::styled(
             "PLAN",
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         )));
         plan_and_agents.extend(model.plan.iter().take(2).map(|item| plan_line(item, p)));
         if let Some(agent) = model
@@ -1015,7 +1015,9 @@ pub fn draw_with_view(
         ));
     }
 
-    let shortcuts = if inline && area.width < 32 {
+    let shortcuts = if detail_card.is_some() {
+        "Esc to return · ↑↓ / PgUp / PgDn scroll".to_owned()
+    } else if inline && area.width < 32 {
         "Ctrl+C twice quit".to_owned()
     } else if inline && area.width < 52 {
         "Enter send · Ctrl+C twice quit".to_owned()
@@ -1082,7 +1084,7 @@ pub fn draw_with_view(
         frame.render_widget(ratatui::widgets::Clear, popup);
         let mut lines = vec![Line::from(Span::styled(
             safe_text(&interaction.title),
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ))];
         if !interaction.message.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -1384,20 +1386,26 @@ fn transcript_lines(
 }
 
 fn detail_lines(card: &crate::model::Card, p: Palette) -> Vec<Line<'static>> {
-    if card.detail_loading && card.detail.is_none() {
-        return vec![Line::from(Span::styled(
+    let detail = card.detail.as_deref().unwrap_or(&card.body);
+    let mut lines = if card.detail_loading && card.detail.is_none() {
+        vec![Line::from(Span::styled(
             "Loading the complete result from the session log…",
             Style::default().fg(p.muted),
-        ))];
-    }
-    let detail = card.detail.as_deref().unwrap_or(&card.body);
-    if detail.is_empty() {
-        return vec![Line::from(Span::styled(
+        ))]
+    } else if detail.is_empty() {
+        vec![Line::from(Span::styled(
             "No detail text is available for this item.",
             Style::default().fg(p.muted),
-        ))];
-    }
-    format_markdown(&detail.lines().collect::<Vec<_>>(), p, card.title == "Diff")
+        ))]
+    } else {
+        format_markdown(&detail.lines().collect::<Vec<_>>(), p, card.title == "Diff")
+    };
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "   Esc to return to the conversation",
+        Style::default().fg(p.info),
+    )));
+    lines
 }
 
 fn card_lines(
@@ -1601,8 +1609,7 @@ fn card_lines(
     let mut rendered_body = format_markdown(&markdown_lines, p, card.title == "Diff");
     if is_assistant {
         for line in &mut rendered_body {
-            line.spans
-                .insert(0, Span::styled("  │ ", Style::default().fg(p.accent)));
+            line.spans.insert(0, Span::raw("    "));
         }
     } else if is_user {
         for line in &mut rendered_body {
@@ -1622,7 +1629,7 @@ fn card_lines(
         lines.push(Line::from(vec![
             Span::styled(
                 format!("   ＋ Show details{hint}"),
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                Style::default().fg(p.info).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" · Click / Enter", Style::default().fg(p.muted)),
             if card.detail_loading {
@@ -1770,7 +1777,7 @@ fn format_markdown(lines: &[&str], p: Palette, diff: bool) -> Vec<Line<'static>>
             {
                 return Line::from(Span::styled(
                     format!("   {}", heading.trim_matches('#').trim()),
-                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD),
                 ));
             }
             if let Some(quote) = trimmed.strip_prefix("> ") {
@@ -1782,7 +1789,7 @@ fn format_markdown(lines: &[&str], p: Palette, diff: bool) -> Vec<Line<'static>>
                 .or_else(|| trimmed.strip_prefix("* "))
             {
                 return Line::from(vec![
-                    Span::styled("   • ", Style::default().fg(p.accent)),
+                    Span::styled("   • ", Style::default().fg(p.muted)),
                     Span::styled(item.to_owned(), Style::default().fg(p.text)),
                 ]);
             }
@@ -1867,7 +1874,7 @@ fn code_spans(line: &str, p: Palette) -> Vec<Span<'static>> {
             spans.push(Span::styled(
                 word.to_owned(),
                 Style::default()
-                    .fg(if keyword { p.accent } else { p.code })
+                    .fg(if keyword { p.info } else { p.text })
                     .add_modifier(if keyword {
                         Modifier::BOLD
                     } else {
