@@ -99,5 +99,10 @@ try {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   const commands = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
   assert.deepEqual(commands.filter(command => command.type === 'prompt').map(command => command.data.text), ['after switch']);
+  const capabilities = commands.filter(command => command.type === 'hello').map(command => command.data.capabilities);
+  assert.ok(capabilities.some(caps => caps.view === 'inline' && caps.size.rows === 32 && caps.size.columns === 110));
+  assert.ok(capabilities.some(caps => caps.view === 'fullscreen' && caps.size.rows === 24 && caps.size.columns === 80));
+  assert.equal(capabilities.at(-1).view, 'inline');
+  assert.match(capabilities.at(-1).detection, /active queries not implemented/);
   console.log('PASS: inline command preview, complete details, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

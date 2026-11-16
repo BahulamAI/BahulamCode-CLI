@@ -623,3 +623,41 @@ the input/footer remain at the bottom and startup heading leaves the screen.
 Existing command, approval, mouse, details, popup and view-handoff checks also
 pass. This remains application history navigation with a pinned composer;
 it does not print a second full transcript into native scrollback.
+
+## Terminal capability diagnostics backport
+
+Adapted the environment/profile reporting portion of preserved commit `5c04734`.
+`/tui doctor` runs through the existing Node command dispatcher and displays the
+active Rust renderer's report as a command card, with the complete report in
+details. Rust sends this information using the existing protocol `hello` command
+at attachment, view changes and resize. Returning to Node clears the report so
+it cannot describe a renderer that has already exited. Node's visual renderer and
+agent/tool command execution remain unchanged.
+
+`rust/target/debug/bahulam-tui --doctor [--json]` also reports diagnostics without
+entering raw mode or taking over the terminal. Reports include terminal/profile
+hints, locale, transport/multiplexer flags, color selection and, when attached,
+view, viewport dimensions, mouse capture and bracketed paste. Hosted rendering
+retains Node's canonical color selection and palette; standalone replay uses the
+same resolved color level as its diagnostics. Explicit color/mouse opt-outs are
+preserved. Only allowlisted environment fields are read; SSH addresses, tmux
+socket paths and unrelated environment values are not included.
+
+These are environment/profile hints, not active capability probes. Reports say
+this explicitly and distinguish enabled renderer features from pending links,
+clipboard, images and notifications. Active queries, response routing/timeouts,
+profile overrides and persistent capability caching remain future work. This
+batch does not certify support in any real terminal emulator.
+
+Validation: 30 Rust tests; standalone diagnostic CLI tests; protocol and request
+invariance checks; real CLI diagnostics/command/view-handoff tests; and existing
+inline details, four-size layout, approval and full-assistant-message PTY tests.
+The inline round-trip test also checks updated capability reports after resize
+and switching views. The 1,000-message benchmark still produces zero idle writes
+(approximately 461 ms first page-back, 18 ms warm page-back and 121 ms command
+response locally). The debug binary was rebuilt for live acceptance.
+
+Live check: run `/tui doctor` in inline, inspect its details with Tab/Enter, resize,
+and run it again. Repeat in `/tui fullscreen`; the report should show that view
+and its current dimensions. Use `/tui default` to return to Node. Clipboard/editor
+handoffs and OS integrations remain separate reviewed batches after acceptance.

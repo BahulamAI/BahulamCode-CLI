@@ -3616,7 +3616,9 @@ async function handleCommand(input, ctx) {
   switch (cmd) {
     case '/tui': {
       const view = rest.trim().toLowerCase().replace(/\s+/g, '');
-      if (['fullscreen', 'full', 'inline'].includes(view)) await ctx.openRustView?.(view === 'inline' ? 'inline' : 'fullscreen');
+      if (view === 'doctor') {
+        process.stderr.write(`${ctx.rustTuiCapabilities?.report || 'Open /tui inline or /tui fullscreen to inspect the active Rust renderer.'}\n`);
+      } else if (['fullscreen', 'full', 'inline'].includes(view)) await ctx.openRustView?.(view === 'inline' ? 'inline' : 'fullscreen');
       else process.stderr.write('  /tui inline or /tui fullscreen opens Rust · /tui default returns to Node\n');
       return;
     }
@@ -5642,6 +5644,7 @@ export async function startTerminalRepl() {
   }
   async function openRustView(view = process.env.BAHULAM_TUI_MODE || 'inline', snapshotMode = session.historyMode || 'current') {
     if (_rustTuiActive) return;
+    ctx.rustTuiCapabilities = null;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       process.stderr.write('  Full-screen view requires an interactive terminal.\n');
       return;
@@ -5693,6 +5696,9 @@ export async function startTerminalRepl() {
         onCommand: async command => {
           const data = command?.data || {};
           switch (command?.type) {
+            case 'hello':
+              if (data.client === 'bahulam-tui' && typeof data.capabilities?.report === 'string') ctx.rustTuiCapabilities = data.capabilities;
+              break;
             case 'prompt': {
               const instruction = String(data.text || '').trim();
               if (instruction) _submitExternalPrompt?.(instruction);
@@ -5796,6 +5802,7 @@ export async function startTerminalRepl() {
           _rustApprovalBridge?.close();
           _rustApprovalBridge = null;
           _rustTuiActive = false;
+          ctx.rustTuiCapabilities = null;
           ctx._rustChoose = null;
           _rustTuiEnsureSessionId = null;
           process.stderr.write = restoreStderr;
@@ -5831,6 +5838,7 @@ export async function startTerminalRepl() {
       const rustCompletions = [...new Set([
         '/tui',
         '/tui default',
+        '/tui doctor',
         '/tui inline',
         '/tui fullscreen',
         '/tui full screen',

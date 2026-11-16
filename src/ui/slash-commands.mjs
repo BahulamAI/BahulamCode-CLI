@@ -87,6 +87,7 @@ export const HELP_GROUPS = [
     summary: 'session, usage, budget',
     commands: [
       ['/tui fullscreen', 'Open the Rust full-screen view'],
+      ['/tui doctor', 'Inspect Rust terminal settings and capability detection status'],
       ['/tui inline', 'Open the Rust inline view'],
       ['/tui default', 'Return from Rust to the Node default view'],
       ['/status', 'Session snapshot'],

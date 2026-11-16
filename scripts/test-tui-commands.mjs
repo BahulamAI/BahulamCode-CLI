@@ -26,7 +26,7 @@ test('reopening keeps resumed replay and messages added in either view without d
 });
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-for (const mode of ['fresh startup', 'default Rust startup', 'missing Rust binary', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node', 'inline from Node']) {
+for (const mode of ['fresh startup', 'default Rust startup', 'missing Rust binary', 'diagnostics', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node', 'inline from Node']) {
   const startupResume = !['fresh startup', 'default Rust startup'].includes(mode);
   test(`real Rust CLI commands from ${mode}`, {
     skip: process.platform === 'win32', timeout: 35000,
@@ -58,6 +58,7 @@ bare_tui = sys.argv[1] == 'return via /tui'
 roundtrip = sys.argv[1].endswith('from Node')
 inline_route = sys.argv[1] == 'inline from Node'
 fallback = sys.argv[1] == 'missing Rust binary'
+diagnostics = sys.argv[1] == 'diagnostics'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 original_mode = termios.tcgetattr(slave)
@@ -90,7 +91,15 @@ try:
   elif stage==4 and b'mode:newsession' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, '/new left the old reply on screen'
    keys=b'/help\r'
-  elif stage==5 and b'Command/help' in screen: keys=b'/model status\r'
+  elif stage==5 and b'Command/help' in screen: keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
+  elif stage==6 and diagnostics and b'Bahulamterminalcapabilities' in screen:
+   keys=b'\t\r';stage=39
+  elif stage==40 and b'Details' in screen and b'activequeriesnotimplemented' in screen:
+   assert b'Rustviewfullscreen' in screen and b'Viewport120x36' in screen
+   assert b'Colordepthtruecolor(Nodehost)' in screen and b'Mousecaptureinactive' in screen
+   keys=b'\x1b'
+  elif stage==41 and b'Details' not in screen:
+   keys=b'\t\t/clear\r';stage=6
   elif stage==6 and b'Command/modelstatus' in screen: keys=b'/clear\r'
   elif stage==7 and b'mode:cleared' in screen:
    assert b'Command/help' not in screen and b'Command/modelstatus' not in screen, '/clear left old command cards'

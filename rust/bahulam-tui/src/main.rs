@@ -1,4 +1,5 @@
 use bahulam_tui::{
+    capabilities::TerminalCapabilities,
     model::safe_text,
     render::{draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
@@ -124,6 +125,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut plain = false;
     let mut watch = false;
     let mut stdio = false;
+    let mut doctor = false;
+    let mut json = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--replay" => {
@@ -134,6 +137,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--plain" => plain = true,
             "--watch" => watch = true,
             "--stdio" => stdio = true,
+            "--doctor" => doctor = true,
+            "--json" => json = true,
             "--help" | "-h" => {
                 println!(
                     "Bahulam Rust terminal client\n\n\
@@ -141,6 +146,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                      \x20 bahulam-tui --replay <events.jsonl> [--watch] [--plain]\n\
                      \x20 bahulam-tui --help | --version\n\n\
                      OPTIONS:\n\
+                     \x20 --doctor [--json] Report terminal hints and restored features (no active probes)\n\
                      \x20 --replay <path>  Render one recorded session\n\
                      \x20 --watch          Follow an active events.jsonl file (requires --replay)\n\
                      \x20 --plain          Print replay output without taking over the terminal\n\
@@ -161,6 +167,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => return Err(format!("Unknown option: {arg}. Use --help.").into()),
         }
+    }
+    if doctor {
+        if stdio || file.is_some() || watch || plain {
+            return Err("--doctor cannot be combined with replay or live mode".into());
+        }
+        let caps = TerminalCapabilities::detect();
+        let size = if caps.interactive {
+            crossterm::terminal::size().ok()
+        } else {
+            None
+        };
+        println!(
+            "{}",
+            if json {
+                serde_json::to_string_pretty(&caps.as_json(None, size))?
+            } else {
+                caps.report(None, size)
+            }
+        );
+        return Ok(());
+    }
+    if json {
+        return Err("--json requires --doctor".into());
     }
     if stdio && (file.is_some() || watch || plain) {
         return Err("--stdio is an internal live mode and cannot be combined with --replay, --watch, or --plain.".into());
@@ -240,6 +269,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+    let capabilities = TerminalCapabilities::detect();
+    // Use the same resolved color level for standalone replay and diagnostics.
+    // Hosted mode keeps Node's canonical palette selection authoritative.
+    std::env::set_var("BAHULAM_TUI_COLOR_LEVEL", &capabilities.color_depth);
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
@@ -251,14 +284,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline");
     // Wheel navigation belongs to the Rust conversation in both views.
     // Hold Shift for native selection, or explicitly disable reporting with =0.
-    let mouse_requested = std::env::var("BAHULAM_TUI_MOUSE")
-        .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
-        .unwrap_or(true);
+    let mouse_requested = capabilities.mouse_capture;
     let mut mouse_enabled = mouse_requested;
     let mut terminal = open_terminal(inline_mode)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
+    report_capabilities(
+        &command_writer,
+        &capabilities,
+        inline_mode,
+        terminal.get_frame().area(),
+        &model,
+    )?;
     let mut scroll: u16 = 0;
     let mut follow = stdio;
     let mut seen_transcript_revision = model
@@ -758,6 +796,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 enable_raw_mode()?;
                                 inline_mode = requested_inline;
                                 terminal = open_terminal(inline_mode)?;
+                                report_capabilities(
+                                    &command_writer,
+                                    &capabilities,
+                                    inline_mode,
+                                    terminal.get_frame().area(),
+                                    &model,
+                                )?;
                                 mouse_enabled = mouse_requested;
                                 if mouse_enabled {
                                     execute!(io::stdout(), EnableMouseCapture)?;
@@ -970,6 +1015,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         None
                     };
                     terminal.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
+                    report_capabilities(
+                        &command_writer,
+                        &capabilities,
+                        inline_mode,
+                        terminal.get_frame().area(),
+                        &model,
+                    )?;
                     if let Some((index, offset)) = anchor {
                         if let Ok(state) = model.lock() {
                             let g = history_geometry(
@@ -1015,6 +1067,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+
+fn report_capabilities(
+    writer: &Option<Arc<Mutex<BufWriter<File>>>>,
+    caps: &TerminalCapabilities,
+    inline: bool,
+    area: ratatui::layout::Rect,
+    model: &Arc<Mutex<bahulam_tui::model::Model>>,
+) -> io::Result<()> {
+    write_command(
+        writer,
+        serde_json::json!({"type":"hello","data":{
+            "client":"bahulam-tui","version":env!("CARGO_PKG_VERSION"),
+            "last_seq":model.lock().map(|state| state.last_seq).unwrap_or_default(),
+            "capabilities":caps.as_json(Some(if inline { "inline" } else { "fullscreen" }),Some((area.width,area.height)))
+        }}),
+    )
+}
 
 fn write_command(
     writer: &Option<Arc<Mutex<BufWriter<File>>>>,

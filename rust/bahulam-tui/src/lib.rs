@@ -1,3 +1,4 @@
+pub mod capabilities;
 pub mod model;
 #[rustfmt::skip]
 pub mod protocol;
