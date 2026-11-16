@@ -42,6 +42,8 @@ pub struct TurnEndedData {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TextDeltaData {
@@ -207,6 +209,12 @@ pub struct NoticeData {
     pub retry: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommandResultData {

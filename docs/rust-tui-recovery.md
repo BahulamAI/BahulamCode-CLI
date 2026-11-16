@@ -264,7 +264,7 @@ retains up to 128 entries / 64 MiB, and unregistering the last live subscriber
 clears it. Reopening currently restores messages, not every new tool payload.
 “Show details” cannot promise unlimited historical tool retention yet.
 
-Most missing SSE mappings also remain missing in the original later branch.
+At that audit checkpoint, most missing SSE mappings also remained missing in the original later branch.
 Cherry-picking its remaining commits alone will not establish display parity.
 Keep producer identity, event projection, Rust model handling, and details
 retention as separate checks in each recovered feature.
@@ -276,10 +276,10 @@ retention as separate checks in each recovered feature.
 | `8112157` | Protocol fixtures and host/cache checks | Disconnect notices/lifecycle review |
 | `5c04734` | Opt-in wheel navigation | Scoped approvals, model-control messages, capability diagnostics |
 | `7e81afb` | Rust session reset now works through existing `/new` | Its Node redraw/scrollback changes deliberately excluded |
-| `377dd2d` | None of its job/check UI batch | Job subscriptions/status, check handling and live tool timing |
+| `377dd2d` | Check-result rendering now implemented independently | Job subscriptions/status and live tool timing |
 | `b37c586` | Inline viewport/switching adapted narrowly in the batch below | Clipboard/editor/history, background promotion, recovery; wholesale renderer rewrite excluded |
 | `7cd8933` | Popup sizing and session-ID correction adapted | Composer, question routing and remaining input integrations; renderer rewrite excluded |
-| `3e16f9e` | Inline exit-output suppression adapted | Historical control isolation and resume progress cleanup |
+| `3e16f9e` | Inline exit-output suppression, historical control isolation and resume progress cleanup adapted | Remaining differences require review |
 
 ### Compact preview direction
 
@@ -334,6 +334,73 @@ and mouse PTY tests, 13 command-catalog checks, and the original Node
 startup/resume regression. The cache was cleared and Rust rebuilt. Tests use
 fixtures; live model/provider acceptance and the audited event gaps remain.
 
-The live-event and identity defects identified above remain open. The next
-review should prioritize tool/agent correlation and missing event delivery,
-alongside historical-control isolation, before adding job/approval UI features.
+The live-event, identity and historical-control gaps from that checkpoint are
+addressed in the following batch. Remaining job/approval features stay separate.
+
+
+## Reviewed batch: event parity and historical control isolation
+
+This batch changes shared event production/projection and Rust presentation.
+It does not change Node rendering, slash-command implementations, model request
+assembly, or the default renderer. Both Rust layouts consume the same model.
+
+- Gateway tool completions retain call ID, arguments, complete output, success,
+  exit code and measured duration. Thrown executor errors remain failed results.
+- Graph/node identity is stable across start, inner events and completion, and
+  distinct across graph runs. Explicit agent/run IDs remain authoritative.
+  Child completion does not end the main turn. Background tool results retain
+  their originating turn after the main turn ends. Events with no usable
+  identity remain explicitly unattributed; identity cannot be inferred reliably.
+- Status, phases, delegation, sub-agent tool metadata, compaction, changes,
+  goals, follow-up acknowledgements, pause/resume/cancel, graph lifecycle and
+  approval decisions now cross the bridge. Progress updates coalesce by turn,
+  agent and category; failures remain separate. Thinking and check results
+  render compactly and retain full detail. Sub-agent internals remain in their
+  agent view, with final reports in the main conversation.
+- Cancelled turns close their unfinished tool/message cards; missing results at
+  normal completion are marked incomplete, never fabricated as successful.
+  A main turn ending does not close background agents' tools.
+- Historical approval requests/decisions are inactive display data. Saved
+  pickers, catalogs, session-state updates, detail responses and nested snapshots
+  cannot take control. Historical and live tool/message/approval keys are
+  separate, even when IDs match. Snapshot chunks preserve the live sequence
+  and produce one header. Saved resume progress bars are removed from command
+  previews/details while the recovered conversation remains intact.
+- Projection deep-copies payloads before handing them to display subscribers,
+  including when persistent logging is disabled, protecting canonical arguments.
+
+Verification: 24 Rust tests; five focused producer/bridge regressions; 34 asserted
+projection-to-Rust replay cases; generated protocol and cache/request invariance;
+real CLI command/handoff tests (7 cases); inline and resume-popup PTY tests;
+13 slash-catalog checks; unchanged Node startup/resume regression. Cell-buffer
+checks exercise thinking, check results, tools and code diffs in both layouts,
+including details and draft preservation. PTY tests exercise scrolling details,
+resize and clean terminal restoration. No paid model session was used.
+
+### Release requirements reviewed against both PRDs
+
+Sources: PRD-121 sections 4–7 and its acceptance order, plus the terminal UI/UX
+guide's tool cards, approvals, agent tree, thinking/progress, end-of-turn summary
+and phased acceptance sections. Later-branch implementation claims in those
+files are not proof that a feature exists on recovery.
+
+| Requirement | Recovery status / next reviewed batch |
+| --- | --- |
+| Tool/result and agent correlation; missing event display; historical isolation | Implemented and tested in this batch; live acceptance still required |
+| Full history, compact details, scrolling, view switching | Fixture/PTY coverage passes. Inline uses a bounded pane, not an unlimited native scrollback transcript. Full-screen retains the agent panel/drilldown. |
+| Approval scopes, multiple pending approvals, hold, model control | Selective backport and live tests still required; historical isolation alone does not close this gate |
+| Shell output while a command runs, jobs/background controls and elapsed time | Still requires producer/integration work; the audit tests output deltas only when emitted |
+| Tool preview limits/read grouping, timed thinking, richer turn summaries | Guide refinements remain; current compact cards are not complete visual-spec parity |
+| Full tool-detail retention across renderer detachment and long sessions | Still pending; transient payload eviction and message-only reopening must be addressed |
+| Bounded transcript memory, incremental Markdown, 1,000-tool latency/memory/flicker | Still pending implementation/measurement; passing functional tests is not performance evidence |
+| Clipboard/editor/notifications, mouse click actions, capability probes | Remaining selective integration work and OS/terminal acceptance |
+| Crash/signals/pipe closure, hostile output, real provider-cache readings | Automated coverage is partial; live acceptance matrix remains open |
+| VS Code/iTerm2/Ghostty/Windows Terminal, SSH/tmux | Live matrix remains open; local PTYs do not establish cross-platform acceptance |
+| Rich artifacts/browser workspace, retiring Node/default flip | Deferred until the earlier gates close; Rust remains opt-in |
+
+Live test this batch in Rust inline and full-screen: resume a transcript with
+old approvals; submit a prompt that reads and edits a fixture file and runs a
+failing check; inspect compact results and their final detail lines; interrupt
+a running tool; switch views and submit another prompt. Old approvals must
+never reopen, results must remain attached to their tools, and only the intended
+agent should receive each event. Review one subsequent feature batch at a time.

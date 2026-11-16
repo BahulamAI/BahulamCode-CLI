@@ -222,6 +222,7 @@ export async function* createAgentLoop({
                 yield { type: 'tool_call', data: { call_id: id, tool: name, args: input } };
 
                 // Execute locally via the existing tool executor
+                const toolStart = Date.now();
                 let result;
                 try {
                     result = await toolExecutor.execute(name, input || {});
@@ -229,7 +230,7 @@ export async function* createAgentLoop({
                     result = { success: false, output: `Error: ${err.message}` };
                 }
 
-                yield { type: 'tool_done', data: { tool: name, duration_ms: 0 } };
+                yield { type: 'tool_done', data: { ...result, call_id: id, tool: name, args: input || {}, duration_ms: Date.now() - toolStart } };
                 toolCount++;
 
                 // Push tool response as a role='tool' message (OpenAI shape).

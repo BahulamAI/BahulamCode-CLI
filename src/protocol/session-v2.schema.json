@@ -685,6 +685,9 @@
         },
         "duration_ms": {
           "type": "number"
+        },
+        "outcome": {
+          "type": "string"
         }
       },
       "required": [],
@@ -1048,6 +1051,15 @@
           "type": "object"
         },
         "stack_ref": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "progress_key": {
+          "type": "string"
+        },
+        "activity": {
           "type": "string"
         }
       },

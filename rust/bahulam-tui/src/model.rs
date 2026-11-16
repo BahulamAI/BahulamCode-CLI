@@ -54,6 +54,9 @@ pub struct Model {
     pub interaction: Option<Interaction>,
     tools: HashMap<String, usize>,
     messages: HashMap<String, usize>,
+    progress: HashMap<String, usize>,
+    approvals: HashMap<String, usize>,
+    replaying_history: bool,
 }
 #[derive(Debug, Clone)]
 pub struct InteractionOption {
@@ -222,7 +225,21 @@ impl Model {
     }
 
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
+        if self.replaying_history
+            && matches!(
+                event.r#type.as_str(),
+                "transcript_snapshot"
+                    | "interaction_requested"
+                    | "command_catalog"
+                    | "session_state"
+                    | "detail_loaded"
+            )
+        {
+            return Ok(());
+        }
         if event.r#type == "transcript_snapshot" {
+            let live_seq = self.last_seq;
+            self.last_seq = 0;
             let replace = event.data.get("replace").and_then(Value::as_bool) != Some(false);
             if replace {
                 self.cards.clear();
@@ -230,7 +247,12 @@ impl Model {
                 self.plan.clear();
                 self.tools.clear();
                 self.messages.clear();
-                self.approval = None;
+                self.progress.clear();
+                self.approvals.clear();
+                if self.session != event.session_id {
+                    self.approval = None;
+                    self.interaction = None;
+                }
                 self.last_seq = 0;
                 self.transcript_revision = self.transcript_revision.wrapping_add(1);
             }
@@ -238,12 +260,14 @@ impl Model {
             self.cwd = text(&event.data, "cwd");
             self.model = text(&event.data, "model");
             self.status = format!("Resumed · {}", text(&event.data, "mode"));
-            self.card(
-                "main",
-                "Session",
-                format!("Transcript loaded · mode: {}", text(&event.data, "mode")),
-                "ready",
-            );
+            if replace || self.cards.is_empty() {
+                self.card(
+                    "main",
+                    "Session",
+                    format!("Transcript loaded · mode: {}", text(&event.data, "mode")),
+                    "ready",
+                );
+            }
             if let Some(items) = event.data.get("items").and_then(Value::as_array) {
                 let mut seq = 0i64;
                 for item in items {
@@ -254,8 +278,9 @@ impl Model {
                             let kind = match raw_kind {
                                 "content_partial" => "text_delta",
                                 "content" => "message_end",
-                                "tool_request" => "tool_requested",
-                                "tool_done" => "tool_finished",
+                                "tool_request" | "tool_call" => "tool_requested",
+                                "tool_done" | "tool_result" => "tool_finished",
+                                "thinking" => "thinking_delta",
                                 "sub_agent_start" | "worker_start" => "agent_spawned",
                                 "sub_agent_complete" | "worker_done" => "agent_finished",
                                 "plan" | "plan_created" => "plan_updated",
@@ -272,7 +297,7 @@ impl Model {
                                     ("tool_id", &["call_id", "tool_call_id", "id"][..]),
                                     ("name", &["tool"][..]),
                                     ("args", &["tool_input", "input"][..]),
-                                    ("chunk", &["text"][..]),
+                                    ("chunk", &["text", "message"][..]),
                                     ("text", &["content"][..]),
                                     ("summary", &["output", "result"][..]),
                                 ] {
@@ -287,7 +312,9 @@ impl Model {
                                 if !object.contains_key("ok")
                                     && (object.contains_key("error")
                                         || object.get("is_error").and_then(Value::as_bool)
-                                            == Some(true))
+                                            == Some(true)
+                                        || object.get("success").and_then(Value::as_bool)
+                                            == Some(false))
                                 {
                                     object.insert("ok".into(), Value::Bool(false));
                                 }
@@ -335,7 +362,10 @@ impl Model {
                                     .and_then(Value::as_str)
                                     .map(str::to_owned),
                             };
-                            self.apply(&envelope)?;
+                            self.replaying_history = true;
+                            let applied = self.apply(&envelope);
+                            self.replaying_history = false;
+                            applied?;
                         }
                     } else {
                         if item.get("kind").and_then(Value::as_str) == Some("notice") {
@@ -368,7 +398,7 @@ impl Model {
             }
             self.cwd = text(&event.data, "cwd");
             self.model = text(&event.data, "model");
-            self.last_seq = 0;
+            self.last_seq = if replace { 0 } else { live_seq };
             return Ok(());
         }
         if event.r#type == "command_catalog" {
@@ -429,7 +459,7 @@ impl Model {
                 .iter_mut()
                 .find(|card| card.payload_ref.as_deref() == Some(reference.as_str()))
             {
-                card.detail = Some(detail.clone());
+                card.detail = Some(command_output(&card.title, &detail));
                 card.detail_loading = false;
                 if event.data.get("error").is_some() {
                     card.detail = Some(format!(
@@ -482,8 +512,13 @@ impl Model {
             });
         }
         let tool_id = text(data, "tool_id");
-        let key = format!("{turn}/{agent}/{tool_id}");
-        let message_key = format!("{turn}/{agent}");
+        let origin = if self.replaying_history {
+            "history"
+        } else {
+            "live"
+        };
+        let key = format!("{origin}/{turn}/{agent}/{tool_id}");
+        let message_key = format!("{origin}/{turn}/{agent}");
         match kind {
             "session_started" => {
                 self.cwd = text(data, "cwd");
@@ -497,6 +532,49 @@ impl Model {
                     main.status = "working".into();
                 }
                 self.card(agent, "Prompt", text(data, "text"), "sent");
+            }
+            "thinking_delta" => {
+                let progress_key = format!("{message_key}/thinking");
+                let index = if let Some(index) = self.progress.get(&progress_key) {
+                    *index
+                } else {
+                    let index = self.card(agent, "Thinking", String::new(), "streaming");
+                    self.progress.insert(progress_key, index);
+                    index
+                };
+                self.cards[index].body.push_str(&text(data, "chunk"));
+                self.cards[index].payload_ref = event.payload_ref.clone();
+            }
+            "test_result" => {
+                let status = if data.get("ok").and_then(Value::as_bool) == Some(false)
+                    || data.get("failed").and_then(Value::as_u64).unwrap_or(0) > 0
+                {
+                    "failed"
+                } else {
+                    "done"
+                };
+                let summary = text(data, "summary");
+                let summary = if summary.is_empty() {
+                    format!(
+                        "{} passed · {} failed",
+                        data.get("passed").and_then(Value::as_u64).unwrap_or(0),
+                        data.get("failed").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                } else {
+                    summary
+                };
+                let index = self.card(agent, "Check", summary, status);
+                self.cards[index].primary = if text(data, "name").is_empty() {
+                    text(data, "suite")
+                } else {
+                    text(data, "name")
+                };
+                self.cards[index].detail = if event.payload_ref.is_none() {
+                    Some(pretty_json(data))
+                } else {
+                    None
+                };
+                self.cards[index].payload_ref = event.payload_ref.clone();
             }
             "text_delta" => {
                 let index = if let Some(index) = self.messages.get(&message_key) {
@@ -650,13 +728,14 @@ impl Model {
                     if !current_tool_id.is_empty() {
                         row.current_tool = self
                             .tools
-                            .get(&format!("{turn}/{agent}/{current_tool_id}"))
+                            .get(&format!("{origin}/{turn}/{agent}/{current_tool_id}"))
                             .map(|index| self.cards[*index].title.clone())
                             .unwrap_or_else(|| "tool running".into());
                     }
                     row.elapsed_ms = data.get("elapsed_ms").and_then(Value::as_f64);
                     row.tokens = data.get("tokens").map(safe_text_json).unwrap_or_default();
                 } else {
+                    row.current_tool.clear();
                     row.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
                         "failed"
                     } else {
@@ -673,6 +752,7 @@ impl Model {
                 }
                 if let Some((report, status, reference)) = final_report {
                     let index = self.card("main", "Agent report", report, &status);
+                    self.cards[index].primary = agent.into();
                     if !self.cards[index].body.is_empty() {
                         self.cards[index].detail = Some(self.cards[index].body.clone());
                     } else {
@@ -742,6 +822,15 @@ impl Model {
                 }
             }
             "notice" => {
+                let activity = text(data, "activity");
+                if !activity.is_empty() {
+                    if agent == "main" {
+                        self.status = activity.clone();
+                    }
+                    if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                        row.status = activity;
+                    }
+                }
                 let cause = text(data, "cause");
                 let next_step = text(data, "next_step");
                 let body = [cause, next_step]
@@ -749,7 +838,26 @@ impl Model {
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
-                let index = self.card(agent, &text(data, "title"), body, &text(data, "level"));
+                let progress_kind = text(data, "progress_key");
+                let progress_key = format!("{message_key}/{progress_kind}");
+                let index = if !progress_kind.is_empty() {
+                    if let Some(index) = self.progress.get(&progress_key) {
+                        let index = *index;
+                        self.cards[index].title = text(data, "title");
+                        self.cards[index].body = body;
+                        self.cards[index].status = text(data, "level");
+                        self.cards[index].detail = None;
+                        self.cards[index].payload_ref = None;
+                        index
+                    } else {
+                        let index =
+                            self.card(agent, &text(data, "title"), body, &text(data, "level"));
+                        self.progress.insert(progress_key, index);
+                        index
+                    }
+                } else {
+                    self.card(agent, &text(data, "title"), body, &text(data, "level"))
+                };
                 if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else {
@@ -762,7 +870,13 @@ impl Model {
             "command_result" => {
                 let name = text(data, "name");
                 let result = data
-                    .get("result")
+                    .get(
+                        if name.starts_with("/resume") && data.get("output").is_some() {
+                            "output"
+                        } else {
+                            "result"
+                        },
+                    )
                     .and_then(Value::as_str)
                     .map(safe_text)
                     .filter(|result| !result.is_empty())
@@ -772,6 +886,7 @@ impl Model {
                 } else {
                     "done"
                 };
+                let result = command_output(&name, &result);
                 let index = self.card(agent, &format!("Command {name}"), result, status);
                 if let Some(reference) = &event.payload_ref {
                     self.cards[index].payload_ref = Some(reference.clone());
@@ -780,6 +895,7 @@ impl Model {
                         data.get("output")
                             .and_then(Value::as_str)
                             .map(safe_text)
+                            .map(|output| command_output(&name, &output))
                             .unwrap_or_else(|| self.cards[index].body.clone()),
                     );
                 }
@@ -791,30 +907,61 @@ impl Model {
                     };
             }
             "approval_required" => {
-                self.approval = Some(Approval {
-                    id: text(data, "apr_id"),
-                    tool: text(data, "name"),
-                    command: data.get("args").map(safe_text_json).unwrap_or_default(),
-                    cwd: text(data, "cwd"),
-                    reason: text(data, "reason"),
-                    payload_ref: event.payload_ref.clone(),
-                });
-                let index = self.card(agent, "Approval", text(data, "reason"), "waiting");
+                if !self.replaying_history {
+                    self.approval = Some(Approval {
+                        id: text(data, "apr_id"),
+                        tool: text(data, "name"),
+                        command: data.get("args").map(safe_text_json).unwrap_or_default(),
+                        cwd: text(data, "cwd"),
+                        reason: text(data, "reason"),
+                        payload_ref: event.payload_ref.clone(),
+                    });
+                }
+                let status = if self.replaying_history {
+                    "historical"
+                } else {
+                    "waiting"
+                };
+                let index = self.card(agent, "Approval", text(data, "reason"), status);
+                self.approvals
+                    .insert(format!("{origin}/{}", text(data, "apr_id")), index);
+                if self.replaying_history {
+                    self.cards[index].metadata = "saved approval · inactive".into();
+                }
                 if event.payload_ref.is_some() && data.get("args").is_none() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 }
             }
             "approval_decided" => {
-                if self
-                    .approval
-                    .as_ref()
-                    .is_some_and(|approval| approval.id == text(data, "apr_id"))
+                if let Some(index) = self
+                    .approvals
+                    .get(&format!("{origin}/{}", text(data, "apr_id")))
+                {
+                    self.cards[*index].status = if self.replaying_history {
+                        "historical"
+                    } else {
+                        "decided"
+                    }
+                    .into();
+                    self.cards[*index].metadata = if self.replaying_history {
+                        format!("saved approval · inactive · {}", text(data, "decision"))
+                    } else {
+                        text(data, "decision")
+                    };
+                }
+                if !self.replaying_history
+                    && self
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.id == text(data, "apr_id"))
                 {
                     self.approval = None;
                 }
             }
             "turn_ended" | "agent_complete" => {
-                self.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                self.status = if text(data, "outcome") == "cancelled" {
+                    "cancelled"
+                } else if data.get("ok").and_then(Value::as_bool) == Some(false) {
                     "failed"
                 } else {
                     "complete"
@@ -822,7 +969,39 @@ impl Model {
                 .into();
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
                     main.status = self.status.clone();
+                    main.current_tool.clear();
                 }
+                // A terminal event must not leave tools or streamed text spinning forever.
+                let prefix = format!("{origin}/{turn}/{agent}/");
+                for (key, index) in &self.tools {
+                    if key.starts_with(&prefix)
+                        && matches!(
+                            self.cards[*index].status.as_str(),
+                            "requested" | "running" | "unknown"
+                        )
+                    {
+                        self.cards[*index].status = if self.status == "cancelled" {
+                            "cancelled"
+                        } else {
+                            "incomplete"
+                        }
+                        .into();
+                        self.cards[*index].metadata =
+                            "turn ended before a tool result arrived".into();
+                    }
+                }
+                for (key, index) in self.messages.iter().chain(self.progress.iter()) {
+                    if key.starts_with(&prefix) && self.cards[*index].status == "streaming" {
+                        self.cards[*index].status = if self.status == "cancelled" {
+                            "cancelled"
+                        } else {
+                            "done"
+                        }
+                        .into();
+                    }
+                }
+                self.messages.retain(|key, _| !key.starts_with(&prefix));
+                self.progress.retain(|key, _| !key.starts_with(&prefix));
                 let index = self.card(agent, "Turn", text(data, "summary"), &self.status.clone());
                 if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
                     self.cards[index].payload_ref = event.payload_ref.clone();
@@ -859,9 +1038,14 @@ impl Model {
             .iter()
             .flat_map(|card| {
                 let mut lines = vec![format!(
-                    "[{}] {} ({})",
+                    "[{}] {}{} ({})",
                     card.status,
                     card.title,
+                    if card.primary.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", safe_text(&card.primary))
+                    },
                     safe_text(&card.agent)
                 )];
                 lines.extend(card.body.lines().map(|line| format!("  {line}")));
@@ -870,6 +1054,18 @@ impl Model {
             })
             .collect()
     }
+}
+
+// Saved resume progress is transient UI, never part of the recovered conversation.
+fn command_output(name: &str, output: &str) -> String {
+    if name != "/resume" && !name.starts_with("/resume ") && !name.starts_with("Command /resume") {
+        return safe_text(output);
+    }
+    safe_text(output)
+        .lines()
+        .filter(|line| !(line.contains('%') && (line.contains('█') || line.contains('░'))))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn safe_text_json(value: &Value) -> String {

@@ -145,7 +145,15 @@ const SSE_TO_V2 = Object.freeze({
   command_result: 'command_result',
   tokens_used: 'usage_update', usage_update: 'usage_update', complete: 'turn_ended',
   error: 'notice', reconnecting: 'notice', reconnected: 'notice',
-  reconnect_failed: 'notice', stagnation_detected: 'notice',
+  reconnect_failed: 'notice', stagnation_detected: 'notice', stagnation: 'notice',
+  status: 'notice', phase_start: 'notice', phase_update: 'notice', phase_summary: 'notice',
+  delegation: 'notice', sub_agent_tool: 'notice', sub_agent_tool_result: 'notice',
+  summarize: 'notice', change: 'notice', goal_created: 'notice',
+  user_intervention_queued: 'notice', user_intervention_accepted: 'notice', user_intervention_delivered: 'notice',
+  cancelled: 'turn_ended', paused: 'notice', resumed: 'notice', pause_instruction: 'notice',
+  approval_granted: 'approval_decided', approval_denied: 'approval_decided',
+  graph_node_start: 'agent_spawned', graph_node_result: 'agent_finished',
+  graph_run_start: 'notice', graph_run_result: 'notice',
 });
 
 function asText(value) {
@@ -253,7 +261,7 @@ function project(type, src, identity) {
         preview: typeof src.output === 'string' ? toolOutputPreview(src.output, ok) :
           (src.summary ? truncateUtf8(asText(src.summary), 2400) :
             (src.error ? truncateUtf8(asText(src.error), 2400, !ok) : undefined)),
-        output: src.output, diff_stats: src.diff_stats, output_ref: src.output_ref };
+        output: src.output ?? asText(src.error), diff_stats: src.diff_stats, output_ref: src.output_ref };
     }
     case 'text_delta':
     case 'thinking_delta':
@@ -265,13 +273,15 @@ function project(type, src, identity) {
     case 'session_started':
       return { cwd: src.cwd, model: src.model, product: src.product, session_id_from_backend: src.session_id };
     case 'turn_ended':
-      return { ok: !src.error && src.ok !== false, summary: asText(src.summary), duration_ms: src.duration_ms };
+      return { ok: !src.error && src.ok !== false && identity.sourceType !== 'cancelled',
+        outcome: identity.sourceType === 'cancelled' ? 'cancelled' : undefined,
+        summary: asText(src.summary ?? src.message ?? src.reason), duration_ms: src.duration_ms };
     case 'agent_spawned':
-      return { agent_id: identity.agentId, type: src.type || src.worker || src.name || 'agent',
+      return { agent_id: identity.agentId, type: src.type || src.worker || src.name || src.agent || src.sub_agent || 'agent',
         task: src.task || src.query || '', model: src.model };
     case 'agent_finished': {
-      const ok = !src.error && src.ok !== false && src.success !== false;
-      const report = asText(src.report || src.summary) || '';
+      const ok = !src.error && src.ok !== false && src.success !== false && src.status !== 'failed';
+      const report = asText(src.report || src.summary || src.output) || '';
       const error = asText(src.error);
       return { agent_id: identity.agentId, ok,
         report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
@@ -279,7 +289,7 @@ function project(type, src, identity) {
         cost_usd: src.cost_usd, error };
     }
     case 'agent_status':
-      return { agent_id: identity.agentId, status: src.status || src.message || 'working',
+      return { agent_id: identity.agentId, status: src.status || src.message || (identity.sourceType === 'complete' ? 'done' : identity.sourceType === 'cancelled' ? 'cancelled' : 'working'),
         current_tool_id: src.current_tool_id, tokens: src.tokens, elapsed_ms: src.elapsed_ms };
     case 'plan_updated':
       return { items: src.items || src.steps || src.plan?.items || [] };
@@ -291,10 +301,28 @@ function project(type, src, identity) {
         context_used_pct: usage.context_used_pct, cost_usd: usage.cost_usd ?? usage.total_cost,
         per_agent: usage.per_agent || {} };
     }
-    case 'notice':
-      return { level: identity.sourceType === 'error' || identity.sourceType === 'reconnect_failed' ? 'error' : 'info',
-        title: asText(src.message || src.error) || identity.sourceType, cause: asText(src.cause),
-        next_step: src.next_step || 'Use /resume to continue or inspect the session log.', retry: src.retry };
+    case 'test_result':
+      return { ...src, ok: !src.error && src.ok !== false && src.success !== false && !(Number(src.failed) > 0) };
+    case 'approval_decided':
+      return { ...src, apr_id: src.apr_id || src.approval_id || src.request_id,
+        decision: src.decision || (identity.sourceType === 'approval_denied' ? 'deny' : identity.sourceType === 'approval_granted' ? 'allow' : undefined) };
+    case 'notice': {
+      const source = identity.sourceType;
+      const progress = ['status', 'phase_start', 'phase_update', 'phase_summary', 'sub_agent_tool', 'sub_agent_tool_result'];
+      const title = source === 'delegation' ? `Delegation ${src.from || 'main'} → ${src.to || 'agent'}` :
+        source.replaceAll('_', ' ');
+      const description = asText(src.message ?? src.summary ?? src.reason ?? src.error ?? src.output ??
+        src.phase ?? src.stage_name ?? src.path ?? src.goal ?? src.instruction ?? src.text ?? src.tool ?? src.name);
+      return { level: source === 'error' || source === 'reconnect_failed' || src.success === false || src.error ? 'error' : 'info',
+        title: ['error', 'reconnecting', 'reconnected', 'reconnect_failed', 'stagnation_detected', 'stagnation'].includes(source)
+          ? asText(src.message || src.error) || title : title,
+        cause: asText(src.cause) || description,
+        next_step: src.next_step || (source === 'error' || source === 'reconnect_failed'
+          ? 'Use /resume to continue or inspect the session log.' : undefined),
+        retry: src.retry, source,
+        progress_key: progress.includes(source) && src.success !== false && !src.error ? (source.startsWith('phase_') ? 'phase' : source.startsWith('sub_agent_tool') ? 'agent-tool' : source) : undefined,
+        activity: source === 'paused' ? 'paused' : source === 'resumed' ? 'working' : undefined };
+    }
     case 'command_result':
       return { name: asText(src.name) || 'command', added_to_context: false,
         result: (asText(src.preview ?? src.result) || '(no output)').slice(0, 1200),
@@ -308,27 +336,36 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
   const persist = _enabled();
   const hasLiveClient = _broadcasters.some(subscriber => subscriber.live);
   if ((!persist && !hasLiveClient) || !event?.type || !sessionId) return;
-  const type = SSE_TO_V2[event.type];
+  let type = SSE_TO_V2[event.type];
   if (!type) return;
   try {
     const log = persist ? _openLogFor(sessionId) : null;
     if (!_wireState || _wireState.sessionId !== sessionId) {
-      _wireState = { sessionId, turnId: null, seq: log?.currentSeq() || 0 };
+      _wireState = { sessionId, turnId: null, agentTurns: new Map(), seq: log?.currentSeq() || 0 };
     }
     const nextSeq = log ? log.currentSeq() + 1 : _wireState.seq + 1;
     const src = event.data || {};
     const scoped = type !== 'session_started';
-    if (scoped) _wireState.turnId = turnId || src.turn_id || _wireState.turnId || `turn_${nextSeq}`;
-    const agentEvent = type.startsWith('agent_');
-    const agentId = src.run_id || src.sub_agent_run_id || src.agent_id || src.subagent_id || src.sub_agent_id ||
-      (agentEvent ? src.worker || src.name || `unattributed-agent:${nextSeq}` :
-        (src.sub_agent || src.internal ? `unattributed-agent:${nextSeq}` : 'main'));
+    const agentEvent = type.startsWith('agent_') || event.type.startsWith('sub_agent_');
+    // Graph node identity must be identical on lifecycle and namespaced inner events.
+    // Explicit run IDs win; graph+node disambiguates simultaneous runs of the same agent.
+    const agentId = src.sub_agent_run_id || src.agent_id || src.subagent_id || src.sub_agent_id || src.run_id ||
+      (src.graph_run_id && src.node_id ? `graph:${src.graph_run_id}/node:${src.node_id}` :
+        src.sub_agent || (agentEvent ? src.worker || src.name || 'unattributed-agent' :
+          (src.internal ? 'unattributed-agent' : 'main')));
     const parentAgentId = agentId !== 'main' ? src.parent_agent_id || src.parent_run_id || 'main' : undefined;
-    let data = project(type, src, { agentId, nextSeq, sourceType: event.type });
+    if (scoped && agentId === 'main') _wireState.turnId = turnId || src.turn_id || _wireState.turnId || `turn_${nextSeq}`;
+    let eventTurnId = scoped ? _wireState.turnId : null;
+    if (scoped && agentId !== 'main') {
+      eventTurnId = turnId || src.turn_id || _wireState.agentTurns.get(agentId) || eventTurnId || `turn_${nextSeq}`;
+      _wireState.agentTurns.set(agentId, eventTurnId);
+    }
+    if (type === 'turn_ended' && agentId !== 'main') type = 'agent_status';
+    let data = structuredClone(project(type, src, { agentId, nextSeq, sourceType: event.type }));
     let wireEvent;
     if (log) {
       wireEvent = log.appendEvent(type, data, {
-        turnId: scoped ? _wireState.turnId : null, agentId, parentAgentId,
+        turnId: eventTurnId, agentId, parentAgentId,
       });
     } else {
       const serialized = JSON.stringify(data);
@@ -342,13 +379,14 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
       }
       wireEvent = {
         seq: nextSeq, ts: new Date().toISOString(), type, session_id: sessionId,
-        v: 2, turn_id: scoped ? _wireState.turnId : null, agent_id: agentId,
+        v: 2, turn_id: eventTurnId, agent_id: agentId,
         ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
         id: `${sessionId}:${nextSeq}`, ...(payloadRef ? { payload_ref: payloadRef } : {}), data,
       };
     }
     _wireState.seq = wireEvent.seq;
-    if (type === 'turn_ended') _wireState.turnId = null;
+    if (type === 'agent_finished') _wireState.agentTurns.delete(agentId);
+    if (type === 'turn_ended' && agentId === 'main') _wireState.turnId = null;
     for (const { fn, schemaVersion } of _broadcasters) {
       try {
         const frame = schemaVersion === 2 ? wireEvent : toLegacyEvent(wireEvent);

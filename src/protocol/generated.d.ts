@@ -26,6 +26,7 @@ export interface TurnEndedData {
   ok?: boolean;
   summary?: string;
   duration_ms?: number;
+  outcome?: string;
 }
 export interface TextDeltaData {
   chunk: string;
@@ -129,6 +130,9 @@ export interface NoticeData {
   next_step?: string;
   retry?: Record<string, unknown>;
   stack_ref?: string;
+  source?: string;
+  progress_key?: string;
+  activity?: string;
 }
 export interface CommandResultData {
   name: string;

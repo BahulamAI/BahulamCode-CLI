@@ -752,3 +752,264 @@ fn payload_paths_future_events_and_torn_tail() {
     std::fs::write(&log, format!("{referenced}\n")).unwrap();
     assert!(replay(&log).unwrap_err().to_string().contains("turn_id"));
 }
+
+#[test]
+fn historical_controls_cannot_activate_or_resolve_live_approval() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            10,
+            "approval_required",
+            "main",
+            json!({"apr_id":"live", "reason":"live approval"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            11,
+            "interaction_requested",
+            "main",
+            json!({"request_id":"live-picker", "title":"Live picker", "options":[]}),
+        ))
+        .unwrap();
+    let historical = vec![
+        json!({"kind":"event", "event":{"type":"approval_required", "data":{"apr_id":"live", "reason":"saved approval"}}}),
+        json!({"kind":"event", "event":{"type":"approval_decided", "data":{"apr_id":"live", "decision":"allow"}}}),
+        json!({"kind":"event", "event":{"type":"interaction_requested", "data":{"request_id":"stale", "title":"Stale picker"}}}),
+        json!({"kind":"event", "event":{"type":"command_catalog", "data":{"commands":[{"name":"evil"}]}}}),
+        json!({"kind":"event", "event":{"type":"session_state", "data":{"cwd":"stale"}}}),
+        json!({"kind":"event", "event":{"type":"transcript_snapshot", "data":{"items":[]}}}),
+    ];
+    model
+        .apply(&event(
+            0,
+            "transcript_snapshot",
+            "main",
+            json!({"replace":false,"cwd":"/live", "mode":"full", "items":historical}),
+        ))
+        .unwrap();
+    assert_eq!(model.approval.as_ref().unwrap().reason, "live approval");
+    assert_eq!(
+        model.interaction.as_ref().unwrap().request_id,
+        "live-picker"
+    );
+    assert!(model.command_catalog.is_empty());
+    assert_eq!(model.cwd, "/live");
+    assert_eq!(model.last_seq, 10);
+    let saved = model
+        .cards
+        .iter()
+        .find(|card| card.body == "saved approval")
+        .unwrap();
+    assert_eq!(saved.status, "historical");
+    assert!(saved.metadata.contains("inactive"));
+    model
+        .apply(&event(
+            12,
+            "approval_decided",
+            "main",
+            json!({"apr_id":"live", "decision":"deny"}),
+        ))
+        .unwrap();
+    assert!(model.approval.is_none());
+    // Loading the same history alone must never create an actionable approval.
+    let mut replay = Model::default();
+    replay
+        .apply(&event(
+            0,
+            "transcript_snapshot",
+            "main",
+            json!({"items":historical}),
+        ))
+        .unwrap();
+    assert!(replay.approval.is_none());
+    assert!(replay.interaction.is_none());
+}
+
+#[test]
+fn progress_thinking_checks_and_cancelled_tools_keep_full_details() {
+    let mut model = Model::default();
+    for seq in 1..=100 {
+        model.apply(&event(seq, "notice", "main", json!({"title":"status", "cause":format!("progress {seq}"), "level":"info", "progress_key":"status"}))).unwrap();
+    }
+    assert_eq!(model.cards.len(), 1);
+    assert_eq!(model.cards[0].body, "progress 100");
+    for seq in 101..=110 {
+        model
+            .apply(&event(
+                seq,
+                "thinking_delta",
+                "main",
+                json!({"chunk":format!("thinking {seq}\n")}),
+            ))
+            .unwrap();
+    }
+    assert_eq!(model.cards.len(), 2);
+    assert!(model.cards[1].body.contains("thinking 101"));
+    assert!(model.cards[1].body.contains("thinking 110"));
+    model.apply(&event(111, "test_result", "main", json!({"name":"cargo test", "ok":false, "summary":"1 failed", "output":"full diagnostic"}))).unwrap();
+    assert_eq!(model.cards[2].status, "failed");
+    assert!(model.cards[2]
+        .detail
+        .as_ref()
+        .unwrap()
+        .contains("full diagnostic"));
+    model
+        .apply(&event(
+            112,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"pending", "name":"shell", "args":{}}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            113,
+            "tool_started",
+            "main",
+            json!({"tool_id":"pending"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            114,
+            "turn_ended",
+            "main",
+            json!({"ok":false, "outcome":"cancelled"}),
+        ))
+        .unwrap();
+    assert_eq!(model.status, "cancelled");
+    assert_eq!(model.cards[3].status, "cancelled");
+    assert_eq!(model.cards[1].status, "cancelled");
+    assert!(model.agents[0].current_tool.is_empty());
+}
+
+#[test]
+fn snapshot_chunks_do_not_duplicate_header_or_merge_live_tool_ids() {
+    let mut model = Model::default();
+    for replace in [true, false] {
+        model.apply(&event(0, "transcript_snapshot", "main", json!({"replace":replace, "mode":"full", "items":[
+            {"kind":"event", "event":{"type":"tool_request", "turn_id":"t1", "data":{"call_id":"same", "tool":"shell", "args":{}}}}
+        ]}))).unwrap();
+    }
+    assert_eq!(
+        model
+            .cards
+            .iter()
+            .filter(|card| card.title == "Session")
+            .count(),
+        1
+    );
+    model
+        .apply(&event(
+            1,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"same", "name":"shell", "args":{}}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"same", "ok":true, "output":"live result"}),
+        ))
+        .unwrap();
+    let tools: Vec<_> = model
+        .cards
+        .iter()
+        .filter(|card| card.title == "shell")
+        .collect();
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0].status, "requested");
+    assert_eq!(tools[1].status, "done");
+}
+
+#[test]
+fn resume_command_keeps_full_history_but_not_saved_spinner_frames() {
+    let mut model = Model::default();
+    model.apply(&event(1, "command_result", "main", json!({"name":"/resume", "result":"truncated", "output":"resuming █░ 8%\nreading transcript ██░ 14%\nResumed saved session\nactual history"}))).unwrap();
+    assert_eq!(model.cards[0].body, "Resumed saved session\nactual history");
+    assert_eq!(
+        model.cards[0].detail.as_deref(),
+        Some("Resumed saved session\nactual history")
+    );
+}
+
+#[test]
+fn checks_and_thinking_render_and_expand_in_both_rust_views() {
+    use bahulam_tui::render::draw_with_view;
+    for inline in [true, false] {
+        for (kind, data, expected) in [
+            (
+                "diff",
+                json!({"path":"fixture.rs", "hunks":[{"text":"+ CODE_EDIT_VISIBLE"}]}),
+                "CODE_EDIT_VISIBLE",
+            ),
+            (
+                "tool_finished",
+                json!({"tool_id":"tool", "summary":"TOOL_RESULT_VISIBLE", "output":"TOOL_RESULT_VISIBLE", "ok":true}),
+                "TOOL_RESULT_VISIBLE",
+            ),
+            (
+                "test_result",
+                json!({"suite":"verification", "passed":2, "failed":1}),
+                "verification",
+            ),
+            (
+                "thinking_delta",
+                json!({"chunk":"THINKING_FIRST\n".repeat(8) + "THINKING_LAST"}),
+                "THINKING_FIRST",
+            ),
+            (
+                "notice",
+                json!({"title":"phase update", "cause":"VERIFY_PHASE", "level":"info", "progress_key":"phase"}),
+                "VERIFY_PHASE",
+            ),
+        ] {
+            let mut model = Model::default();
+            model.apply(&event(1, kind, "main", data)).unwrap();
+            for details in [false, true] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(110, if inline { 16 } else { 36 })).unwrap();
+                terminal
+                    .draw(|frame| {
+                        draw_with_view(
+                            frame,
+                            &model,
+                            0,
+                            true,
+                            "dark",
+                            "draft",
+                            5,
+                            &HashSet::new(),
+                            Some(0),
+                            true,
+                            None,
+                            None,
+                            0,
+                            if details { Some(0) } else { None },
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    text.contains(expected),
+                    "missing {expected}, inline={inline}, details={details}"
+                );
+                if !details {
+                    assert!(text.contains("draft"));
+                }
+            }
+        }
+    }
+}

@@ -1,6 +1,8 @@
 // Read-only rendering audit. Uses synthetic events, an isolated home, the real
 // Node projection, and the compiled Rust replay client. It makes no model calls.
 import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { createAgentLoop } from '../src/core/loop.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -48,6 +50,9 @@ const cases = [
   ['cancelled', [event('cancelled', { message: marker })]],
   ['paused', [event('paused', { message: marker })]],
   ['resumed', [event('resumed', { message: marker })]],
+  ['pause instruction', [event('pause_instruction', { instruction: marker })]],
+  ['check counts', [event('test_result', { suite: marker, passed: 3, failed: 1 })]],
+  ['graph lifecycle', [event('graph_node_start', { graph_run_id: 'g', node_id: 'n', agent: 'review' }), event('graph_node_result', { graph_run_id: 'g', node_id: 'n', status: 'completed', output: marker })]],
 ];
 let frames = [];
 const unsubscribe = registerBroadcaster(frame => frames.push(frame), { schemaVersion: 2, live: true });
@@ -66,10 +71,18 @@ try {
     return { feature, inputs: events.map(item => item.type), projected,
       result: output.includes(marker) ? 'rendered' : projected.length ? 'renderer gap' : 'bridge gap' };
   });
-  // Match the current gateway loop's actual completion shape, not an idealized fixture.
-  const gatewayOutput = replay([request, start, event('tool_done', { tool: 'shell', duration_ms: 0 })], 'gateway-audit');
+  // Exercise the actual producer, including the same full result sent to the model.
+  const gatewayEvents = [];
+  let turn = 0;
+  for await (const item of createAgentLoop({ session: {}, messages: [],
+    gatewayFetch: async () => ({ message: turn++ ? { content: 'done' } : { tool_calls: [{ id: 'tool-1', function: { name: 'shell', arguments: '{}' } }] } }),
+    toolExecutor: { execute: async () => ({ success: true, output: marker }) },
+  })) gatewayEvents.push(item);
+  const gatewayOutput = replay(gatewayEvents, 'gateway-audit');
+  const completedTool = frames.find(frame => frame.type === 'tool_finished');
   const gatewayToolCompletion = {
-    requestId: frames[1].data.tool_id, completionId: frames.at(-1).data.tool_id,
+    requestId: frames[1].data.tool_id, completionId: completedTool.data.tool_id,
+    resultPreserved: completedTool.data.output === marker,
     originalToolStillRunning: gatewayOutput.includes('[running] shell'),
     extraUnattributedTool: gatewayOutput.includes('Tool unattributed:'),
   };
@@ -77,6 +90,12 @@ try {
   replay([request, start, event('tool_done', { call_id: 'tool-1', output: marker })].map(item => ({
     ...item, data: { ...item.data, internal: true, sub_agent: 'reviewer', graph_run_id: 'graph-1', node_id: 'node-1' },
   })), 'orchestration-audit');
+  assert.ok(results.every(item => item.result === 'rendered'), JSON.stringify(results.filter(item => item.result !== 'rendered')));
+  assert.equal(gatewayToolCompletion.requestId, gatewayToolCompletion.completionId);
+  assert.equal(gatewayToolCompletion.originalToolStillRunning, false);
+  assert.equal(gatewayToolCompletion.extraUnattributedTool, false);
+  assert.equal(gatewayToolCompletion.resultPreserved, true);
+  assert.equal(new Set(frames.slice(1).map(frame => frame.agent_id)).size, 1);
   console.log(JSON.stringify({
     scope: 'Synthetic projection + Rust plain replay; not an interactive/model-session parity test',
     results,
