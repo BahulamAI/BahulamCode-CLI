@@ -88,7 +88,7 @@ try:
    keys=b'/res'
   elif stage==1 and b'/resume' in screen: keys=b'\t\r'
   elif stage==2 and b'Chooseasavedtranscript.' in screen: keys=b'\r'
-  elif stage==3 and b'SAVED_REPLY_FROM_DISK' in screen and b'1234in' in screen and b'56out' in screen and (not startup or b'AskBahulam' in screen): keys=b'/new\r'
+  elif stage==3 and b'SAVED_REPLY_FROM_DISK' in screen and b'1.2Kin' in screen and b'56out' in screen and (not startup or b'AskBahulam' in screen): keys=b'/new\r'
   elif stage==4 and b'mode:newsession' in screen and b'0in' in screen and b'0out' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, '/new left the old reply on screen'
    keys=b'/help\r'

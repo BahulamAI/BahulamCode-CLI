@@ -791,7 +791,7 @@ fn usage_state_is_absolute_and_historical_or_agent_usage_cannot_replace_it() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("1234 in · 56 out · ctx ~23.4% · ~$0.2345"));
+    assert!(text.contains("1.2K in · 56 out · ctx ~23.4% · ~$0.2345"));
 }
 
 #[test]

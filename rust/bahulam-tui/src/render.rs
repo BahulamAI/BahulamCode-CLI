@@ -1039,7 +1039,11 @@ pub fn draw_with_view(
     };
     let state = safe_text(&model.status);
     let tokens = if model.usage_known {
-        format!("{} in · {} out", model.input_tokens, model.output_tokens)
+        format!(
+            "{} in · {} out",
+            format_token_count(model.input_tokens),
+            format_token_count(model.output_tokens)
+        )
     } else {
         "usage —".into()
     };
@@ -1696,6 +1700,18 @@ fn wrap_text(line: &str, width: usize, hard: bool) -> Vec<String> {
         rows.push(current);
     }
     rows
+}
+
+fn format_token_count(tokens: u64) -> String {
+    let (value, suffix) = if tokens >= 999_950 {
+        (tokens as f64 / 1_000_000.0, "M")
+    } else if tokens >= 1_000 {
+        (tokens as f64 / 1_000.0, "K")
+    } else {
+        return tokens.to_string();
+    };
+    let rounded = format!("{value:.1}");
+    format!("{}{suffix}", rounded.strip_suffix(".0").unwrap_or(&rounded))
 }
 
 fn middle_ellipsis(value: &str, max_width: usize) -> String {
