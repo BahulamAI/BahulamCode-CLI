@@ -850,3 +850,20 @@ wheel navigation and keyboard/PageUp/PageDown behavior retain their existing
 steps. The PTY mouse check measures the actual row displacement for the default
 and a three-line override, alongside resize, draft and terminal restoration.
 Terminal/OS trackpad acceleration can still determine how many events arrive.
+
+## Follow-up: details must release composer focus
+
+Live testing exposed a focus trap: expanding selected the transcript, collapsing
+kept that focus, and clicks in the composer were ignored. The earlier PTY flow
+hid the problem by pressing Tab before typing. Collapse via Show less, Enter or
+Esc now returns directly to the composer, including Esc from separate details.
+Clicking the composer restores its focus. Ordinary typing or bracketed paste
+from history resumes the preserved draft without losing the first character;
+questions, approvals and separate details retain their input ownership.
+
+The dedicated `scripts/test-tui-detail-focus.mjs` uses both real Rust views and
+the Node host to assert exact prompt submissions after composer clicks, mouse
+collapse, Esc, keyboard collapse, direct typing and paste while expanded.
+The existing details/view-roundtrip and CLI diagnostics tests now type directly
+after collapse, with no compensating Tab presses. Node production code and
+transcript storage remain unchanged.

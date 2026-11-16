@@ -67,7 +67,7 @@ try:
     screen=Screen(24,80)
     os.killpg(child.pid,signal.SIGWINCH)
     resized=True
-   else: keys=b'\t' + b'\x7f'*10 + b'/tui fullscreen\r'
+   else: keys=b'\x7f'*10 + b'/tui fullscreen\r'
   elif stage==4 and 'Agents' in text and b'\x1b[?1049h' in output:
    assert 'REPLY_001' in text and 'Show details' in text
    row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
@@ -79,7 +79,7 @@ try:
    # not select the following assistant message.
    keys=b'\x1b[<65;10;5M\x1b[<65;10;5M\x1b'
   elif stage==41 and 'Show details' in text:
-   keys=b'\t\t/tui inline\r';stage=4
+   keys=b'/tui inline\r';stage=4
   elif stage==5 and 'Message' in text and output.count(b'\x1b[?1049l')==1:
    assert 'REPLY_001' in text and 'Show details' in text
    keys=b'after switch\r'

@@ -100,7 +100,7 @@ fn toggle_expansion(
         } else {
             expanded.insert(index);
             state.composer_hint =
-                "Expanded result · Esc or Show less collapses · Ctrl+Y copies".into();
+                "Expanded result · Esc collapse · type to write · Ctrl+Y copy".into();
             state.request_details(index)
         }
     } else {
@@ -547,6 +547,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Event::Paste(_) | Event::Resize(_, _) | Event::FocusGained => true,
                 _ => false,
             };
+            // History inspection must not swallow the first character/paste of
+            // a new draft. Questions, approvals and separate details still own input.
+            let starts_input = match &event {
+                Event::Paste(_) => true,
+                Event::Key(key) => {
+                    key.kind == KeyEventKind::Press
+                        && matches!(key.code, KeyCode::Char(_))
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                }
+                _ => false,
+            };
+            if stdio
+                && focus_panel == 1
+                && history_search.is_none()
+                && editable(&model, 0, detail_card)
+                && starts_input
+            {
+                focus_panel = 0;
+                input_hint(&model, "");
+            }
             match event {
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
@@ -799,11 +821,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Esc if detail_card.is_some() => {
                         detail_card = None;
                         detail_scroll = 0;
-                        focus_panel = if model.lock().ok().is_some_and(|m| m.approval.is_some()) {
-                            0
-                        } else {
-                            1
-                        };
+                        focus_panel = 0;
+                        input_hint(&model, "");
                     }
                     KeyCode::Esc if expanded.contains(&focused_card) => {
                         scroll = geometry()
@@ -816,6 +835,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(scroll);
                         expanded.remove(&focused_card);
                         follow = false;
+                        focus_panel = 0;
                         input_hint(&model, "");
                     }
                     KeyCode::Esc if agent_filter.is_some() => {
@@ -1048,6 +1068,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(scroll);
                         follow = false;
                         toggle_expansion(&model, focused_card, &mut expanded, &command_writer)?;
+                        if !expanded.contains(&focused_card) {
+                            focus_panel = 0;
+                        }
                     }
                     KeyCode::Enter if focus_panel == 1 => {
                         if model.lock().ok().is_some_and(|m| {
@@ -1300,6 +1323,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or(scroll);
                             follow = false;
                             toggle_expansion(&model, index, &mut expanded, &command_writer)?;
+                            if !expanded.contains(&index) {
+                                focus_panel = 0;
+                            }
+                        } else if model.lock().ok().is_some_and(|state| {
+                            mouse_panel_at_view(
+                                terminal.get_frame().area(),
+                                &state,
+                                &input,
+                                ratatui::layout::Position::new(mouse.column, mouse.row),
+                                inline_mode,
+                            ) == Some(MousePanel::Composer)
+                        }) && history_search.is_none()
+                        {
+                            focus_panel = 0;
+                            input_hint(&model, "");
                         }
                         continue;
                     }

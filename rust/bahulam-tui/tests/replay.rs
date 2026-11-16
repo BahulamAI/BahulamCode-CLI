@@ -281,11 +281,14 @@ fn mouse_targets_follow_layout_and_do_not_reach_behind_modals() {
         Position::new(0, 3),
         Position::new(10, 1),
         Position::new(10, 14),
-        Position::new(90, 20),
         Position::new(90, 23),
     ] {
         assert_eq!(mouse_panel_at(area, &model, "", point), None);
     }
+    assert_eq!(
+        mouse_panel_at(area, &model, "", Position::new(90, 20)),
+        Some(MousePanel::Composer)
+    );
     assert_eq!(
         mouse_panel_at(area, &model, "", Position::new(10, 10)),
         Some(MousePanel::Transcript)
@@ -315,6 +318,10 @@ fn mouse_targets_follow_layout_and_do_not_reach_behind_modals() {
         .unwrap();
     assert_eq!(mouse_panel_at(area, &model, "", Position::new(10, 3)), None);
     assert_eq!(mouse_panel_at(area, &model, "", Position::new(90, 3)), None);
+    assert_eq!(
+        mouse_panel_at(area, &model, "", Position::new(90, 20)),
+        None
+    );
     model.interaction = None;
     model
         .apply(&event(

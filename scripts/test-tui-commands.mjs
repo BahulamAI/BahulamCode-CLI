@@ -100,7 +100,7 @@ try:
    assert b'Colordepthtruecolor(Nodehost)' in screen and b'Mousecaptureinactive' in screen
    keys=b'\x1b'
   elif stage==41 and b'Expandedresult' not in screen and b'Showdetails' in screen:
-   keys=b'\t\t/clear\r';stage=6
+   keys=b'/clear\r';stage=6
   elif stage==6 and b'Command/modelstatus' in screen: keys=b'/clear\r'
   elif stage==7 and b'mode:cleared' in screen:
    assert b'Command/help' not in screen and b'Command/modelstatus' not in screen, '/clear left old command cards'

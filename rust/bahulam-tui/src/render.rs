@@ -484,6 +484,7 @@ pub fn details_at(
 pub enum MousePanel {
     Transcript,
     Agents,
+    Composer,
 }
 
 /// Use the painted layout; a modal owns input even when the pointer is outside it.
@@ -514,6 +515,9 @@ pub fn mouse_panel_at_view(
     } else {
         view_layout(area, input, false)
     };
+    if layout.rows[3].contains(position) {
+        return Some(MousePanel::Composer);
+    }
     if inline && position.y < layout.rows[3].y {
         return Some(MousePanel::Transcript);
     }
