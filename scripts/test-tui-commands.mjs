@@ -26,8 +26,8 @@ test('reopening keeps resumed replay and messages added in either view without d
 });
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node', 'inline from Node']) {
-  const startupResume = mode !== 'fresh startup';
+for (const mode of ['fresh startup', 'default Rust startup', 'missing Rust binary', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node', 'inline from Node']) {
+  const startupResume = !['fresh startup', 'default Rust startup'].includes(mode);
   test(`real Rust CLI commands from ${mode}`, {
     skip: process.platform === 'win32', timeout: 35000,
   }, () => {
@@ -52,19 +52,19 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, ${JSON.stringify(path.join(root, 'scripts'))})
 from tui_test_screen import Screen
 terminal_screen = Screen(36,120)
-startup = sys.argv[1] != 'fresh startup'
+startup = sys.argv[1] not in ['fresh startup', 'default Rust startup']
 return_default = sys.argv[1].startswith('return ')
 bare_tui = sys.argv[1] == 'return via /tui'
 roundtrip = sys.argv[1].endswith('from Node')
 inline_route = sys.argv[1] == 'inline from Node'
+fallback = sys.argv[1] == 'missing Rust binary'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 original_mode = termios.tcgetattr(slave)
 child = subprocess.Popen(sys.argv[2:],stdin=slave,stdout=slave,stderr=slave,close_fds=True,start_new_session=True)
 output, stage_output = bytearray(), bytearray()
-stage, deadline = (20 if roundtrip else (3 if startup else 0)), time.time()+24
+stage, deadline = (30 if fallback else (20 if roundtrip else (3 if startup else 0))), time.time()+24
 stage_at = time.time()
-pending_keys, next_key_at = bytearray(), 0
 try:
  while child.poll() is None and time.time()<deadline:
   if select.select([master],[],[],0.02)[0]:
@@ -79,7 +79,11 @@ try:
   screen=re.sub(rb'\s+',b'',terminal_screen.text().encode('utf8'))
   recent=re.sub(rb'\x1b\[[0-9;?]*[a-zA-Z]',b'',bytes(stage_output))
   keys=None
-  if stage==0 and b'AskBahulam' in screen: keys=b'/res'
+  if stage==0 and b'AskBahulam' in screen:
+   assert b'You' not in output, 'Node input dock painted before Rust handoff: '+output.decode('utf8','replace')
+   if sys.argv[1]=='default Rust startup':
+    assert b'Rustinline' in screen and b'\x1b[?1049h' not in output, 'Rust did not start inline'
+   keys=b'/res'
   elif stage==1 and b'/resume' in screen: keys=b'\t\r'
   elif stage==2 and b'Chooseasavedtranscript.' in screen: keys=b'\r'
   elif stage==3 and b'SAVED_REPLY_FROM_DISK' in screen and (not startup or b'AskBahulam' in screen): keys=b'/new\r'
@@ -116,22 +120,16 @@ try:
   elif stage==27 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'AskBahulam' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, 'Reopening resurrected cleared history'
    keys=b'\x03\x03'
+  elif stage==30 and 'You›' in terminal_screen.text().replace(' ','') and b'Rust terminal unavailable' in recent: keys=b'/status\r'
+  elif stage==31 and re.search(rb'ID\s+command-fixture',recent): keys=b'/history\r'
+  elif stage==32 and b'SAVED_REPLY_FROM_DISK' in recent: keys=b'/exit\r'
   if keys is not None:
    stage+=1
    stage_at=time.time()
    stage_output.clear()
-   if (return_default and stage>=13) or (roundtrip and stage in [21,23,24,27]):
-    # Node treats a text+newline burst as pasted text awaiting submission.
-    # Keep draining dock redraws while typing, so PTY output backpressure
-    # cannot block Node and coalesce these events into a paste burst.
-    pending_keys = bytearray(keys)
-    next_key_at = time.time()+0.1
-   else: os.write(master,keys)
-  if pending_keys and time.time()>=next_key_at:
-   os.write(master,bytes(pending_keys[:1]))
-   del pending_keys[:1]
-   next_key_at = time.time()+0.04
- if stage!=(28 if roundtrip else (15 if return_default else 14)) or child.poll()!=0:
+   # Deliver the whole command with Enter: buffered terminal input must submit.
+   os.write(master,keys)
+ if stage!=(33 if fallback else (28 if roundtrip else (15 if return_default else 14))) or child.poll()!=0:
   clean=re.sub(rb'\x1b\[[0-9;?]*[a-zA-Z]',b'',bytes(output))
   raise Exception('Command flow stalled at stage '+str(stage)+'\n'+terminal_screen.text()+'\n'+clean[-2000:].decode('utf8','replace'))
  while select.select([master],[],[],0.02)[0]: output.extend(os.read(master,65536))
@@ -144,9 +142,10 @@ try:
  assert restored_mode==original_mode, 'Quit did not restore terminal modes: '+str(restored_mode)+' != '+str(original_mode)
  assert b'Goodbye!' in output, 'Quit did not use the existing CLI exit handler'
  expected_brand = b'38;2;48;59;160' if bare_tui else b'38;2;190;198;255'
- if not inline_route:
+ if not inline_route and not fallback and sys.argv[1]!='default Rust startup':
   rust_frame = output.split(b'\x1b[?1049h',1)[1].split(b'\x1b[?1049l',1)[0]
   assert expected_brand in rust_frame, 'Host did not pass the canonical brand palette/theme to Rust'
+ if fallback: assert b'\x1b[?1049h' not in output
  if roundtrip: assert output.count(b'\x1b[?1049h')==(0 if inline_route else 3), 'Unexpected alternate-screen ownership'
 finally:
  if child.poll() is None:
@@ -164,9 +163,9 @@ finally:
         cwd: project, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, BAHULAM_HOME: home, B0_TOKEN: '', KEPLER_TOKEN: '',
           BAHULAM_TUI: mode.endsWith('from Node') ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
-          BAHULAM_TUI_MODE: 'fullscreen',
+          BAHULAM_TUI_MODE: mode === 'default Rust startup' ? '' : 'fullscreen',
           NO_COLOR: '', FORCE_COLOR: '3', BAHULAM_THEME: 'auto', COLORFGBG: mode === 'return via /tui' ? '0;15' : '15;0',
-          BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui'),
+          BAHULAM_TUI_BINARY: mode === 'missing Rust binary' ? path.join(temp, 'missing-tui') : path.join(root, 'rust/target/debug/bahulam-tui'),
           BAHULAM_AUTO_ATTACH: '0', BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_AUTO_REGISTER: 'true',
           BAHULAM_MODEL_CATALOG_OFFLINE: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true', BAHULAM_DISABLE_TELEMETRY: '1',
         },

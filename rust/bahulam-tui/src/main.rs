@@ -20,7 +20,7 @@ use std::{
     io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -188,6 +188,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{}", safe_text(warning));
     }
     let model = Arc::new(Mutex::new(std::mem::take(&mut initial)));
+    // Independent of protocol seq: controls and snapshots may reuse/reset seq.
+    let render_revision = Arc::new(AtomicU64::new(0));
     let core_connected = Arc::new(AtomicBool::new(true));
     let command_writer = if stdio {
         #[cfg(unix)]
@@ -195,6 +197,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let events = unsafe { File::from_raw_fd(3) };
             let shared = Arc::clone(&model);
             let connected = Arc::clone(&core_connected);
+            let revision = Arc::clone(&render_revision);
             thread::spawn(move || {
                 for line in BufReader::new(events).lines().map_while(Result::ok) {
                     if let Ok(event) =
@@ -202,6 +205,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         if let Ok(mut model) = shared.lock() {
                             let _ = model.apply(&event);
+                            revision.fetch_add(1, Ordering::Release);
                         }
                     }
                 }
@@ -246,7 +250,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     let mut inline_mode = resolve_inline(
-        stdio && std::env::var("BAHULAM_TUI_MODE").is_ok_and(|mode| mode == "inline"),
+        stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline"),
     );
     // Wheel navigation belongs to the Rust conversation in both views.
     // Hold Shift for native selection, or explicitly disable reporting with =0.
@@ -278,12 +282,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Live mode: one Ctrl+C interrupts the agent, a second within two
     // seconds quits. One accidental press never ends the session.
     let mut last_ctrl_c: Option<std::time::Instant> = None;
+    let mut dirty = true;
+    let mut drawn_revision = 0;
     loop {
+        let frame_revision = render_revision.load(Ordering::Acquire);
+        dirty |= frame_revision != drawn_revision;
         if stdio && !core_connected.load(Ordering::Acquire) {
             break;
         }
         if let Ok(state) = model.lock() {
             if state.transcript_revision != seen_transcript_revision {
+                dirty = true;
                 seen_transcript_revision = state.transcript_revision;
                 scroll = 0;
                 follow = true;
@@ -297,16 +306,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if watch && !stdio && last_refresh.elapsed() >= Duration::from_millis(100) {
             if let Some(file) = &file {
                 *model.lock().map_err(|_| "view model lock poisoned")? = replay(file)?;
+                dirty = true;
             }
             last_refresh = std::time::Instant::now();
         }
-        if follow {
+        if follow && dirty {
             focused_card = model
                 .lock()
                 .map(|m| {
-                    scoped_card_indices(&m, agent_filter.as_deref())
-                        .last()
-                        .copied()
+                    m.cards
+                        .iter()
+                        .rposition(|card| card.agent == agent_filter.as_deref().unwrap_or("main"))
                         .unwrap_or(0)
                 })
                 .unwrap_or(0);
@@ -326,30 +336,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
         };
         let visible_scroll = if follow { u16::MAX } else { scroll };
-        terminal.draw(|frame| {
-            if let Ok(model) = model.lock() {
-                draw_with_view(
-                    frame,
-                    &model,
-                    visible_scroll,
-                    stdio || watch,
-                    &theme,
-                    &input,
-                    cursor,
-                    &expanded,
-                    Some(focused_card),
-                    stdio,
-                    agent_filter.as_deref(),
-                    Some(focused_agent),
-                    focus_panel,
-                    detail_card,
-                    detail_scroll,
-                    inline_mode,
-                );
-            }
-        })?;
+        if dirty {
+            terminal.draw(|frame| {
+                if let Ok(model) = model.lock() {
+                    draw_with_view(
+                        frame,
+                        &model,
+                        visible_scroll,
+                        stdio || watch,
+                        &theme,
+                        &input,
+                        cursor,
+                        &expanded,
+                        Some(focused_card),
+                        stdio,
+                        agent_filter.as_deref(),
+                        Some(focused_agent),
+                        focus_panel,
+                        detail_card,
+                        detail_scroll,
+                        inline_mode,
+                    );
+                }
+            })?;
+            // A core event arriving during paint remains newer and triggers the next frame.
+            drawn_revision = frame_revision;
+            dirty = false;
+        }
         if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
+            let event = event::read()?;
+            dirty |= match &event {
+                Event::Key(key) => key.kind == KeyEventKind::Press,
+                Event::Mouse(mouse) => matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ),
+                Event::Paste(_) | Event::Resize(_, _) | Event::FocusGained => true,
+                _ => false,
+            };
+            match event {
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && !(key.code == KeyCode::Char('c')

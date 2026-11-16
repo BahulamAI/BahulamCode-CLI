@@ -2,7 +2,7 @@ use crate::protocol::{EventEnvelope, EVENT_TYPES};
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct Card {
     pub agent: String,
     pub title: String,

@@ -5026,7 +5026,9 @@ export async function startTerminalRepl() {
   // One owner from the first startup line through the first prompt. Keep
   // existing shell output in scrollback; never guess an absolute cursor row.
   orbitRef.current = createOrbit();
-  const inputDockActive = mountInputDock({ preserveScrollback: true });
+  const startInRust = process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY;
+  // Rust owns the first composer too; startup output can use normal scrollback.
+  if (!startInRust) mountInputDock({ preserveScrollback: true });
   if (!cliArgs.resume) printBanner(auth);
   toolExecutor = makeToolExecutor();
   ctx.toolExecutor = toolExecutor;
@@ -5094,9 +5096,9 @@ export async function startTerminalRepl() {
   // prefix and draft, making the cursor bounce when the next event arrives.
   // `unref()` ensures the timer never blocks process exit.
   let _dockTickTimer = null;
-  if (inputDockActive) {
-    process.on('beforeExit', unmountInputDock);
-    process.on('exit',       unmountInputDock);
+  process.on('beforeExit', unmountInputDock);
+  process.on('exit',       unmountInputDock);
+  if (isInputDockMounted()) {
     _dockTickTimer = setInterval(() => {
       if (!isInputDockMounted() || approval._approvalPromptActive) return;
       try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch { /* one bad tick is not fatal */ }
@@ -5548,7 +5550,7 @@ export async function startTerminalRepl() {
     promptInputLine();
   }
 
-  showPrompt();
+  if (!startInRust) showPrompt();
 
   // Shared login/logout is visible in already-open terminals. Never repaint
   // the input text or draft, and do not fetch a profile on every timer tick.
@@ -5622,7 +5624,7 @@ export async function startTerminalRepl() {
   });
   _submitExternalPrompt = instruction => queueOrRunLine(instruction);
   function restoreNodeDock() {
-    if (inputDockActive && mountInputDock({ preserveScrollback: true })) {
+    if (mountInputDock({ preserveScrollback: true })) {
       if (_dockTickTimer) clearInterval(_dockTickTimer);
       _dockTickTimer = setInterval(() => {
         if (!isInputDockMounted() || approval._approvalPromptActive) return;
@@ -5631,7 +5633,7 @@ export async function startTerminalRepl() {
       _dockTickTimer.unref?.();
     }
   }
-  async function openRustView(view = process.env.BAHULAM_TUI_MODE || 'fullscreen', snapshotMode = session.historyMode || 'current') {
+  async function openRustView(view = process.env.BAHULAM_TUI_MODE || 'inline', snapshotMode = session.historyMode || 'current') {
     if (_rustTuiActive) return;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       process.stderr.write('  Full-screen view requires an interactive terminal.\n');
@@ -5834,10 +5836,11 @@ export async function startTerminalRepl() {
       if (restoreStdout) process.stdout.write = restoreStdout;
       process.stderr.write(`  ${c.yellow(`Rust terminal unavailable: ${error.message}; using Node terminal.`)}\n`);
       restoreNodeDock();
+      showPrompt();
     }
   }
   ctx.openRustView = openRustView;
-  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) await openRustView(undefined, startupResumeMode);
+  if (startInRust) await openRustView(undefined, startupResumeMode);
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 

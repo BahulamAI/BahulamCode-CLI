@@ -9,9 +9,10 @@ matches original commit `16ac966`. The branch
 The original later implementation remains on
 `fix/daemon-lifecycle-and-ci-guards`.
 
-Preserve the accepted full-screen transcript and history rendering. Do not
-reapply the later inline renderer or change the default Node CLI as part of a
-Rust feature backport. Shared host changes need specific review and Node
+Preserve the accepted transcript and history rendering. Do not wholesale
+reapply the later renderer or change the default Node CLI as part of a
+Rust feature backport. Selective inline recovery and startup changes are
+recorded in the later batch sections below. Shared host changes need specific review and Node
 regression checks. Automated checks supplement the user's terminal tests;
 they do not establish visual acceptance.
 
@@ -315,7 +316,8 @@ batch does not append every Rust event permanently into native scrollback.
 - `/tui default` returns to Node. Bare `/tui` inside Rust retains its accepted
   return-to-Node alias; this does not mean switching to Rust inline.
 - `BAHULAM_TUI=rust BAHULAM_TUI_MODE=inline` starts directly in inline. Recovery
-  startup remains full-screen unless inline is explicitly selected.
+  startup was full-screen at this batch; the startup/performance correction
+  below now defaults Rust launches to inline.
 - Inline requires a terminal cursor-position reply; unsupported terminals
   fall back to full-screen. Mouse capture remains disabled in inline for native
   text selection. Existing opt-in wheel navigation remains full-screen only.
@@ -468,3 +470,80 @@ keeping Bahulam's conversation renderer and command/agent handoff shared:
 
 This is the next design direction, not a completed dashboard backport. Keep the
 session/resume correction as a separately live-tested recovery batch.
+
+
+## Startup and performance correction (current review batch)
+
+`BAHULAM_TUI=rust TARANG_ENV=local node src/terminal/main.mjs` now starts
+Rust inline. `/tui fullscreen` explicitly selects the workspace; `/tui inline`
+returns to the compact Rust view. `/tui default` still returns to the original
+Node view. Without the Rust opt-in, startup remains Node. Explicit
+`BAHULAM_TUI_MODE=fullscreen` still overrides the Rust startup default. Inline's
+existing cursor-position fallback remains: terminals that cannot report their
+cursor position use full-screen.
+
+The startup ownership correction suppresses both the early Node dock mount and
+the later initial Node prompt paint when a Rust handoff is known. Detach or a
+missing Rust binary restores Node's dock and prompt. Plugin/MCP initialization
+still belongs to Node; no Rust command or plugin reimplementation was added.
+The existing raw-paste fix from `7cd8933` was adapted: strip one trailing Enter
+before classifying a chunk as multiline. Buffered `/help`, `/resume`, and ordinary
+single-line submissions must execute; actual multiline and bracketed pastes
+remain editable. Node's visual renderer is unchanged.
+
+Two measured sources of full-screen slowness were corrected:
+
+- The live loop rebuilt a frame every 50 ms without any changes. It now paints
+  after input, resize, focus restoration, or an incoming event. A separate render
+  revision covers control frames and snapshots that reuse/reset protocol seq.
+  Follow mode finds its last matching card without allocating the entire index
+  list. Polling for new core events retains the existing 50 ms maximum interval.
+- After scrolling, every key rebuilt Markdown and wrapped all preceding cards.
+  A bounded measurement cache now skips off-screen cards by their row heights.
+  It stores hashes and counts only (at most 65,536 entries), not duplicate text.
+  Card contents, details, width and expansion participate in its identity.
+  Visible rows retain the same renderer and formatting.
+
+`scripts/test-tui-idle.mjs` uses the real debug binary and host in a synthetic
+140×40 PTY with 1,000 messages of 31 lines each. Local observations:
+
+| Check | Before correction | After correction |
+| --- | --- | --- |
+| Idle terminal writes over two seconds | 962 bytes | 0 bytes |
+| First page back | 405 ms | 155 ms |
+| Subsequent page back with cached measurements | Not measured | 18 ms |
+| Command/popup response while scrolled back | 1,484 ms | 117 ms |
+
+These are local observations, not release performance guarantees or a real
+terminal matrix. First-time measurements, very large expanded cards, details
+rendering and replay-file watch still have additional optimization opportunities.
+The regression test also sends a control frame with a reused seq. Tests cover
+cache invalidation after streaming, resize, folding and replacement, plus its
+fixed size limit. Actual CLI checks now send Node commands in whole chunks;
+they no longer pace keystrokes to conceal the paste bug. The startup checks
+assert no Node prompt precedes Rust, and cover implicit inline startup.
+
+Validation completed: 26 Rust tests; input/paste, request-invariance and resume
+unit checks; actual CLI command/startup/Node-fallback paths; inline details,
+popup resize and mouse navigation PTYs. The reported session
+`0064bd09-e1bf-4b83-9fa3-ce53e328fbde` was copied into an isolated test home:
+repeated inline/full-screen/Node resumes preserved canonical messages and its
+1,818-token transcript estimate (picker: 2k). Original session files were not
+modified, and no model request was sent. Live terminal acceptance remains next.
+
+### Remaining backports against the PRD and experience spec
+
+The audit describes features from the original later branch. Recovery deliberately
+started earlier and has not wholesale imported `b37c586`/`7cd8933`. Missing
+clipboard/capability/open-target modules are deferred backports; their original
+source remains preserved on `fix/daemon-lifecycle-and-ci-guards`. The PRD's earlier
+implementation checkmarks do not establish completion on this recovery branch.
+
+After live acceptance of this batch, review capability detection and diagnostics
+as the next foundation, then clipboard/editor handoffs, file/OSC 8 opening and
+notifications as separate functional batches. Preserve Node command ownership,
+historical approval isolation, session identity and the shared transcript reader
+through each merge. Scoped approvals and remaining lifecycle controls still need
+review. Image protocols, bounded transcript retention/incremental Markdown, richer
+agent navigation and the real VS Code/iTerm2/Ghostty/Windows Terminal/tmux matrix
+remain release work. No parity or release-ready claim is made by this batch.

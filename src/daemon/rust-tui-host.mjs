@@ -16,7 +16,7 @@ export function startRustTuiHost({ onCommand, onExit, mode } = {}) {
   const child = spawn(binary, ['--stdio'], {
     stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
     env: { ...process.env,
-      BAHULAM_TUI_MODE: mode || process.env.BAHULAM_TUI_MODE || 'fullscreen',
+      BAHULAM_TUI_MODE: mode || process.env.BAHULAM_TUI_MODE || 'inline',
       BAHULAM_THEME: ['dark', 'light', 'high-contrast', 'ansi'].includes(requestedTheme) ? requestedTheme : term().appearance,
       BAHULAM_TUI_COLOR_LEVEL: term().colorLevel,
       BAHULAM_TUI_PALETTE: JSON.stringify({ dark: TOKENS, light: LIGHT_TOKENS }),

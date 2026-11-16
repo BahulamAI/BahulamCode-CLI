@@ -6,8 +6,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::{
+    cell::RefCell,
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    hash::{Hash, Hasher},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -1098,6 +1102,45 @@ fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     rows
 }
 
+// Cache measurements, not transcript text or styled rows. Off-screen cards can
+// then be skipped without Markdown/grapheme layout on every scroll or keystroke.
+// All card fields participate: streaming, details and replacement invalidate
+// measurements even when protocol sequence numbers or card indices are reused.
+const MAX_ROW_MEASUREMENTS: usize = 65_536;
+thread_local! {
+    static ROW_MEASUREMENTS: RefCell<HashMap<u64, usize>> = RefCell::new(HashMap::new());
+}
+
+fn card_row_count(
+    card: &crate::model::Card,
+    index: usize,
+    expanded: &HashSet<usize>,
+    p: Palette,
+    width: usize,
+) -> usize {
+    let mut key = DefaultHasher::new();
+    card.hash(&mut key);
+    width.hash(&mut key);
+    expanded.contains(&index).hash(&mut key);
+    let key = key.finish();
+    ROW_MEASUREMENTS.with(|cache| {
+        if let Some(count) = cache.borrow().get(&key) {
+            return *count;
+        }
+        let count = wrap_rows(
+            card_lines(card, index, expanded, None, p, width, usize::MAX),
+            width,
+        )
+        .len();
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= MAX_ROW_MEASUREMENTS {
+            cache.clear();
+        }
+        cache.insert(key, count);
+        count
+    })
+}
+
 pub struct HistoryGeometry {
     pub end: u16,
     pub page: u16,
@@ -1121,6 +1164,7 @@ pub fn history_geometry(
     let border = if inline { 0 } else { 2 };
     let width = layout.columns[0].width.saturating_sub(border) as usize;
     let page = layout.columns[0].height.saturating_sub(border).max(1);
+    let p = palette(theme);
     let mut total = 0usize;
     let mut cards = Vec::new();
     for (index, card) in model
@@ -1130,19 +1174,7 @@ pub fn history_geometry(
         .filter(|(_, card)| card.agent == agent_filter.unwrap_or("main"))
     {
         cards.push((index, total.min((u16::MAX - 1) as usize) as u16));
-        total += wrap_rows(
-            card_lines(
-                card,
-                index,
-                expanded,
-                None,
-                palette(theme),
-                width,
-                usize::MAX,
-            ),
-            width,
-        )
-        .len();
+        total += card_row_count(card, index, expanded, p, width);
     }
     HistoryGeometry {
         end: total
@@ -1189,14 +1221,17 @@ fn transcript_lines(
     } else {
         let mut skip = scroll as usize;
         for (index, card) in cards {
+            if skip > 0 {
+                let height = card_row_count(card, index, expanded, p, width);
+                if skip >= height {
+                    skip -= height;
+                    continue;
+                }
+            }
             let rows = wrap_rows(
                 card_lines(card, index, expanded, focused, p, width, usize::MAX),
                 width,
             );
-            if skip >= rows.len() {
-                skip -= rows.len();
-                continue;
-            }
             output.extend(rows.into_iter().skip(skip).take(budget - output.len()));
             skip = 0;
             if output.len() >= budget {
@@ -1746,4 +1781,64 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod row_measurement_tests {
+    use super::*;
+    use crate::model::Card;
+
+    #[test]
+    fn history_measurements_follow_streams_resize_fold_and_replacement() {
+        let mut card = Card {
+            agent: "main".into(),
+            title: "Assistant".into(),
+            primary: String::new(),
+            metadata: String::new(),
+            body: "short".into(),
+            status: "streaming".into(),
+            payload_ref: None,
+            detail: None,
+            detail_loading: false,
+        };
+        let mut expanded = HashSet::new();
+        let p = palette("dark");
+        let short = card_row_count(&card, 0, &expanded, p, 80);
+        card.body = (0..20)
+            .map(|i| format!("row {i}: a long saved reply with unicode 界界 and **formatting**\n"))
+            .collect();
+        let folded = card_row_count(&card, 0, &expanded, p, 80);
+        assert!(folded > short);
+        expanded.insert(0);
+        let full = card_row_count(&card, 0, &expanded, p, 80);
+        assert!(full > folded);
+        assert!(card_row_count(&card, 0, &expanded, p, 25) > full);
+        expanded.clear();
+        assert_eq!(card_row_count(&card, 0, &expanded, p, 80), folded);
+        // Resume can reuse both a card index and event seq for a different body.
+        card.body = "replacement".into();
+        assert_eq!(card_row_count(&card, 0, &expanded, p, 80), short);
+        card.payload_ref = Some("stored-result".into());
+        assert!(card_row_count(&card, 0, &expanded, p, 80) > short);
+    }
+
+    #[test]
+    fn measurement_cache_has_a_fixed_bound_and_retains_no_transcript_text() {
+        ROW_MEASUREMENTS.with(|cache| {
+            *cache.borrow_mut() = (0..MAX_ROW_MEASUREMENTS as u64).map(|i| (i, 1)).collect();
+        });
+        let card = Card {
+            agent: "main".into(),
+            title: "Prompt".into(),
+            primary: String::new(),
+            metadata: String::new(),
+            body: "bounded-cache-fixture".into(),
+            status: "done".into(),
+            payload_ref: None,
+            detail: None,
+            detail_loading: false,
+        };
+        assert!(card_row_count(&card, 0, &HashSet::new(), palette("dark"), 80) > 1);
+        ROW_MEASUREMENTS.with(|cache| assert!(cache.borrow().len() <= MAX_ROW_MEASUREMENTS));
+    }
 }

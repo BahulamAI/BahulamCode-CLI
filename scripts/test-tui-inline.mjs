@@ -15,7 +15,7 @@ fs.writeFileSync(driver, `
 import fs from 'node:fs';
 import { startRustTuiHost } from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs', import.meta.url).href)};
 const commands = [];
-const host = startRustTuiHost({ mode: 'inline', onCommand: command => {
+const host = startRustTuiHost({ onCommand: command => {
   commands.push(command);
   fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(commands));
 }});
@@ -93,7 +93,7 @@ finally:
 try {
   const result = spawnSync('python3', ['-c', python, resultFile, process.execPath, driver], {
     encoding: 'utf8', timeout: 18000, maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
+    env: { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_MODE: '', BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
   });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);

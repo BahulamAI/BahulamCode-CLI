@@ -23,7 +23,7 @@ const responses = [];
 let picker = 0;
 let host;
 const send = (type, data) => host.send({v:2,seq:1,ts:'',type,session_id:'popup-fixture',agent_id:'main',data});
-host = startRustTuiHost({onCommand: async command => {
+host = startRustTuiHost({mode:'fullscreen',onCommand: async command => {
   if (command.type === 'prompt' && command.data.text === '/resume') {
     picker++;
     await send('interaction_requested', {request_id:'resume-'+picker,title:'Resume a session',
