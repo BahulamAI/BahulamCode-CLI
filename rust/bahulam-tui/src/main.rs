@@ -592,7 +592,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Enter if focus_panel == 0 && !input.trim().is_empty() => {
                         let prompt = std::mem::take(&mut input);
                         cursor = 0;
-                        if let Some(next_theme) = prompt.trim().strip_prefix("/theme ") {
+                        if stdio && prompt.split_whitespace().eq(["/tui", "default"]) {
+                            // Release the terminal normally; Node retains the session
+                            // and resumes its existing prompt after this child exits.
+                            write_command(&command_writer, serde_json::json!({"type":"detach"}))?;
+                            break;
+                        } else if let Some(next_theme) = prompt.trim().strip_prefix("/theme ") {
                             if ["dark", "light", "high-contrast", "ansi"].contains(&next_theme) {
                                 theme = next_theme.to_owned();
                             }

@@ -140,3 +140,30 @@ The Rust build cache was cleared and the binary rebuilt for live testing.
 These checks do not establish full parity or a live model response in both
 views. Resume command-card formatting and historical interaction isolation
 remain separate review items; this batch does not change transcript formatting.
+
+## Recovery correction: return to the default view
+
+Use `/tui default` in the Rust full-screen composer to return to the existing
+Node view without ending the session. This is a renderer control, advertised
+in the Rust command suggestions and footer; it does not replace a shared
+business command. Rust sends `detach`, restores the terminal, and exits
+normally. Node resumes readline, restores bracketed-paste reporting, and
+remounts its original input dock and metadata timer when enabled. Session,
+history, agent client and command dispatch remain in the same Node process.
+
+Ctrl+C once still interrupts; twice within two seconds exits the entire CLI.
+Ctrl+Q remains unused in live Rust. This batch adds only the return path:
+reopening Rust from the Node prompt is not yet included. The later Rust
+`/tui inline` renderer is not the Node default view and remains deferred.
+
+The real CLI PTY test now includes returning to Node after resume, checking
+the same session ID with `/status`, reading the saved reply with `/history`,
+and exiting with `/exit`. It checks alternate-screen release, preserved saved
+messages and restored terminal settings. Node commands are typed with Enter
+as a separate input event so the test does not accidentally trigger its
+existing paste-detection behavior. Live acceptance of this handoff comes
+before the next selective backport.
+
+Validation: all 16 Rust tests pass after the clean rebuild. The existing two
+real CLI command/quit cases pass, and the added return-to-default case passes
+with the dock restored, the same session ID and saved reply, and a clean exit.

@@ -5661,6 +5661,7 @@ export async function startTerminalRepl() {
         return session.id;
       };
       let rustQuitRequested = false;
+      let rustDefaultRequested = false;
       _rustTuiHost = startRustTuiHost({
         onCommand: async command => {
           const data = command?.data || {};
@@ -5751,6 +5752,9 @@ export async function startTerminalRepl() {
               }
               break;
             }
+            case 'detach':
+              rustDefaultRequested = true;
+              break;
             case 'bye':
               // Rust is about to restore the terminal and exit normally. Do
               // not kill it between its quit request and terminal cleanup.
@@ -5780,6 +5784,18 @@ export async function startTerminalRepl() {
           // The child disabled raw mode on its way out; readline needs it back.
           try { if (process.stdin.isTTY) process.stdin.setRawMode(true); } catch {}
           rl.resume();
+          if (rustDefaultRequested) {
+            // Rust's restoration disables paste reporting; Node's existing
+            // paste handler needs it enabled again when taking the terminal.
+            process.stderr.write('\x1b[?2004h\n  Default terminal view · session preserved\n');
+            if (inputDockActive && mountInputDock({ preserveScrollback: true })) {
+              _dockTickTimer = setInterval(() => {
+                if (!isInputDockMounted() || approval._approvalPromptActive) return;
+                try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch {}
+              }, 1000);
+              _dockTickTimer.unref?.();
+            }
+          }
           showPrompt();
         },
       });
@@ -5789,11 +5805,13 @@ export async function startTerminalRepl() {
       rl.pause();
       const rustSessionId = _rustTuiEnsureSessionId();
       const rustCompletions = [...new Set([
+        '/tui default',
         ...commandCompletions('/'),
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
       ])].sort();
       _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
-        data: { commands: rustCompletions.map(name => ({ name, description: slashCompletionDescription(name) })) } });
+        data: { commands: rustCompletions.map(name => ({ name, description: name === '/tui default'
+          ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })) } });
       await sendRustTranscriptSnapshot(startupResumeMode);
     } catch (error) {
       _rustTuiEnsureSessionId = null;
