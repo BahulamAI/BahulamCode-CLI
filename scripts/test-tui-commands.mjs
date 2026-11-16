@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-for (const mode of ['fresh startup', 'startup resume', 'return to default']) {
+for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui']) {
   const startupResume = mode !== 'fresh startup';
   test(`real Rust CLI commands from ${mode}`, {
     skip: process.platform === 'win32', timeout: 35000,
@@ -35,7 +35,8 @@ sys.path.insert(0, ${JSON.stringify(path.join(root, 'scripts'))})
 from tui_test_screen import Screen
 terminal_screen = Screen(36,120)
 startup = sys.argv[1] != 'fresh startup'
-return_default = sys.argv[1] == 'return to default'
+return_default = sys.argv[1].startswith('return ')
+bare_tui = sys.argv[1] == 'return via /tui'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 original_mode = termios.tcgetattr(slave)
@@ -73,7 +74,8 @@ try:
   elif stage==8 and b'Chooseasavedtranscript.' in screen: keys=b'\x1b'
   elif stage==9 and b'Cancelled.' in screen: keys=b'/resume command-fixture\r'
   elif stage==10 and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/help\r'
-  elif stage==11 and b'Command/help' in screen: keys=b'/tui default\r' if return_default else b'/resume\r'
+  elif stage==11 and b'Command/help' in screen:
+   keys=(b'/tui\r' if bare_tui else b'/tui default\r') if return_default else b'/resume\r'
   elif return_default and stage==12 and b'Default terminal view' in recent:
    assert b'\x1b[?1049l' in stage_output, 'Renderer did not release alternate screen'
    assert b'Goodbye!' not in output, 'View switch quit the session'

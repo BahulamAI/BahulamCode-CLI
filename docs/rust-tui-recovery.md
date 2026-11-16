@@ -143,7 +143,7 @@ remain separate review items; this batch does not change transcript formatting.
 
 ## Recovery correction: return to the default view
 
-Use `/tui default` in the Rust full-screen composer to return to the existing
+Use `/tui default` (or its `/tui` alias) in the Rust full-screen composer to return to the existing
 Node view without ending the session. This is a renderer control, advertised
 in the Rust command suggestions and footer; it does not replace a shared
 business command. Rust sends `detach`, restores the terminal, and exits
@@ -167,3 +167,15 @@ before the next selective backport.
 Validation: all 16 Rust tests pass after the clean rebuild. The existing two
 real CLI command/quit cases pass, and the added return-to-default case passes
 with the dock restored, the same session ID and saved reply, and a clean exit.
+The bare `/tui` alias has the same PTY coverage; previously it reached Node's
+dispatcher and printed `Unknown: /tui`, while only `/tui default` was handled.
+
+## Pending review: palette parity
+
+The recovery renderer has dark/light/high-contrast/ANSI palettes, but its
+separately defined blue/gray values do not match Node's Bahulam brand tokens
+in `src/ui/palette.mjs`. Rust defaults to dark without background detection;
+`/theme light` or `BAHULAM_THEME=light` can explicitly select light. Its current
+NO_COLOR presence check also disables colors for an empty value, unlike Node.
+Review token alignment, theme selection and color capability handling as a
+separate batch; do not change the existing Node palette as a side effect.

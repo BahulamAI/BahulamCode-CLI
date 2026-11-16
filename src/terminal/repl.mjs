@@ -5805,12 +5805,13 @@ export async function startTerminalRepl() {
       rl.pause();
       const rustSessionId = _rustTuiEnsureSessionId();
       const rustCompletions = [...new Set([
+        '/tui',
         '/tui default',
         ...commandCompletions('/'),
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
       ])].sort();
       _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
-        data: { commands: rustCompletions.map(name => ({ name, description: name === '/tui default'
+        data: { commands: rustCompletions.map(name => ({ name, description: ['/tui', '/tui default'].includes(name)
           ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })) } });
       await sendRustTranscriptSnapshot(startupResumeMode);
     } catch (error) {

@@ -592,7 +592,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Enter if focus_panel == 0 && !input.trim().is_empty() => {
                         let prompt = std::mem::take(&mut input);
                         cursor = 0;
-                        if stdio && prompt.split_whitespace().eq(["/tui", "default"]) {
+                        if stdio
+                            && (prompt.trim() == "/tui"
+                                || prompt.split_whitespace().eq(["/tui", "default"]))
+                        {
                             // Release the terminal normally; Node retains the session
                             // and resumes its existing prompt after this child exits.
                             write_command(&command_writer, serde_json::json!({"type":"detach"}))?;
