@@ -7,6 +7,7 @@ use ratatui::{
     Frame,
 };
 use std::collections::HashSet;
+use std::sync::OnceLock;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -27,7 +28,21 @@ struct Palette {
 }
 
 fn palette(theme: &str) -> Palette {
-    if std::env::var_os("NO_COLOR").is_some() {
+    static HOST_TOKENS: OnceLock<serde_json::Value> = OnceLock::new();
+    let tokens = HOST_TOKENS.get_or_init(|| {
+        std::env::var("BAHULAM_TUI_PALETTE")
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    });
+    let level = std::env::var("BAHULAM_TUI_COLOR_LEVEL").unwrap_or_else(|_| "truecolor".into());
+    let disabled = std::env::var("NO_COLOR").is_ok_and(|value| !value.is_empty())
+        || std::env::var("FORCE_COLOR").is_ok_and(|value| matches!(value.trim(), "0" | "false"));
+    resolved_palette(theme, if disabled { "none" } else { &level }, tokens)
+}
+
+fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Palette {
+    if level == "none" {
         return Palette {
             accent: Color::Reset,
             text: Color::Reset,
@@ -43,7 +58,7 @@ fn palette(theme: &str) -> Palette {
             agent_colors: [Color::Reset; 5],
         };
     }
-    match theme {
+    let mut p = match theme {
         "light" => Palette {
             accent: Color::Rgb(49, 91, 154),
             text: Color::Rgb(32, 42, 56),
@@ -124,6 +139,185 @@ fn palette(theme: &str) -> Palette {
                 Color::Rgb(207, 141, 159),
             ],
         },
+    };
+    let level = if theme == "ansi" { "ansi16" } else { level };
+    // The live host supplies the canonical Node tokens at all three depths.
+    // Replay without a host retains the standalone palettes above.
+    if theme != "high-contrast" {
+        let values = &tokens[if theme == "light" { "light" } else { "dark" }];
+        for (color, name) in [
+            (&mut p.accent, "brand.primary"),
+            (&mut p.text, "text.primary"),
+            (&mut p.muted, "text.muted"),
+            (&mut p.info, "brand.data"),
+            (&mut p.success, "state.success"),
+            (&mut p.warning, "state.warn"),
+            (&mut p.danger, "state.danger"),
+            (&mut p.code, "syntax.keyword"),
+        ] {
+            if let Some(value) = token_color(&values[name], level) {
+                *color = value;
+            }
+        }
+        for (color, name) in p.agent_colors.iter_mut().zip([
+            "brand.primary",
+            "brand.accent",
+            "brand.data",
+            "syntax.literal",
+            "state.success",
+        ]) {
+            if let Some(value) = token_color(&values[name], level) {
+                *color = value;
+            }
+        }
+    }
+    for color in [
+        &mut p.accent,
+        &mut p.text,
+        &mut p.muted,
+        &mut p.border,
+        &mut p.selection,
+        &mut p.input_bg,
+        &mut p.info,
+        &mut p.success,
+        &mut p.warning,
+        &mut p.danger,
+        &mut p.code,
+    ]
+    .into_iter()
+    .chain(p.agent_colors.iter_mut())
+    {
+        *color = limit_color(*color, level);
+    }
+    if level == "ansi16" {
+        p.input_bg = Color::Reset;
+    }
+    p
+}
+
+fn token_color(token: &serde_json::Value, level: &str) -> Option<Color> {
+    Some(match level {
+        "ansi16" => match token["ansi16"].as_str()? {
+            "black" => Color::Black,
+            "red" => Color::Red,
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "blue" => Color::Blue,
+            "magenta" => Color::Magenta,
+            "cyan" => Color::Cyan,
+            "white" => Color::Gray,
+            "gray" => Color::DarkGray,
+            _ => return None,
+        },
+        "ansi256" => Color::Indexed(u8::try_from(token["ansi256"].as_u64()?).ok()?),
+        _ => Color::Rgb(
+            u8::try_from(token["rgb"][0].as_u64()?).ok()?,
+            u8::try_from(token["rgb"][1].as_u64()?).ok()?,
+            u8::try_from(token["rgb"][2].as_u64()?).ok()?,
+        ),
+    })
+}
+
+fn limit_color(color: Color, level: &str) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    if level == "ansi256" {
+        // Find the nearest fixed xterm color, including its grayscale ramp.
+        let index = (16u16..=255)
+            .min_by_key(|index| {
+                let (cr, cg, cb) = if *index >= 232 {
+                    let gray = 8 + (*index - 232) as i32 * 10;
+                    (gray, gray, gray)
+                } else {
+                    let cube = [0, 95, 135, 175, 215, 255];
+                    let n = (*index - 16) as usize;
+                    (cube[n / 36], cube[n / 6 % 6], cube[n % 6])
+                };
+                (r as i32 - cr).pow(2) + (g as i32 - cg).pow(2) + (b as i32 - cb).pow(2)
+            })
+            .unwrap_or(16);
+        return Color::Indexed(index as u8);
+    }
+    if level == "ansi16" {
+        return if r.max(g).max(b) < 90 {
+            Color::DarkGray
+        } else if r.abs_diff(g) < 35 && g.abs_diff(b) < 35 {
+            Color::Gray
+        } else if b >= r && b >= g {
+            Color::Blue
+        } else if g >= r {
+            Color::Green
+        } else {
+            Color::Red
+        };
+    }
+    color
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn host_tokens_select_theme_and_exact_color_depth() {
+        let tokens = serde_json::json!({
+            "dark": {"brand.primary": {"rgb": [190,198,255], "ansi256":147, "ansi16":"blue"}},
+            "light": {"brand.primary": {"rgb": [48,59,160], "ansi256":61, "ansi16":"blue"}}
+        });
+        assert_eq!(
+            resolved_palette("dark", "truecolor", &tokens).accent,
+            Color::Rgb(190, 198, 255)
+        );
+        assert_eq!(
+            resolved_palette("light", "truecolor", &tokens).accent,
+            Color::Rgb(48, 59, 160)
+        );
+        assert_eq!(
+            resolved_palette("light", "ansi256", &tokens).accent,
+            Color::Indexed(61)
+        );
+        assert_eq!(
+            resolved_palette("dark", "ansi16", &tokens).accent,
+            Color::Blue
+        );
+        assert_eq!(
+            resolved_palette("ansi", "truecolor", &tokens).accent,
+            Color::Blue
+        );
+    }
+
+    #[test]
+    fn limited_terminals_never_receive_rgb_and_no_color_clears_all_styles() {
+        for theme in ["dark", "light", "ansi", "high-contrast"] {
+            for level in ["none", "ansi16", "ansi256"] {
+                let p = resolved_palette(theme, level, &serde_json::Value::Null);
+                for color in [
+                    p.accent,
+                    p.text,
+                    p.muted,
+                    p.border,
+                    p.selection,
+                    p.input_bg,
+                    p.info,
+                    p.success,
+                    p.warning,
+                    p.danger,
+                    p.code,
+                ]
+                .into_iter()
+                .chain(p.agent_colors)
+                {
+                    assert!(!matches!(color, Color::Rgb(..)));
+                    if level == "none" {
+                        assert_eq!(color, Color::Reset);
+                    }
+                    if level == "ansi16" {
+                        assert!(!matches!(color, Color::Indexed(_)));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -617,7 +811,8 @@ pub fn draw_with_input(
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        "Enter send · Ctrl+J new line · Tab transcript · /tui default · Ctrl+C twice quit".to_owned()
+        "Enter send · Ctrl+J new line · Tab transcript · /tui default · Ctrl+C twice quit"
+            .to_owned()
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };

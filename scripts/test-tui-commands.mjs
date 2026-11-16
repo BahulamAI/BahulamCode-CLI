@@ -6,9 +6,27 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { rustTranscriptItems } from '../src/daemon/rust-tui-snapshot.mjs';
+
+test('reopening keeps resumed replay and messages added in either view without duplicating them', () => {
+  const history = Array.from({ length: 80 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `saved ${i}` }));
+  const state = { history, rustSnapshotItems: history.map(message => ({ kind: 'message', ...message })), rustSnapshotHistoryLength: 80 };
+  const resumed = structuredClone(state.rustSnapshotItems);
+  state.history.push({ role: 'user', content: 'new turn in Node' }, { role: 'assistant', content: 'new reply in Node' });
+  for (let reopen = 0; reopen < 3; reopen++) {
+    const items = rustTranscriptItems(state);
+    assert.equal(items.length, 82);
+    assert.deepEqual(items.slice(0, 80), resumed);
+    assert.equal(items.at(-1).content, 'new reply in Node');
+  }
+  state.history = [{ role: 'assistant', content: 'reply after clear' }];
+  state.rustSnapshotItems = [];
+  state.rustSnapshotHistoryLength = 0;
+  assert.deepEqual(rustTranscriptItems(state), [{ kind: 'message', role: 'assistant', content: 'reply after clear' }]);
+});
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui']) {
+for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node']) {
   const startupResume = mode !== 'fresh startup';
   test(`real Rust CLI commands from ${mode}`, {
     skip: process.platform === 'win32', timeout: 35000,
@@ -37,12 +55,13 @@ terminal_screen = Screen(36,120)
 startup = sys.argv[1] != 'fresh startup'
 return_default = sys.argv[1].startswith('return ')
 bare_tui = sys.argv[1] == 'return via /tui'
+roundtrip = sys.argv[1] == 'roundtrip from Node'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 original_mode = termios.tcgetattr(slave)
 child = subprocess.Popen(sys.argv[2:],stdin=slave,stdout=slave,stderr=slave,close_fds=True,start_new_session=True)
 output, stage_output = bytearray(), bytearray()
-stage, deadline = (3 if startup else 0), time.time()+24
+stage, deadline = (20 if roundtrip else (3 if startup else 0)), time.time()+24
 stage_at = time.time()
 pending_keys, next_key_at = bytearray(), 0
 try:
@@ -86,11 +105,21 @@ try:
    keys=b'/exit\r'
   elif not return_default and stage==12 and b'Chooseasavedtranscript.' in screen: keys=b'\x11'
   elif not return_default and stage==13 and time.time()-stage_at > 0.2: keys=b'\x03\x03'
+  elif stage==20 and 'You›' in terminal_screen.text().replace(' ',''): keys=b'/tui full screen\r'
+  elif stage==21 and b'BAHULAM' in screen and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/tui default\r'
+  elif stage==22 and b'Default terminal view' in recent: keys=b'/history\r'
+  elif stage==23 and b'SAVED_REPLY_FROM_DISK' in recent: keys=b'/tui fullscreen\r'
+  elif stage==24 and b'BAHULAM' in screen and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/new\r'
+  elif stage==25 and b'mode:newsession' in screen: keys=b'/tui default\r'
+  elif stage==26 and b'Default terminal view' in recent: keys=b'/tui fullscreen\r'
+  elif stage==27 and b'BAHULAM' in screen and b'AskBahulam' in screen:
+   assert b'SAVED_REPLY_FROM_DISK' not in screen, 'Reopening resurrected cleared history'
+   keys=b'\x03\x03'
   if keys is not None:
    stage+=1
    stage_at=time.time()
    stage_output.clear()
-   if return_default and stage>=13:
+   if (return_default and stage>=13) or (roundtrip and stage in [21,23,24,27]):
     # Node treats a text+newline burst as pasted text awaiting submission.
     # Keep draining dock redraws while typing, so PTY output backpressure
     # cannot block Node and coalesce these events into a paste burst.
@@ -101,7 +130,7 @@ try:
    os.write(master,bytes(pending_keys[:1]))
    del pending_keys[:1]
    next_key_at = time.time()+0.04
- if stage!=(15 if return_default else 14) or child.poll()!=0:
+ if stage!=(28 if roundtrip else (15 if return_default else 14)) or child.poll()!=0:
   clean=re.sub(rb'\x1b\[[0-9;?]*[a-zA-Z]',b'',bytes(output))
   raise Exception('Command flow stalled at stage '+str(stage)+'\n'+terminal_screen.text()+'\n'+clean[-2000:].decode('utf8','replace'))
  while select.select([master],[],[],0.02)[0]: output.extend(os.read(master,65536))
@@ -113,6 +142,10 @@ try:
  original_mode[3] &= ~pending_input
  assert restored_mode==original_mode, 'Quit did not restore terminal modes: '+str(restored_mode)+' != '+str(original_mode)
  assert b'Goodbye!' in output, 'Quit did not use the existing CLI exit handler'
+ expected_brand = b'38;2;48;59;160' if bare_tui else b'38;2;190;198;255'
+ rust_frame = output.split(b'\x1b[?1049h',1)[1].split(b'\x1b[?1049l',1)[0]
+ assert expected_brand in rust_frame, 'Host did not pass the canonical brand palette/theme to Rust'
+ if roundtrip: assert output.count(b'\x1b[?1049h')==3, 'Expected exactly three full-screen launches'
 finally:
  if child.poll() is None:
   os.killpg(child.pid,signal.SIGTERM)
@@ -128,7 +161,8 @@ finally:
         path.join(root, 'src/terminal/main.mjs'), ...(startupResume ? ['--resume', 'command-fixture'] : [])], {
         cwd: project, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, BAHULAM_HOME: home, B0_TOKEN: '', KEPLER_TOKEN: '',
-          BAHULAM_TUI: 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
+          BAHULAM_TUI: mode === 'roundtrip from Node' ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
+          NO_COLOR: '', FORCE_COLOR: '3', BAHULAM_THEME: 'auto', COLORFGBG: mode === 'return via /tui' ? '0;15' : '15;0',
           BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui'),
           BAHULAM_AUTO_ATTACH: '0', BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_AUTO_REGISTER: 'true',
           BAHULAM_MODEL_CATALOG_OFFLINE: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true', BAHULAM_DISABLE_TELEMETRY: '1',

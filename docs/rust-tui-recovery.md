@@ -152,8 +152,8 @@ remounts its original input dock and metadata timer when enabled. Session,
 history, agent client and command dispatch remain in the same Node process.
 
 Ctrl+C once still interrupts; twice within two seconds exits the entire CLI.
-Ctrl+Q remains unused in live Rust. This batch adds only the return path:
-reopening Rust from the Node prompt is not yet included. The later Rust
+Ctrl+Q remains unused in live Rust. The initial batch added only the return
+path; the next reviewed batch below adds reopening. The later Rust
 `/tui inline` renderer is not the Node default view and remains deferred.
 
 The real CLI PTY test now includes returning to Node after resume, checking
@@ -170,12 +170,55 @@ with the dock restored, the same session ID and saved reply, and a clean exit.
 The bare `/tui` alias has the same PTY coverage; previously it reached Node's
 dispatcher and printed `Unknown: /tui`, while only `/tui default` was handled.
 
-## Pending review: palette parity
+## Reviewed batch: reopen full-screen and share the brand palette
 
-The recovery renderer has dark/light/high-contrast/ANSI palettes, but its
-separately defined blue/gray values do not match Node's Bahulam brand tokens
-in `src/ui/palette.mjs`. Rust defaults to dark without background detection;
-`/theme light` or `BAHULAM_THEME=light` can explicitly select light. Its current
-NO_COLOR presence check also disables colors for an empty value, unlike Node.
-Review token alignment, theme selection and color capability handling as a
-separate batch; do not change the existing Node palette as a side effect.
+From the default Node prompt, `/tui fullscreen` or `/tui full screen` opens
+Rust in the same process-owned session. `/tui default` (or bare `/tui` inside
+Rust) returns to Node. The launch path is reusable, with one renderer owning
+the terminal at a time. Node's existing command catalog gains `/tui`; no
+existing business command handler or default appearance changes.
+
+Resume replay items now track the number of messages represented by that
+replay. Reopening appends subsequent conversation messages to the saved
+prefix without duplicating it, and `/new` and `/clear` reset that bookkeeping.
+New live tool-detail cards are not reconstructed by this message append;
+complete event replay across view switches remains a separate review item.
+
+The later renderer still had independent blue/gray values. Instead of copying
+them, the Node host passes the canonical dark/light tokens from
+`src/ui/palette.mjs` and its existing resolved color depth to Rust. This keeps
+brand, text, status and agent colors aligned without modifying Node's palette.
+Rust uses exact token values at truecolor/256/16 depths and downgrades its
+remaining panel colors to the selected depth. Standalone offline replay retains
+its fallback palettes; high-contrast retains its dedicated palette.
+
+Launch theme follows Node's existing `BAHULAM_THEME` / `COLORFGBG` selection.
+`/theme dark`, `/theme light`, `/theme high-contrast` and `/theme ansi` remain
+available in Rust; these local changes apply to that renderer instance.
+Empty `NO_COLOR` no longer disables Rust colors. Nonempty `NO_COLOR`, disabled
+color capability and `FORCE_COLOR=0`/`false` suppress colors. OSC background
+probing and persistent interactive theme selection are not added here.
+
+Validation covers 18 Rust tests, protocol/request invariance, popup/mouse PTY
+tests, and command-catalog checks. The real CLI tests include repeated
+Node-to-Rust-to-Node switches, both full-screen spellings, restored history,
+new-session clearing and quitting. The palette assertion inspects Rust's own
+alternate-screen bytes for canonical dark/light RGB values. Snapshot regression
+coverage includes 80 resumed messages plus new turns and repeated reopening.
+All six command/snapshot cases and the unchanged default Node startup-resume
+regression pass. The Rust cache was cleared and the client rebuilt for live
+testing before this batch was committed.
+
+## Next selective backports, after live acceptance
+
+1. Resume transcript formatting and historical-interaction isolation from
+   `3e16f9e`: old approval events must not become live approval prompts.
+2. Scoped approvals and model-picker behavior from `5c04734` through the shared
+   Node handlers; retain existing policy checks.
+3. Job status, tool timing and check results from `377dd2d`.
+4. Split clipboard, editor/history, background promotion and recovery work from
+   `b37c586` / `7cd8933` into individual batches. Their inline renderer rewrites
+   remain excluded from this recovery branch.
+
+This queue is not a claim that all later commits or complete Rust parity have
+been merged. Each batch needs its own review and live acceptance.

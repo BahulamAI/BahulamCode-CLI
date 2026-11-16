@@ -30,6 +30,7 @@ import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
+import { rustTranscriptItems } from '../daemon/rust-tui-snapshot.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
@@ -2146,11 +2147,7 @@ async function sendRustTranscriptSnapshot(mode = 'current') {
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   const modeLabel = mode === 'current' ? mode : resumeModeLabel(mode);
-  const items = session.rustSnapshotItems || (session.history || []).map(item => ({
-    kind: 'message',
-    role: item?.role || 'assistant',
-    content: item?.content ?? item?.text ?? '',
-  }));
+  const items = rustTranscriptItems(session);
   const chunks = [];
   for (let offset = 0; offset < items.length; offset += 32) chunks.push(items.slice(offset, offset + 32));
   if (!chunks.length) chunks.push([]);
@@ -3613,6 +3610,12 @@ async function handleCommand(input, ctx) {
   }
 
   switch (cmd) {
+    case '/tui': {
+      const view = rest.trim().toLowerCase().replace(/\s+/g, '');
+      if (['fullscreen', 'full'].includes(view)) await ctx.openRustView?.();
+      else process.stderr.write('  /tui fullscreen opens Rust · /tui default returns to Node\n');
+      return;
+    }
     case '/help': {
       renderHelp(rest);
       return;
@@ -4165,6 +4168,7 @@ async function handleCommand(input, ctx) {
     case '/clear':
       session.history.length = 0;
       session.rustSnapshotItems = [];
+      session.rustSnapshotHistoryLength = 0;
       session.agentHistory.length = 0;
       session.toolCalls = 0;
       session.subAgentToolCalls = 0;
@@ -4733,6 +4737,7 @@ export async function startTerminalRepl() {
       id: null,
       historyMode: 'current',
       rustSnapshotItems: [],
+      rustSnapshotHistoryLength: 0,
       startTime: Date.now(),
       inputTokens: 0,
       outputTokens: 0,
@@ -4937,6 +4942,7 @@ export async function startTerminalRepl() {
     onProgress('preparing replay', 92);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
+    session.rustSnapshotHistoryLength = displayHistory.length;
     session.rustSnapshotItems = (() => {
       if (historyMode === 'summary') return richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
       const replayStartOrder = replayStartOrderForMode(displayHistory, historyMode);
@@ -5619,7 +5625,22 @@ export async function startTerminalRepl() {
     showPrompt();
   });
   _submitExternalPrompt = instruction => queueOrRunLine(instruction);
-  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) {
+  function restoreNodeDock() {
+    if (inputDockActive && mountInputDock({ preserveScrollback: true })) {
+      if (_dockTickTimer) clearInterval(_dockTickTimer);
+      _dockTickTimer = setInterval(() => {
+        if (!isInputDockMounted() || approval._approvalPromptActive) return;
+        try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch {}
+      }, 1000);
+      _dockTickTimer.unref?.();
+    }
+  }
+  async function openRustView(snapshotMode = session.historyMode || 'current') {
+    if (_rustTuiActive) return;
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write('  Full-screen view requires an interactive terminal.\n');
+      return;
+    }
     let restoreStderr = null;
     let restoreStdout = null;
     try {
@@ -5784,18 +5805,11 @@ export async function startTerminalRepl() {
           // The child disabled raw mode on its way out; readline needs it back.
           try { if (process.stdin.isTTY) process.stdin.setRawMode(true); } catch {}
           rl.resume();
-          if (rustDefaultRequested) {
-            // Rust's restoration disables paste reporting; Node's existing
-            // paste handler needs it enabled again when taking the terminal.
-            process.stderr.write('\x1b[?2004h\n  Default terminal view · session preserved\n');
-            if (inputDockActive && mountInputDock({ preserveScrollback: true })) {
-              _dockTickTimer = setInterval(() => {
-                if (!isInputDockMounted() || approval._approvalPromptActive) return;
-                try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch {}
-              }, 1000);
-              _dockTickTimer.unref?.();
-            }
-          }
+          // Rust's restoration disables paste reporting; Node's existing
+          // paste handler needs it enabled again when taking the terminal.
+          process.stderr.write('\x1b[?2004h');
+          if (rustDefaultRequested) process.stderr.write('\n  Default terminal view · session preserved\n');
+          restoreNodeDock();
           showPrompt();
         },
       });
@@ -5807,20 +5821,25 @@ export async function startTerminalRepl() {
       const rustCompletions = [...new Set([
         '/tui',
         '/tui default',
+        '/tui fullscreen',
+        '/tui full screen',
         ...commandCompletions('/'),
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
       ])].sort();
       _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
         data: { commands: rustCompletions.map(name => ({ name, description: ['/tui', '/tui default'].includes(name)
           ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })) } });
-      await sendRustTranscriptSnapshot(startupResumeMode);
+      await sendRustTranscriptSnapshot(snapshotMode);
     } catch (error) {
       _rustTuiEnsureSessionId = null;
       if (restoreStderr) process.stderr.write = restoreStderr;
       if (restoreStdout) process.stdout.write = restoreStdout;
       process.stderr.write(`  ${c.yellow(`Rust terminal unavailable: ${error.message}; using Node terminal.`)}\n`);
+      restoreNodeDock();
     }
   }
+  ctx.openRustView = openRustView;
+  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) await openRustView(startupResumeMode);
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 

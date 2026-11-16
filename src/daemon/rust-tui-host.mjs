@@ -3,6 +3,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { registerBroadcaster } from './event-tap.mjs';
+import { TOKENS, LIGHT_TOKENS } from '../ui/palette.mjs';
+import { term } from '../ui/term.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -10,7 +12,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export function startRustTuiHost({ onCommand, onExit } = {}) {
   const binary = process.env.BAHULAM_TUI_BINARY || path.resolve(here, '../../rust/target/debug/bahulam-tui');
   if (!fs.existsSync(binary)) throw new Error(`Rust terminal client is not built: ${binary}. Run npm run tui:build.`);
-  const child = spawn(binary, ['--stdio'], { stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'] });
+  const requestedTheme = (process.env.BAHULAM_THEME || '').toLowerCase();
+  const child = spawn(binary, ['--stdio'], {
+    stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
+    env: { ...process.env,
+      BAHULAM_THEME: ['dark', 'light', 'high-contrast', 'ansi'].includes(requestedTheme) ? requestedTheme : term().appearance,
+      BAHULAM_TUI_COLOR_LEVEL: term().colorLevel,
+      BAHULAM_TUI_PALETTE: JSON.stringify({ dark: TOKENS, light: LIGHT_TOKENS }),
+    },
+  });
   const events = child.stdio[3];
   const commands = child.stdio[4];
   let buffer = '';
