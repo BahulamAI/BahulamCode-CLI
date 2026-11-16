@@ -1,5 +1,58 @@
 # Rust terminal recovery review
 
+## Backport completion checkpoint — 2026-11-16
+
+The accepted runtime checkpoint is `ef58ed2` on `recovery/rust-tui-staged`.
+The user has explicitly held publication: the existing TypeScript release stays
+live; no new version is published until Rust is ready. Finish selective backports
+from `16ac966..3e16f9e` first, then close the remaining PRD/spec work. Preserve
+Node's visual renderer and the accepted recovery transcript/composer; do not
+wholesale replace them with the original combined implementation.
+
+The seven original commits are not seven untouched patches still to apply:
+
+| Source | Recovered already | Still to adapt / disposition |
+| --- | --- | --- |
+| `8112157` | Golden fixtures and live host/cache-invariance checks | Lifecycle/disconnect acceptance still needed. |
+| `5c04734` | Shared approvals, model command handoff, mouse and diagnostics | Review advanced lifecycle controls; keep the stronger shared approval bridge. |
+| `7e81afb` | Recovery `/new` and `/clear` use the shared core correctly | Original Node redraw changes intentionally excluded; not a pending Rust feature. |
+| `377dd2d` | Check/test events and completion metadata | Job subscription/state, running timers, background controls. |
+| `b37c586` | Shared palette, event parity, clipboard text, history/search/editor, viewport work | Host backpressure/crash recovery, native Windows transport, OS/file/link/notification integrations, settings, copy picker, setup/completions, grouping/status/streaming refinements. |
+| `7cd8933` | Startup ownership, paste classification, session identity, resume picker, input geometry | Agent questions with free text/cancel, remaining composer completion/paste/attachment/mouse integrations. |
+| `3e16f9e` | Historical approval isolation and inline duplicate-exit prevention, with newer ordering/status fixes | Preserve these recovery implementations; audit lifecycle and retained payloads across detach. |
+
+Order of work: question ownership → host/process recovery and Windows transport
+→ jobs/timing → remaining composer integrations → OS integrations and remaining
+render/status slices. Commit and validate each adapted slice. Fix the strict
+Clippy gate while integrating; the current gate fails (including test-module
+ordering, needless borrows, argument-count and style lints). Local behavioral
+tests passing does not mean CI is green.
+
+Release audit evidence at this checkpoint:
+
+- `npm pack --dry-run --ignore-scripts --json`: 253 files, no Rust source or binary;
+  only the Node host is included. The host resolves `rust/target/debug/bahulam-tui`
+  unless `BAHULAM_TUI_BINARY` is supplied. The existing publish script does not
+  build or distribute Rust. Cross-platform binary packages/resolution, version
+  matching, signing and clean-install checks remain PRD distribution work.
+- Native Windows `--stdio` explicitly errors in recovery; Windows replay CI is
+  not proof that the live terminal works there. Original Windows pipe code is
+  available to adapt from `b37c586` and later corrections.
+- `ask_user` still invokes the Node stdin overlay; its attached-renderer route
+  from `7cd8933` is a required ownership backport.
+- Last live-subscriber detach clears transient payloads; snapshot reopening adds
+  messages, not all live tool/detail state. This is not complete detach parity.
+- The CI workflow currently runs Rust replay/roundtrip, not the newer Unix PTY
+  input, resume, focus, scrolling and approval suites. Add appropriate regression
+  gates as backports land; real terminal/OS acceptance remains separate.
+
+The external specs' November 15 implementation notes describe the original
+branch and cannot be read as a completion report for recovery. Active probes,
+rich image/diagram/document display, long-session retention/memory/performance,
+remaining support/agent-summary UX, packaging and the real emulator matrix are
+still open PRD work after backports. No release, version bump or preview publish
+is authorized by this audit.
+
 ## Current remaining-work queue
 
 This summary supersedes the historical pending tables below. Continue one
