@@ -9,4 +9,5 @@
 {"type": "background", "data": {"tool_id": "example"}}
 {"type": "open_item", "data": {"item_id": "example", "target": "example"}}
 {"type": "run_slash", "data": {"name": "example", "args": []}}
+{"type": "interaction_response", "data": {"request_id": "interaction-example", "value": "example", "cancelled": false}}
 {"type": "bye", "data": {}}

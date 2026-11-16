@@ -56,6 +56,195 @@ fn v2_reconstructs_messages_tools_agents_plan_and_usage() {
 }
 
 #[test]
+fn resumed_history_keeps_every_message_across_chunks_and_scroll_positions() {
+    let mut model = Model::default();
+    let messages: Vec<_> = (0..80)
+        .map(|index| {
+            json!({"kind":"history", "role":if index % 2 == 0 { "user" } else { "assistant" },
+                "content":format!("SAVED_MESSAGE_{index:03}")})
+        })
+        .collect();
+    for (index, chunk) in messages.chunks(32).enumerate() {
+        model
+            .apply(&event(
+                1,
+                "transcript_snapshot",
+                "main",
+                json!({
+                    "replace":index == 0, "mode":"full", "cwd":"/saved", "model":"fixture",
+                    "items":chunk
+                }),
+            ))
+            .unwrap();
+    }
+    let saved: Vec<_> = model
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| card.title == "Prompt" || card.title == "Assistant")
+        .collect();
+    assert_eq!(
+        saved.len(),
+        80,
+        "resume must retain more than a recent preview"
+    );
+    let before = model.transcript();
+    // Exercise the same terminal through resize and every saved card position.
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    for (width, height) in [(120, 36), (80, 24), (40, 24), (120, 36)] {
+        terminal.backend_mut().resize(width, height);
+        terminal.autoresize().unwrap();
+        for (index, (card_index, card)) in saved.iter().enumerate() {
+            let expected = format!("SAVED_MESSAGE_{index:03}");
+            assert_eq!(card.body, expected);
+            assert_eq!(card.detail.as_deref(), Some(expected.as_str()));
+            terminal
+                .draw(|frame| draw(frame, &model, *card_index as u16))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                screen.contains(&expected),
+                "missing {expected} at {width}x{height}"
+            );
+        }
+    }
+    assert_eq!(
+        model.transcript(),
+        before,
+        "redraw must not mutate saved history"
+    );
+}
+
+#[test]
+fn resume_replacement_preserves_full_reply_and_accepts_next_live_turn() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            90,
+            "message_end",
+            "main",
+            json!({"text":"STALE_SESSION"}),
+        ))
+        .unwrap();
+    let full_reply = format!("{}\nSAVED_REPLY_END", "saved reply line\n".repeat(200));
+    model
+        .apply(&event(
+            1,
+            "transcript_snapshot",
+            "main",
+            json!({
+                "replace":true, "mode":"full", "items":[
+                    {"kind":"history", "role":"user", "content":"Saved question"},
+                    {"kind":"history", "role":"assistant", "content":full_reply}
+                ]
+            }),
+        ))
+        .unwrap();
+    assert!(!model.transcript().join("\n").contains("STALE_SESSION"));
+    let saved_reply = model
+        .cards
+        .iter()
+        .find(|card| card.title == "Assistant")
+        .unwrap();
+    assert_eq!(saved_reply.body, full_reply);
+    assert_eq!(saved_reply.detail.as_deref(), Some(full_reply.as_str()));
+    model
+        .apply(&event(
+            1,
+            "text_delta",
+            "main",
+            json!({"chunk":"LIVE_REPLY"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "message_end",
+            "main",
+            json!({"text":"LIVE_REPLY"}),
+        ))
+        .unwrap();
+    let replies: Vec<_> = model
+        .cards
+        .iter()
+        .filter(|card| card.title == "Assistant")
+        .map(|card| card.body.as_str())
+        .collect();
+    assert_eq!(replies, vec![full_reply.as_str(), "LIVE_REPLY"]);
+}
+
+#[test]
+fn resume_popup_keeps_selected_session_visible_and_restores_history_on_close() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "message_end",
+            "main",
+            json!({"text":"ACCEPTED_REPLY"}),
+        ))
+        .unwrap();
+    let history = model.transcript();
+    let options: Vec<_> = (0..30).map(|index| json!({
+        "label":format!("S{index:02} · project · {}", "a very long saved instruction 界 ".repeat(12)),
+        "value":format!("saved-{index}")
+    })).collect();
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    for (width, height) in [(120, 36), (80, 24), (40, 16), (120, 36)] {
+        terminal.backend_mut().resize(width, height);
+        terminal.autoresize().unwrap();
+        model.interaction = None;
+        terminal.draw(|frame| draw(frame, &model, 0)).unwrap();
+        let before_popup = terminal.backend().buffer().clone();
+        model
+            .apply(&event(
+                1,
+                "interaction_requested",
+                "main",
+                json!({
+                    "request_id":"resume-picker", "title":"Resume a session",
+                    "message":"Choose a saved transcript.", "options":options
+                }),
+            ))
+            .unwrap();
+        for selected in [0, 15, 29] {
+            model.interaction.as_mut().unwrap().selected = selected;
+            terminal.draw(|frame| draw(frame, &model, 0)).unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(screen.contains("Resume a session"));
+            assert!(
+                screen.contains(&format!("› S{selected:02}")),
+                "selected session {selected} hidden at {width}x{height}"
+            );
+            assert!(
+                screen.contains("Esc cancel"),
+                "popup controls hidden at {width}x{height}"
+            );
+        }
+        model.interaction = None;
+        terminal.draw(|frame| draw(frame, &model, 0)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer(),
+            &before_popup,
+            "closing the popup must redraw the accepted transcript"
+        );
+        assert_eq!(model.transcript(), history);
+    }
+}
+
+#[test]
 fn legacy_logs_and_future_events() {
     let mut model = replay(&fixture("replay-v1.jsonl")).unwrap();
     assert_eq!(model.input_tokens, 12);

@@ -542,7 +542,12 @@ pub fn draw_with_input(
             ),
         rows[3],
     );
-    if interactive && focus_panel == 0 && detail_card.is_none() && model.approval.is_none() {
+    if interactive
+        && focus_panel == 0
+        && detail_card.is_none()
+        && model.approval.is_none()
+        && model.interaction.is_none()
+    {
         let row_offset = cursor_row.saturating_sub(prompt_scroll) as u16;
         let col_offset = cursor_column % input_width;
         frame.set_cursor_position(Position::new(
@@ -606,7 +611,11 @@ pub fn draw_with_input(
             )));
         }
         lines.push(Line::from(""));
-        let visible = 12usize.min(interaction.options.len());
+        // Reserve borders, title/message, spacing, continuation markers and
+        // controls before choosing the session window. Labels occupy one row.
+        let visible = (height.saturating_sub(8) as usize)
+            .max(1)
+            .min(interaction.options.len());
         let start = interaction
             .selected
             .saturating_sub(visible.saturating_sub(1))
@@ -632,7 +641,10 @@ pub fn draw_with_input(
                         } else {
                             " "
                         },
-                        safe_text(&option.label)
+                        middle_ellipsis(
+                            &safe_text(&option.label),
+                            width.saturating_sub(4) as usize
+                        )
                     ),
                     if index == interaction.selected {
                         Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
@@ -649,18 +661,20 @@ pub fn draw_with_input(
             )));
         }
         lines.push(Line::from(Span::styled(
-            "↑↓ select · Enter confirm · Esc cancel",
+            if width < 42 {
+                "↑↓ select · Enter pick · Esc cancel"
+            } else {
+                "↑↓ select · Enter confirm · Esc cancel"
+            },
             Style::default().fg(p.muted),
         )));
         frame.render_widget(
-            Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(p.accent))
-                        .title(" Choose "),
-                )
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(p.accent))
+                    .title(" Choose "),
+            ),
             popup,
         );
     }
