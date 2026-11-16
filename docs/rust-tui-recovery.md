@@ -790,3 +790,63 @@ full stored-result copying, late-paste cancellation, oversize reads and timeout.
 Existing command, resume, approval, scrolling, resize, details, capability and
 request/cache-invariance checks remain part of this batch's validation. Native
 OS helpers, GUI editors and remote clipboard behavior still need live acceptance.
+
+
+## Composer geometry, in-conversation details and message ordering
+
+This cleanup supersedes the earlier dedicated-details default. Both Rust views
+now expand tool/command/status results in the conversation on **Show details**
+click or history-focused Enter. **Show less**, Enter again, or Esc collapses the
+selected result. The action and Esc hint appear after its full content; the
+footer also explains collapse while expanded. Large stored results use the
+existing show_details request and remain scrollable. Alt+Enter retains the
+separate detail view as an optional inspection route. Assistant/user messages
+remain fully displayed and do not become expandable tool cards.
+
+Structured tool JSON is displayed as labeled fields/lists with readable
+multiline strings. This presentation does not rewrite stored payloads or the
+raw text copied by Ctrl+Y. A distinct full result remains expandable even when
+its compact JSON fits on a single line. Input has a lower border; a single
+grapheme/cell layout now drives both painting and cursor position. Spaces,
+indentation, tabs, Unicode and physical wrapping survive resizing without the
+old mismatch between word-wrapped text and fixed-column cursor arithmetic.
+
+An ordering regression came from keeping one streaming card per agent/turn:
+text after tool calls, including the final answer, was appended to or replaced
+that earlier card. Rust now ends that segment at the agent's next new tool
+card and starts subsequent text after the tool activity. A cumulative final
+message contributes only its unseen suffix, preserving commentary without
+repeating it. This applies to live events and event replay, including stored
+final payloads hydrated after turn completion. Tool completion updates its
+original card; concurrent agents retain separate streams. No Node production
+code, JSONL contents, agent requests, command behavior or billing is changed.
+
+Validation: 43 Rust tests, real PTY expansion/collapse in both layouts, full
+200-line results, draft preservation and resize/view handoff; clipboard/editor
+and approval regressions; mouse navigation; ten real CLI command/resume/handoff
+checks; and the actual Node event producer → JSONL/sidecar → Rust consumer.
+The latter asserts unchanged JSONL bytes and commentary → tool → final reply
+order. The large-history idle check still records zero idle terminal writes.
+Live terminal acceptance is still needed before the next backport batch.
+
+
+The user's resume screenshot exposed another presentation mismatch: saved
+`tool_done` records contain `success: true, error: null`, but historical
+normalization treated the mere presence of `error` as failure. Resume now checks
+its value, and tool status follows the live tap's error/is_error, explicit
+ok/success and exit-code semantics. Regression cases cover null/false/empty
+errors, real errors, nonzero exits and duplicate completion aliases.
+An isolated copy of session `9fe4bd85-582b-478b-98c7-55aea1bb1d3d` passed through
+the actual Node resume builder and compiled Rust replay: the inspected
+list_files/grep/read_file/shell cards show 37 successful and one genuinely failed
+operation, rather than all failures. Original JSONL bytes were verified unchanged.
+
+
+Mouse/trackpad scrolling now defaults to one display line per event (previously
+three). `BAHULAM_TUI_SCROLL_LINES=1..20` calibrates conversation and optional
+separate-details scrolling in both Rust views; invalid values use one. The
+setting is read at renderer startup and reported in `/tui doctor`. Agent-list
+wheel navigation and keyboard/PageUp/PageDown behavior retain their existing
+steps. The PTY mouse check measures the actual row displacement for the default
+and a three-line override, alongside resize, draft and terminal restoration.
+Terminal/OS trackpad acceleration can still determine how many events arrive.

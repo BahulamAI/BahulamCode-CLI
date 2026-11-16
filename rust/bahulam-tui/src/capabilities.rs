@@ -17,6 +17,7 @@ pub struct TerminalCapabilities {
     pub color_source: String,
     pub unicode_locale: bool,
     pub mouse_capture: bool,
+    pub scroll_lines: u16,
     pub tmux: bool,
     pub screen: bool,
     pub ssh: bool,
@@ -38,6 +39,7 @@ impl TerminalCapabilities {
             "BAHULAM_PLAIN",
             "BAHULAM_TUI_COLOR_LEVEL",
             "BAHULAM_TUI_MOUSE",
+            "BAHULAM_TUI_SCROLL_LINES",
             "BAHULAM_CLIPBOARD",
             "LC_ALL",
             "LC_CTYPE",
@@ -141,6 +143,12 @@ impl TerminalCapabilities {
             unicode_locale: locale.contains("utf-8") || locale.contains("utf8"),
             mouse_capture: interactive
                 && !matches!(get("BAHULAM_TUI_MOUSE"), "0" | "false" | "off"),
+            scroll_lines: get("BAHULAM_TUI_SCROLL_LINES")
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|lines| (1..=20).contains(lines))
+                .unwrap_or(1),
             tmux: !get("TMUX").is_empty() || term.starts_with("tmux"),
             screen: !get("STY").is_empty() || term.starts_with("screen"),
             ssh: !get("SSH_CONNECTION").is_empty() || !get("SSH_TTY").is_empty(),
@@ -166,6 +174,7 @@ impl TerminalCapabilities {
             "ssh": self.ssh, "wsl": self.wsl, "view": view, "size": size.map(|(columns, rows)| json!({"columns":columns,"rows":rows})),
             "mouse_capture": view.is_some() && self.mouse_capture,
             "mouse_requested": self.mouse_capture, "bracketed_paste": view.is_some(),
+            "scroll_lines": self.scroll_lines,
             "synchronized_output": "inactive; not probed", "focus_reporting": "inactive; not probed",
             "osc8_links": "not restored", "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": "not restored",
             "notifications": "not restored", "report": self.report(view, size),
@@ -210,6 +219,10 @@ impl TerminalCapabilities {
                 } else {
                     "inactive"
                 }
+            ),
+            format!(
+                "Mouse scroll         {} lines/event (BAHULAM_TUI_SCROLL_LINES)",
+                self.scroll_lines
             ),
             format!(
                 "tmux / screen        {} / {}",
@@ -305,6 +318,30 @@ mod tests {
         assert!(caps
             .report(None, None)
             .contains("active queries not implemented"));
+    }
+    #[test]
+    fn mouse_scroll_is_gentle_by_default_and_configurable() {
+        for (value, expected) in [
+            ("", 1),
+            ("1", 1),
+            ("3", 3),
+            ("20", 20),
+            ("0", 1),
+            ("21", 1),
+            ("-1", 1),
+            ("invalid", 1),
+        ] {
+            let caps = TerminalCapabilities::from_values(
+                &values(&[("BAHULAM_TUI_SCROLL_LINES", value)]),
+                true,
+                true,
+            );
+            assert_eq!(caps.scroll_lines, expected);
+            assert_eq!(caps.as_json(Some("inline"), None)["scroll_lines"], expected);
+            assert!(caps
+                .report(Some("inline"), None)
+                .contains(&format!("{expected} lines/event")));
+        }
     }
     #[test]
     fn mouse_opt_out_and_terminal_names_are_safe() {

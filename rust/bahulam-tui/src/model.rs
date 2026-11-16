@@ -70,6 +70,8 @@ pub struct Model {
     pub interaction: Option<Interaction>,
     tools: HashMap<String, usize>,
     messages: HashMap<String, usize>,
+    // Card indices only: keep streamed segments in arrival order without copying text.
+    message_segments: HashMap<String, Vec<usize>>,
     progress: HashMap<String, usize>,
     approvals: HashMap<String, usize>,
     replaying_history: bool,
@@ -93,6 +95,33 @@ fn text(data: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .map(safe_text)
         .unwrap_or_default()
+}
+
+// Match the Node event tap's truth-value check: an optional error:null or
+// error:false field is not a failure just because the key was serialized.
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|n| n != 0.0),
+        Value::String(value) => !value.is_empty(),
+        _ => true,
+    }
+}
+
+fn tool_succeeded(data: &Value) -> bool {
+    let exit_ok = match data.get("exit_code") {
+        None | Some(Value::Null) => true,
+        Some(Value::Number(n)) => n.as_f64() == Some(0.0),
+        Some(Value::String(s)) => s.trim().is_empty() || s.trim().parse::<f64>() == Ok(0.0),
+        Some(Value::Bool(value)) => !value,
+        _ => false,
+    };
+    !data.get("error").is_some_and(truthy)
+        && !data.get("is_error").is_some_and(truthy)
+        && data.get("ok").and_then(Value::as_bool) != Some(false)
+        && data.get("success").and_then(Value::as_bool) != Some(false)
+        && exit_ok
 }
 
 fn display_message_content(value: &Value) -> String {
@@ -275,6 +304,26 @@ impl Model {
         index
     }
 
+    fn finish_message_segment(&mut self, key: &str) {
+        if let Some(index) = self.messages.remove(key) {
+            self.cards[index].status = "done".into();
+        }
+    }
+
+    // Some hosts send a turn-wide aggregate in content/message_end after
+    // streaming commentary and tool calls. Only its unseen suffix belongs at
+    // the new position; never overwrite the earlier commentary with the final.
+    fn message_suffix<'a>(&self, indices: &[usize], before: usize, text: &'a str) -> &'a str {
+        let mut remaining = text;
+        for &index in indices.iter().take_while(|&&i| i < before) {
+            match remaining.strip_prefix(self.cards[index].body.as_str()) {
+                Some(suffix) => remaining = suffix,
+                None => return text, // A standalone message, not a cumulative result.
+            }
+        }
+        remaining
+    }
+
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
         if self.replaying_history
             && matches!(
@@ -301,6 +350,7 @@ impl Model {
                 self.plan.clear();
                 self.tools.clear();
                 self.messages.clear();
+                self.message_segments.clear();
                 self.progress.clear();
                 self.approvals.clear();
                 if self.session != event.session_id {
@@ -364,7 +414,7 @@ impl Model {
                                     }
                                 }
                                 if !object.contains_key("ok")
-                                    && (object.contains_key("error")
+                                    && (object.get("error").is_some_and(truthy)
                                         || object.get("is_error").and_then(Value::as_bool)
                                             == Some(true)
                                         || object.get("success").and_then(Value::as_bool)
@@ -511,18 +561,33 @@ impl Model {
         if event.r#type == "detail_loaded" {
             let reference = text(&event.data, "payload_ref");
             let detail = text(&event.data, "detail");
-            for card in self
+            let indices: Vec<_> = self
                 .cards
-                .iter_mut()
-                .filter(|card| card.payload_ref.as_deref() == Some(reference.as_str()))
-            {
+                .iter()
+                .enumerate()
+                .filter(|(_, card)| card.payload_ref.as_deref() == Some(reference.as_str()))
+                .map(|(index, _)| index)
+                .collect();
+            for index in indices {
+                let card = &self.cards[index];
                 let detail = if event.data.get("error").is_some() {
                     format!("Could not load details: {}", text(&event.data, "error"))
                 } else {
                     command_output(&card.title, &detail)
                 };
+                let body = if card.is_message() && event.data.get("error").is_none() {
+                    self.message_segments
+                        .values()
+                        .find(|indices| indices.contains(&index))
+                        .map(|indices| self.message_suffix(indices, index, &detail))
+                        .unwrap_or(&detail)
+                        .to_owned()
+                } else {
+                    detail.clone()
+                };
+                let card = &mut self.cards[index];
                 if card.is_message() {
-                    card.body = detail.clone();
+                    card.body = body;
                 }
                 card.detail = Some(detail);
                 card.detail_loading = false;
@@ -651,13 +716,28 @@ impl Model {
                     let title = self.message_title(&agent);
                     let index = self.card(&agent, &title, String::new(), "streaming");
                     self.messages.insert(message_key.clone(), index);
+                    self.message_segments
+                        .entry(message_key.clone())
+                        .or_default()
+                        .push(index);
                     index
                 };
                 self.cards[index].body.push_str(&text(data, "chunk"));
             }
             "message_end" => {
                 let final_text = text(data, "text");
-                if let Some(index) = self.messages.remove(&message_key) {
+                let existing = self.messages.remove(&message_key);
+                let final_text = self
+                    .message_suffix(
+                        self.message_segments
+                            .get(&message_key)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        existing.unwrap_or(self.cards.len()),
+                        &final_text,
+                    )
+                    .to_owned();
+                if let Some(index) = existing {
                     if !final_text.is_empty() {
                         self.cards[index].body = final_text;
                         self.cards[index].detail = Some(self.cards[index].body.clone());
@@ -670,13 +750,22 @@ impl Model {
                     let title = self.message_title(&agent);
                     let index = self.card(&agent, &title, final_text, "done");
                     self.cards[index].detail = Some(self.cards[index].body.clone());
+                    self.message_segments
+                        .entry(message_key.clone())
+                        .or_default()
+                        .push(index);
                 } else if let Some(reference) = &event.payload_ref {
                     let title = self.message_title(&agent);
                     let index = self.card(&agent, &title, String::new(), "done");
                     self.cards[index].payload_ref = Some(reference.clone());
+                    self.message_segments
+                        .entry(message_key.clone())
+                        .or_default()
+                        .push(index);
                 }
             }
             "tool_requested" | "tool_call" if !self.tools.contains_key(&key) => {
+                self.finish_message_segment(&message_key);
                 let name = text(data, "name");
                 let args_value = data.get("args").cloned().unwrap_or(Value::Null);
                 let primary = text(data, "primary");
@@ -727,6 +816,7 @@ impl Model {
                 let index = if let Some(index) = self.tools.get(&key) {
                     *index
                 } else {
+                    self.finish_message_segment(&message_key);
                     let index =
                         self.card(agent, &format!("Tool {tool_id}"), String::new(), "unknown");
                     self.tools.insert(key, index);
@@ -740,13 +830,12 @@ impl Model {
                 } else if kind == "tool_output_delta" {
                     self.cards[index].body.push_str(&text(data, "chunk"));
                 } else {
-                    self.cards[index].status =
-                        if data.get("ok").and_then(Value::as_bool) == Some(false) {
-                            "failed"
-                        } else {
-                            "done"
-                        }
-                        .into();
+                    self.cards[index].status = if tool_succeeded(data) {
+                        "done"
+                    } else {
+                        "failed"
+                    }
+                    .into();
                     let preview = text(data, "preview");
                     self.cards[index].body = if preview.is_empty() {
                         text(data, "summary")
@@ -1072,7 +1161,9 @@ impl Model {
                     }
                 }
                 for (key, index) in self.messages.iter().chain(self.progress.iter()) {
-                    if key.starts_with(&prefix) && self.cards[*index].status == "streaming" {
+                    if (key == &message_key || key.starts_with(&prefix))
+                        && self.cards[*index].status == "streaming"
+                    {
                         self.cards[*index].status = if self.status == "cancelled" {
                             "cancelled"
                         } else {
@@ -1081,7 +1172,7 @@ impl Model {
                         .into();
                     }
                 }
-                self.messages.retain(|key, _| !key.starts_with(&prefix));
+                self.messages.remove(&message_key);
                 self.progress.retain(|key, _| !key.starts_with(&prefix));
                 let index = self.card(agent, "Turn", text(data, "summary"), &self.status.clone());
                 if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {

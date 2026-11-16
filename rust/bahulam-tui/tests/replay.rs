@@ -1209,3 +1209,432 @@ fn checks_and_thinking_render_and_expand_in_both_rust_views() {
         }
     }
 }
+
+#[test]
+fn composer_cursor_matches_painted_graphemes_spaces_and_wrap_after_resize() {
+    use bahulam_tui::render::draw_with_view;
+    let model = Model::default();
+    // Put a visible marker at the caret, including after preserved indentation,
+    // tabs, multi-cell characters and long lines that wrap in a narrow terminal.
+    for prefix in [
+        "",
+        "    ",
+        "hello ",
+        "a\tb ",
+        "界👩‍💻é ",
+        "first\n    ",
+        "a very long line with spaces that must wrap many times in a narrow composer ",
+    ] {
+        let input = format!("{prefix}X");
+        for inline in [true, false] {
+            let mut terminal = Terminal::new(TestBackend::new(100, 36)).unwrap();
+            for width in [100, 28, 60] {
+                terminal.backend_mut().resize(width, 36);
+                terminal.autoresize().unwrap();
+                terminal
+                    .draw(|frame| {
+                        draw_with_view(
+                            frame,
+                            &model,
+                            0,
+                            true,
+                            "dark",
+                            &input,
+                            prefix.len(),
+                            &HashSet::new(),
+                            None,
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let cursor = terminal.get_cursor_position().unwrap();
+                assert_eq!(terminal.backend().buffer()[cursor].symbol(), "X",
+                    "caret must cover next typed character: {prefix:?}, inline={inline}, width={width}, cursor={cursor:?}");
+                let buffer = terminal.backend().buffer();
+                let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(text.contains("Message"));
+            }
+        }
+    }
+}
+
+#[test]
+fn expanded_tool_json_is_readable_and_keeps_neighbor_messages_and_raw_copy() {
+    use bahulam_tui::render::{details_at, draw_with_view};
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "message_end",
+            "main",
+            json!({"text":"BEFORE_TOOL"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"tool", "name":"shell", "args":{"command":"inspect"}}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            3,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"tool", "name":"shell", "result":"preview", "ok":true}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            4,
+            "message_end",
+            "main",
+            json!({"text":"AFTER_TOOL"}),
+        ))
+        .unwrap();
+    let index = model.cards.iter().position(|c| c.title == "shell").unwrap();
+    let raw =
+        json!({"exit_code":0, "stdout":"FIRST_LINE\nFINAL_LINE", "files":["one.rs","two.rs"]})
+            .to_string();
+    model.cards[index].detail = Some(raw.clone());
+    for inline in [true, false] {
+        for expanded in [HashSet::from([index]), HashSet::new()] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 44)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_with_view(
+                        frame,
+                        &model,
+                        0,
+                        true,
+                        "dark",
+                        "draft",
+                        5,
+                        &expanded,
+                        Some(index),
+                        false,
+                        None,
+                        None,
+                        0,
+                        None,
+                        1,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = buffer
+                .content
+                .chunks(120)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("BEFORE_TOOL")
+                    && text.contains("AFTER_TOOL")
+                    && text.contains("draft")
+            );
+            if expanded.contains(&index) {
+                assert!(
+                    text.contains("exit code")
+                        && text.contains("stdout")
+                        && text.contains("FINAL_LINE")
+                        && text.contains("two.rs")
+                );
+                assert!(!text.contains("\\n") && !text.contains("Details ·"));
+                for (y, row) in buffer.content.chunks(120).enumerate() {
+                    let cells: Vec<_> = row.iter().map(|cell| cell.symbol()).collect();
+                    if let Some(x) = cells
+                        .windows(9)
+                        .position(|slice| slice.concat() == "Show less")
+                    {
+                        assert_eq!(
+                            details_at(
+                                &model,
+                                buffer.area,
+                                "draft",
+                                inline,
+                                &expanded,
+                                "dark",
+                                None,
+                                0,
+                                Position::new(x as u16, y as u16)
+                            ),
+                            Some(index)
+                        );
+                    }
+                }
+                assert!(text.contains("Show less") && text.contains("Esc to collapse"));
+            } else {
+                assert!(text.contains("Show details") && !text.contains("FINAL_LINE"));
+            }
+            assert_eq!(
+                model.cards[index].detail.as_deref(),
+                Some(raw.as_str()),
+                "presentation must not rewrite stored/copyable tool data"
+            );
+        }
+    }
+}
+
+#[test]
+fn interleaved_reply_segments_keep_event_order_live_and_on_resume() {
+    use bahulam_tui::render::draw_with_view;
+    for cumulative in [false, true] {
+        for streamed_final in [false, true] {
+            for stored_final in [false, true] {
+                let final_text = if cumulative {
+                    "BEFORE_TOOLBETWEEN_TOOLSFINAL_ANSWER"
+                } else {
+                    "FINAL_ANSWER"
+                };
+                let mut events = vec![
+                    event(1, "text_delta", "main", json!({"chunk":"BEFORE_TOOL"})),
+                    event(
+                        2,
+                        "tool_requested",
+                        "main",
+                        json!({"tool_id":"a", "name":"shell", "args":{"command":"inspect"}}),
+                    ),
+                    event(
+                        3,
+                        "tool_finished",
+                        "main",
+                        json!({"tool_id":"a", "ok":true, "summary":"TOOL_ONE"}),
+                    ),
+                    event(4, "text_delta", "main", json!({"chunk":"BETWEEN_TOOLS"})),
+                    event(
+                        5,
+                        "tool_requested",
+                        "main",
+                        json!({"tool_id":"b", "name":"read_file", "args":{"path":"file"}}),
+                    ),
+                    event(
+                        6,
+                        "tool_finished",
+                        "main",
+                        json!({"tool_id":"b", "ok":true, "summary":"TOOL_TWO"}),
+                    ),
+                ];
+                if streamed_final {
+                    events.push(event(7, "text_delta", "main", json!({"chunk":"FINAL_"})));
+                }
+                let mut final_event = event(
+                    8,
+                    "message_end",
+                    "main",
+                    if stored_final {
+                        json!({})
+                    } else {
+                        json!({"text":final_text})
+                    },
+                );
+                if stored_final {
+                    final_event.payload_ref = Some("memory:final".into());
+                }
+                events.push(final_event);
+                events.push(event(9, "turn_ended", "main", json!({"ok":true})));
+                for resume in [false, true] {
+                    let mut model = Model::default();
+                    if resume {
+                        let items: Vec<_> = events
+                            .iter()
+                            .map(|event| json!({"kind":"event", "event":event}))
+                            .collect();
+                        model
+                            .apply(&event(
+                                1,
+                                "transcript_snapshot",
+                                "main",
+                                json!({"replace":true,"mode":"full","items":items}),
+                            ))
+                            .unwrap();
+                    } else {
+                        for item in &events {
+                            model.apply(item).unwrap();
+                        }
+                    }
+                    if stored_final {
+                        model
+                            .apply(&event(
+                                10,
+                                "detail_loaded",
+                                "main",
+                                json!({"payload_ref":"memory:final","detail":final_text}),
+                            ))
+                            .unwrap();
+                    }
+                    // A late tool completion updates its original card, never moves below the final.
+                    if !resume {
+                        model
+                            .apply(&event(
+                                11,
+                                "tool_finished",
+                                "main",
+                                json!({"tool_id":"b","ok":true,"summary":"TOOL_TWO"}),
+                            ))
+                            .unwrap();
+                    }
+                    let content: Vec<_> = model
+                        .cards
+                        .iter()
+                        .filter(|card| !matches!(card.title.as_str(), "Session" | "Turn"))
+                        .map(|card| (card.title.as_str(), card.body.as_str()))
+                        .collect();
+                    assert_eq!(content, vec![("Assistant","BEFORE_TOOL"),("shell","TOOL_ONE"),("Assistant","BETWEEN_TOOLS"),("read_file","TOOL_TWO"),("Assistant","FINAL_ANSWER")],
+                        "cumulative={cumulative}, streamed={streamed_final}, stored={stored_final}, resume={resume}");
+                    assert!(model
+                        .cards
+                        .iter()
+                        .filter(|card| card.title == "Assistant")
+                        .all(|card| card.status == "done"));
+                    for inline in [true, false] {
+                        let mut terminal = Terminal::new(TestBackend::new(120, 44)).unwrap();
+                        terminal
+                            .draw(|frame| {
+                                draw_with_view(
+                                    frame,
+                                    &model,
+                                    0,
+                                    true,
+                                    "dark",
+                                    "",
+                                    0,
+                                    &HashSet::new(),
+                                    None,
+                                    true,
+                                    None,
+                                    None,
+                                    0,
+                                    None,
+                                    0,
+                                    inline,
+                                )
+                            })
+                            .unwrap();
+                        let screen: String = terminal
+                            .backend()
+                            .buffer()
+                            .content
+                            .iter()
+                            .map(|cell| cell.symbol())
+                            .collect();
+                        let positions: Vec<_> = [
+                            "BEFORE_TOOL",
+                            "TOOL_ONE",
+                            "BETWEEN_TOOLS",
+                            "TOOL_TWO",
+                            "FINAL_ANSWER",
+                        ]
+                        .iter()
+                        .map(|text| screen.find(text).expect(text))
+                        .collect();
+                        assert!(positions.windows(2).all(|p| p[0] < p[1]));
+                        assert_eq!(screen.matches("FINAL_ANSWER").count(), 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn concurrent_agents_do_not_close_each_others_message_segments() {
+    let mut model = Model::default();
+    for item in [
+        event(1, "text_delta", "main", json!({"chunk":"MAIN "})),
+        event(2, "text_delta", "worker", json!({"chunk":"WORKER_NOTE"})),
+        event(
+            3,
+            "tool_requested",
+            "worker",
+            json!({"tool_id":"x","name":"shell","args":{}}),
+        ),
+        event(4, "text_delta", "main", json!({"chunk":"ANSWER"})),
+        event(5, "message_end", "worker", json!({"text":"WORKER_FINAL"})),
+        event(6, "message_end", "main", json!({"text":"MAIN ANSWER"})),
+    ] {
+        model.apply(&item).unwrap();
+    }
+    let main: Vec<_> = model.cards.iter().filter(|c| c.agent == "main").collect();
+    assert_eq!(main.len(), 1);
+    assert_eq!(main[0].body, "MAIN ANSWER");
+    let worker: Vec<_> = model
+        .cards
+        .iter()
+        .filter(|c| c.agent == "worker")
+        .map(|c| c.body.as_str())
+        .collect();
+    assert_eq!(worker, vec!["WORKER_NOTE", "{}", "WORKER_FINAL"]);
+}
+
+#[test]
+fn resumed_tool_status_matches_live_for_null_errors_and_real_failures() {
+    let cases = [
+        (json!({"success":true,"error":null}), "done"),
+        (json!({"success":true,"error":false}), "done"),
+        (json!({"success":true,"error":""}), "done"),
+        (
+            json!({"success":true,"is_error":false,"exit_code":0}),
+            "done",
+        ),
+        (json!({"success":true,"exit_code":"0"}), "done"),
+        (json!({"success":false,"error":null}), "failed"),
+        (json!({"ok":false}), "failed"),
+        (
+            json!({"success":true,"error":"permission denied"}),
+            "failed",
+        ),
+        (
+            json!({"success":true,"error":{"message":"denied"}}),
+            "failed",
+        ),
+        (json!({"is_error":true}), "failed"),
+        (json!({"success":true,"exit_code":1}), "failed"),
+        (json!({"success":true,"exit_code":"2"}), "failed"),
+    ];
+    for (flags, expected) in cases {
+        for resume in [false, true] {
+            let mut model = Model::default();
+            let mut result = flags.clone();
+            result["tool_id"] = json!("tool");
+            result["call_id"] = json!("tool");
+            result["output"] = json!("saved output");
+            let requested = event(
+                1,
+                "tool_requested",
+                "main",
+                json!({"tool_id":"tool","name":"read_file","args":{"path":"file"}}),
+            );
+            if resume {
+                // Real logs contain tool_result followed by tool_done with error:null.
+                model.apply(&event(1,"transcript_snapshot","main",json!({"replace":true,"mode":"full","items":[
+                    {"kind":"event","event":requested},
+                    {"kind":"event","event":{"type":"tool_result","data":result,"turn_id":"t1","agent_id":"main"}},
+                    {"kind":"event","event":{"type":"tool_done","data":result,"turn_id":"t1","agent_id":"main"}}
+                ]}))).unwrap();
+            } else {
+                model.apply(&requested).unwrap();
+                model
+                    .apply(&event(2, "tool_finished", "main", result))
+                    .unwrap();
+            }
+            let tools: Vec<_> = model
+                .cards
+                .iter()
+                .filter(|card| card.title == "read_file")
+                .collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].status, expected, "resume={resume}, flags={flags}");
+            assert_eq!(tools[0].detail.as_deref(), Some("saved output"));
+        }
+    }
+}

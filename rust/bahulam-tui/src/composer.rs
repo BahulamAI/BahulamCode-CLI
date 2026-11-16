@@ -8,6 +8,7 @@ use std::{
     process::{Command, Stdio},
 };
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub const MAX_INPUT_BYTES: usize = 5 * 1024 * 1024;
 
@@ -357,5 +358,68 @@ mod tests {
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
         assert_eq!(cursor, 0);
+    }
+}
+
+/// A single geometry for painting, cursor placement and mouse hit testing.
+pub struct PromptLayout {
+    pub lines: Vec<String>,
+    positions: Vec<(usize, usize, usize)>,
+}
+
+impl PromptLayout {
+    pub fn new(input: &str, width: usize) -> Self {
+        let width = width.max(1);
+        let mut result = Self {
+            lines: vec!["› ".chars().take(width.saturating_sub(1)).collect()],
+            positions: Vec::new(),
+        };
+        let mut column = UnicodeWidthStr::width(result.lines[0].as_str());
+        for (offset, grapheme) in input.grapheme_indices(true) {
+            let display = if grapheme == "\t" { "    " } else { grapheme };
+            let cells = UnicodeWidthStr::width(display).min(width);
+            if grapheme != "\n" && column + cells > width {
+                result.lines.push(String::new());
+                column = 0;
+            }
+            result
+                .positions
+                .push((offset, result.lines.len() - 1, column));
+            if grapheme == "\n" {
+                let gutter: String = "  │ ".chars().take(width.saturating_sub(1)).collect();
+                column = UnicodeWidthStr::width(gutter.as_str());
+                result.lines.push(gutter);
+            } else {
+                result.lines.last_mut().unwrap().push_str(display);
+                column += cells;
+                if column >= width {
+                    result.lines.push(String::new());
+                    column = 0;
+                }
+            }
+        }
+        result
+            .positions
+            .push((input.len(), result.lines.len() - 1, column));
+        result
+    }
+
+    pub fn cursor(&self, offset: usize) -> (usize, usize) {
+        self.positions
+            .iter()
+            .rev()
+            .find(|(byte, _, _)| *byte <= offset)
+            .map(|(_, row, column)| (*row, *column))
+            .unwrap_or_default()
+    }
+
+    pub fn offset_at(&self, row: usize, column: usize) -> usize {
+        self.positions
+            .iter()
+            .rev()
+            .find(|(_, r, c)| *r < row || (*r == row && *c <= column))
+            .or_else(|| self.positions.first())
+            .map(|(byte, _, _)| *byte)
+            .unwrap_or(0)
     }
 }

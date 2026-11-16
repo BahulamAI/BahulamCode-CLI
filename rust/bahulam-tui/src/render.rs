@@ -1,3 +1,4 @@
+use crate::composer::PromptLayout;
 use crate::model::{safe_text, Model};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Position, Rect},
@@ -335,10 +336,17 @@ fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let compact = area.width < 72 || area.height < 16;
     let prompt_height = if approval {
         7.min(area.height.saturating_sub(12).max(4))
-    } else if input.contains('\n') {
-        (input.split('\n').count() as u16 + 3)
-            .clamp(5, 8)
-            .min(area.height.saturating_sub(12).max(4))
+    } else if PromptLayout::new(input, area.width.saturating_sub(4) as usize)
+        .lines
+        .len()
+        > 1
+    {
+        (PromptLayout::new(input, area.width.saturating_sub(4) as usize)
+            .lines
+            .len() as u16
+            + 3)
+        .clamp(5, 8)
+        .min(area.height.saturating_sub(12).max(4))
     } else {
         4
     };
@@ -372,7 +380,12 @@ fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let prompt_height = if approval {
         7
     } else {
-        (input.lines().count() as u16 + 2).clamp(3, 7)
+        (PromptLayout::new(input, area.width.saturating_sub(2) as usize)
+            .lines
+            .len() as u16
+            + 2
+            + u16::from(input.trim_start().starts_with('/')))
+        .clamp(3, 7)
     };
     let rows = Layout::vertical([
         Constraint::Length(0),
@@ -456,10 +469,15 @@ pub fn details_at(
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    let action = text.find("Show details")?;
+    let label = if text.contains("Show less") {
+        "Show less"
+    } else {
+        "Show details"
+    };
+    let action = text.find(label)?;
     let left = UnicodeWidthStr::width(&text[..action]);
     let col = (position.x - inner.x) as usize;
-    (col >= left && col < left + "Show details".len()).then_some(*index)
+    (col >= left && col < left + label.len()).then_some(*index)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -814,6 +832,11 @@ pub fn draw_with_view(
         rows[2],
     );
 
+    let input_width = rows[3]
+        .width
+        .saturating_sub(if inline { 2 } else { 4 })
+        .max(1) as usize;
+    let input_layout = PromptLayout::new(input, input_width);
     let mut prompt = if let Some(approval) = &model.approval {
         vec![
             Line::from(vec![
@@ -898,25 +921,10 @@ pub fn draw_with_view(
                 ),
             ])]
         } else {
-            input
-                .split('\n')
-                .enumerate()
-                .map(|(index, line)| {
-                    let gutter = if index == 0 { "› " } else { "  │ " };
-                    Line::from(vec![
-                        Span::styled(
-                            gutter,
-                            Style::default()
-                                .fg(if index == 0 { p.accent } else { p.border })
-                                .add_modifier(if index == 0 {
-                                    Modifier::BOLD
-                                } else {
-                                    Modifier::empty()
-                                }),
-                        ),
-                        Span::styled(safe_text(line), Style::default().fg(p.text)),
-                    ])
-                })
+            input_layout
+                .lines
+                .iter()
+                .map(|line| Line::from(Span::styled(line.clone(), Style::default().fg(p.text))))
                 .collect()
         }
     };
@@ -936,44 +944,23 @@ pub fn draw_with_view(
             )));
         }
     }
-    let prompt_inner_height = rows[3]
-        .height
-        .saturating_sub(if inline { 1 } else { 2 })
-        .max(1);
-    let input_lines: Vec<&str> = input.split('\n').collect();
-    let suggestion_rows = prompt.len().saturating_sub(input_lines.len()) as u16;
+    let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
+    let suggestion_rows = prompt.len().saturating_sub(input_layout.lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
-    let input_width = rows[3]
-        .width
-        .saturating_sub(if inline { 2 } else { 4 })
-        .max(1) as usize;
-    let cursor_line_index = input[..cursor.min(input.len())].matches('\n').count();
-    let cursor_line = input[..cursor.min(input.len())]
-        .rsplit('\n')
-        .next()
-        .unwrap_or("");
-    let cursor_gutter_width = if cursor_line_index == 0 { 2 } else { 4 };
-    let cursor_column = cursor_gutter_width + UnicodeWidthStr::width(cursor_line);
-    let mut cursor_row = 0usize;
-    for (index, line) in input_lines.iter().enumerate().take(cursor_line_index + 1) {
-        let gutter = if index == 0 { 2 } else { 4 };
-        if index == cursor_line_index {
-            cursor_row += (gutter + UnicodeWidthStr::width(cursor_line)) / input_width;
-        } else {
-            let line_width = gutter + UnicodeWidthStr::width(*line);
-            cursor_row += line_width.max(1).div_ceil(input_width);
-        }
-    }
+    let (cursor_row, cursor_column) = input_layout.cursor(cursor);
     let prompt_scroll = cursor_row.saturating_sub(prompt_visible_rows.saturating_sub(1) as usize);
     frame.render_widget(
         Paragraph::new(prompt)
             .style(Style::default().bg(p.input_bg))
-            .wrap(Wrap { trim: true })
             .scroll((prompt_scroll.min(u16::MAX as usize) as u16, 0))
             .block(
                 Block::default()
                     .padding(Padding::horizontal(1))
-                    .borders(if inline { Borders::TOP } else { Borders::ALL })
+                    .borders(if inline {
+                        Borders::TOP | Borders::BOTTOM
+                    } else {
+                        Borders::ALL
+                    })
                     .border_style(Style::default().fg(if model.approval.is_some() {
                         p.warning
                     } else if interactive && focus_panel == 0 {
@@ -1406,6 +1393,62 @@ fn transcript_lines(
     output
 }
 
+// Presentation only: copy and agent history retain the exact stored tool value.
+fn readable_detail(text: &str) -> String {
+    fn render(value: &serde_json::Value, depth: usize, out: &mut String) {
+        let indent = "  ".repeat(depth.min(8));
+        match value {
+            serde_json::Value::Object(fields) if depth < 32 => {
+                if fields.is_empty() {
+                    out.push_str("(empty object)\n");
+                }
+                for (key, value) in fields {
+                    let label = safe_text(key).replace('_', " ");
+                    if depth == 0 {
+                        out.push_str(&format!("## {label}\n"));
+                    } else {
+                        out.push_str(&format!("{indent}{label}:\n"));
+                    }
+                    render(value, depth + 1, out);
+                    if depth == 0 {
+                        out.push('\n');
+                    }
+                }
+            }
+            serde_json::Value::Array(items) if depth < 32 => {
+                if items.is_empty() {
+                    out.push_str("(empty list)\n");
+                }
+                for (i, value) in items.iter().enumerate() {
+                    if value.is_object() || value.is_array() {
+                        out.push_str(&format!("{indent}Item {}\n", i + 1));
+                        render(value, depth + 1, out);
+                    } else {
+                        out.push_str(&format!("{indent}• "));
+                        render(value, 0, out);
+                    }
+                }
+            }
+            serde_json::Value::String(text) => {
+                out.push_str(&safe_text(text));
+                out.push('\n');
+            }
+            value => {
+                out.push_str(&value.to_string());
+                out.push('\n');
+            }
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) if value.is_object() || value.is_array() => {
+            let mut output = String::new();
+            render(&value, 0, &mut output);
+            output
+        }
+        _ => text.to_owned(),
+    }
+}
+
 fn detail_lines(card: &crate::model::Card, p: Palette) -> Vec<Line<'static>> {
     let detail = card.detail.as_deref().unwrap_or(&card.body);
     let mut lines = if card.detail_loading && card.detail.is_none() {
@@ -1545,7 +1588,18 @@ fn card_lines(
     if budget <= 1 {
         return lines;
     }
-    let total = card.body.lines().count();
+    let is_expanded = expanded.contains(&index);
+    let expanded_text = if is_expanded && !card.is_message() {
+        Some(if card.detail_loading && card.detail.is_none() {
+            "Loading complete result…".to_owned()
+        } else {
+            readable_detail(card.detail.as_deref().unwrap_or(&card.body))
+        })
+    } else {
+        None
+    };
+    let body = expanded_text.as_deref().unwrap_or(&card.body);
+    let total = body.lines().count();
     let details_total = card
         .detail
         .as_deref()
@@ -1573,11 +1627,18 @@ fn card_lines(
             _ => 2,
         }
     };
-    let is_expanded = expanded.contains(&index);
     let has_more = if is_message {
         false
     } else {
-        card.payload_ref.is_some() || total > limit || details_total > limit || long_line
+        is_expanded
+            || card.payload_ref.is_some()
+            || card
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail != card.body)
+            || total > limit
+            || details_total > limit
+            || long_line
     };
     let body_room = budget
         .saturating_sub(1)
@@ -1592,8 +1653,7 @@ fn card_lines(
     // A reply that is still streaming shows its newest lines, not its first.
     let tail = failure_tail;
     let selected_lines: Vec<&str> = if tail {
-        card.body
-            .lines()
+        body.lines()
             .rev()
             .take(show)
             .collect::<Vec<_>>()
@@ -1601,13 +1661,13 @@ fn card_lines(
             .rev()
             .collect()
     } else {
-        card.body.lines().take(show).collect()
+        body.lines().take(show).collect()
     };
-    let body_lines: Vec<String> = if is_message {
+    let body_lines: Vec<String> = if is_message || is_expanded {
         // Message lines get a 4-column speaker gutter plus the 3-column
         // markdown indent; wrap to what remains so the paragraph widget
         // never re-wraps and pushes the newest line out of the viewport.
-        let wrap_width = content_width.saturating_sub(3).max(8);
+        let wrap_width = width.saturating_sub(if is_message { 7 } else { 3 }).max(1);
         let mut wrapped = Vec::new();
         let mut in_code = false;
         for line in &selected_lines {
@@ -1645,7 +1705,9 @@ fn card_lines(
     }
     lines.extend(rendered_body.into_iter().take(body_room));
     if has_more && lines.len() < budget {
-        let hint = if card.payload_ref.is_some() && card.detail.is_none() {
+        let hint = if is_expanded {
+            " · Esc to collapse".to_owned()
+        } else if card.payload_ref.is_some() && card.detail.is_none() {
             " · stored full result".to_owned()
         } else if details_total > show {
             format!(" · {} more lines", details_total - show)
@@ -1654,7 +1716,14 @@ fn card_lines(
         };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("   ＋ Show details{hint}"),
+                format!(
+                    "   {}{hint}",
+                    if is_expanded {
+                        "− Show less"
+                    } else {
+                        "＋ Show details"
+                    }
+                ),
                 Style::default().fg(p.info).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" · Click / Enter", Style::default().fg(p.muted)),

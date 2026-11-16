@@ -59,7 +59,8 @@ try:
    assert 'shell' in text and '[2] deny' in text
    os.write(master,b'2');stage=2
   elif stage==2 and 'HYDRATED_012' in text:
-   assert 'Show details' not in text,'Assistant still folded behind details'
+   assert 'HYDRATED_001' in text,'Assistant still folded behind details'
+   assert 'Show details' not in text[text.index('HYDRATED_001'):text.index('HYDRATED_012')], 'Assistant reply interrupted by details'
    assert 'IGNORED' not in text,'Approval keys edited or submitted the draft'
    os.write(master,b'\t\r');stage=3;entered=time.monotonic()
   elif stage==3 and time.monotonic()-entered>0.15:

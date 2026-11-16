@@ -84,6 +84,36 @@ enum ClipboardReply {
     Paste(io::Result<String>),
     Copy(io::Result<clipboard::Copied>),
 }
+fn toggle_expansion(
+    model: &Arc<Mutex<bahulam_tui::model::Model>>,
+    index: usize,
+    expanded: &mut HashSet<usize>,
+    writer: &Option<Arc<Mutex<BufWriter<File>>>>,
+) -> io::Result<()> {
+    let reference = if let Ok(mut state) = model.lock() {
+        if state.cards.get(index).is_none_or(|card| card.is_message()) {
+            return Ok(());
+        }
+        if expanded.remove(&index) {
+            state.composer_hint.clear();
+            None
+        } else {
+            expanded.insert(index);
+            state.composer_hint =
+                "Expanded result · Esc or Show less collapses · Ctrl+Y copies".into();
+            state.request_details(index)
+        }
+    } else {
+        None
+    };
+    if let Some(payload_ref) = reference {
+        write_command(
+            writer,
+            serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+        )?;
+    }
+    Ok(())
+}
 fn input_hint(model: &Arc<Mutex<bahulam_tui::model::Model>>, hint: &str) {
     if let Ok(mut state) = model.lock() {
         state.composer_hint = safe_text(hint);
@@ -356,6 +386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if state.transcript_revision != seen_transcript_revision {
                 dirty = true;
                 seen_transcript_revision = state.transcript_revision;
+                expanded.clear();
                 scroll = 0;
                 follow = true;
                 focused_card = state.cards.len().saturating_sub(1);
@@ -381,8 +412,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .cards
                         .iter()
                         .enumerate()
-                        .filter(|(_, card)| {
-                            card.is_message()
+                        .filter(|(i, card)| {
+                            (card.is_message() || expanded.contains(i))
                                 && card.payload_ref.is_some()
                                 && card.detail.is_none()
                                 && !card.detail_loading
@@ -774,6 +805,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             1
                         };
                     }
+                    KeyCode::Esc if expanded.contains(&focused_card) => {
+                        scroll = geometry()
+                            .and_then(|g| {
+                                g.cards
+                                    .into_iter()
+                                    .find(|(i, _)| *i == focused_card)
+                                    .map(|(_, row)| row)
+                            })
+                            .unwrap_or(scroll);
+                        expanded.remove(&focused_card);
+                        follow = false;
+                        input_hint(&model, "");
+                    }
                     KeyCode::Esc if agent_filter.is_some() => {
                         agent_filter = None;
                         focus_panel = 1;
@@ -984,6 +1028,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Enter if detail_card.is_some() => {}
+                    KeyCode::Enter
+                        if focus_panel == 1 && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        if model.lock().ok().is_some_and(|m| {
+                            m.cards
+                                .get(focused_card)
+                                .is_some_and(|card| card.is_message())
+                        }) {
+                            continue;
+                        }
+                        scroll = geometry()
+                            .and_then(|g| {
+                                g.cards
+                                    .into_iter()
+                                    .find(|(i, _)| *i == focused_card)
+                                    .map(|(_, row)| row)
+                            })
+                            .unwrap_or(scroll);
+                        follow = false;
+                        toggle_expansion(&model, focused_card, &mut expanded, &command_writer)?;
+                    }
                     KeyCode::Enter if focus_panel == 1 => {
                         if model.lock().ok().is_some_and(|m| {
                             m.cards
@@ -1225,37 +1290,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(index) = hit {
                             focused_card = index;
                             focus_panel = 1;
-                            detail_card = Some(index);
-                            detail_scroll = 0;
-                            // Preserve the conversation position when closing the details view.
-                            if follow {
-                                scroll = model
-                                    .lock()
-                                    .map(|state| {
-                                        history_geometry(
-                                            &state,
-                                            terminal.get_frame().area(),
-                                            &input,
-                                            inline_mode,
-                                            &expanded,
-                                            &theme,
-                                            agent_filter.as_deref(),
-                                        )
-                                        .end
-                                    })
-                                    .unwrap_or(0);
-                            }
+                            scroll = geometry()
+                                .and_then(|g| {
+                                    g.cards
+                                        .into_iter()
+                                        .find(|(i, _)| *i == index)
+                                        .map(|(_, row)| row)
+                                })
+                                .unwrap_or(scroll);
                             follow = false;
-                            if let Some(payload_ref) = model
-                                .lock()
-                                .ok()
-                                .and_then(|mut state| state.request_details(index))
-                            {
-                                write_command(
-                                    &command_writer,
-                                    serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
-                                )?;
-                            }
+                            toggle_expansion(&model, index, &mut expanded, &command_writer)?;
                         }
                         continue;
                     }
@@ -1280,9 +1324,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     .min(u16::MAX as usize)
                                     as u16;
                                 detail_scroll = if down {
-                                    detail_scroll.saturating_add(3).min(end)
+                                    detail_scroll
+                                        .saturating_add(capabilities.scroll_lines)
+                                        .min(end)
                                 } else {
-                                    detail_scroll.saturating_sub(3)
+                                    detail_scroll.saturating_sub(capabilities.scroll_lines)
                                 };
                             }
                             Some(MousePanel::Transcript) => {
@@ -1295,12 +1341,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     &theme,
                                     agent_filter.as_deref(),
                                 );
-                                scroll_history(&mut scroll, &mut follow, g.end, down, 3);
+                                scroll_history(
+                                    &mut scroll,
+                                    &mut follow,
+                                    g.end,
+                                    down,
+                                    capabilities.scroll_lines,
+                                );
                                 if let Some((index, _)) = g
                                     .cards
                                     .iter()
-                                    .find(|(_, row)| *row >= scroll)
-                                    .or(g.cards.last())
+                                    .rev()
+                                    .find(|(_, row)| *row <= scroll)
+                                    .or(g.cards.first())
                                 {
                                     focused_card = *index;
                                 }

@@ -32,6 +32,10 @@ setTimeout(()=>host.close(),12000).unref();
 `);
 const python = String.raw`
 import fcntl, json, os, pty, re, select, signal, struct, subprocess, sys, termios, time
+sys.dont_write_bytecode=True
+sys.path.insert(0,${JSON.stringify(path.join(root, 'scripts'))})
+from tui_test_screen import Screen
+terminal_screen=Screen(24,100)
 enabled = sys.argv[1] == '1'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,100,0,0))
@@ -44,6 +48,7 @@ def pump(seconds):
  while time.time()<deadline:
   if select.select([master],[],[],0.02)[0]:
    chunk=os.read(master,65536)
+   terminal_screen.feed(chunk)
    output.extend(chunk)
    stage_output.extend(chunk)
    if b'\x1b[6n' in chunk: os.write(master,b'\x1b[1;1R')
@@ -54,6 +59,8 @@ def wait_text(text):
  while text not in screen() and time.time()<deadline: pump(0.03)
  assert text in screen(), 'Missing '+str(text)+'\n'+screen()[-4000:].decode('utf8','replace')
 def refresh(columns):
+ global terminal_screen
+ terminal_screen=Screen(24,columns)
  stage_output.clear()
  fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,columns,0,0))
  os.killpg(child.pid,signal.SIGWINCH)
@@ -62,20 +69,26 @@ try:
  os.write(master,b'draft kept')
  pump(0.2)
  if enabled:
+  before={match.group():row for row,line in enumerate(terminal_screen.text().splitlines()) for match in re.finditer(r'HISTORY_\d+',line)}
   # Initial session card is included in the main transcript count.
   os.write(master,b'\x1b[<64;10;4M')
   pump(0.2)
+  after={match.group():row for row,line in enumerate(terminal_screen.text().splitlines()) for match in re.finditer(r'HISTORY_\d+',line)}
+  common=set(before)&set(after)
+  assert common,'No common visible history row for scroll calibration'
+  step=int(os.environ.get('BAHULAM_TUI_SCROLL_LINES','1'))
+  assert all(after[key]-before[key]==step for key in common),(before,after,step)
   refresh(99)
-  wait_text(b'HISTORY_27')
+  wait_text(b'HISTORY_27' if step>=3 else b'HISTORY_28')
   os.write(master,b'\x1b[<65;10;4M')
   pump(0.2)
   refresh(100)
   wait_text(b'HISTORY_29')
-  os.write(master,b'\x1b[<64;10;4M'*50)
+  os.write(master,b'\x1b[<64;10;4M'*150)
   pump(.5)
   refresh(99)
   wait_text(b'HISTORY_00')
-  os.write(master,b'\x1b[<65;10;4M'*50)
+  os.write(master,b'\x1b[<65;10;4M'*150)
   pump(.5)
   refresh(100)
   wait_text(b'HISTORY_29')
@@ -110,17 +123,20 @@ finally:
  os.close(slave)
 `;
 try {
-  for (const mode of ['fullscreen', 'inline']) for (const enabled of [false, true]) {
-    const resultFile = path.join(temp, `prompt-${enabled}.json`);
+  for (const mode of ['fullscreen', 'inline']) for (const setting of ['disabled', 'default', '3']) {
+    const enabled = setting !== 'disabled';
+    const resultFile = path.join(temp, `prompt-${mode}-${setting}.json`);
     const env = { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_BINARY: binary, BAHULAM_TUI_MODE: mode };
+    if (setting === '3') env.BAHULAM_TUI_SCROLL_LINES = '3';
+    else delete env.BAHULAM_TUI_SCROLL_LINES;
     if (enabled) delete env.BAHULAM_TUI_MOUSE;
     else env.BAHULAM_TUI_MOUSE = '0';
     const result = spawnSync('python3', ['-c', python, enabled ? '1' : '0', resultFile,
       process.execPath, driver, resultFile], { env, encoding: 'utf8', timeout: 16000, maxBuffer: 1024 * 1024 });
     assert.equal(result.error, undefined, result.error?.message);
-    assert.equal(result.status, 0, `Mouse ${mode} ${enabled}: ${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, `Mouse ${mode} ${setting}: ${result.stdout}\n${result.stderr}`);
   }
-  console.log('PASS: mouse defaults on in both Rust views; history/agent navigation preserves drafts and restores terminal modes.');
+  console.log('PASS: both Rust views scroll exactly 1 line by default and 3 with the override; history/agent navigation preserves drafts and restores terminal modes.');
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

@@ -20,7 +20,7 @@ const host = startRustTuiHost({ onCommand: command => {
   fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(commands));
 }});
 host.send({v:2,seq:1,ts:'',type:'transcript_snapshot',session_id:'inline-test',agent_id:'main',data:{
-  replace:true,mode:'full',items:[{kind:'event',event:{type:'command_result',data:{name:'/fixture',result:Array.from({length:200},(_,i)=>'REPLY_'+String(i+1).padStart(3,'0')).join('\\n')}}}]
+  replace:true,mode:'full',items:[{kind:'event',event:{type:'command_result',data:{name:'/fixture',result:Array.from({length:200},(_,i)=>'REPLY_'+String(i+1).padStart(3,'0')).join('\\n')}}},{kind:'history',role:'assistant',content:'AFTER_COMMAND'}]
 }});
 setTimeout(()=>host.close(),15000).unref();
 `);
@@ -53,8 +53,14 @@ try:
    row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
    col=line.index('Show details')
    keys=b'draft kept'+('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode()
-  elif stage==1 and 'Details' in text: keys=b'\x1b[F'
-  elif stage==2 and 'REPLY_200' in text: keys=b'\x1b'
+  elif stage==1 and 'Expanded result' in text and 'REPLY_003' in text:
+   assert 'Details ·' not in text, 'Expansion replaced the conversation'
+   keys=b'\x1b[F'
+  elif stage==2 and 'REPLY_200' in text and 'Show less' in text:
+   assert 'Esc to collapse' in text
+   row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show less' in line)
+   col=line.index('Show less')
+   keys=('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode()
   elif stage==3 and 'Show details' in text and 'draft kept' in text:
    if not resized:
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
@@ -67,8 +73,11 @@ try:
    row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
    col=line.index('Show details')
    keys=('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode();stage=39
-  elif stage==40 and 'Details' in text:
-   keys=b'\x1b'
+  elif stage==40 and 'Expanded result' in text and 'REPLY_003' in text:
+   assert 'Details ·' not in text
+   # Scrolling within a long expanded card must keep Esc on that card,
+   # not select the following assistant message.
+   keys=b'\x1b[<65;10;5M\x1b[<65;10;5M\x1b'
   elif stage==41 and 'Show details' in text:
    keys=b'\t\t/tui inline\r';stage=4
   elif stage==5 and 'Message' in text and output.count(b'\x1b[?1049l')==1:
@@ -112,5 +121,5 @@ try {
   assert.ok(capabilities.some(caps => caps.view === 'fullscreen' && caps.size.rows === 24 && caps.size.columns === 80));
   assert.equal(capabilities.at(-1).view, 'inline');
   assert.match(capabilities.at(-1).detection, /active queries not implemented/);
-  console.log('PASS: mouse-click command details in both views, complete result, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
+  console.log('PASS: in-conversation expansion in both views, complete result, Show less click and Esc collapse, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

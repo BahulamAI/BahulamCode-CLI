@@ -95,11 +95,11 @@ try:
   elif stage==5 and b'Command/help' in screen: keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
   elif stage==6 and diagnostics and b'Bahulamterminalcapabilities' in screen:
    keys=b'\t\r';stage=39
-  elif stage==40 and b'Details' in screen and b'activequeriesnotimplemented' in screen:
+  elif stage==40 and b'Expandedresult' in screen and b'activequeriesnotimplemented' in screen:
    assert b'Rustviewfullscreen' in screen and b'Viewport120x36' in screen
    assert b'Colordepthtruecolor(Nodehost)' in screen and b'Mousecaptureinactive' in screen
    keys=b'\x1b'
-  elif stage==41 and b'Details' not in screen:
+  elif stage==41 and b'Expandedresult' not in screen and b'Showdetails' in screen:
    keys=b'\t\t/clear\r';stage=6
   elif stage==6 and b'Command/modelstatus' in screen: keys=b'/clear\r'
   elif stage==7 and b'mode:cleared' in screen:
