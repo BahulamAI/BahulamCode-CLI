@@ -30,7 +30,7 @@ import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
-import { rustTranscriptItems, rustResumeItems } from '../daemon/rust-tui-snapshot.mjs';
+import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage } from '../daemon/rust-tui-snapshot.mjs';
 import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
@@ -2156,6 +2156,7 @@ async function sendRustTranscriptSnapshot(mode = 'current') {
     await _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'transcript_snapshot', session_id: sessionId,
       agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: index === 0, items: chunks[index] } });
   }
+  sendRustSessionState();
 }
 
 function sendRustSessionState() {
@@ -2164,7 +2165,7 @@ function sendRustSessionState() {
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
-    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', status: session.model || 'ready' } });
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', usage: rustSessionUsage(session) } });
 }
 
 function renderEvent(event) {
@@ -4749,6 +4750,7 @@ export async function startTerminalRepl() {
       rustSnapshotItems: [],
       rustSnapshotHistoryLength: 0,
       startTime: Date.now(),
+      rustUsageBaseline: null,
       inputTokens: 0,
       outputTokens: 0,
       lastTurnInputTokens: 0,
@@ -4951,6 +4953,7 @@ export async function startTerminalRepl() {
     for (const result of registered) if (!result.success) hydrationFailures.push(result.root);
 
     onProgress('preparing replay', 92);
+    session.rustUsageBaseline = rustUsageBaseline(session, detail.meta);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
     session.rustSnapshotHistoryLength = displayHistory.length;
@@ -6787,6 +6790,7 @@ export async function startTerminalRepl() {
         }
         if (isInputDockMounted()) moveToContent();
         renderEvent(event);
+        if (event.type === 'complete' || event.type === 'session_info') sendRustSessionState();
         focusExecutionInput();
 
         if (event.type === 'content_partial') {
@@ -6874,6 +6878,7 @@ export async function startTerminalRepl() {
       session.agentHistory.push({ role: 'assistant', content: assistantContent });
     }
 
+    sendRustSessionState();
     showPrompt();
     if (executionInputBuffer) {
       replaceReadlineLine(executionInputBuffer);

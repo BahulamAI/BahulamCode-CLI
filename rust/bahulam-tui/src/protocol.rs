@@ -197,6 +197,16 @@ pub struct UsageUpdateData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_estimated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_estimated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_agent: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -248,6 +258,8 @@ pub struct SessionStateData {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommandCatalogData {

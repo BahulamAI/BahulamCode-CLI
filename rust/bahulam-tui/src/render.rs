@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
 use std::sync::OnceLock;
@@ -390,6 +390,78 @@ fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     }
 }
 
+fn transcript_rect(area: Rect, inline: bool) -> Rect {
+    area.inner(Margin {
+        horizontal: if inline { 1 } else { 2 },
+        vertical: if inline { 0 } else { 1 },
+    })
+}
+
+/// Locate the actual painted details action, including wrapped rows and tail-follow.
+#[allow(clippy::too_many_arguments)]
+pub fn details_at(
+    model: &Model,
+    area: Rect,
+    input: &str,
+    inline: bool,
+    expanded: &HashSet<usize>,
+    theme: &str,
+    agent_filter: Option<&str>,
+    scroll: u16,
+    position: Position,
+) -> Option<usize> {
+    if model.interaction.is_some() {
+        return None;
+    }
+    let layout = if inline {
+        inline_layout(area, input, model.approval.is_some())
+    } else {
+        view_layout(area, input, model.approval.is_some())
+    };
+    let inner = transcript_rect(layout.columns[0], inline);
+    if !inner.contains(position) {
+        return None;
+    }
+    let geometry = history_geometry(model, area, input, inline, expanded, theme, agent_filter);
+    let offset = if scroll == u16::MAX {
+        geometry.end
+    } else {
+        scroll
+    };
+    let row = offset as usize + (position.y - inner.y) as usize;
+    let (index, start) = geometry
+        .cards
+        .iter()
+        .rev()
+        .find(|(_, start)| *start as usize <= row)?;
+    let card = &model.cards[*index];
+    if card.is_message() {
+        return None;
+    }
+    let lines = wrap_rows(
+        card_lines(
+            card,
+            *index,
+            expanded,
+            None,
+            palette(theme),
+            inner.width as usize,
+            usize::MAX,
+        ),
+        inner.width as usize,
+    );
+    let line = lines.get(row - *start as usize)?;
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let action = text.find("Show details")?;
+    let left = UnicodeWidthStr::width(&text[..action]);
+    let col = (position.x - inner.x) as usize;
+    (col >= left && col < left + "Show details".len()).then_some(*index)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum MousePanel {
     Transcript,
@@ -565,7 +637,7 @@ pub fn draw_with_view(
             expanded,
             focused,
             p,
-            columns[0].width.saturating_sub(if inline { 0 } else { 2 }) as usize,
+            transcript_rect(columns[0], inline).width as usize,
             agent_filter,
             scroll,
             rows[1].height.saturating_sub(if inline { 0 } else { 2 }) as usize,
@@ -597,6 +669,7 @@ pub fn draw_with_view(
     };
     frame.render_widget(
         Paragraph::new(transcript)
+            .style(Style::default().fg(p.text))
             .wrap(Wrap { trim: false })
             .scroll((
                 if detail_card.is_some() {
@@ -608,6 +681,7 @@ pub fn draw_with_view(
             ))
             .block({
                 let block = Block::default()
+                    .padding(Padding::horizontal(1))
                     .borders(if inline { Borders::NONE } else { Borders::ALL })
                     .border_style(Style::default().fg(if interactive && focus_panel == 1 {
                         p.accent
@@ -871,7 +945,7 @@ pub fn draw_with_view(
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
     let input_width = rows[3]
         .width
-        .saturating_sub(if inline { 0 } else { 2 })
+        .saturating_sub(if inline { 2 } else { 4 })
         .max(1) as usize;
     let cursor_line_index = input[..cursor.min(input.len())].matches('\n').count();
     let cursor_line = input[..cursor.min(input.len())]
@@ -898,6 +972,7 @@ pub fn draw_with_view(
             .scroll((prompt_scroll.min(u16::MAX as usize) as u16, 0))
             .block(
                 Block::default()
+                    .padding(Padding::horizontal(1))
                     .borders(if inline { Borders::TOP } else { Borders::ALL })
                     .border_style(Style::default().fg(if model.approval.is_some() {
                         p.warning
@@ -929,7 +1004,7 @@ pub fn draw_with_view(
         frame.set_cursor_position(Position::new(
             rows[3]
                 .x
-                .saturating_add(if inline { 0 } else { 1 })
+                .saturating_add(if inline { 1 } else { 2 })
                 .saturating_add(col_offset.min(u16::MAX as usize) as u16)
                 .min(rows[3].right().saturating_sub(1)),
             rows[3]
@@ -961,10 +1036,30 @@ pub fn draw_with_view(
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };
     let state = safe_text(&model.status);
-    let metrics = format!(
-        "{} in · {} out · ctx {:.0}% · ${:.4}",
-        model.input_tokens, model.output_tokens, model.context_used_pct, model.cost
-    );
+    let tokens = if model.usage_known {
+        format!("{} in · {} out", model.input_tokens, model.output_tokens)
+    } else {
+        "usage —".into()
+    };
+    let context = if model.context_known {
+        format!(
+            "ctx {}{:.1}%",
+            if model.context_estimated { "~" } else { "" },
+            model.context_used_pct
+        )
+    } else {
+        "ctx —".into()
+    };
+    let cost = if model.cost_known {
+        format!(
+            "{}${:.4}",
+            if model.cost_estimated { "~" } else { "" },
+            model.cost
+        )
+    } else {
+        "cost —".into()
+    };
+    let metrics = format!("{tokens} · {context} · {cost}");
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("● ", Style::default().fg(p.info)),
@@ -1207,9 +1302,9 @@ pub fn history_geometry(
     } else {
         view_layout(area, input, model.approval.is_some())
     };
-    let border = if inline { 0 } else { 2 };
-    let width = layout.columns[0].width.saturating_sub(border) as usize;
-    let page = layout.columns[0].height.saturating_sub(border).max(1);
+    let inner = transcript_rect(layout.columns[0], inline);
+    let width = inner.width as usize;
+    let page = inner.height.max(1);
     let p = palette(theme);
     let mut total = 0usize;
     let mut cards = Vec::new();
@@ -1302,7 +1397,7 @@ fn detail_lines(card: &crate::model::Card, p: Palette) -> Vec<Line<'static>> {
             Style::default().fg(p.muted),
         ))];
     }
-    format_markdown(&detail.lines().collect::<Vec<_>>(), p)
+    format_markdown(&detail.lines().collect::<Vec<_>>(), p, card.title == "Diff")
 }
 
 fn card_lines(
@@ -1360,19 +1455,35 @@ fn card_lines(
         p.text
     };
     let metadata_width = UnicodeWidthStr::width(card.metadata.as_str()).min(18);
-    let fixed_width = 3 + 12 + 1 + card.status.len().min(9) + metadata_width + 5;
-    let primary = middle_ellipsis(&safe_text(&card.primary), width.saturating_sub(fixed_width));
+    let heading_width = if !is_assistant || card.title == "Agent report" {
+        3 + UnicodeWidthStr::width(display_title).max(12)
+            + 1
+            + UnicodeWidthStr::width(display_status).max(9)
+            + 1
+    } else {
+        3
+    };
+    let fixed_width = heading_width + metadata_width;
+    let primary = middle_ellipsis(
+        &safe_text(&card.primary),
+        width.saturating_sub(fixed_width + 2),
+    );
     let metadata = if card.metadata.is_empty() {
         String::new()
     } else {
-        safe_text(&card.metadata)
+        middle_ellipsis(
+            &safe_text(&card.metadata),
+            width.saturating_sub(heading_width).min(18),
+        )
     };
     let gap = if metadata.is_empty() {
         0
     } else {
-        width
-            .saturating_sub(fixed_width + UnicodeWidthStr::width(primary.as_str()))
-            .max(2)
+        width.saturating_sub(
+            heading_width
+                + UnicodeWidthStr::width(metadata.as_str())
+                + UnicodeWidthStr::width(primary.as_str()),
+        )
     };
     let mut heading = vec![Span::styled(
         format!("{focus}{glyph} "),
@@ -1487,12 +1598,7 @@ fn card_lines(
             .collect()
     };
     let markdown_lines: Vec<&str> = body_lines.iter().map(String::as_str).collect();
-    let body_palette = if is_assistant || is_user {
-        p
-    } else {
-        Palette { text: p.muted, ..p }
-    };
-    let mut rendered_body = format_markdown(&markdown_lines, body_palette);
+    let mut rendered_body = format_markdown(&markdown_lines, p, card.title == "Diff");
     if is_assistant {
         for line in &mut rendered_body {
             line.spans
@@ -1518,7 +1624,7 @@ fn card_lines(
                 format!("   ＋ Show details{hint}"),
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · Enter", Style::default().fg(p.muted)),
+            Span::styled(" · Click / Enter", Style::default().fg(p.muted)),
             if card.detail_loading {
                 Span::styled(" · loading…", Style::default().fg(p.warning))
             } else {
@@ -1531,6 +1637,7 @@ fn card_lines(
                 .style(Style::default().fg(p.muted)),
         );
     }
+    lines.push(Line::default());
     lines
 }
 
@@ -1612,7 +1719,7 @@ fn middle_ellipsis(value: &str, max_width: usize) -> String {
     format!("{left}…{right}")
 }
 
-fn format_markdown(lines: &[&str], p: Palette) -> Vec<Line<'static>> {
+fn format_markdown(lines: &[&str], p: Palette, diff: bool) -> Vec<Line<'static>> {
     let mut code = false;
     let mut language = String::new();
     lines
@@ -1634,15 +1741,20 @@ fn format_markdown(lines: &[&str], p: Palette) -> Vec<Line<'static>> {
                     Style::default().fg(p.muted).add_modifier(Modifier::ITALIC),
                 ));
             }
+            if diff || (code && matches!(language.as_str(), "diff" | "patch")) {
+                let color = if line.starts_with('+') {
+                    p.success
+                } else if line.starts_with('-') {
+                    p.danger
+                } else if line.starts_with("@@") {
+                    p.info
+                } else {
+                    p.text
+                };
+                return Line::from(format!("   {line}")).style(Style::default().fg(color));
+            }
             if code {
-                let _ = &language;
                 return Line::from(code_spans(&line, p));
-            }
-            if line.starts_with('+') {
-                return Line::from(format!("   {line}")).style(Style::default().fg(p.success));
-            }
-            if line.starts_with('-') {
-                return Line::from(format!("   {line}")).style(Style::default().fg(p.danger));
             }
             let trimmed = line.trim_start();
             if trimmed.starts_with("error:")
@@ -1671,7 +1783,7 @@ fn format_markdown(lines: &[&str], p: Palette) -> Vec<Line<'static>> {
             {
                 return Line::from(vec![
                     Span::styled("   • ", Style::default().fg(p.accent)),
-                    Span::raw(item.to_owned()),
+                    Span::styled(item.to_owned(), Style::default().fg(p.text)),
                 ]);
             }
             if trimmed.starts_with('|') && trimmed.ends_with('|') {
@@ -1800,11 +1912,14 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
             })
             .min_by_key(|entry| entry.0);
         let Some((index, marker, modifier, color)) = next else {
-            out.push(Span::raw(rest.to_owned()));
+            out.push(Span::styled(rest.to_owned(), Style::default().fg(p.text)));
             break;
         };
         if index > 0 {
-            out.push(Span::raw(rest[..index].to_owned()));
+            out.push(Span::styled(
+                rest[..index].to_owned(),
+                Style::default().fg(p.text),
+            ));
         }
         let content_start = index + marker.len();
         if let Some(close) = rest[content_start..].find(marker) {
@@ -1826,6 +1941,23 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
 mod row_measurement_tests {
     use super::*;
     use crate::model::Card;
+
+    #[test]
+    fn markdown_bullets_use_text_and_diff_rows_use_change_colors() {
+        for theme in ["dark", "light", "ansi", "high-contrast"] {
+            let p = resolved_palette(theme, "truecolor", &serde_json::Value::Null);
+            let prose = format_markdown(&["- completed a task", "ordinary text"], p, false);
+            assert_eq!(prose[0].spans[0].content, "   • ");
+            assert_eq!(prose[0].spans[1].style.fg, Some(p.text));
+            assert_eq!(prose[1].spans[1].style.fg, Some(p.text));
+            let diff = format_markdown(&["- removed", "+ added"], p, true);
+            assert_eq!(diff[0].style.fg, Some(p.danger));
+            assert_eq!(diff[1].style.fg, Some(p.success));
+            let fenced = format_markdown(&["```diff", "- old", "+ new", "```"], p, false);
+            assert_eq!(fenced[1].style.fg, Some(p.danger));
+            assert_eq!(fenced[2].style.fg, Some(p.success));
+        }
+    }
 
     #[test]
     fn history_measurements_follow_streams_resize_fold_and_replacement() {

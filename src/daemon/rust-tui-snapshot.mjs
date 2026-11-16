@@ -1,3 +1,4 @@
+import { modelContextWindowInfo } from '../core/resume-mode.mjs';
 import { mergeResumeReplayItems } from '../terminal/repl-format.mjs';
 // Preserve the accepted resume replay, then include messages added in either view.
 export function rustTranscriptItems(session) {
@@ -54,4 +55,30 @@ export function rustResumeItems(users, replay, history) {
     }));
   }
   return output;
+}
+
+// Presentation-only totals: use the core's accounting, with saved usage as a
+// baseline on resume. Never add replay frames to billing or agent context.
+export function rustUsageBaseline(session, meta = {}) {
+  return { input: session.inputTokens || 0, output: session.outputTokens || 0,
+    cost: session.totalCost || 0, savedInput: meta.inputTokens || 0,
+    savedOutput: meta.outputTokens || 0, savedCost: meta.costUsd || 0 };
+}
+export function rustSessionUsage(session) {
+  const base = session.rustUsageBaseline;
+  const input = Math.max(0, (session.inputTokens || 0) - (base?.input || 0)) + (base?.savedInput || 0);
+  const output = Math.max(0, (session.outputTokens || 0) - (base?.output || 0)) + (base?.savedOutput || 0);
+  const cost = Math.max(0, (session.totalCost || 0) - (base?.cost || 0)) + (base?.savedCost || 0);
+  // Cumulative turn input counts include repeated tool-loop requests. They are
+  // not the size of the current prompt. Estimate only the actual agent history.
+  const history = session.agentHistory || session.history || [];
+  const bytes = history.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify({
+    role: message.role, content: message.content, tool_calls: message.tool_calls,
+    tool_call_id: message.tool_call_id,
+  })), 0);
+  const window = modelContextWindowInfo(session.model, session.modelLimits?.coder);
+  return { input_tokens: input, output_tokens: output, cost_usd: cost,
+    cost_estimated: !session.costAccurate, context_tokens: Math.ceil(bytes / 4),
+    context_used_pct: bytes / 4 / window.tokens * 100, context_estimated: true,
+    context_window: window.tokens, context_window_source: window.source };
 }

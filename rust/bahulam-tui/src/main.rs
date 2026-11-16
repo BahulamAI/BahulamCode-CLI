@@ -1,14 +1,14 @@
 use bahulam_tui::{
     capabilities::TerminalCapabilities,
     model::safe_text,
-    render::{draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
+    render::{details_at, draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
 };
 use crossterm::{
     cursor::Show,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     style::ResetColor,
@@ -435,7 +435,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Event::Key(key) => key.kind == KeyEventKind::Press,
                 Event::Mouse(mouse) => matches!(
                     mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::Down(MouseButton::Left)
                 ),
                 Event::Paste(_) | Event::Resize(_, _) | Event::FocusGained => true,
                 _ => false,
@@ -941,6 +943,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::Mouse(mouse) if mouse_enabled => {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                        && detail_card.is_none()
+                    {
+                        let hit = model.lock().ok().and_then(|state| {
+                            details_at(
+                                &state,
+                                terminal.get_frame().area(),
+                                &input,
+                                inline_mode,
+                                &expanded,
+                                &theme,
+                                agent_filter.as_deref(),
+                                if follow { u16::MAX } else { scroll },
+                                ratatui::layout::Position::new(mouse.column, mouse.row),
+                            )
+                        });
+                        if let Some(index) = hit {
+                            focused_card = index;
+                            focus_panel = 1;
+                            detail_card = Some(index);
+                            detail_scroll = 0;
+                            // Preserve the conversation position when closing the details view.
+                            if follow {
+                                scroll = model
+                                    .lock()
+                                    .map(|state| {
+                                        history_geometry(
+                                            &state,
+                                            terminal.get_frame().area(),
+                                            &input,
+                                            inline_mode,
+                                            &expanded,
+                                            &theme,
+                                            agent_filter.as_deref(),
+                                        )
+                                        .end
+                                    })
+                                    .unwrap_or(0);
+                            }
+                            follow = false;
+                            if let Some(payload_ref) = model
+                                .lock()
+                                .ok()
+                                .and_then(|mut state| state.request_details(index))
+                            {
+                                write_command(
+                                    &command_writer,
+                                    serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+                                )?;
+                            }
+                        }
+                        continue;
+                    }
                     let down = match mouse.kind {
                         MouseEventKind::ScrollDown => true,
                         MouseEventKind::ScrollUp => false,

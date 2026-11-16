@@ -295,9 +295,9 @@ function project(type, src, identity) {
       return { items: src.items || src.steps || src.plan?.items || [] };
     case 'usage_update': {
       const usage = src.usage || src;
-      return { input_tokens: usage.input_tokens ?? usage.prompt_tokens ?? usage.prompt,
-        output_tokens: usage.output_tokens ?? usage.completion_tokens ?? usage.completion,
-        cache_tokens: usage.cache_tokens ?? usage.cached_tokens ?? usage.cached,
+      return { input_tokens: usage.input_tokens ?? usage.total_input_tokens ?? usage.prompt_tokens ?? usage.prompt,
+        output_tokens: usage.output_tokens ?? usage.total_output_tokens ?? usage.completion_tokens ?? usage.completion,
+        cache_tokens: usage.cache_tokens ?? usage.cache_read_input_tokens ?? usage.cached_tokens ?? usage.cached,
         context_used_pct: usage.context_used_pct, cost_usd: usage.cost_usd ?? usage.total_cost,
         per_agent: usage.per_agent || {} };
     }

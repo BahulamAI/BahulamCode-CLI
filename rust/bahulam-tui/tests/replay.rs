@@ -513,18 +513,25 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for expected in [
-                "Agents",
-                "Plan",
-                "Agent report",
-                "Read source",
-                "120 in · 35 out",
-            ] {
+            for expected in ["Agents", "Plan", "Read source", "120 in · 35 out"] {
                 assert!(
                     text.contains(expected),
                     "missing {expected} at {width}x{height}"
                 );
             }
+            let mut tail = Terminal::new(TestBackend::new(width, height)).unwrap();
+            tail.draw(|frame| draw(frame, &model, u16::MAX)).unwrap();
+            let tail_text = tail
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                tail_text.contains("Agent report"),
+                "agent report must remain reachable by scrolling"
+            );
             // Sub-agent internals stay out of the main conversation; the
             // reviewer's own transcript is where its tool card appears.
             assert!(
@@ -671,6 +678,7 @@ fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
     let mut model = Model::default();
     model.status = "Ready".into();
     model.input_tokens = 100;
+    model.usage_known = true;
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal
         .draw(|frame| {
@@ -730,6 +738,139 @@ fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
         input_row[draft_column].style().bg,
         Some(expected_background)
     );
+}
+
+#[test]
+fn usage_state_is_absolute_and_historical_or_agent_usage_cannot_replace_it() {
+    let mut model = Model::default();
+    let usage = event(
+        1,
+        "session_state",
+        "main",
+        json!({"usage":{
+            "input_tokens":1234,"output_tokens":56,"cost_usd":0.2345,
+            "context_used_pct":23.4,"context_estimated":true,"cost_estimated":true
+        }}),
+    );
+    model.apply(&usage).unwrap();
+    model.apply(&usage).unwrap();
+    assert_eq!(model.input_tokens, 1234);
+    assert_eq!(model.output_tokens, 56);
+    assert_eq!(model.cost, 0.2345);
+    assert!(
+        model.usage_known && model.context_known && model.cost_known && model.context_estimated
+    );
+    model
+        .apply(&event(
+            2,
+            "usage_update",
+            "child",
+            json!({"input_tokens":9}),
+        ))
+        .unwrap();
+    assert_eq!(model.input_tokens, 1234);
+    model
+        .apply(&event(
+            1,
+            "transcript_snapshot",
+            "main",
+            json!({"replace":true,"items":[
+                {"kind":"event","event":{"type":"usage_update","data":{"input_tokens":999999}}}
+            ]}),
+        ))
+        .unwrap();
+    assert!(!model.usage_known);
+    model.apply(&usage).unwrap();
+    assert_eq!(model.input_tokens, 1234);
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    terminal.draw(|frame| draw(frame, &model, 0)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("1234 in · 56 out · ctx ~23.4% · ~$0.2345"));
+}
+
+#[test]
+fn details_click_targets_the_painted_card_after_scroll_resize_and_approval() {
+    use bahulam_tui::render::{details_at, draw_with_view};
+    let mut model = Model::default();
+    for i in 0..20 {
+        model
+            .apply(&event(
+                i + 1,
+                "command_result",
+                "main",
+                json!({
+                    "name": format!("/tool-{i}"), "result": "result\n".repeat(20)
+                }),
+            ))
+            .unwrap();
+    }
+    let expanded = HashSet::new();
+    for approval in [false, true] {
+        if approval {
+            model.apply(&event(21, "approval_required", "main", json!({
+                "apr_id":"a", "name":"shell", "args":{"command":"inspect"}, "reason":"review"
+            }))).unwrap();
+        }
+        for inline in [true, false] {
+            for (width, height) in [(120, 36), (60, 28)] {
+                for scroll in [0, u16::MAX] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            draw_with_view(
+                                frame, &model, scroll, true, "dark", "draft", 5, &expanded, None,
+                                true, None, None, 0, None, 0, inline,
+                            )
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let mut hits = 0;
+                    for (y, row) in buffer.content.chunks(width as usize).enumerate() {
+                        // Cells, rather than UTF-8 byte offsets, determine mouse coordinates.
+                        let symbols: Vec<_> = row.iter().map(|cell| cell.symbol()).collect();
+                        for x in 0..symbols.len().saturating_sub(12) {
+                            if symbols[x..x + 12].concat() != "Show details" {
+                                continue;
+                            }
+                            let hit = details_at(
+                                &model,
+                                buffer.area,
+                                "draft",
+                                inline,
+                                &expanded,
+                                "dark",
+                                None,
+                                scroll,
+                                Position::new(x as u16 + 1, y as u16),
+                            );
+                            let card = &model.cards[hit.expect("painted action must be clickable")];
+                            assert!(!card.is_message());
+                            hits += 1;
+                        }
+                    }
+                    assert!(hits > 0, "fixture must expose a details action: approval={approval} inline={inline} width={width} height={height} scroll={scroll}");
+                    assert!(details_at(
+                        &model,
+                        buffer.area,
+                        "draft",
+                        inline,
+                        &expanded,
+                        "dark",
+                        None,
+                        scroll,
+                        Position::new(0, height - 1)
+                    )
+                    .is_none());
+                }
+            }
+        }
+    }
 }
 
 #[test]

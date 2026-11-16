@@ -661,3 +661,42 @@ Live check: run `/tui doctor` in inline, inspect its details with Tab/Enter, res
 and run it again. Repeat in `/tui fullscreen`; the report should show that view
 and its current dimensions. Use `/tui default` to return to Node. Clipboard/editor
 handoffs and OS integrations remain separate reviewed batches after acceptance.
+
+## Usage footer, spacing, palette and clickable details
+
+Checkpoint `f12e67b` preserves the capability-diagnostics batch. This follow-up
+fixes the footer's missing connection to Node accounting: Rust receives absolute
+usage snapshots at attachment, transcript replacement, model/session changes and
+turn completion. Input/output and cost come from the existing Node counters.
+On resume, the shared JSONL reader's saved totals form a presentation-only baseline;
+subsequent core-accounted usage is added once. Repeated resume/view changes do not
+accumulate replay events, and `/new` resets the display. Child-agent usage cannot
+overwrite the main session footer. Unavailable fields show a dash, not a false zero.
+
+`ctx ~…%` is explicitly an estimate of the current agent history (UTF-8 bytes / 4)
+against the backend model limit or existing CLI fallback. It excludes unsent
+system/tool-definition overhead and is not a provider-reported context measurement.
+Cumulative input usage, which may include many tool-loop requests, is never used
+as context size. Estimated local cost has a `~` prefix. Billing, request content,
+JSONL format and the Node visual renderer are unchanged.
+
+Both Rust layouts now have a one-column horizontal content inset in conversation
+and input, plus a blank line between cards. Layout measurement, cursor placement
+and click coordinates use the same inset. Ordinary text uses the selected palette's
+text color; operational metadata remains muted and statuses keep their semantic
+colors. Markdown list bullets no longer get mistaken for red diff removals.
+Diff cards and fenced diff/patch blocks retain addition/removal coloring.
+
+The details overlay and stored-payload loading already worked with Enter; mouse
+clicks were missing. The painted `Show details` label now opens that same overlay
+in inline and fullscreen, including while inspecting a pending approval. It
+does not approve anything. Escape returns to the conversation with the draft
+preserved. Picker modals retain input ownership. Assistant messages stay full;
+only operational cards expose details. Mouse capture must be enabled for clicks.
+
+Validation includes Rust model/palette/cell hit-testing, Node usage-baseline tests,
+real CLI saved-usage and `/new` reset checks, mouse-click details in both views,
+approval/full-message, four-size resize, scrolling and picker PTY regressions.
+Protocol generation and request/cache invariance checks pass. Idle rendering still
+produces zero writes (approximately 481 ms first page-back, 18 ms warm page-back,
+119 ms command response locally). Live emulator acceptance remains required.

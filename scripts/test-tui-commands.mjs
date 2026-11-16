@@ -43,6 +43,7 @@ for (const mode of ['fresh startup', 'default Rust startup', 'missing Rust binar
       { role: 'assistant', content: 'SAVED_REPLY_FROM_DISK' },
     ].map(message => ({ type: message.role, cwd: project, sessionId: 'command-fixture',
       timestamp: new Date().toISOString(), message }));
+    records[1].message.usage = { input_tokens: 1234, output_tokens: 56 };
     const savedFile = path.join(sessions, 'command-fixture.jsonl');
     const savedBytes = records.map(record => JSON.stringify(record)).join('\n') + '\n';
     fs.writeFileSync(savedFile, savedBytes);
@@ -87,8 +88,8 @@ try:
    keys=b'/res'
   elif stage==1 and b'/resume' in screen: keys=b'\t\r'
   elif stage==2 and b'Chooseasavedtranscript.' in screen: keys=b'\r'
-  elif stage==3 and b'SAVED_REPLY_FROM_DISK' in screen and (not startup or b'AskBahulam' in screen): keys=b'/new\r'
-  elif stage==4 and b'mode:newsession' in screen:
+  elif stage==3 and b'SAVED_REPLY_FROM_DISK' in screen and b'1234in' in screen and b'56out' in screen and (not startup or b'AskBahulam' in screen): keys=b'/new\r'
+  elif stage==4 and b'mode:newsession' in screen and b'0in' in screen and b'0out' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, '/new left the old reply on screen'
    keys=b'/help\r'
   elif stage==5 and b'Command/help' in screen: keys=b'/tui doctor\r' if diagnostics else b'/model status\r'

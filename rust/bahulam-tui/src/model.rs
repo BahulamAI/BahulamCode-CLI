@@ -57,6 +57,11 @@ pub struct Model {
     pub output_tokens: u64,
     pub cost: f64,
     pub context_used_pct: f64,
+    pub usage_known: bool,
+    pub cost_known: bool,
+    pub context_known: bool,
+    pub context_estimated: bool,
+    pub cost_estimated: bool,
     pub status: String,
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
@@ -196,6 +201,41 @@ impl Model {
         format!("Agent: {}", if name.is_empty() { agent } else { name })
     }
 
+    fn apply_usage(&mut self, data: &Value) {
+        if let Some(value) = data
+            .get("input_tokens")
+            .or_else(|| data.get("prompt"))
+            .and_then(Value::as_u64)
+        {
+            self.input_tokens = value;
+            self.usage_known = true;
+        }
+        if let Some(value) = data
+            .get("output_tokens")
+            .or_else(|| data.get("completion"))
+            .and_then(Value::as_u64)
+        {
+            self.output_tokens = value;
+            self.usage_known = true;
+        }
+        if let Some(value) = data.get("cost_usd").and_then(Value::as_f64) {
+            self.cost = value;
+            self.cost_known = true;
+        }
+        if let Some(value) = data.get("context_used_pct").and_then(Value::as_f64) {
+            self.context_used_pct = value;
+            self.context_known = true;
+        }
+        self.context_estimated = data
+            .get("context_estimated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        self.cost_estimated = data
+            .get("cost_estimated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+
     pub fn request_details(&mut self, index: usize) -> Option<String> {
         let card = self.cards.get_mut(index)?;
         if card.detail.is_some() {
@@ -252,6 +292,9 @@ impl Model {
             self.last_seq = 0;
             let replace = event.data.get("replace").and_then(Value::as_bool) != Some(false);
             if replace {
+                self.usage_known = false;
+                self.cost_known = false;
+                self.context_known = false;
                 self.cards.clear();
                 self.agents.clear();
                 self.plan.clear();
@@ -431,6 +474,9 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "session_state" {
+            if let Some(usage) = event.data.get("usage") {
+                self.apply_usage(usage);
+            }
             self.cwd = text(&event.data, "cwd");
             self.model = text(&event.data, "model");
             if !text(&event.data, "status").is_empty() {
@@ -821,25 +867,8 @@ impl Model {
                 }
             }
             "usage_update" | "tokens_used" => {
-                if let Some(value) = data
-                    .get("input_tokens")
-                    .or_else(|| data.get("prompt"))
-                    .and_then(Value::as_u64)
-                {
-                    self.input_tokens = value;
-                }
-                if let Some(value) = data
-                    .get("output_tokens")
-                    .or_else(|| data.get("completion"))
-                    .and_then(Value::as_u64)
-                {
-                    self.output_tokens = value;
-                }
-                if let Some(value) = data.get("cost_usd").and_then(Value::as_f64) {
-                    self.cost = value;
-                }
-                if let Some(value) = data.get("context_used_pct").and_then(Value::as_f64) {
-                    self.context_used_pct = value;
+                if !self.replaying_history && agent == "main" {
+                    self.apply_usage(data);
                 }
             }
             "notice" => {

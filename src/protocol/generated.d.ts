@@ -122,6 +122,11 @@ export interface UsageUpdateData {
   cache_tokens?: number;
   context_used_pct?: number;
   cost_usd?: number;
+  context_estimated?: boolean;
+  context_tokens?: number;
+  context_window?: number;
+  context_window_source?: string;
+  cost_estimated?: boolean;
   per_agent?: Record<string, unknown>;
 }
 export interface NoticeData {
@@ -153,6 +158,7 @@ export interface SessionStateData {
   cwd?: string;
   model?: string;
   status?: string;
+  usage?: Record<string, unknown>;
 }
 export interface CommandCatalogData {
   commands: unknown[];

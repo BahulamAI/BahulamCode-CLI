@@ -50,7 +50,9 @@ try:
   if stage==0 and 'Message' in text and 'REPLY_001' in text and 'Show details' in text:
    assert b'\x1b[?1049h' not in output, 'Inline unexpectedly used alternate screen'
    assert 'Show details' in text and 'REPLY_007' not in text, 'Reply was not folded'
-   keys=b'draft kept\t\r'
+   row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
+   col=line.index('Show details')
+   keys=b'draft kept'+('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode()
   elif stage==1 and 'Details' in text: keys=b'\x1b[F'
   elif stage==2 and 'REPLY_200' in text: keys=b'\x1b'
   elif stage==3 and 'Show details' in text and 'draft kept' in text:
@@ -62,7 +64,13 @@ try:
    else: keys=b'\t' + b'\x7f'*10 + b'/tui fullscreen\r'
   elif stage==4 and 'Agents' in text and b'\x1b[?1049h' in output:
    assert 'REPLY_001' in text and 'Show details' in text
-   keys=b'/tui inline\r'
+   row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
+   col=line.index('Show details')
+   keys=('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode();stage=39
+  elif stage==40 and 'Details' in text:
+   keys=b'\x1b'
+  elif stage==41 and 'Show details' in text:
+   keys=b'\t\t/tui inline\r';stage=4
   elif stage==5 and 'Message' in text and output.count(b'\x1b[?1049l')==1:
    assert 'REPLY_001' in text and 'Show details' in text
    keys=b'after switch\r'
@@ -93,7 +101,7 @@ finally:
 try {
   const result = spawnSync('python3', ['-c', python, resultFile, process.execPath, driver], {
     encoding: 'utf8', timeout: 18000, maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_MODE: '', BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
+    env: { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_MODE: '', BAHULAM_TUI_MOUSE: '1', BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
   });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
@@ -104,5 +112,5 @@ try {
   assert.ok(capabilities.some(caps => caps.view === 'fullscreen' && caps.size.rows === 24 && caps.size.columns === 80));
   assert.equal(capabilities.at(-1).view, 'inline');
   assert.match(capabilities.at(-1).detection, /active queries not implemented/);
-  console.log('PASS: inline command preview, complete details, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
+  console.log('PASS: mouse-click command details in both views, complete result, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

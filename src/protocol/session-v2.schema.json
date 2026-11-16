@@ -1029,6 +1029,11 @@
         "cost_usd": {
           "type": "number"
         },
+        "context_estimated": {"type": "boolean"},
+        "context_tokens": {"type": "number"},
+        "context_window": {"type": "number"},
+        "context_window_source": {"type": "string"},
+        "cost_estimated": {"type": "boolean"},
         "per_agent": {
           "type": "object"
         }
@@ -1106,7 +1111,7 @@
     },
     "SessionStateData": {
       "type": "object",
-      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "status": {"type": "string"}},
+      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "status": {"type": "string"}, "usage": {"type": "object"}},
       "required": [],
       "additionalProperties": true
     },
