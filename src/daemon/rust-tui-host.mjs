@@ -9,13 +9,14 @@ import { term } from '../ui/term.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Host the Rust renderer while Node keeps ownership of the coding session. */
-export function startRustTuiHost({ onCommand, onExit } = {}) {
+export function startRustTuiHost({ onCommand, onExit, mode } = {}) {
   const binary = process.env.BAHULAM_TUI_BINARY || path.resolve(here, '../../rust/target/debug/bahulam-tui');
   if (!fs.existsSync(binary)) throw new Error(`Rust terminal client is not built: ${binary}. Run npm run tui:build.`);
   const requestedTheme = (process.env.BAHULAM_THEME || '').toLowerCase();
   const child = spawn(binary, ['--stdio'], {
     stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
     env: { ...process.env,
+      BAHULAM_TUI_MODE: mode || process.env.BAHULAM_TUI_MODE || 'fullscreen',
       BAHULAM_THEME: ['dark', 'light', 'high-contrast', 'ansi'].includes(requestedTheme) ? requestedTheme : term().appearance,
       BAHULAM_TUI_COLOR_LEVEL: term().colorLevel,
       BAHULAM_TUI_PALETTE: JSON.stringify({ dark: TOKENS, light: LIGHT_TOKENS }),

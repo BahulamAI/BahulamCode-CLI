@@ -1,6 +1,6 @@
 use bahulam_tui::{
     model::safe_text,
-    render::{draw_with_input, mouse_panel_at, MousePanel},
+    render::{draw_with_view, mouse_panel_at, MousePanel},
     replay,
 };
 use crossterm::{
@@ -13,7 +13,7 @@ use crossterm::{
     style::ResetColor,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, Terminal, TerminalOptions, Viewport};
 use std::{
     collections::HashSet,
     fs::File,
@@ -28,16 +28,43 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+static ALT_SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 fn restore() {
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
         DisableBracketedPaste,
         DisableMouseCapture,
-        LeaveAlternateScreen,
         ResetColor,
         Show
     );
+    if ALT_SCREEN_ACTIVE.swap(false, Ordering::AcqRel) {
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
+fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+    if !inline {
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        ALT_SCREEN_ACTIVE.store(true, Ordering::Release);
+    }
+    execute!(io::stdout(), EnableBracketedPaste)?;
+    Terminal::with_options(
+        CrosstermBackend::new(io::stdout()),
+        TerminalOptions {
+            viewport: if inline {
+                Viewport::Inline(crossterm::terminal::size()?.1.clamp(1, 16))
+            } else {
+                Viewport::Fullscreen
+            },
+        },
+    )
+}
+
+fn resolve_inline(requested: bool) -> bool {
+    // Inline requires a cursor-position reply to preserve existing scrollback.
+    requested && crossterm::cursor::position().is_ok()
 }
 
 fn normalize_paste(text: &str) -> String {
@@ -222,14 +249,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }));
     enable_raw_mode()?;
     let _guard = TerminalGuard;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    let mut inline_mode = resolve_inline(
+        stdio && std::env::var("BAHULAM_TUI_MODE").is_ok_and(|mode| mode == "inline"),
+    );
     // Off by default: mouse reporting suppresses native terminal text selection.
-    let mouse_enabled = std::env::var("BAHULAM_TUI_MOUSE")
+    let mouse_requested = std::env::var("BAHULAM_TUI_MOUSE")
         .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "scroll"));
+    let mut mouse_enabled = mouse_requested && !inline_mode;
+    let mut terminal = open_terminal(inline_mode)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut scroll: u16 = 0;
     let mut follow = stdio;
     let mut seen_transcript_revision = model
@@ -286,7 +316,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let visible_scroll = if follow { u16::MAX } else { scroll };
         terminal.draw(|frame| {
             if let Ok(model) = model.lock() {
-                draw_with_input(
+                draw_with_view(
                     frame,
                     &model,
                     visible_scroll,
@@ -302,6 +332,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     focus_panel,
                     detail_card,
                     detail_scroll,
+                    inline_mode,
                 );
             }
         })?;
@@ -413,7 +444,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             cursor = input.len();
                         }
                     }
-                    KeyCode::Tab => focus_panel = (focus_panel + 1) % 3,
+                    KeyCode::Tab => {
+                        focus_panel = (focus_panel + 1) % if inline_mode { 2 } else { 3 }
+                    }
                     KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
                         if expanded.len() == count {
@@ -592,7 +625,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Enter if focus_panel == 0 && !input.trim().is_empty() => {
                         let prompt = std::mem::take(&mut input);
                         cursor = 0;
+                        let view_command = prompt
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_ascii_lowercase();
                         if stdio
+                            && [
+                                "/tui inline",
+                                "/tui fullscreen",
+                                "/tui full screen",
+                                "/tui full",
+                            ]
+                            .contains(&view_command.as_str())
+                        {
+                            let requested_inline = view_command == "/tui inline";
+                            if requested_inline != inline_mode {
+                                terminal.clear()?;
+                                drop(terminal);
+                                restore();
+                                enable_raw_mode()?;
+                                inline_mode = resolve_inline(requested_inline);
+                                terminal = open_terminal(inline_mode)?;
+                                mouse_enabled = mouse_requested && !inline_mode;
+                                if mouse_enabled {
+                                    execute!(io::stdout(), EnableMouseCapture)?;
+                                }
+                                agent_filter = None;
+                                detail_card = None;
+                                focus_panel = 0;
+                                follow = true;
+                            }
+                        } else if stdio
                             && (prompt.trim() == "/tui"
                                 || prompt.split_whitespace().eq(["/tui", "default"]))
                         {
@@ -804,11 +868,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    let inline_exit_row =
+        inline_mode.then(|| terminal.get_frame().area().bottom().saturating_sub(1));
     drop(terminal);
     restore();
-    if let Ok(model) = model.lock() {
-        for line in model.transcript() {
-            println!("{line}");
+    if let Some(row) = inline_exit_row {
+        // The shell/Node prompt starts below the viewport, not inside the old
+        // composer. Keep the existing transcript; do not print it again.
+        execute!(io::stdout(), crossterm::cursor::MoveTo(0, row))?;
+        write!(io::stdout(), "\r\n")?;
+        io::stdout().flush()?;
+    }
+    if !stdio || !inline_mode {
+        if let Ok(model) = model.lock() {
+            for line in model.transcript() {
+                println!("{line}");
+            }
         }
     }
     Ok(())

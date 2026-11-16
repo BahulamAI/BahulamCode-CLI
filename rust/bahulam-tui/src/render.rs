@@ -364,6 +364,28 @@ fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     }
 }
 
+fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
+    let prompt_height = if approval {
+        7
+    } else {
+        (input.lines().count() as u16 + 3).clamp(4, 7)
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(0),
+        Constraint::Min(3),
+        Constraint::Length(0),
+        Constraint::Length(prompt_height),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    ViewLayout {
+        columns: [rows[1], Rect::default()],
+        rows,
+        compact: true,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum MousePanel {
     Transcript,
@@ -431,13 +453,56 @@ pub fn draw_with_input(
     detail_card: Option<usize>,
     detail_scroll: u16,
 ) {
+    draw_with_view(
+        frame,
+        model,
+        scroll,
+        live,
+        theme,
+        input,
+        cursor,
+        expanded,
+        focused,
+        interactive,
+        agent_filter,
+        focused_agent,
+        focus_panel,
+        detail_card,
+        detail_scroll,
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_with_view(
+    frame: &mut Frame,
+    model: &Model,
+    scroll: u16,
+    live: bool,
+    theme: &str,
+    input: &str,
+    cursor: usize,
+    expanded: &HashSet<usize>,
+    focused: Option<usize>,
+    interactive: bool,
+    agent_filter: Option<&str>,
+    focused_agent: Option<usize>,
+    focus_panel: u8,
+    detail_card: Option<usize>,
+    detail_scroll: u16,
+    inline: bool,
+) {
     let p = palette(theme);
     let area = frame.area();
     let ViewLayout {
         rows,
         columns,
         compact,
-    } = view_layout(area, input, model.approval.is_some());
+    } = if inline {
+        inline_layout(area, input, model.approval.is_some())
+    } else {
+        view_layout(area, input, model.approval.is_some())
+    };
     let header = Line::from(vec![
         Span::styled(
             " BAHULAM ",
@@ -519,13 +584,17 @@ pub fn draw_with_input(
             ))
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(if inline { Borders::NONE } else { Borders::ALL })
                     .border_style(Style::default().fg(if interactive && focus_panel == 1 {
                         p.accent
                     } else {
                         p.border
                     }))
-                    .title(title),
+                    .title(if inline && detail_card.is_none() {
+                        String::new()
+                    } else {
+                        title
+                    }),
             ),
         columns[0],
     );
@@ -764,7 +833,7 @@ pub fn draw_with_input(
             .scroll((prompt_scroll.min(u16::MAX as usize) as u16, 0))
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(if inline { Borders::TOP } else { Borders::ALL })
                     .border_style(Style::default().fg(if model.approval.is_some() {
                         p.warning
                     } else if interactive && focus_panel == 0 {
@@ -774,6 +843,8 @@ pub fn draw_with_input(
                     }))
                     .title(if model.approval.is_some() {
                         " Permission needed "
+                    } else if inline {
+                        " bahulam. code · Rust inline "
                     } else if interactive {
                         " Message  ·  Enter to send · Ctrl+J for a new line "
                     } else {
@@ -804,7 +875,9 @@ pub fn draw_with_input(
         ));
     }
 
-    let shortcuts = if interactive && agent_filter.is_some() {
+    let shortcuts = if inline {
+        "Tab input/history · Enter details/send · /tui fullscreen · Ctrl+C twice quit".to_owned()
+    } else if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
         "↑↓ select agent · Enter transcript · Tab input · Ctrl+C twice quit".to_owned()
@@ -1159,12 +1232,13 @@ fn card_lines(
                 .lines()
                 .any(|line| UnicodeWidthStr::width(line) > content_width)
         });
-    // Spoken text (user prompt, agent reply) is prose: it is never previewed
-    // or ellipsized, only bounded by the viewport. Tool cards keep the
-    // quiet-by-default preview.
+    // Keep the complete reply in the model/details view. Only its card preview
+    // is folded, so long replies cannot consume the whole conversation pane.
     let is_message = is_assistant || is_user;
-    let limit = if is_message {
+    let limit = if is_user {
         usize::MAX
+    } else if is_assistant {
+        6
     } else {
         match card.status.as_str() {
             "running" | "streaming" => 2,
@@ -1174,7 +1248,7 @@ fn card_lines(
         }
     };
     let is_expanded = expanded.contains(&index);
-    let has_more = if is_message {
+    let has_more = if is_user {
         card.payload_ref.is_some() && card.detail.is_none()
     } else {
         card.payload_ref.is_some() || total > limit || details_total > limit || long_line
@@ -1182,7 +1256,7 @@ fn card_lines(
     let body_room = budget
         .saturating_sub(1)
         .saturating_sub(usize::from(has_more));
-    let show = if is_expanded || is_message {
+    let show = if is_expanded || is_user {
         body_room.min(total)
     } else {
         limit.min(body_room).min(total)
@@ -1218,9 +1292,15 @@ fn card_lines(
             }
             wrapped.extend(wrap_text(line, wrap_width, in_code));
         }
-        if tail && wrapped.len() > body_room {
-            wrapped.drain(..wrapped.len() - body_room);
+        let visible_rows = if is_assistant && !is_expanded {
+            limit.min(body_room)
+        } else {
+            body_room
+        };
+        if tail && wrapped.len() > visible_rows {
+            wrapped.drain(..wrapped.len() - visible_rows);
         }
+        wrapped.truncate(visible_rows);
         wrapped
     } else {
         selected_lines
@@ -1246,11 +1326,7 @@ fn card_lines(
                 .insert(0, Span::styled("  │ ", Style::default().fg(p.muted)));
         }
     }
-    lines.extend(
-        rendered_body
-            .into_iter()
-            .take(budget.saturating_sub(lines.len())),
-    );
+    lines.extend(rendered_body.into_iter().take(body_room));
     if has_more && lines.len() < budget {
         let hint = if card.payload_ref.is_some() && card.detail.is_none() {
             " · stored full result".to_owned()

@@ -368,6 +368,83 @@ fn parallel_agents_do_not_overwrite_each_others_tools() {
 }
 
 #[test]
+fn long_replies_have_compact_previews_and_complete_scrollable_details() {
+    let mut model = Model::default();
+    let body = (1..=200)
+        .map(|n| format!("Reply line {n:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    model
+        .apply(&event(1, "message_end", "main", json!({"text":body})))
+        .unwrap();
+    let screen = |model: &Model, details: Option<usize>, offset: u16| {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_input(
+                    frame,
+                    model,
+                    0,
+                    false,
+                    "dark",
+                    "draft kept",
+                    0,
+                    &HashSet::new(),
+                    Some(0),
+                    true,
+                    None,
+                    None,
+                    1,
+                    details,
+                    offset,
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let preview = screen(&model, None, 0);
+    assert!(preview.contains("Reply line 001") && preview.contains("Reply line 006"));
+    assert!(!preview.contains("Reply line 007"));
+    assert!(preview.contains("Show details") && preview.contains("194 more lines"));
+    assert!(screen(&model, Some(0), 190).contains("Reply line 200"));
+    assert_eq!(
+        screen(&model, None, 0),
+        preview,
+        "closing details must restore the preview and draft"
+    );
+    assert_eq!(model.cards[0].detail.as_deref(), Some(body.as_str()));
+
+    let mut streaming = Model::default();
+    streaming
+        .apply(&event(1, "text_delta", "main", json!({"chunk":body})))
+        .unwrap();
+    let tail = screen(&streaming, None, 0);
+    assert!(tail.contains("Reply line 200") && tail.contains("Show details"));
+    assert!(!tail.contains("Reply line 193"));
+    assert_eq!(streaming.detail_line_count(0), 200);
+
+    let mut wrapped = Model::default();
+    wrapped
+        .apply(&event(
+            1,
+            "message_end",
+            "main",
+            json!({"text":"Long paragraph words ".repeat(100)}),
+        ))
+        .unwrap();
+    assert!(
+        screen(&wrapped, None, 0).contains("Show details"),
+        "wrapped prose must retain its details action"
+    );
+}
+
+#[test]
 fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
     let model = replay(&fixture("replay-v2.jsonl")).unwrap();
     for (width, height) in [(120, 36), (80, 24), (40, 16), (1, 1)] {

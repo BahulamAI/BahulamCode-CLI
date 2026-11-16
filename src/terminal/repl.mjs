@@ -3612,8 +3612,8 @@ async function handleCommand(input, ctx) {
   switch (cmd) {
     case '/tui': {
       const view = rest.trim().toLowerCase().replace(/\s+/g, '');
-      if (['fullscreen', 'full'].includes(view)) await ctx.openRustView?.();
-      else process.stderr.write('  /tui fullscreen opens Rust · /tui default returns to Node\n');
+      if (['fullscreen', 'full', 'inline'].includes(view)) await ctx.openRustView?.(view === 'inline' ? 'inline' : 'fullscreen');
+      else process.stderr.write('  /tui inline or /tui fullscreen opens Rust · /tui default returns to Node\n');
       return;
     }
     case '/help': {
@@ -5635,7 +5635,7 @@ export async function startTerminalRepl() {
       _dockTickTimer.unref?.();
     }
   }
-  async function openRustView(snapshotMode = session.historyMode || 'current') {
+  async function openRustView(view = process.env.BAHULAM_TUI_MODE || 'fullscreen', snapshotMode = session.historyMode || 'current') {
     if (_rustTuiActive) return;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       process.stderr.write('  Full-screen view requires an interactive terminal.\n');
@@ -5684,6 +5684,7 @@ export async function startTerminalRepl() {
       let rustQuitRequested = false;
       let rustDefaultRequested = false;
       _rustTuiHost = startRustTuiHost({
+        mode: view,
         onCommand: async command => {
           const data = command?.data || {};
           switch (command?.type) {
@@ -5821,6 +5822,7 @@ export async function startTerminalRepl() {
       const rustCompletions = [...new Set([
         '/tui',
         '/tui default',
+        '/tui inline',
         '/tui fullscreen',
         '/tui full screen',
         ...commandCompletions('/'),
@@ -5839,7 +5841,7 @@ export async function startTerminalRepl() {
     }
   }
   ctx.openRustView = openRustView;
-  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) await openRustView(startupResumeMode);
+  if (process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY) await openRustView(undefined, startupResumeMode);
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 

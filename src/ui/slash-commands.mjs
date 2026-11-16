@@ -13,7 +13,7 @@
 
 // name -> one-line description (bare string).
 export const COMMANDS = {
-  '/tui':         'Switch terminal view: fullscreen or default',
+  '/tui':         'Switch terminal view: inline, fullscreen or default',
   '/help':        'Show commands',
   '/login':       'Sign in via browser',
   '/whoami':      'Show logged-in user',
@@ -87,6 +87,7 @@ export const HELP_GROUPS = [
     summary: 'session, usage, budget',
     commands: [
       ['/tui fullscreen', 'Open the Rust full-screen view'],
+      ['/tui inline', 'Open the Rust inline view'],
       ['/tui default', 'Return from Rust to the Node default view'],
       ['/status', 'Session snapshot'],
       ['/status context', 'Loaded .bahulam context'],

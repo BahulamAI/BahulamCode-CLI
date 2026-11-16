@@ -26,7 +26,7 @@ test('reopening keeps resumed replay and messages added in either view without d
 });
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node']) {
+for (const mode of ['fresh startup', 'startup resume', 'return to default', 'return via /tui', 'roundtrip from Node', 'inline from Node']) {
   const startupResume = mode !== 'fresh startup';
   test(`real Rust CLI commands from ${mode}`, {
     skip: process.platform === 'win32', timeout: 35000,
@@ -55,7 +55,8 @@ terminal_screen = Screen(36,120)
 startup = sys.argv[1] != 'fresh startup'
 return_default = sys.argv[1].startswith('return ')
 bare_tui = sys.argv[1] == 'return via /tui'
-roundtrip = sys.argv[1] == 'roundtrip from Node'
+roundtrip = sys.argv[1].endswith('from Node')
+inline_route = sys.argv[1] == 'inline from Node'
 master, slave = pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 original_mode = termios.tcgetattr(slave)
@@ -105,14 +106,14 @@ try:
    keys=b'/exit\r'
   elif not return_default and stage==12 and b'Chooseasavedtranscript.' in screen: keys=b'\x11'
   elif not return_default and stage==13 and time.time()-stage_at > 0.2: keys=b'\x03\x03'
-  elif stage==20 and 'You›' in terminal_screen.text().replace(' ',''): keys=b'/tui full screen\r'
-  elif stage==21 and b'BAHULAM' in screen and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/tui default\r'
+  elif stage==20 and 'You›' in terminal_screen.text().replace(' ',''): keys=b'/tui inline\r' if inline_route else b'/tui full screen\r'
+  elif stage==21 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/tui default\r'
   elif stage==22 and b'Default terminal view' in recent: keys=b'/history\r'
-  elif stage==23 and b'SAVED_REPLY_FROM_DISK' in recent: keys=b'/tui fullscreen\r'
-  elif stage==24 and b'BAHULAM' in screen and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/new\r'
+  elif stage==23 and b'SAVED_REPLY_FROM_DISK' in recent: keys=b'/tui inline\r' if inline_route else b'/tui fullscreen\r'
+  elif stage==24 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/new\r'
   elif stage==25 and b'mode:newsession' in screen: keys=b'/tui default\r'
-  elif stage==26 and b'Default terminal view' in recent: keys=b'/tui fullscreen\r'
-  elif stage==27 and b'BAHULAM' in screen and b'AskBahulam' in screen:
+  elif stage==26 and b'Default terminal view' in recent: keys=b'/tui inline\r' if inline_route else b'/tui fullscreen\r'
+  elif stage==27 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'AskBahulam' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, 'Reopening resurrected cleared history'
    keys=b'\x03\x03'
   if keys is not None:
@@ -143,9 +144,10 @@ try:
  assert restored_mode==original_mode, 'Quit did not restore terminal modes: '+str(restored_mode)+' != '+str(original_mode)
  assert b'Goodbye!' in output, 'Quit did not use the existing CLI exit handler'
  expected_brand = b'38;2;48;59;160' if bare_tui else b'38;2;190;198;255'
- rust_frame = output.split(b'\x1b[?1049h',1)[1].split(b'\x1b[?1049l',1)[0]
- assert expected_brand in rust_frame, 'Host did not pass the canonical brand palette/theme to Rust'
- if roundtrip: assert output.count(b'\x1b[?1049h')==3, 'Expected exactly three full-screen launches'
+ if not inline_route:
+  rust_frame = output.split(b'\x1b[?1049h',1)[1].split(b'\x1b[?1049l',1)[0]
+  assert expected_brand in rust_frame, 'Host did not pass the canonical brand palette/theme to Rust'
+ if roundtrip: assert output.count(b'\x1b[?1049h')==(0 if inline_route else 3), 'Unexpected alternate-screen ownership'
 finally:
  if child.poll() is None:
   os.killpg(child.pid,signal.SIGTERM)
@@ -161,7 +163,8 @@ finally:
         path.join(root, 'src/terminal/main.mjs'), ...(startupResume ? ['--resume', 'command-fixture'] : [])], {
         cwd: project, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, BAHULAM_HOME: home, B0_TOKEN: '', KEPLER_TOKEN: '',
-          BAHULAM_TUI: mode === 'roundtrip from Node' ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
+          BAHULAM_TUI: mode.endsWith('from Node') ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
+          BAHULAM_TUI_MODE: 'fullscreen',
           NO_COLOR: '', FORCE_COLOR: '3', BAHULAM_THEME: 'auto', COLORFGBG: mode === 'return via /tui' ? '0;15' : '15;0',
           BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui'),
           BAHULAM_AUTO_ATTACH: '0', BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_AUTO_REGISTER: 'true',

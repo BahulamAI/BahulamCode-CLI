@@ -25,7 +25,7 @@ they do not establish visual acceptance.
 | `377dd2d` | Candidate later batch: job status, tool timing and check results. Validate lifecycle events without changing history order or saved replies. |
 | `b37c586` | Split into individual features. It combines clipboard, editor/history, capabilities, background promotion and host recovery with a change to default inline rendering and redraw scheduling. Do not copy its renderer as a feature dependency. |
 | `7cd8933` | Extract specific fixes only. It mixes session-ID delivery, picker sizing, editing and question routing with a large renderer rewrite and startup dock changes. The latter interacted with captured resume progress. |
-| `3e16f9e` | Review historical-interaction isolation separately. Its inline exit-output suppression is not directly applicable to the accepted full-screen renderer, which restores the alternate screen on exit. |
+| `3e16f9e` | Historical-interaction isolation remains separate. Inline exit-output suppression was adapted when the inline viewport was restored; full-screen retains its accepted exit behavior. |
 
 ## Batch 1: validation foundation
 
@@ -222,3 +222,118 @@ testing before this batch was committed.
 
 This queue is not a claim that all later commits or complete Rust parity have
 been merged. Each batch needs its own review and live acceptance.
+
+## Live-event audit after `659e6b7`
+
+Run `node scripts/audit-tui-events.mjs` after building Rust. This uses synthetic
+events through the real Node projection and Rust plain replay, with an isolated
+temporary home and no model calls. It checks event visibility, not interactive
+rendering, pixel parity, live provider behavior or approval policy correctness.
+At this checkpoint, 12 of 31 representative cases render, 17 are dropped by
+the bridge, and 2 reach Rust without a display handler. These counts are not a
+percentage of feature completion.
+
+| Surface | Recovery behavior | Outstanding work |
+| --- | --- | --- |
+| Assistant text | Stream/final events update a message card; full text retained | Compact previews added below; provider/live-turn acceptance still needed |
+| Normal tools | Request/running/done/failed cards correlate when call IDs match; preview plus details | Gateway loop completion shape is incomplete; elapsed live timer not backported |
+| Shell output | Renderer handles `tool_output_delta` | No emitter found in current `src` outside the tap itself; streaming shell output is not end-to-end wired |
+| Agents | Spawn/status/finish, reports, attributed text and sidebar navigation exist | Sub-agent tool progress metadata is dropped; graph/node attribution needs correction |
+| Thinking and checks | `thinking_delta` / `test_result` are projected | Model has no display cases for either |
+| Plans, diffs, errors, usage | Protocol/model paths exist; fixtures cover the core paths | Not all producer shapes or display metadata are covered |
+| Status/phases/delegation | Node has display handlers | Bridge drops `status`, `phase_start/update/summary`, `delegation` |
+| Other notices | Node handles local stagnation, compaction, changes, goals, follow-ups, cancellation/pause/resume | Bridge drops these events; some have display/state side effects only in Node |
+| Approvals | Rust has allow-once/deny and details loading | Scope choices, multiple pending approvals and historical/live isolation are not backported |
+| Jobs | Base registry exists | `377dd2d` job/check/status UI wiring is absent |
+
+Two reproducible identity defects need priority over visual polish:
+
+- `src/core/loop.mjs` emits gateway `tool_done` with only tool name and duration,
+  unlike `src/core/local-agent.mjs`, which includes `call_id`, output and success.
+  The audit reproduces a still-running original tool plus a separate completed
+  `Tool unattributed:…` card. It also loses the tool failure/result on this route.
+- `src/orchestration/events.mjs` can attribute events with `graph_run_id`,
+  `node_id`, `sub_agent` and `internal`, without a dedicated `run_id`. The tap
+  does not use graph/node identity and generates a new unattributed agent ID
+  per event, so a single tool lifecycle can split across agent lanes.
+
+The snapshot code also applies historical approval/control events through the
+live model. The isolation part of `3e16f9e` remains necessary. Full result
+availability has limits: with disk logging off, the transient payload store
+retains up to 128 entries / 64 MiB, and unregistering the last live subscriber
+clears it. Reopening currently restores messages, not every new tool payload.
+“Show details” cannot promise unlimited historical tool retention yet.
+
+Most missing SSE mappings also remain missing in the original later branch.
+Cherry-picking its remaining commits alone will not establish display parity.
+Keep producer identity, event projection, Rust model handling, and details
+retention as separate checks in each recovered feature.
+
+### Remaining original commits: current disposition
+
+| Original commit | Recovered | Still pending/excluded |
+| --- | --- | --- |
+| `8112157` | Protocol fixtures and host/cache checks | Disconnect notices/lifecycle review |
+| `5c04734` | Opt-in wheel navigation | Scoped approvals, model-control messages, capability diagnostics |
+| `7e81afb` | Rust session reset now works through existing `/new` | Its Node redraw/scrollback changes deliberately excluded |
+| `377dd2d` | None of its job/check UI batch | Job subscriptions/status, check handling and live tool timing |
+| `b37c586` | Inline viewport/switching adapted narrowly in the batch below | Clipboard/editor/history, background promotion, recovery; wholesale renderer rewrite excluded |
+| `7cd8933` | Popup sizing and session-ID correction adapted | Composer, question routing and remaining input integrations; renderer rewrite excluded |
+| `3e16f9e` | Inline exit-output suppression adapted | Historical control isolation and resume progress cleanup |
+
+### Compact preview direction
+
+The user requested compact previews with a visible Show details action in both
+views. Existing Rust tool/command cards already show short previews and load
+full payloads via Enter. The default Node renderer already has tool previews
+and F2 / `/last` / `/expand`, but assistant messages stream in full.
+
+The Rust-only change folds long assistant/agent replies to six preview
+rows, retaining full text in the model and details view. Streaming previews
+show the newest rows; completed previews show the beginning. Short replies
+and user prompts retain their normal display. The existing keyboard action
+is Tab to transcript, select the card, Enter for details, Esc to return.
+These are keyboard actions; mouse-click buttons are not implemented here.
+
+A regression renders a 200-line reply, opens its final lines in details,
+restores the exact preview/draft, and checks streaming tails and long wrapped
+paragraphs. The user clarified that the two target views are Rust inline and
+Rust full-screen. Node's existing rendering must remain unchanged.
+
+### Reviewed batch: Rust inline plus shared compact previews
+
+Adapted the later renderer's bounded inline viewport and view transitions,
+without importing its composer/renderer rewrite. Inline and full-screen use
+the same model, compact card rendering, input handlers, picker and details
+code. Inline omits the agent/plan panels and transcript frame, using a
+16-row viewport on the normal screen. Full-screen keeps the accepted workspace
+layout. Full history is navigated with the existing keyboard controls; this
+batch does not append every Rust event permanently into native scrollback.
+
+- `/tui inline` opens Rust inline from Node, or switches a running Rust view.
+- `/tui fullscreen` (also `/tui full screen`) selects Rust full-screen.
+- `/tui default` returns to Node. Bare `/tui` inside Rust retains its accepted
+  return-to-Node alias; this does not mean switching to Rust inline.
+- `BAHULAM_TUI=rust BAHULAM_TUI_MODE=inline` starts directly in inline. Recovery
+  startup remains full-screen unless inline is explicitly selected.
+- Inline requires a terminal cursor-position reply; unsupported terminals
+  fall back to full-screen. Mouse capture remains disabled in inline for native
+  text selection. Existing opt-in wheel navigation remains full-screen only.
+- Inline exit does not dump its transcript a second time. Alternate-screen
+  restoration only runs if this process actually entered that screen.
+
+The real Rust/host PTY test (`npm run test:tui:inline`) verifies a folded reply,
+Enter/End to the last detail line, Esc back to the unchanged draft, switching
+inline/full-screen/inline, subsequent prompt handoff, terminal-mode restoration,
+and no duplicate transcript dump. `/tui inline` adds only a view-launch option
+to Node's existing dispatcher/catalog; no Node rendering code is changed.
+
+Validation passed: 19 Rust tests, seven command/snapshot cases including
+repeated Node/inline handoffs, inline details/resize/layout switching, popup
+and mouse PTY tests, 13 command-catalog checks, and the original Node
+startup/resume regression. The cache was cleared and Rust rebuilt. Tests use
+fixtures; live model/provider acceptance and the audited event gaps remain.
+
+The live-event and identity defects identified above remain open. The next
+review should prioritize tool/agent correlation and missing event delivery,
+alongside historical-control isolation, before adding job/approval UI features.
