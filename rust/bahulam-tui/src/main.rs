@@ -576,39 +576,72 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             && key.modifiers.contains(KeyModifiers::CONTROL))
                         && model.lock().ok().is_some_and(|m| m.interaction.is_some()) =>
                 {
-                    let response = match key.code {
-                        KeyCode::Up => {
-                            if let Ok(mut m) = model.lock() {
-                                if let Some(menu) = m.interaction.as_mut() {
-                                    menu.selected = menu.selected.saturating_sub(1);
+                    let response = {
+                        let mut state = model.lock().map_err(|_| "view model lock poisoned")?;
+                        let menu = state.interaction.as_mut().unwrap();
+                        let mut response = None;
+                        if menu.editing {
+                            match key.code {
+                                KeyCode::Esc => menu.editing = false,
+                                KeyCode::Enter if !menu.free_text.trim().is_empty() => {
+                                    response = Some((
+                                        menu.request_id.clone(),
+                                        Some(menu.free_text.trim().to_owned()),
+                                        false,
+                                    ))
                                 }
+                                KeyCode::Backspace => {
+                                    if let Some((at, _)) =
+                                        menu.free_text.grapheme_indices(true).last()
+                                    {
+                                        menu.free_text.truncate(at);
+                                    }
+                                }
+                                KeyCode::Char(ch)
+                                    if !key
+                                        .modifiers
+                                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                        && menu.free_text.len() + ch.len_utf8()
+                                            <= composer::MAX_INPUT_BYTES =>
+                                {
+                                    menu.free_text.push(ch)
+                                }
+                                _ => {}
                             }
-                            None
-                        }
-                        KeyCode::Down => {
-                            if let Ok(mut m) = model.lock() {
-                                if let Some(menu) = m.interaction.as_mut() {
+                        } else {
+                            match key.code {
+                                KeyCode::Up | KeyCode::BackTab => {
+                                    menu.selected = menu.selected.saturating_sub(1)
+                                }
+                                KeyCode::Down | KeyCode::Tab => {
                                     menu.selected = (menu.selected + 1)
-                                        .min(menu.options.len().saturating_sub(1));
+                                        .min(menu.options.len().saturating_sub(1))
                                 }
+                                KeyCode::Enter
+                                    if menu.allow_free_text
+                                        && menu.selected + 1 == menu.options.len() =>
+                                {
+                                    menu.editing = true
+                                }
+                                KeyCode::Enter => {
+                                    response = Some((
+                                        menu.request_id.clone(),
+                                        menu.options
+                                            .get(menu.selected)
+                                            .map(|option| option.value.clone()),
+                                        false,
+                                    ))
+                                }
+                                KeyCode::Esc => {
+                                    response = Some((menu.request_id.clone(), None, true))
+                                }
+                                _ => {}
                             }
-                            None
                         }
-                        KeyCode::Enter => model
-                            .lock()
-                            .ok()
-                            .and_then(|mut m| m.interaction.take())
-                            .map(|menu| {
-                                let value =
-                                    menu.options.get(menu.selected).map(|o| o.value.clone());
-                                (menu.request_id, value, false)
-                            }),
-                        KeyCode::Esc => model
-                            .lock()
-                            .ok()
-                            .and_then(|mut m| m.interaction.take())
-                            .map(|menu| (menu.request_id, None, true)),
-                        _ => None,
+                        if response.is_some() {
+                            state.interaction = None;
+                        }
+                        response
                     };
                     if let Some((request_id, value, cancelled)) = response {
                         write_command(
@@ -803,6 +836,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                         last_ctrl_c = Some(now);
+                        if let Some(menu) = model
+                            .lock()
+                            .ok()
+                            .and_then(|mut state| state.interaction.take())
+                        {
+                            write_command(
+                                &command_writer,
+                                serde_json::json!({"type":"interaction_response","data":{"request_id":menu.request_id,"cancelled":true}}),
+                            )?;
+                        }
                         input.clear();
                         cursor = 0;
                         history_search = None;
@@ -1280,6 +1323,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {}
                 },
+                Event::Paste(text) if model.lock().is_ok_and(|m| m.interaction.is_some()) => {
+                    if let Ok(mut state) = model.lock() {
+                        if let Some(menu) = state.interaction.as_mut().filter(|m| m.editing) {
+                            let text = composer::normalize(&text).replace(['\n', '\t'], " ");
+                            if menu.free_text.len().saturating_add(text.len())
+                                <= composer::MAX_INPUT_BYTES
+                            {
+                                menu.free_text.push_str(&text);
+                            }
+                        }
+                    }
+                }
                 Event::Paste(text) if focus_panel == 0 => {
                     let can_paste = model
                         .lock()

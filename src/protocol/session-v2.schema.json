@@ -1125,6 +1125,8 @@
       "type": "object",
       "properties": {
         "request_id": {"type": "string"},
+        "allow_free_text": {"type": "boolean"},
+        "cancelled": {"type": "boolean"},
         "title": {"type": "string"},
         "message": {"type": "string"},
         "options": {"type": "array", "items": {}}

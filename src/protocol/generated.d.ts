@@ -165,6 +165,8 @@ export interface CommandCatalogData {
 }
 export interface InteractionRequestedData {
   request_id: string;
+  allow_free_text?: boolean;
+  cancelled?: boolean;
   title: string;
   message?: string;
   options: unknown[];

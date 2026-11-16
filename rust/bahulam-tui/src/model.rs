@@ -88,6 +88,9 @@ pub struct Interaction {
     pub message: String,
     pub options: Vec<InteractionOption>,
     pub selected: usize,
+    pub allow_free_text: bool,
+    pub editing: bool,
+    pub free_text: String,
 }
 
 fn text(data: &Value, key: &str) -> String {
@@ -536,7 +539,17 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "interaction_requested" {
-            let options = event
+            if event.data.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                if self
+                    .interaction
+                    .as_ref()
+                    .is_some_and(|menu| menu.request_id == text(&event.data, "request_id"))
+                {
+                    self.interaction = None;
+                }
+                return Ok(());
+            }
+            let mut options: Vec<InteractionOption> = event
                 .data
                 .get("options")
                 .and_then(Value::as_array)
@@ -549,7 +562,18 @@ impl Model {
                     })
                 })
                 .collect();
+            let allow_free_text =
+                event.data.get("allow_free_text").and_then(Value::as_bool) == Some(true);
+            if allow_free_text {
+                options.push(InteractionOption {
+                    label: "Other — type your own answer".into(),
+                    value: String::new(),
+                });
+            }
             self.interaction = Some(Interaction {
+                allow_free_text,
+                editing: false,
+                free_text: String::new(),
                 request_id: text(&event.data, "request_id"),
                 title: text(&event.data, "title"),
                 message: text(&event.data, "message"),

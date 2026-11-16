@@ -268,6 +268,10 @@ pub struct CommandCatalogData {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InteractionRequestedData {
     pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_free_text: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<bool>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

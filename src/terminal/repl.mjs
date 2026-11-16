@@ -47,6 +47,7 @@ import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
+import { createRustInteractions } from '../daemon/rust-interactions.mjs';
 import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { createSessionAuthSync, refreshStartupChecks } from './startup.mjs';
@@ -2125,21 +2126,10 @@ let _rustTuiHost = null;
 let _rustApprovalBridge = null;
 let _rustTuiOutputCapture = null;
 let _rustTuiEnsureSessionId = null;
-const _rustTuiInteractions = new Map();
-let _rustTuiInteractionSeq = 0;
+let _rustTuiInteractions = null;
 
-function rustTuiChoose(title, options, message = '') {
-  if (!_rustTuiActive || !_rustTuiHost) return Promise.resolve(null);
-  const requestId = `interaction-${Date.now()}-${++_rustTuiInteractionSeq}`;
-  return new Promise(resolve => {
-    const timer = setTimeout(() => { _rustTuiInteractions.delete(requestId); resolve(null); }, 5 * 60_000);
-    _rustTuiInteractions.set(requestId, value => { clearTimeout(timer); resolve(value); });
-    const sessionId = session.id || _rustTuiEnsureSessionId?.();
-    if (!sessionId) { _rustTuiInteractions.delete(requestId); clearTimeout(timer); resolve(null); return; }
-    if (!session.id) session.id = sessionId;
-    _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'interaction_requested', session_id: sessionId,
-      agent_id: 'main', data: { request_id: requestId, title, message, options: options.map(option => ({ label: String(option.label), value: String(option.value) })) } });
-  });
+function rustTuiChoose(title, options, message = '', preferences = {}) {
+  return _rustTuiInteractions?.choose(title, options, message, preferences) ?? Promise.resolve(null);
 }
 
 async function sendRustTranscriptSnapshot(mode = 'current') {
@@ -4616,6 +4606,7 @@ export async function startTerminalRepl() {
     stopSpinner();
     flushContent();
     const res = await askUserForm({
+      choose: _rustTuiActive ? rustTuiChoose : null,
       rl: ctx?._rl || null,
       question: req?.question || '',
       options: Array.isArray(req?.options) ? req.options : [],
@@ -5708,6 +5699,7 @@ export async function startTerminalRepl() {
               break;
             }
             case 'interrupt':
+              _rustTuiInteractions?.cancel();
               _rustApprovalBridge?.cancel();
               streamClient?.cancel?.();
               break;
@@ -5717,12 +5709,9 @@ export async function startTerminalRepl() {
             case 'deny':
               if (!_rustApprovalBridge?.answer('deny', data)) resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
               break;
-            case 'interaction_response': {
-              const id = String(data.request_id || '');
-              const complete = _rustTuiInteractions.get(id);
-              if (complete) { _rustTuiInteractions.delete(id); complete(data.cancelled ? null : (data.value ?? null)); }
+            case 'interaction_response':
+              _rustTuiInteractions?.answer(data);
               break;
-            }
             case 'show_details': {
               const payloadRef = String(data.payload_ref || '');
               const sendDetail = detail => _rustTuiHost?.send({
@@ -5812,7 +5801,8 @@ export async function startTerminalRepl() {
           process.stdout.write = restoreStdout;
           _rustTuiOutputCapture = null;
           _rustTuiHost = null;
-          for (const [id, complete] of _rustTuiInteractions) { _rustTuiInteractions.delete(id); complete(null); }
+          _rustTuiInteractions?.close();
+          _rustTuiInteractions = null;
           if (rustQuitRequested) {
             // Reuse the existing CLI exit behavior after the renderer releases
             // the terminal. Unexpected renderer exits retain Node recovery.
@@ -5834,6 +5824,10 @@ export async function startTerminalRepl() {
       });
       _rustApprovalBridge = createRustApprovalBridge({ emit: (type, data) => tapSseEvent({ type, data }, { sessionId: session.id || _rustTuiEnsureSessionId?.() }) });
       _rustTuiActive = true;
+      _rustTuiInteractions = createRustInteractions({
+        send: event => _rustTuiHost?.send(event) ?? false,
+        getSessionId: () => session.id || _rustTuiEnsureSessionId?.(),
+      });
       ctx._rustChoose = rustTuiChoose;
       inputActive = false;
       rl.pause();

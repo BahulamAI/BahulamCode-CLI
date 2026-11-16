@@ -1097,6 +1097,35 @@ pub fn draw_with_view(
             )));
         }
         lines.push(Line::from(""));
+        if interaction.editing {
+            let layout =
+                PromptLayout::new(&interaction.free_text, width.saturating_sub(2) as usize);
+            let available = height.saturating_sub(3 + lines.len() as u16).max(1) as usize;
+            let skip = layout.lines.len().saturating_sub(available);
+            let (row, col) = layout.cursor(interaction.free_text.len());
+            let text_y = popup.y.saturating_add(1 + lines.len() as u16);
+            lines.extend(layout.lines.iter().skip(skip).map(|line| {
+                Line::styled(line.clone(), Style::default().fg(p.text).bg(p.input_bg))
+            }));
+            lines.push(Line::styled(
+                "Enter answer · Esc back",
+                Style::default().fg(p.muted),
+            ));
+            frame.render_widget(
+                Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(p.accent))
+                        .title(" Your answer "),
+                ),
+                popup,
+            );
+            frame.set_cursor_position(Position::new(
+                (popup.x + 1 + col as u16).min(popup.right().saturating_sub(1)),
+                (text_y + row.saturating_sub(skip) as u16).min(popup.bottom().saturating_sub(1)),
+            ));
+            return;
+        }
         // Reserve borders, title/message, spacing, continuation markers and
         // controls before choosing the session window. Labels occupy one row.
         let visible = (height.saturating_sub(8) as usize)

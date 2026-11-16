@@ -920,3 +920,19 @@ collapse, Esc, keyboard collapse, direct typing and paste while expanded.
 The existing details/view-roundtrip and CLI diagnostics tests now type directly
 after collapse, with no compensating Tab presses. Node production code and
 transcript storage remain unchanged.
+
+## Backport: attached questions and picker lifecycle
+
+Adapted `7cd8933`'s `ask_user` routing and free-text picker, retaining Node's
+original form when no Rust renderer is attached. Rust handles choices, Other,
+Unicode editing/paste, Esc back/cancel and matching host cancellation. The
+Node interaction bridge queues concurrent questions, clears timed-out popups,
+rejects stale/invalid selections and resolves pending requests on interrupt or
+detach. No new stdin owner is installed while Rust is attached. Drafts survive.
+
+Validation: queued/timeout/failure/close unit cases; real Rust/Node PTY questions
+in both views with option and free-text answers, paste, cancellation, timeout
+and subsequent draft submission; protocol/request invariance; existing resume,
+approval and details-focus regressions. Native Node form code below the adapter
+is unchanged. This closes the question-transport slice, not the other backports
+or the separate PRD acceptance gates.
