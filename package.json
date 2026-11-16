@@ -28,6 +28,7 @@
     "test:tui:roundtrip": "node scripts/test-tui-roundtrip.mjs",
     "test:tui:popup": "node scripts/test-tui-resume-popup.mjs",
     "test:tui:mouse": "node scripts/test-tui-mouse.mjs",
+    "test:tui:commands": "node scripts/test-tui-commands.mjs",
     "tui:replay": "cargo run --manifest-path rust/Cargo.toml --locked --bin bahulam-tui -- --replay test/fixtures/protocol/replay-v2.jsonl",
     "test:design:browser": "node test/test-design-browser.mjs",
     "test:design:terminal": "node test/test-dock-browser.mjs",

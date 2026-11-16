@@ -309,6 +309,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             match event::read()? {
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
+                        && !(key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL))
                         && model.lock().ok().is_some_and(|m| m.interaction.is_some()) =>
                 {
                     let response = match key.code {
@@ -370,7 +372,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('q') if !stdio && input.is_empty() => break,
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Char('q')
+                        if !stdio && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        break
+                    }
                     KeyCode::Esc if detail_card.is_some() => {
                         detail_card = None;
                         detail_scroll = 0;
@@ -383,7 +389,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Esc if focus_panel != 0 => focus_panel = 0,
                     // Live mode: Esc interrupts the running turn; it never
-                    // tears down the screen. Ctrl+Q or Ctrl+C twice exits.
+                    // tears down the screen. Ctrl+C twice exits the CLI.
                     KeyCode::Esc if stdio => {
                         write_command(&command_writer, serde_json::json!({"type":"interrupt"}))?;
                     }

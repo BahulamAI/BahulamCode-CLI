@@ -613,11 +613,11 @@ pub fn draw_with_input(
     let shortcuts = if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
-        "↑↓ select agent · Enter transcript · Tab input · Ctrl+Q quit".to_owned()
+        "↑↓ select agent · Enter transcript · Tab input · Ctrl+C twice quit".to_owned()
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        "Enter send · Ctrl+J new line · Tab transcript · / commands · Ctrl+Q quit".to_owned()
+        "Enter send · Ctrl+J new line · Tab transcript · / commands · Ctrl+C twice quit".to_owned()
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };

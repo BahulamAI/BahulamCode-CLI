@@ -104,3 +104,39 @@ with capture unset/enabled, history scrolling, agent navigation, draft
 submission, and exact terminal-mode restoration. `npm run test:tui:popup`
 also passes with capture enabled. User live acceptance remains pending for
 this mouse batch before another functionality is added.
+
+## Recovery correction: shared command handoff and quit
+
+Live testing exposed an adapter bug, not missing command implementations:
+`JsonlWriter.ensureSessionId()` initializes a property and returns no value.
+The Rust adapter used its return value, sending startup command catalogs and
+post-`/new` snapshots without a valid session ID. It now reads the current
+writer's `sessionId`, including after the existing `/new` handler replaces it.
+No default Node handlers or writer APIs changed.
+
+Both views use the same instruction queue and `_handleLine` in the Node REPL.
+Rust forwards submitted text through its `prompt` message; ordinary text then
+uses the existing agent client, and slash commands use `handleCommand`.
+There is no separate Rust agent or command implementation in this correction.
+
+Ctrl+C twice within two seconds now exits the CLI, including from a picker.
+Rust restores its terminal before Node calls the existing `/exit` handler;
+Node also releases its inherited raw mode. An unexpected renderer exit still
+falls back to the Node prompt. Ctrl+Q is no longer a live shortcut, and the
+footer advertises Ctrl+C twice. Offline replay retains its existing shortcuts.
+
+Validation adds `npm run test:tui:commands`, using the actual CLI in an isolated
+PTY from both fresh startup and `--resume`. It exercises slash completion,
+session selection, `/new`, `/help`, `/model status`, `/clear`, cancellation,
+resume by ID, and Ctrl+C twice while a picker is open. It checks that Ctrl+Q
+does not close the picker, saved messages remain unchanged, the process exits
+through `/exit`, and terminal settings are restored (excluding macOS's
+transient PENDIN flag). A small VT cell reader checks redraws instead of
+assuming every frame prints unchanged text again.
+
+Rust tests, protocol checks, popup/mouse PTY tests, slash-command tests, and
+the default Node startup-resume regression passed during this correction.
+The Rust build cache was cleared and the binary rebuilt for live testing.
+These checks do not establish full parity or a live model response in both
+views. Resume command-card formatting and historical interaction isolation
+remain separate review items; this batch does not change transcript formatting.

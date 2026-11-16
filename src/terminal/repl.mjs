@@ -5651,10 +5651,16 @@ export async function startTerminalRepl() {
       process.stderr.write = screenWrite(restoreStderr);
       process.stdout.write = screenWrite(restoreStdout);
       _rustTuiEnsureSessionId = () => {
-        const id = session.id || jsonlWriter.ensureSessionId();
-        if (!session.id) session.id = id;
-        return id;
+        // The writer initializes its property; ensureSessionId() returns void.
+        // Read the current writer after /new replaces it, just as Node's
+        // normal prompt path does. This adapter is only installed for Rust.
+        if (!session.id) {
+          jsonlWriter.ensureSessionId();
+          session.id = jsonlWriter.sessionId;
+        }
+        return session.id;
       };
+      let rustQuitRequested = false;
       _rustTuiHost = startRustTuiHost({
         onCommand: async command => {
           const data = command?.data || {};
@@ -5746,7 +5752,9 @@ export async function startTerminalRepl() {
               break;
             }
             case 'bye':
-              _rustTuiHost?.close();
+              // Rust is about to restore the terminal and exit normally. Do
+              // not kill it between its quit request and terminal cleanup.
+              rustQuitRequested = true;
               break;
             default:
               throw new Error(`unsupported command ${String(command?.type)}`);
@@ -5761,6 +5769,14 @@ export async function startTerminalRepl() {
           _rustTuiOutputCapture = null;
           _rustTuiHost = null;
           for (const [id, complete] of _rustTuiInteractions) { _rustTuiInteractions.delete(id); complete(null); }
+          if (rustQuitRequested) {
+            // Reuse the existing CLI exit behavior after the renderer releases
+            // the terminal. Unexpected renderer exits retain Node recovery.
+            // Rust inherited readline's raw mode, so Node must release it too.
+            try { if (process.stdin.isTTY) process.stdin.setRawMode(false); } catch {}
+            void handleCommand('/exit', ctx);
+            return;
+          }
           // The child disabled raw mode on its way out; readline needs it back.
           try { if (process.stdin.isTTY) process.stdin.setRawMode(true); } catch {}
           rl.resume();
@@ -5771,8 +5787,7 @@ export async function startTerminalRepl() {
       ctx._rustChoose = rustTuiChoose;
       inputActive = false;
       rl.pause();
-      const rustSessionId = session.id || jsonlWriter.ensureSessionId();
-      if (!session.id) session.id = rustSessionId;
+      const rustSessionId = _rustTuiEnsureSessionId();
       const rustCompletions = [...new Set([
         ...commandCompletions('/'),
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
