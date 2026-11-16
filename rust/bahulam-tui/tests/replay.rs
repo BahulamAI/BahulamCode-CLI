@@ -1,10 +1,14 @@
 use bahulam_tui::{
     model::{safe_text, Model},
     protocol::{EventEnvelope, EVENT_TYPES},
-    render::{draw, draw_with_input},
+    render::{draw, draw_with_input, mouse_panel_at, MousePanel},
     replay,
 };
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{
+    backend::TestBackend,
+    layout::{Position, Rect},
+    Terminal,
+};
 use serde_json::json;
 use std::{collections::HashSet, path::PathBuf};
 
@@ -242,6 +246,71 @@ fn resume_popup_keeps_selected_session_visible_and_restores_history_on_close() {
         );
         assert_eq!(model.transcript(), history);
     }
+}
+
+#[test]
+fn mouse_targets_follow_layout_and_do_not_reach_behind_modals() {
+    let mut model = Model::default();
+    let area = Rect::new(0, 0, 100, 24);
+    assert_eq!(
+        mouse_panel_at(area, &model, "", Position::new(10, 3)),
+        Some(MousePanel::Transcript)
+    );
+    assert_eq!(
+        mouse_panel_at(area, &model, "", Position::new(90, 3)),
+        Some(MousePanel::Agents)
+    );
+    for point in [
+        Position::new(0, 3),
+        Position::new(10, 1),
+        Position::new(10, 14),
+        Position::new(90, 20),
+        Position::new(90, 23),
+    ] {
+        assert_eq!(mouse_panel_at(area, &model, "", point), None);
+    }
+    assert_eq!(
+        mouse_panel_at(area, &model, "", Position::new(10, 10)),
+        Some(MousePanel::Transcript)
+    );
+    assert_eq!(
+        mouse_panel_at(area, &model, "a\nb\nc\nd\ne", Position::new(10, 10)),
+        None
+    );
+    assert_eq!(
+        mouse_panel_at(Rect::new(0, 0, 40, 24), &model, "", Position::new(35, 3)),
+        Some(MousePanel::Transcript),
+        "compact mode has no invisible sidebar"
+    );
+    assert_eq!(
+        mouse_panel_at(Rect::new(0, 0, 1, 1), &model, "", Position::new(0, 0)),
+        None
+    );
+    model
+        .apply(&event(
+            1,
+            "interaction_requested",
+            "main",
+            json!({
+                "request_id":"resume", "title":"Resume a session", "options":[]
+            }),
+        ))
+        .unwrap();
+    assert_eq!(mouse_panel_at(area, &model, "", Position::new(10, 3)), None);
+    assert_eq!(mouse_panel_at(area, &model, "", Position::new(90, 3)), None);
+    model.interaction = None;
+    model
+        .apply(&event(
+            2,
+            "approval_required",
+            "main",
+            json!({
+                "apr_id":"approval", "name":"shell", "args":{"command":"fixture"}
+            }),
+        ))
+        .unwrap();
+    assert_eq!(mouse_panel_at(area, &model, "", Position::new(10, 3)), None);
+    assert_eq!(mouse_panel_at(area, &model, "", Position::new(90, 3)), None);
 }
 
 #[test]

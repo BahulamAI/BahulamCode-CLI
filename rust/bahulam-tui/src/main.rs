@@ -1,9 +1,13 @@
-use bahulam_tui::{model::safe_text, render::draw_with_input, replay};
+use bahulam_tui::{
+    model::safe_text,
+    render::{draw_with_input, mouse_panel_at, MousePanel},
+    replay,
+};
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute,
     style::ResetColor,
@@ -29,6 +33,7 @@ fn restore() {
     let _ = execute!(
         io::stdout(),
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen,
         ResetColor,
         Show
@@ -74,6 +79,22 @@ fn scoped_card_indices(
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+fn scroll_history(scroll: &mut u16, follow: &mut bool, count: usize, down: bool) {
+    let end = count.saturating_sub(5).min((u16::MAX - 1) as usize) as u16;
+    if down {
+        if !*follow {
+            *scroll = scroll.saturating_add(3).min(end);
+            *follow = *scroll >= end;
+        }
+    } else if *follow {
+        // Match the existing Ctrl+Up anchor, rather than jumping to stale scroll=0.
+        *scroll = end;
+        *follow = false;
+    } else {
+        *scroll = scroll.saturating_sub(3);
+    }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -202,6 +223,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    // Off by default: mouse reporting suppresses native terminal text selection.
+    let mouse_enabled = std::env::var("BAHULAM_TUI_MOUSE")
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "scroll"));
+    if mouse_enabled {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    }
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut scroll: u16 = 0;
     let mut follow = stdio;
@@ -713,6 +740,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         insert_paste(&mut input, &mut cursor, &text);
                     }
                 }
+                Event::Mouse(mouse) if mouse_enabled => {
+                    let down = match mouse.kind {
+                        MouseEventKind::ScrollDown => true,
+                        MouseEventKind::ScrollUp => false,
+                        _ => continue,
+                    };
+                    let size = terminal.size()?;
+                    let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                    if let Ok(state) = model.lock() {
+                        match mouse_panel_at(
+                            area,
+                            &state,
+                            &input,
+                            ratatui::layout::Position::new(mouse.column, mouse.row),
+                        ) {
+                            Some(MousePanel::Transcript) if detail_card.is_some() => {
+                                let end = state
+                                    .detail_line_count(detail_card.unwrap_or(0))
+                                    .saturating_sub(1)
+                                    .min(u16::MAX as usize)
+                                    as u16;
+                                detail_scroll = if down {
+                                    detail_scroll.saturating_add(3).min(end)
+                                } else {
+                                    detail_scroll.saturating_sub(3)
+                                };
+                            }
+                            Some(MousePanel::Transcript) => {
+                                let count =
+                                    scoped_card_indices(&state, agent_filter.as_deref()).len();
+                                scroll_history(&mut scroll, &mut follow, count, down);
+                                // Scrolling history must not steal an editable draft's focus.
+                            }
+                            Some(MousePanel::Agents) if !state.agents.is_empty() => {
+                                focused_agent = if down {
+                                    focused_agent.saturating_add(1).min(state.agents.len() - 1)
+                                } else {
+                                    focused_agent.saturating_sub(1)
+                                };
+                                focus_panel = 2;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -748,7 +820,31 @@ fn write_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_paste, normalize_paste};
+    use super::{insert_paste, normalize_paste, scroll_history};
+
+    #[test]
+    fn wheel_history_starts_near_tail_and_returns_to_follow() {
+        let (mut scroll, mut follow) = (0, true);
+        scroll_history(&mut scroll, &mut follow, 100, false);
+        assert_eq!((scroll, follow), (95, false));
+        scroll_history(&mut scroll, &mut follow, 100, false);
+        assert_eq!((scroll, follow), (92, false));
+        scroll_history(&mut scroll, &mut follow, 100, true);
+        assert_eq!((scroll, follow), (95, true));
+        scroll_history(&mut scroll, &mut follow, 100, true);
+        assert_eq!((scroll, follow), (95, true));
+        scroll_history(&mut scroll, &mut follow, 0, false);
+        assert_eq!((scroll, follow), (0, false));
+        scroll_history(&mut scroll, &mut follow, 0, false);
+        assert_eq!((scroll, follow), (0, false));
+        scroll_history(&mut scroll, &mut follow, 0, true);
+        assert_eq!((scroll, follow), (0, true));
+        scroll_history(&mut scroll, &mut follow, 80_000, false);
+        assert!(
+            scroll < u16::MAX,
+            "manual scroll must not become the tail sentinel"
+        );
+    }
 
     #[test]
     fn paste_normalizes_newlines_and_drops_terminal_controls() {

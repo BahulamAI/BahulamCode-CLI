@@ -70,6 +70,37 @@ Validation:
   and submits a subsequent prompt. This uses fixture sessions and a valid
   protocol session ID, not the real REPL's startup/session-discovery path.
 
-User live acceptance is still required for this popup batch before adding the
-next feature. Keep the known baseline limitations above separate from this
+The user confirmed `f0ed045` working as expected before requesting the next
+functionality. Keep the known baseline limitations above separate from this
 popup change.
+
+## Reviewed feature: opt-in mouse wheel navigation
+
+Adapted only mouse wheel navigation from `5c04734`. Enable it with
+`BAHULAM_TUI_MOUSE=1` (also `true` or `scroll`); leaving it unset preserves native
+terminal selection. In capture mode, use the terminal's selection override
+(commonly Shift-drag) when selecting text.
+
+- Wheel over conversation history or an open detail view to scroll. Scrolling
+  the conversation keeps a draft editable and follows new output again when
+  returning to the bottom.
+- Wheel over the visible agent sidebar to select an agent; Enter opens its
+  transcript. Existing Esc/Tab keyboard navigation remains available.
+- Wheel input over borders, plan, composer and status rows does nothing.
+  Pickers and approvals block mouse navigation behind them.
+- Capture is disabled during terminal restoration. No click, clipboard,
+  capability-probe, approval-policy or Node CLI changes are included.
+
+Review corrections: the original code estimated panel boundaries and started
+scrolling from stale offset zero. Hit detection now shares the existing layout
+calculation with rendering, including multiline prompts and compact widths.
+Initial wheel-up uses the existing Ctrl+Up history anchor. The actual layout,
+transcript formatting and replay model remain unchanged.
+
+Validation: 16 Rust tests pass, including hit regions after resize, compact
+layouts, multiline drafts, modal isolation and bounded tail navigation.
+`npm run test:tui:mouse` exercises the compiled client through the Node host
+with capture unset/enabled, history scrolling, agent navigation, draft
+submission, and exact terminal-mode restoration. `npm run test:tui:popup`
+also passes with capture enabled. User live acceptance remains pending for
+this mouse batch before another functionality is added.

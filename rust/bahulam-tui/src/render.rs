@@ -1,6 +1,6 @@
 use crate::model::{safe_text, Model};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Position},
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -127,6 +127,79 @@ fn palette(theme: &str) -> Palette {
     }
 }
 
+struct ViewLayout {
+    rows: [Rect; 6],
+    columns: [Rect; 2],
+    compact: bool,
+}
+
+fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
+    let compact = area.width < 72 || area.height < 16;
+    let prompt_height = if approval {
+        7.min(area.height.saturating_sub(12).max(4))
+    } else if input.contains('\n') {
+        (input.split('\n').count() as u16 + 3)
+            .clamp(5, 8)
+            .min(area.height.saturating_sub(12).max(4))
+    } else {
+        4
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(6),
+            Constraint::Length(prompt_height),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+    let columns = if compact {
+        [rows[1], Rect::default()]
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(74), Constraint::Percentage(26)])
+            .areas(rows[1])
+    };
+    ViewLayout {
+        rows,
+        columns,
+        compact,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MousePanel {
+    Transcript,
+    Agents,
+}
+
+/// Use the painted layout; a modal owns input even when the pointer is outside it.
+pub fn mouse_panel_at(
+    area: Rect,
+    model: &Model,
+    input: &str,
+    position: Position,
+) -> Option<MousePanel> {
+    if model.interaction.is_some() || model.approval.is_some() {
+        return None;
+    }
+    let layout = view_layout(area, input, false);
+    let inset = Margin {
+        horizontal: 1,
+        vertical: 1,
+    };
+    if layout.columns[0].inner(inset).contains(position) {
+        Some(MousePanel::Transcript)
+    } else if !layout.compact && layout.columns[1].inner(inset).contains(position) {
+        Some(MousePanel::Agents)
+    } else {
+        None
+    }
+}
+
 pub fn draw(frame: &mut Frame, model: &Model, scroll: u16) {
     draw_with_input(
         frame,
@@ -166,27 +239,11 @@ pub fn draw_with_input(
 ) {
     let p = palette(theme);
     let area = frame.area();
-    let compact = area.width < 72 || area.height < 16;
-    let prompt_height = if model.approval.is_some() {
-        7.min(area.height.saturating_sub(12).max(4))
-    } else if input.contains('\n') {
-        (input.split('\n').count() as u16 + 3)
-            .clamp(5, 8)
-            .min(area.height.saturating_sub(12).max(4))
-    } else {
-        4
-    };
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(6),
-            Constraint::Length(prompt_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let ViewLayout {
+        rows,
+        columns,
+        compact,
+    } = view_layout(area, input, model.approval.is_some());
     let header = Line::from(vec![
         Span::styled(
             " BAHULAM ",
@@ -213,17 +270,6 @@ pub fn draw_with_input(
     ]);
     frame.render_widget(Paragraph::new(header), rows[0]);
 
-    let columns = if compact {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100)])
-            .split(rows[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(74), Constraint::Percentage(26)])
-            .split(rows[1])
-    };
     let transcript = if let Some(index) = detail_card {
         model
             .cards
