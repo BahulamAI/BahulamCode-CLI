@@ -372,7 +372,7 @@ fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let prompt_height = if approval {
         7
     } else {
-        (input.lines().count() as u16 + 3).clamp(4, 7)
+        (input.lines().count() as u16 + 2).clamp(3, 7)
     };
     let rows = Layout::vertical([
         Constraint::Length(0),
@@ -862,11 +862,17 @@ pub fn draw_with_view(
             )));
         }
     }
-    let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
+    let prompt_inner_height = rows[3]
+        .height
+        .saturating_sub(if inline { 1 } else { 2 })
+        .max(1);
     let input_lines: Vec<&str> = input.split('\n').collect();
     let suggestion_rows = prompt.len().saturating_sub(input_lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
-    let input_width = rows[3].width.saturating_sub(2).max(1) as usize;
+    let input_width = rows[3]
+        .width
+        .saturating_sub(if inline { 0 } else { 2 })
+        .max(1) as usize;
     let cursor_line_index = input[..cursor.min(input.len())].matches('\n').count();
     let cursor_line = input[..cursor.min(input.len())]
         .rsplit('\n')
@@ -903,7 +909,7 @@ pub fn draw_with_view(
                     .title(if model.approval.is_some() {
                         " Permission needed "
                     } else if inline {
-                        " bahulam. code · Rust inline "
+                        " Message "
                     } else if interactive {
                         " Message  ·  Enter to send · Ctrl+J for a new line "
                     } else {
@@ -923,7 +929,7 @@ pub fn draw_with_view(
         frame.set_cursor_position(Position::new(
             rows[3]
                 .x
-                .saturating_add(1)
+                .saturating_add(if inline { 0 } else { 1 })
                 .saturating_add(col_offset.min(u16::MAX as usize) as u16)
                 .min(rows[3].right().saturating_sub(1)),
             rows[3]
@@ -934,7 +940,13 @@ pub fn draw_with_view(
         ));
     }
 
-    let shortcuts = if inline {
+    let shortcuts = if inline && area.width < 32 {
+        "Ctrl+C twice quit".to_owned()
+    } else if inline && area.width < 52 {
+        "Enter send · Ctrl+C twice quit".to_owned()
+    } else if inline && area.width < 78 {
+        "Tab history/input · Enter send · Ctrl+C twice quit".to_owned()
+    } else if inline {
         "Tab input/history · Enter details/send · /tui fullscreen · Ctrl+C twice quit".to_owned()
     } else if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()

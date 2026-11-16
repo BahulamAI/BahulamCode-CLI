@@ -82,7 +82,7 @@ try:
   if stage==0 and b'AskBahulam' in screen:
    assert b'You' not in output, 'Node input dock painted before Rust handoff: '+output.decode('utf8','replace')
    if sys.argv[1]=='default Rust startup':
-    assert b'Rustinline' in screen and b'\x1b[?1049h' not in output, 'Rust did not start inline'
+    assert b'Message' in screen and b'\x1b[?1049h' not in output, 'Rust did not start inline'
    keys=b'/res'
   elif stage==1 and b'/resume' in screen: keys=b'\t\r'
   elif stage==2 and b'Chooseasavedtranscript.' in screen: keys=b'\r'
@@ -111,13 +111,13 @@ try:
   elif not return_default and stage==12 and b'Chooseasavedtranscript.' in screen: keys=b'\x11'
   elif not return_default and stage==13 and time.time()-stage_at > 0.2: keys=b'\x03\x03'
   elif stage==20 and 'You›' in terminal_screen.text().replace(' ',''): keys=b'/tui inline\r' if inline_route else b'/tui full screen\r'
-  elif stage==21 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/tui default\r'
+  elif stage==21 and (b'BAHULAM' in screen or b'Message' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/tui default\r'
   elif stage==22 and b'Default terminal view' in recent: keys=b'/history\r'
   elif stage==23 and b'SAVED_REPLY_FROM_DISK' in recent: keys=b'/tui inline\r' if inline_route else b'/tui fullscreen\r'
-  elif stage==24 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/new\r'
+  elif stage==24 and (b'BAHULAM' in screen or b'Message' in screen) and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/new\r'
   elif stage==25 and b'mode:newsession' in screen: keys=b'/tui default\r'
   elif stage==26 and b'Default terminal view' in recent: keys=b'/tui inline\r' if inline_route else b'/tui fullscreen\r'
-  elif stage==27 and (b'BAHULAM' in screen or b'Rustinline' in screen) and b'AskBahulam' in screen:
+  elif stage==27 and (b'BAHULAM' in screen or b'Message' in screen) and b'AskBahulam' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, 'Reopening resurrected cleared history'
    keys=b'\x03\x03'
   elif stage==30 and 'You›' in terminal_screen.text().replace(' ','') and b'Rust terminal unavailable' in recent: keys=b'/status\r'

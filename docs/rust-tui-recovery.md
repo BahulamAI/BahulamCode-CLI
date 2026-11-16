@@ -596,3 +596,30 @@ it is not directly comparable to the preceding folded-message measurements.
 
 This batch addresses approvals and conversation rendering. Capability/clipboard/
 editor/OS/image integrations and real-terminal acceptance remain separate work.
+
+## Inline screen sizing and resize correction
+
+Live testing exposed the old 16-row inline viewport: on a tall terminal it left
+the composer midway down the screen and showed only a few conversation rows.
+Inline now uses the whole normal screen. Startup output scrolls into the terminal's
+scrollback before drawing, and the composer no longer repeats the Bahulam heading.
+The message input, status and hints remain at the bottom; conversation content uses
+the space above them. No alternate screen is entered for inline mode.
+
+This replaces the cursor-anchored `Viewport::Inline(16)` geometry with Ratatui's
+full-terminal geometry on the normal screen. Alternate-screen ownership remains
+an explicit, separate action for `/tui fullscreen`. Inline consequently no longer
+needs a cursor-position query or falls back to the workspace when that query fails.
+Resize updates geometry in place, follows the tail when following output, and
+otherwise anchors the visible card plus its row offset (clamped when the new
+screen has more room). It retains the input draft. Inline input uses its actual
+single top border for cursor/wrapping calculations; narrow footer hints shorten
+to keep the exit key visible.
+
+The new normal-screen PTY regression visits 120×40, 150×56, 60×20 and 100×36,
+checks that more than 40 reply lines become visible in the tall layout, scrolls
+to the oldest/newest content around resizes, preserves the draft, and verifies
+the input/footer remain at the bottom and startup heading leaves the screen.
+Existing command, approval, mouse, details, popup and view-handoff checks also
+pass. This remains application history navigation with a pinned composer;
+it does not print a second full transcript into native scrollback.

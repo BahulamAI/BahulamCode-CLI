@@ -47,7 +47,7 @@ try:
    if b'\x1b[6n' in chunk: os.write(master,b'\x1b[1;1R')
   text=screen.text()
   keys=None
-  if stage==0 and 'Rust inline' in text and 'REPLY_001' in text and 'Show details' in text:
+  if stage==0 and 'Message' in text and 'REPLY_001' in text and 'Show details' in text:
    assert b'\x1b[?1049h' not in output, 'Inline unexpectedly used alternate screen'
    assert 'Show details' in text and 'REPLY_007' not in text, 'Reply was not folded'
    keys=b'draft kept\t\r'
@@ -63,7 +63,7 @@ try:
   elif stage==4 and 'Agents' in text and b'\x1b[?1049h' in output:
    assert 'REPLY_001' in text and 'Show details' in text
    keys=b'/tui inline\r'
-  elif stage==5 and 'Rust inline' in text and output.count(b'\x1b[?1049l')==1:
+  elif stage==5 and 'Message' in text and output.count(b'\x1b[?1049l')==1:
    assert 'REPLY_001' in text and 'Show details' in text
    keys=b'after switch\r'
   elif stage==6 and os.path.exists(sys.argv[1]):

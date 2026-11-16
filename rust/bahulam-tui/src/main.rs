@@ -45,7 +45,14 @@ fn restore() {
 }
 
 fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    if !inline {
+    if inline {
+        // Reserve the normal screen by scrolling startup output into scrollback.
+        // Ratatui's Fullscreen viewport describes geometry, not alternate-screen
+        // ownership: only the explicit command in the other branch enters it.
+        let height = crossterm::terminal::size()?.1;
+        write!(io::stdout(), "\r{}", "\n".repeat(height as usize))?;
+        execute!(io::stdout(), crossterm::cursor::MoveTo(0, 0))?;
+    } else {
         execute!(io::stdout(), EnterAlternateScreen)?;
         ALT_SCREEN_ACTIVE.store(true, Ordering::Release);
     }
@@ -53,18 +60,9 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
     Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
-            viewport: if inline {
-                Viewport::Inline(crossterm::terminal::size()?.1.clamp(1, 16))
-            } else {
-                Viewport::Fullscreen
-            },
+            viewport: Viewport::Fullscreen,
         },
     )
-}
-
-fn resolve_inline(requested: bool) -> bool {
-    // Inline requires a cursor-position reply to preserve existing scrollback.
-    requested && crossterm::cursor::position().is_ok()
 }
 
 fn normalize_paste(text: &str) -> String {
@@ -249,9 +247,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }));
     enable_raw_mode()?;
     let _guard = TerminalGuard;
-    let mut inline_mode = resolve_inline(
-        stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline"),
-    );
+    let mut inline_mode =
+        stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline");
     // Wheel navigation belongs to the Rust conversation in both views.
     // Hold Shift for native selection, or explicitly disable reporting with =0.
     let mouse_requested = std::env::var("BAHULAM_TUI_MOUSE")
@@ -759,7 +756,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 drop(terminal);
                                 restore();
                                 enable_raw_mode()?;
-                                inline_mode = resolve_inline(requested_inline);
+                                inline_mode = requested_inline;
                                 terminal = open_terminal(inline_mode)?;
                                 mouse_enabled = mouse_requested;
                                 if mouse_enabled {
@@ -958,7 +955,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(width, height) => {
+                    // Keep the visible message anchored when reflow changes row
+                    // counts. Following output continues to track the new tail.
+                    let anchor = if !follow && detail_card.is_none() {
+                        geometry().and_then(|g| {
+                            g.cards
+                                .into_iter()
+                                .rev()
+                                .find(|(_, row)| *row <= scroll)
+                                .map(|(index, row)| (index, scroll.saturating_sub(row)))
+                        })
+                    } else {
+                        None
+                    };
+                    terminal.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
+                    if let Some((index, offset)) = anchor {
+                        if let Ok(state) = model.lock() {
+                            let g = history_geometry(
+                                &state,
+                                terminal.get_frame().area(),
+                                &input,
+                                inline_mode,
+                                &expanded,
+                                &theme,
+                                agent_filter.as_deref(),
+                            );
+                            if let Some((_, row)) = g.cards.iter().find(|(card, _)| *card == index)
+                            {
+                                scroll = row.saturating_add(offset).min(g.end);
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
