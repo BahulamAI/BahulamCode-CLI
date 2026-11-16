@@ -1,6 +1,6 @@
 use bahulam_tui::{
     model::safe_text,
-    render::{draw_with_view, mouse_panel_at, MousePanel},
+    render::{draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
 };
 use crossterm::{
@@ -108,20 +108,16 @@ fn scoped_card_indices(
         .collect()
 }
 
-fn scroll_history(scroll: &mut u16, follow: &mut bool, count: usize, down: bool) {
-    let end = count.saturating_sub(5).min((u16::MAX - 1) as usize) as u16;
-    if down {
-        if !*follow {
-            *scroll = scroll.saturating_add(3).min(end);
-            *follow = *scroll >= end;
-        }
-    } else if *follow {
-        // Match the existing Ctrl+Up anchor, rather than jumping to stale scroll=0.
+fn scroll_history(scroll: &mut u16, follow: &mut bool, end: u16, down: bool, amount: u16) {
+    if *follow {
         *scroll = end;
-        *follow = false;
-    } else {
-        *scroll = scroll.saturating_sub(3);
     }
+    *scroll = if down {
+        scroll.saturating_add(amount).min(end)
+    } else {
+        scroll.saturating_sub(amount).min(end)
+    };
+    *follow = down && *scroll >= end;
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -252,10 +248,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut inline_mode = resolve_inline(
         stdio && std::env::var("BAHULAM_TUI_MODE").is_ok_and(|mode| mode == "inline"),
     );
-    // Off by default: mouse reporting suppresses native terminal text selection.
+    // Wheel navigation belongs to the Rust conversation in both views.
+    // Hold Shift for native selection, or explicitly disable reporting with =0.
     let mouse_requested = std::env::var("BAHULAM_TUI_MOUSE")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "scroll"));
-    let mut mouse_enabled = mouse_requested && !inline_mode;
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
+        .unwrap_or(true);
+    let mut mouse_enabled = mouse_requested;
     let mut terminal = open_terminal(inline_mode)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
@@ -313,6 +311,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .unwrap_or(0);
         }
+        let viewport = terminal.get_frame().area();
+        let geometry = || {
+            model.lock().ok().map(|m| {
+                history_geometry(
+                    &m,
+                    viewport,
+                    &input,
+                    inline_mode,
+                    &expanded,
+                    &theme,
+                    agent_filter.as_deref(),
+                )
+            })
+        };
         let visible_scroll = if follow { u16::MAX } else { scroll };
         terminal.draw(|frame| {
             if let Ok(model) = model.lock() {
@@ -482,7 +494,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let next = (position + 1).min(indices.len() - 1);
                             focused_card = indices[next];
                             follow = false;
-                            scroll = next.min(u16::MAX as usize) as u16;
+                            scroll = geometry()
+                                .and_then(|g| {
+                                    g.cards
+                                        .into_iter()
+                                        .find(|(index, _)| *index == focused_card)
+                                        .map(|(_, row)| row)
+                                })
+                                .unwrap_or(0);
                             focus_panel = 1;
                         }
                     }
@@ -499,7 +518,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let previous = position.saturating_sub(1);
                             focused_card = indices[previous];
                             follow = false;
-                            scroll = previous.min(u16::MAX as usize) as u16;
+                            scroll = geometry()
+                                .and_then(|g| {
+                                    g.cards
+                                        .into_iter()
+                                        .find(|(index, _)| *index == focused_card)
+                                        .map(|(_, row)| row)
+                                })
+                                .unwrap_or(0);
                             focus_panel = 1;
                         }
                     }
@@ -647,7 +673,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 enable_raw_mode()?;
                                 inline_mode = resolve_inline(requested_inline);
                                 terminal = open_terminal(inline_mode)?;
-                                mouse_enabled = mouse_requested && !inline_mode;
+                                mouse_enabled = mouse_requested;
                                 if mouse_enabled {
                                     execute!(io::stdout(), EnableMouseCapture)?;
                                 }
@@ -679,38 +705,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Enter => {}
-                    KeyCode::Up
+                    KeyCode::Up | KeyCode::Down
                         if key.modifiers.contains(KeyModifiers::CONTROL)
                             && detail_card.is_none() =>
                     {
-                        if follow {
-                            scroll = model
-                                .lock()
-                                .map(|m| {
-                                    scoped_card_indices(&m, agent_filter.as_deref())
-                                        .len()
-                                        .saturating_sub(5)
-                                        as u16
-                                })
-                                .unwrap_or(0);
-                            follow = false;
-                        } else {
-                            scroll = scroll.saturating_sub(1);
-                        }
-                    }
-                    KeyCode::Down
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && detail_card.is_none() =>
-                    {
-                        if !follow {
-                            let count = model
-                                .lock()
-                                .map(|m| scoped_card_indices(&m, agent_filter.as_deref()).len())
-                                .unwrap_or(0);
-                            scroll = scroll.saturating_add(1);
-                            if scroll as usize >= count.saturating_sub(5) {
-                                follow = true;
-                            }
+                        if let Some(g) = geometry() {
+                            scroll_history(
+                                &mut scroll,
+                                &mut follow,
+                                g.end,
+                                key.code == KeyCode::Down,
+                                1,
+                            );
                         }
                     }
                     KeyCode::Up if focus_panel == 2 => {
@@ -748,40 +754,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(0);
                     }
                     KeyCode::Up | KeyCode::Down if focus_panel == 1 => {
-                        follow = false;
-                        if key.code == KeyCode::Up {
-                            scroll = scroll.saturating_sub(1);
-                        } else {
-                            scroll = scroll.saturating_add(1);
+                        if let Some(g) = geometry() {
+                            scroll_history(
+                                &mut scroll,
+                                &mut follow,
+                                g.end,
+                                key.code == KeyCode::Down,
+                                1,
+                            );
                         }
                     }
                     KeyCode::Up | KeyCode::Down => {}
-                    KeyCode::PageUp if focus_panel == 1 => {
-                        if follow {
-                            scroll = model
-                                .lock()
-                                .map(|m| {
-                                    scoped_card_indices(&m, agent_filter.as_deref())
-                                        .len()
-                                        .saturating_sub(15)
-                                        as u16
-                                })
-                                .unwrap_or(0);
-                            follow = false;
-                        } else {
-                            scroll = scroll.saturating_sub(10);
-                        }
-                    }
-                    KeyCode::PageDown if focus_panel == 1 => {
-                        if !follow {
-                            let count = model
-                                .lock()
-                                .map(|m| scoped_card_indices(&m, agent_filter.as_deref()).len())
-                                .unwrap_or(0);
-                            scroll = scroll.saturating_add(10);
-                            if scroll as usize >= count.saturating_sub(5) {
-                                follow = true;
-                            }
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        if let Some(g) = geometry() {
+                            scroll_history(
+                                &mut scroll,
+                                &mut follow,
+                                g.end,
+                                key.code == KeyCode::PageDown,
+                                g.page.saturating_sub(1).max(1),
+                            );
                         }
                     }
                     KeyCode::Home if stdio && focus_panel == 0 => {
@@ -824,14 +816,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         MouseEventKind::ScrollUp => false,
                         _ => continue,
                     };
-                    let size = terminal.size()?;
-                    let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                    let area = terminal.get_frame().area();
                     if let Ok(state) = model.lock() {
-                        match mouse_panel_at(
+                        match mouse_panel_at_view(
                             area,
                             &state,
                             &input,
                             ratatui::layout::Position::new(mouse.column, mouse.row),
+                            inline_mode,
                         ) {
                             Some(MousePanel::Transcript) if detail_card.is_some() => {
                                 let end = state
@@ -846,9 +838,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                             }
                             Some(MousePanel::Transcript) => {
-                                let count =
-                                    scoped_card_indices(&state, agent_filter.as_deref()).len();
-                                scroll_history(&mut scroll, &mut follow, count, down);
+                                let g = history_geometry(
+                                    &state,
+                                    area,
+                                    &input,
+                                    inline_mode,
+                                    &expanded,
+                                    &theme,
+                                    agent_filter.as_deref(),
+                                );
+                                scroll_history(&mut scroll, &mut follow, g.end, down, 3);
+                                if let Some((index, _)) = g
+                                    .cards
+                                    .iter()
+                                    .find(|(_, row)| *row >= scroll)
+                                    .or(g.cards.last())
+                                {
+                                    focused_card = *index;
+                                }
                                 // Scrolling history must not steal an editable draft's focus.
                             }
                             Some(MousePanel::Agents) if !state.agents.is_empty() => {
@@ -912,27 +919,16 @@ mod tests {
     use super::{insert_paste, normalize_paste, scroll_history};
 
     #[test]
-    fn wheel_history_starts_near_tail_and_returns_to_follow() {
+    fn wheel_history_starts_at_visible_tail_and_returns_to_follow() {
         let (mut scroll, mut follow) = (0, true);
-        scroll_history(&mut scroll, &mut follow, 100, false);
-        assert_eq!((scroll, follow), (95, false));
-        scroll_history(&mut scroll, &mut follow, 100, false);
+        scroll_history(&mut scroll, &mut follow, 95, false, 3);
         assert_eq!((scroll, follow), (92, false));
-        scroll_history(&mut scroll, &mut follow, 100, true);
+        scroll_history(&mut scroll, &mut follow, 95, false, 3);
+        assert_eq!((scroll, follow), (89, false));
+        scroll_history(&mut scroll, &mut follow, 95, true, 6);
         assert_eq!((scroll, follow), (95, true));
-        scroll_history(&mut scroll, &mut follow, 100, true);
-        assert_eq!((scroll, follow), (95, true));
-        scroll_history(&mut scroll, &mut follow, 0, false);
+        scroll_history(&mut scroll, &mut follow, 0, false, 3);
         assert_eq!((scroll, follow), (0, false));
-        scroll_history(&mut scroll, &mut follow, 0, false);
-        assert_eq!((scroll, follow), (0, false));
-        scroll_history(&mut scroll, &mut follow, 0, true);
-        assert_eq!((scroll, follow), (0, true));
-        scroll_history(&mut scroll, &mut follow, 80_000, false);
-        assert!(
-            scroll < u16::MAX,
-            "manual scroll must not become the tail sentinel"
-        );
     }
 
     #[test]

@@ -103,7 +103,24 @@ fn resumed_history_keeps_every_message_across_chunks_and_scroll_positions() {
             assert_eq!(card.body, expected);
             assert_eq!(card.detail.as_deref(), Some(expected.as_str()));
             terminal
-                .draw(|frame| draw(frame, &model, *card_index as u16))
+                .draw(|frame| {
+                    let g = bahulam_tui::render::history_geometry(
+                        &model,
+                        frame.area(),
+                        "",
+                        false,
+                        &HashSet::new(),
+                        "dark",
+                        None,
+                    );
+                    let row = g
+                        .cards
+                        .iter()
+                        .find(|(index, _)| index == card_index)
+                        .unwrap()
+                        .1;
+                    draw(frame, &model, row);
+                })
                 .unwrap();
             let screen: String = terminal
                 .backend()

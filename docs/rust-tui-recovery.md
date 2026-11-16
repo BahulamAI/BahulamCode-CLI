@@ -404,3 +404,67 @@ failing check; inspect compact results and their final detail lines; interrupt
 a running tool; switch views and submit another prompt. Old approvals must
 never reopen, results must remain attached to their tools, and only the intended
 agent should receive each event. Review one subsequent feature batch at a time.
+
+## Recovery correction: shared session identity and real history scrolling
+
+Live testing exposed failures beyond the earlier fixture checks. The first
+prompt was saved under a local UUID, then `session_info` changed the writer to
+a backend UUID. Resume could therefore find a prompt-only transcript while the
+reply/tools existed in another file. Rust additionally replayed `turn_started`
+as a second copy of the saved prompt, and replayed prior `/resume` output.
+
+The shared reader now follows explicit durable backend links and JSONL
+`parentUuid` relationships. It merges records in timestamp/order sequence,
+deduplicates UUIDs and bounds/cycle-checks link traversal. Picker identity comes
+from the actual filename; linked fragments are not listed as duplicate sessions. It does not rewrite
+or repair the original files. All views read this same recovered conversation.
+Future turns keep a stable local transcript identity while backend transport
+identity is tracked separately. The JSONL record format is unchanged.
+
+The resume context estimate counts canonical message payload bytes, excluding
+replay telemetry and repeated resume metadata. It is an approximate transcript
+size, not a provider-measured total including system prompts/tool schemas.
+Repeated resumes no longer inflate this estimate merely by appending metadata.
+
+Rust always includes saved assistant replies, even with sparse replay events.
+Within each turn it removes already represented text events, duplicated prompts,
+and past view/resume commands. Successful resume replaces the transcript without
+adding an empty command-result card. Saved thinking is inactive. Node's visual
+renderer and command implementations remain unchanged.
+
+Mouse/trackpad capture now defaults on in both Rust views. Scrolling uses painted
+rows rather than guessed card counts and respects the actual inline viewport.
+The complete saved history remains reachable; Ctrl+N/P still focus cards and
+Enter opens details. PageUp/PageDown work from the composer without losing the
+draft. `BAHULAM_TUI_MOUSE=0` explicitly restores native terminal wheel behavior;
+native text selection while capture is enabled uses the emulator's override
+(often Shift-drag). Inline still uses a bounded viewport, not an unlimited native
+scrollback copy. An empty inline block title was also removed because it reserved
+a row and hid the last Show details action.
+
+Validation includes 24 Rust tests; replay/analytics/context regressions; real
+mouse tests reaching oldest/newest history in both layouts; inline details,
+resize and view handoff; and seven real CLI command/handoff cases. The new
+`scripts/test-tui-resume-stability.mjs --session ID` copies an explicitly selected
+session and its linked files into an isolated home, then resumes repeatedly in
+inline, full-screen and Node. Both reported sessions passed with stable picker
+estimates and byte-identical reconstructed agent histories. No model call or
+original-file mutation is involved. One showed a rounded 2k transcript estimate,
+the other 11k; neither is a measurement of complete runtime/provider context.
+
+### Next full-screen direction, after live acceptance
+
+The local OpenTab and CodeBurn references demonstrate a read-only session model
+with tree navigation and drill-down panels. Adapt that interaction pattern while
+keeping Bahulam's conversation renderer and command/agent handoff shared:
+
+- Center: existing chronological messages, compact tool results, diffs and details.
+- Agent tree: stable parent/child rows, activity, current tool, elapsed time and
+  usage; selecting a row filters its transcript without replacing the session.
+- Inspectors: Tools, Changes, Context and Usage, opened on demand so they do not
+  compete with conversation space. Label measured usage versus estimates.
+- Same composer, approvals and pending instructions across layouts; switching
+  panels or views never modifies messages, context or JSONL.
+
+This is the next design direction, not a completed dashboard backport. Keep the
+session/resume correction as a separately live-tested recovery batch.

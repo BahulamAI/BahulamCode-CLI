@@ -47,7 +47,7 @@ try:
    if b'\x1b[6n' in chunk: os.write(master,b'\x1b[1;1R')
   text=screen.text()
   keys=None
-  if stage==0 and 'Rust inline' in text and 'REPLY_001' in text:
+  if stage==0 and 'Rust inline' in text and 'REPLY_001' in text and 'Show details' in text:
    assert b'\x1b[?1049h' not in output, 'Inline unexpectedly used alternate screen'
    assert 'Show details' in text and 'REPLY_007' not in text, 'Reply was not folded'
    keys=b'draft kept\t\r'

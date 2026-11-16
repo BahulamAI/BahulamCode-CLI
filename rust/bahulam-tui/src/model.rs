@@ -538,7 +538,16 @@ impl Model {
                 let index = if let Some(index) = self.progress.get(&progress_key) {
                     *index
                 } else {
-                    let index = self.card(agent, "Thinking", String::new(), "streaming");
+                    let index = self.card(
+                        agent,
+                        "Thinking",
+                        String::new(),
+                        if self.replaying_history {
+                            "done"
+                        } else {
+                            "streaming"
+                        },
+                    );
                     self.progress.insert(progress_key, index);
                     index
                 };

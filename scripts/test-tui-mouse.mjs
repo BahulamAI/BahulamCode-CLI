@@ -18,7 +18,7 @@ const driver = path.join(temp, 'driver.mjs');
 fs.writeFileSync(driver, `
 import fs from 'node:fs';
 import { startRustTuiHost } from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs', import.meta.url).href)};
-const host = startRustTuiHost({onCommand: command => {
+const host = startRustTuiHost({mode: process.env.BAHULAM_TUI_MODE, onCommand: command => {
   if (command.type === 'prompt') fs.writeFileSync(process.argv[2], JSON.stringify(command.data));
 }});
 const send = (seq,type,agent_id,data) => host.send({v:2,seq,ts:'',type,session_id:'mouse-test',agent_id,data});
@@ -66,16 +66,24 @@ try:
   os.write(master,b'\x1b[<64;10;4M')
   pump(0.2)
   refresh(99)
-  wait_text(b'HISTORY_26')
+  wait_text(b'HISTORY_27')
   os.write(master,b'\x1b[<65;10;4M')
   pump(0.2)
+  refresh(100)
+  wait_text(b'HISTORY_29')
+  os.write(master,b'\x1b[<64;10;4M'*50)
+  pump(.5)
+  refresh(99)
+  wait_text(b'HISTORY_00')
+  os.write(master,b'\x1b[<65;10;4M'*50)
+  pump(.5)
   refresh(100)
   wait_text(b'HISTORY_29')
  os.write(master,b'\r')
  deadline=time.time()+3
  while not os.path.exists(sys.argv[2]) and time.time()<deadline: pump(0.03)
  with open(sys.argv[2]) as result: assert json.load(result)=={'text':'draft kept'}
- if enabled:
+ if enabled and os.environ.get('BAHULAM_TUI_MODE') != 'inline':
   os.write(master,b'\x1b[<65;90;4M')
   pump(0.2)
   os.write(master,b'\r')
@@ -88,7 +96,7 @@ try:
  pump(0.05)
  assert child.poll()==0, 'Client failed to exit cleanly'
  assert termios.tcgetattr(slave)==original_mode, 'Terminal mode not restored'
- assert (b'\x1b[?1000h' in output)==enabled, 'Capture must be opt-in'
+ assert (b'\x1b[?1000h' in output)==enabled, 'Capture must match the explicit setting'
  if enabled:
   assert b'\x1b[?1000l' in output and b'\x1b[?1006l' in output, 'Mouse reporting not disabled on exit'
 finally:
@@ -102,17 +110,17 @@ finally:
  os.close(slave)
 `;
 try {
-  for (const enabled of [false, true]) {
+  for (const mode of ['fullscreen', 'inline']) for (const enabled of [false, true]) {
     const resultFile = path.join(temp, `prompt-${enabled}.json`);
-    const env = { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_BINARY: binary };
-    if (enabled) env.BAHULAM_TUI_MOUSE = '1';
-    else delete env.BAHULAM_TUI_MOUSE;
+    const env = { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_BINARY: binary, BAHULAM_TUI_MODE: mode };
+    if (enabled) delete env.BAHULAM_TUI_MOUSE;
+    else env.BAHULAM_TUI_MOUSE = '0';
     const result = spawnSync('python3', ['-c', python, enabled ? '1' : '0', resultFile,
       process.execPath, driver, resultFile], { env, encoding: 'utf8', timeout: 16000, maxBuffer: 1024 * 1024 });
     assert.equal(result.error, undefined, result.error?.message);
-    assert.equal(result.status, 0, `Mouse ${enabled}: ${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, `Mouse ${mode} ${enabled}: ${result.stdout}\n${result.stderr}`);
   }
-  console.log('PASS: mouse defaults off; opt-in history/agent navigation preserves drafts and restores terminal modes.');
+  console.log('PASS: mouse defaults on in both Rust views; history/agent navigation preserves drafts and restores terminal modes.');
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

@@ -402,7 +402,27 @@ pub fn mouse_panel_at(
     if model.interaction.is_some() || model.approval.is_some() {
         return None;
     }
-    let layout = view_layout(area, input, false);
+    mouse_panel_at_view(area, model, input, position, false)
+}
+
+pub fn mouse_panel_at_view(
+    area: Rect,
+    model: &Model,
+    input: &str,
+    position: Position,
+    inline: bool,
+) -> Option<MousePanel> {
+    if model.interaction.is_some() || model.approval.is_some() {
+        return None;
+    }
+    let layout = if inline {
+        inline_layout(area, input, false)
+    } else {
+        view_layout(area, input, false)
+    };
+    if inline && position.y < layout.rows[3].y {
+        return Some(MousePanel::Transcript);
+    }
     let inset = Margin {
         horizontal: 1,
         vertical: 1,
@@ -541,10 +561,10 @@ pub fn draw_with_view(
             expanded,
             focused,
             p,
-            columns[0].width.saturating_sub(2) as usize,
+            columns[0].width.saturating_sub(if inline { 0 } else { 2 }) as usize,
             agent_filter,
             scroll,
-            rows[1].height.saturating_sub(2) as usize,
+            rows[1].height.saturating_sub(if inline { 0 } else { 2 }) as usize,
         )
     };
     let title = if let Some(index) = detail_card {
@@ -582,20 +602,21 @@ pub fn draw_with_view(
                 },
                 0,
             ))
-            .block(
-                Block::default()
+            .block({
+                let block = Block::default()
                     .borders(if inline { Borders::NONE } else { Borders::ALL })
                     .border_style(Style::default().fg(if interactive && focus_panel == 1 {
                         p.accent
                     } else {
                         p.border
-                    }))
-                    .title(if inline && detail_card.is_none() {
-                        String::new()
-                    } else {
-                        title
-                    }),
-            ),
+                    }));
+                // Even an empty title reserves a row and would hide the final details action.
+                if inline && detail_card.is_none() {
+                    block
+                } else {
+                    block.title(title)
+                }
+            }),
         columns[0],
     );
 
@@ -1047,6 +1068,91 @@ fn plan_line(item: &str, p: Palette) -> Line<'static> {
     ])
 }
 
+// Scroll in painted rows, never in cards: one message may occupy many rows.
+fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for line in lines {
+        let mut spans = Vec::new();
+        let mut used = 0;
+        for span in line.spans {
+            let mut text = String::new();
+            for grapheme in span.content.graphemes(true) {
+                let size = UnicodeWidthStr::width(grapheme);
+                if used + size > width && used > 0 {
+                    if !text.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut text), span.style));
+                    }
+                    rows.push(Line::from(std::mem::take(&mut spans)).style(line.style));
+                    used = 0;
+                }
+                text.push_str(grapheme);
+                used += size;
+            }
+            if !text.is_empty() {
+                spans.push(Span::styled(text, span.style));
+            }
+        }
+        rows.push(Line::from(spans).style(line.style));
+    }
+    rows
+}
+
+pub struct HistoryGeometry {
+    pub end: u16,
+    pub page: u16,
+    pub cards: Vec<(usize, u16)>,
+}
+
+pub fn history_geometry(
+    model: &Model,
+    area: Rect,
+    input: &str,
+    inline: bool,
+    expanded: &HashSet<usize>,
+    theme: &str,
+    agent_filter: Option<&str>,
+) -> HistoryGeometry {
+    let layout = if inline {
+        inline_layout(area, input, model.approval.is_some())
+    } else {
+        view_layout(area, input, model.approval.is_some())
+    };
+    let border = if inline { 0 } else { 2 };
+    let width = layout.columns[0].width.saturating_sub(border) as usize;
+    let page = layout.columns[0].height.saturating_sub(border).max(1);
+    let mut total = 0usize;
+    let mut cards = Vec::new();
+    for (index, card) in model
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| card.agent == agent_filter.unwrap_or("main"))
+    {
+        cards.push((index, total.min((u16::MAX - 1) as usize) as u16));
+        total += wrap_rows(
+            card_lines(
+                card,
+                index,
+                expanded,
+                None,
+                palette(theme),
+                width,
+                usize::MAX,
+            ),
+            width,
+        )
+        .len();
+    }
+    HistoryGeometry {
+        end: total
+            .saturating_sub(page as usize)
+            .min((u16::MAX - 1) as usize) as u16,
+        page,
+        cards,
+    }
+}
+
 fn transcript_lines(
     model: &Model,
     expanded: &HashSet<usize>,
@@ -1059,47 +1165,45 @@ fn transcript_lines(
 ) -> Vec<Line<'static>> {
     let budget = visible_rows.max(1);
     let mut output = Vec::with_capacity(budget);
+    let cards = model
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| card.agent == agent_filter.unwrap_or("main"));
     if scroll == u16::MAX {
-        for (index, card) in model.cards.iter().enumerate().rev().filter(|(_, card)| {
-            agent_filter
-                .map(|id| card.agent == id)
-                .unwrap_or(card.agent == "main")
-        }) {
-            let lines = card_lines(card, index, expanded, focused, p, width, budget);
+        // Only render enough cards to fill the tail, even in very long sessions.
+        for (index, card) in cards.rev() {
+            let lines = wrap_rows(
+                card_lines(card, index, expanded, focused, p, width, usize::MAX),
+                width,
+            );
             for line in lines.into_iter().rev() {
-                output.insert(0, line);
+                output.push(line);
                 if output.len() >= budget {
+                    output.reverse();
                     return output;
                 }
             }
         }
-        return output;
-    }
-    for (index, card) in model
-        .cards
-        .iter()
-        .enumerate()
-        .filter(|(_, card)| {
-            agent_filter
-                .map(|id| card.agent == id)
-                .unwrap_or(card.agent == "main")
-        })
-        .skip(scroll as usize)
-    {
-        output.extend(card_lines(
-            card,
-            index,
-            expanded,
-            focused,
-            p,
-            width,
-            budget - output.len(),
-        ));
-        if output.len() >= budget {
-            break;
+        output.reverse();
+    } else {
+        let mut skip = scroll as usize;
+        for (index, card) in cards {
+            let rows = wrap_rows(
+                card_lines(card, index, expanded, focused, p, width, usize::MAX),
+                width,
+            );
+            if skip >= rows.len() {
+                skip -= rows.len();
+                continue;
+            }
+            output.extend(rows.into_iter().skip(skip).take(budget - output.len()));
+            skip = 0;
+            if output.len() >= budget {
+                break;
+            }
         }
     }
-    output.truncate(budget);
     output
 }
 

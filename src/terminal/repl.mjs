@@ -30,7 +30,7 @@ import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
-import { rustTranscriptItems } from '../daemon/rust-tui-snapshot.mjs';
+import { rustTranscriptItems, rustResumeItems } from '../daemon/rust-tui-snapshot.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
@@ -166,7 +166,6 @@ import {
   formatRelativeTime,
   formatSessionCost,
   historyRoleLabel,
-  mergeResumeReplayItems,
   messageCountLabel,
   normalizeResumableSession,
   oneLineInstruction,
@@ -2750,9 +2749,10 @@ function renderEvent(event) {
 
     case 'session_info': {
       if (data?.session_id) {
-        session.id = data.session_id;
+        session.backendSessionId = data.session_id;
+        session.id ||= data.session_id;
         // Track in session manager so conversations save to the right file
-        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
+        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: session.id });
         // Wire socket server for attach clients.
         // renderEvent() is NOT async, so we can't `await startSocketServer(...)`
         // directly (that fails at import time — "Unexpected reserved word").
@@ -4352,7 +4352,8 @@ async function handleCommand(input, ctx) {
       // 1. Resolve which session to resume.
       let picked = null;
       if (targetId) {
-        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId));
+        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId)
+          || s.linkedSessionIds?.some(id => id === targetId || id.startsWith(targetId)));
         if (!picked) {
           process.stderr.write(`  ${c.yellow('!')} ${c.dim(`No session found matching id: ${targetId}`)}\n`);
           return;
@@ -4735,6 +4736,7 @@ export async function startTerminalRepl() {
 
     Object.assign(session, {
       id: null,
+      backendSessionId: null,
       historyMode: 'current',
       rustSnapshotItems: [],
       rustSnapshotHistoryLength: 0,
@@ -4968,14 +4970,7 @@ export async function startTerminalRepl() {
         : [];
       if (replay.length) {
         const prefix = historyMode === 'full' ? checkpointCard : continuityCard;
-        const transcriptMessages = replay.some(item => item?.source === 'durable')
-          ? historyForMode.filter(message => message.role !== 'user')
-          : [];
-        return [...prefix, ...mergeResumeReplayItems(users, replay, transcriptMessages).map(item => {
-          if (item.kind === 'user') return { kind: 'message', role: 'user', content: item.message.content };
-          if (item.kind === 'history') return { kind: 'message', role: item.message.role || 'assistant', content: item.message.content ?? '' };
-          return { kind: 'event', event: item.event.event };
-        })];
+        return [...prefix, ...rustResumeItems(users, replay, historyForMode)];
       }
       return [...(historyMode === 'full' ? checkpointCard : continuityCard), ...historyItems];
     })();
@@ -4987,6 +4982,7 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.yellow('Some follow-ups have uncertain or interrupted delivery. Review /history before retrying; they will not run automatically.')}\n`);
     }
     session.id = sessionId;
+    session.backendSessionId = detail.meta?.backendSessionId || sessionId;
     session.historyMode = historyMode;
     session.turns = displayHistory.filter(m => m.role === 'user').length;
     session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
@@ -5971,6 +5967,7 @@ export async function startTerminalRepl() {
     if (!followupId && input.startsWith('/')) {
       if (_rustTuiActive) {
         const capture = { output: '', truncated: false };
+        const historyBeforeCommand = session.history;
         let ok = true;
         _rustTuiOutputCapture = capture;
         try {
@@ -5991,6 +5988,7 @@ export async function startTerminalRepl() {
         } else if (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg)) {
           sendRustSessionState();
         }
+        if (command === '/resume' && ok && session.history !== historyBeforeCommand) return;
         const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
         const preview = previewLines.slice(0, 8).join('\n').slice(0, 1200) +
           (previewLines.length > 8 || result.length > 1200 ? '\n… open details for full output' : '');
@@ -6092,7 +6090,7 @@ export async function startTerminalRepl() {
       });
     }
     const client = streamClient;
-    if (session.id && !client.sessionId) client.sessionId = session.id;
+    if (session.id && !client.sessionId) client.sessionId = session.backendSessionId || session.id;
 
     await _executeWithClient(client);
 
@@ -6217,7 +6215,7 @@ export async function startTerminalRepl() {
     // and local-mode prompts have a durable transcript to attach to.
     jsonlWriter.ensureSessionId();
     if (!session.id) session.id = jsonlWriter.sessionId;
-    if (!client.sessionId) client.sessionId = session.id;
+    if (!client.sessionId) client.sessionId = session.backendSessionId || session.id;
     // The backend never emits turn_started; the prompt only reaches the event
     // stream (and the Rust transcript) if the REPL records it here.
     tapSseEvent({ type: 'turn_started', data: { text: input } }, { sessionId: session.id });
@@ -6790,10 +6788,10 @@ export async function startTerminalRepl() {
           }
         }
 
-        // Local JSONL: capture session ID from backend
+        // Keep the local transcript ID stable; the transport tracks the backend ID separately.
         if (event.type === 'session_info' && event.data?.session_id) {
-          jsonlWriter.setSessionId(event.data.session_id);
-          hookRunner.sessionId = event.data.session_id;
+          jsonlWriter.setSessionId(session.id);
+          hookRunner.sessionId = session.id;
           writeCurrentUserTurn();
         }
 

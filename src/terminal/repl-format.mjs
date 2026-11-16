@@ -284,6 +284,7 @@ export function startResumeProgress(mode = 'full') {
 export function normalizeResumableSession(s) {
   return {
     sessionId: s.sessionId,
+    linkedSessionIds: s.linkedSessionIds || [],
     instruction: s.firstPrompt || s.instruction || '(no instruction)',
     startedAt: s.startTime || s.startedAt || '',
     updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
