@@ -63,6 +63,7 @@ pub struct Model {
     pub context_estimated: bool,
     pub cost_estimated: bool,
     pub status: String,
+    pub composer_hint: String,
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
     pub command_catalog: Vec<(String, String)>,

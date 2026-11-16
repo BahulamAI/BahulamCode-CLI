@@ -22,6 +22,7 @@ pub struct TerminalCapabilities {
     pub ssh: bool,
     pub wsl: bool,
     pub profile: String,
+    pub clipboard_mode: String,
 }
 
 impl TerminalCapabilities {
@@ -37,6 +38,7 @@ impl TerminalCapabilities {
             "BAHULAM_PLAIN",
             "BAHULAM_TUI_COLOR_LEVEL",
             "BAHULAM_TUI_MOUSE",
+            "BAHULAM_CLIPBOARD",
             "LC_ALL",
             "LC_CTYPE",
             "LANG",
@@ -144,6 +146,14 @@ impl TerminalCapabilities {
             ssh: !get("SSH_CONNECTION").is_empty() || !get("SSH_TTY").is_empty(),
             wsl: !get("WSL_DISTRO_NAME").is_empty(),
             profile: profile.into(),
+            clipboard_mode: match get("BAHULAM_CLIPBOARD").to_lowercase().as_str() {
+                "" | "auto" => "auto",
+                "native" => "native",
+                "osc52" => "osc52",
+                "file" => "file",
+                _ => "invalid configuration",
+            }
+            .into(),
         }
     }
 
@@ -157,7 +167,7 @@ impl TerminalCapabilities {
             "mouse_capture": view.is_some() && self.mouse_capture,
             "mouse_requested": self.mouse_capture, "bracketed_paste": view.is_some(),
             "synchronized_output": "inactive; not probed", "focus_reporting": "inactive; not probed",
-            "osc8_links": "not restored", "clipboard": "not restored", "images": "not restored",
+            "osc8_links": "not restored", "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": "not restored",
             "notifications": "not restored", "report": self.report(view, size),
         })
     }
@@ -213,7 +223,13 @@ impl TerminalCapabilities {
             ),
             "Synchronized output  inactive; not probed".to_owned(),
             "Focus reporting      inactive; not probed".to_owned(),
-            "Links / clipboard    not restored".to_owned(),
+            "Links                not restored".to_owned(),
+            format!(
+                "Clipboard text       {} · Ctrl+V paste · Ctrl+Y copy",
+                self.clipboard_mode
+            ),
+            "Prompt editor        Ctrl+G · VISUAL/EDITOR".to_owned(),
+            "Prompt history       ↑↓ recall · Ctrl+R search".to_owned(),
             "Images / notifications  not restored".to_owned(),
         ]
         .join("\n")

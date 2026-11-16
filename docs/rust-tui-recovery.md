@@ -1,5 +1,23 @@
 # Rust terminal recovery review
 
+## Current remaining-work queue
+
+This summary supersedes the historical pending tables below. Continue one
+reviewed functional batch at a time, with the user's live acceptance between
+batches; the expanded scope includes release work as well as original backports.
+
+| Batch | Current disposition |
+| --- | --- |
+| Clipboard text, external editor, history/search and basic editing | Implemented in the latest input batch; awaiting live acceptance. See shortcuts and limits at the end of this document. |
+| Remaining composer and question routing | Pending: large-paste chips, richer completion/caret navigation, attachment paste presentation, and a review of every shared question route. |
+| Jobs, tool timing, background promotion | Pending producer/subscription/control review; existing check/event rendering is retained. |
+| Disconnect, signals and lifecycle controls | Pending recovery and child-process lifecycle review; preserve shared interrupt/exit behavior. |
+| File/link opening and desktop notifications | Pending selective backports and native validation. |
+| Active capability probes | Pending bounded query/reply routing, fallbacks and per-terminal validation. Current diagnostics are environment/profile hints. |
+| Image display | Pending protocol selection, decoding/resource limits and text fallback. Existing Node image attachments are a separate input feature. |
+| Long sessions | Pending payload retention across detach, bounded transcript memory, incremental formatting and sustained tool/stream performance measurements. |
+| Release matrix | Real macOS/Linux/Windows, VS Code/iTerm2/Ghostty/Windows Terminal, SSH/tmux acceptance remains open. |
+
 ## Accepted baseline
 
 The user accepted the reply-history behavior at `e9aa899`, whose source tree
@@ -720,3 +738,55 @@ Sent user messages, including resumed history, now use the composer's background
 tint on their heading and content rows in both Rust layouts. The tint fills the
 conversation's content width, including wrapped lines. Existing margins and the
 blank separator between cards remain unchanged; assistant/tool cards are untinted.
+
+## Clipboard, editor and prompt-history input batch
+
+Adapted input-only pieces from preserved `b37c586`/`7cd8933` and their later
+corrections. No wholesale renderer replacement or changes to Node's commands,
+visual renderer, transcript format or agent requests are included.
+
+- `Ctrl+V`: read native clipboard text at the caret. Native reads/writes run off
+  the UI loop with a two-second timeout and 5 MiB limit. Changing the draft,
+  entering the editor/search, submitting, cancelling, or replacing the transcript
+  invalidates a pending paste. Empty/failed reads are reported; they do not
+  silently turn into image attachments. `/attach clipboard` and `@clipboard`
+  continue to use the existing Node attachment route.
+- `Ctrl+Y`: copy the draft when input is focused, or the selected card/details
+  when history is focused. Missing full payloads are requested first; the hint
+  asks the user to press Ctrl+Y again after loading. Copy never silently takes
+  only the compact preview. Markdown/code text is preserved.
+- `BAHULAM_CLIPBOARD=auto|native|osc52|file`: auto uses a native helper locally,
+  refuses native reads over SSH, and uses a private text file for remote copying
+  or when no native writer exists. OSC 52 copying is explicit, with tmux wrapping
+  and a 100 KB escape-payload threshold; larger copies use a private file.
+  File mode writes an intentional copy artifact with mode 0600 on Unix. Settings
+  file overrides are not yet backported; use the environment variable for now.
+- `Ctrl+G`: edit with `$VISUAL`, then `$EDITOR`, falling back to vi/notepad.
+  Arguments are parsed without shell evaluation. Terminal raw/mouse/paste modes
+  are released while the editor owns the terminal, then restored to the same
+  Rust view. Successful edits remain drafts; nonzero exit or launch/read failure
+  preserves the original. Temporary files are private and removed on return.
+  GUI editors need their wait flag, for example `VISUAL='code --wait'`.
+- `Up/Down`: recall prompts from the same history.jsonl written by Node and
+  restore the current draft/cursor when returning past the newest prompt. Loading
+  reads at most the final 5 MiB and keeps 100 entries; Rust does not rewrite it.
+  Prompts/commands submitted during this attachment also enter its local history.
+- `Ctrl+R`: reverse search; type to filter, Ctrl+R cycles matches, Enter selects
+  without submitting, Esc restores the original draft. Existing read-line edits
+  now include Ctrl+A/E/U/K/W, Delete, and Alt/Ctrl word movement/deletion.
+  Modal questions and approvals retain input ownership. Ordinary approval-time
+  typing can no longer change or submit the preserved draft.
+
+The editor return path avoids Ratatui clear's cursor-position query, which timed
+out in a real PTY. This correction is limited to the new editor handoff; other
+lifecycle/capability query paths remain on the review queue. `/tui doctor` now
+reports the restored clipboard/editor/history routes without claiming native
+backend or terminal-emulator acceptance.
+
+Validation uses fake clipboard/editor executables with the real Rust/Node PTY
+host in both views: prompt recall/search/cancel, no implicit submit, editor raw
+mode release, quoted arguments, file permissions/cleanup, failure draft recovery,
+full stored-result copying, late-paste cancellation, oversize reads and timeout.
+Existing command, resume, approval, scrolling, resize, details, capability and
+request/cache-invariance checks remain part of this batch's validation. Native
+OS helpers, GUI editors and remote clipboard behavior still need live acceptance.

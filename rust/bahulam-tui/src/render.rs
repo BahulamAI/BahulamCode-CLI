@@ -1016,7 +1016,16 @@ pub fn draw_with_view(
     }
 
     let shortcuts = if detail_card.is_some() {
-        "Esc to return · ↑↓ / PgUp / PgDn scroll".to_owned()
+        format!(
+            "Esc return · Ctrl+Y copy · {}",
+            if model.composer_hint.is_empty() {
+                "↑↓ scroll"
+            } else {
+                &model.composer_hint
+            }
+        )
+    } else if !model.composer_hint.is_empty() {
+        model.composer_hint.clone()
     } else if inline && area.width < 32 {
         "Ctrl+C twice quit".to_owned()
     } else if inline && area.width < 52 {
@@ -1024,7 +1033,7 @@ pub fn draw_with_view(
     } else if inline && area.width < 78 {
         "Tab history/input · Enter send · Ctrl+C twice quit".to_owned()
     } else if inline {
-        "Tab input/history · Enter details/send · /tui fullscreen · Ctrl+C twice quit".to_owned()
+        "Tab history · Ctrl+V paste · Ctrl+G editor · Ctrl+R search · Ctrl+C twice quit".to_owned()
     } else if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
@@ -1032,7 +1041,7 @@ pub fn draw_with_view(
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        "Enter send · Ctrl+J new line · Tab transcript · /tui default · Ctrl+C twice quit"
+        "Enter send · Ctrl+J new line · Ctrl+V paste · Ctrl+G editor · Ctrl+R search · Ctrl+C twice quit"
             .to_owned()
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()

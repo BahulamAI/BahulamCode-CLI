@@ -54,12 +54,13 @@ try:
   text=screen.text()
   if stage==0 and 'Permission needed' in text and 'unknown_info' in text and '[3]' in text:
    assert '/fixture' in text and 'Fixture permission check' in text
-   os.write(master,b'3');stage=1
+   os.write(master,b'IGNORED\r3');stage=1
   elif stage==1 and 'Permission needed' in text and 'custom-cli inspect' in text:
    assert 'shell' in text and '[2] deny' in text
    os.write(master,b'2');stage=2
   elif stage==2 and 'HYDRATED_012' in text:
    assert 'Show details' not in text,'Assistant still folded behind details'
+   assert 'IGNORED' not in text,'Approval keys edited or submitted the draft'
    os.write(master,b'\t\r');stage=3;entered=time.monotonic()
   elif stage==3 and time.monotonic()-entered>0.15:
    assert 'Details ·' not in text,'Enter opened assistant details'

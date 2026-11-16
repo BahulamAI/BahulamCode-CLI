@@ -1,5 +1,6 @@
 use bahulam_tui::{
     capabilities::TerminalCapabilities,
+    clipboard, composer,
     model::safe_text,
     render::{details_at, draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
@@ -67,11 +68,7 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
 }
 
 fn normalize_paste(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|ch| *ch == '\n' || *ch == '\t' || !ch.is_control())
-        .collect()
+    composer::normalize(text)
 }
 
 fn insert_paste(input: &mut String, cursor: &mut usize, text: &str) {
@@ -82,6 +79,26 @@ fn insert_paste(input: &mut String, cursor: &mut usize, text: &str) {
     let at = (*cursor).min(input.len());
     input.insert_str(at, &pasted);
     *cursor = at + pasted.len();
+}
+enum ClipboardReply {
+    Paste(io::Result<String>),
+    Copy(io::Result<clipboard::Copied>),
+}
+fn input_hint(model: &Arc<Mutex<bahulam_tui::model::Model>>, hint: &str) {
+    if let Ok(mut state) = model.lock() {
+        state.composer_hint = safe_text(hint);
+    }
+}
+fn editable(
+    model: &Arc<Mutex<bahulam_tui::model::Model>>,
+    focus: u8,
+    details: Option<usize>,
+) -> bool {
+    focus == 0
+        && details.is_none()
+        && model
+            .lock()
+            .is_ok_and(|m| m.interaction.is_none() && m.approval.is_none())
 }
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -306,6 +323,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_refresh = std::time::Instant::now();
     let mut input = String::new();
     let mut cursor = 0usize;
+    let mut prompt_history = composer::History::load();
+    let mut history_search: Option<composer::Search> = None;
+    let mut clipboard_job: Option<std::sync::mpsc::Receiver<ClipboardReply>> = None;
+    let mut paste_origin: Option<(String, usize, u64)> = None;
     let mut theme = std::env::var("BAHULAM_THEME").unwrap_or_else(|_| "dark".into());
     let mut expanded = HashSet::new();
     let mut focused_card = 0usize;
@@ -326,6 +347,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         if let Ok(state) = model.lock() {
+            if (state.interaction.is_some() || state.approval.is_some()) && history_search.is_some()
+            {
+                if let Some(search) = history_search.take() {
+                    (input, cursor) = search.draft;
+                }
+            }
             if state.transcript_revision != seen_transcript_revision {
                 dirty = true;
                 seen_transcript_revision = state.transcript_revision;
@@ -374,6 +401,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &command_writer,
                     serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
                 )?;
+            }
+        }
+        if let Some(reply) = clipboard_job.as_ref().and_then(|job| job.try_recv().ok()) {
+            clipboard_job = None;
+            dirty = true;
+            match reply {
+                ClipboardReply::Paste(result) => {
+                    let unchanged = paste_origin.take().is_some_and(|(draft, at, revision)| {
+                        draft == input && at == cursor && revision == seen_transcript_revision
+                    });
+                    if !unchanged
+                        || !editable(&model, focus_panel, detail_card)
+                        || history_search.is_some()
+                    {
+                        input_hint(
+                            &model,
+                            "Draft changed during clipboard read; press Ctrl+V to retry",
+                        );
+                    } else {
+                        match result {
+                            Ok(text)
+                                if !text.is_empty()
+                                    && input.len().saturating_add(text.len())
+                                        <= composer::MAX_INPUT_BYTES =>
+                            {
+                                insert_paste(&mut input, &mut cursor, &text);
+                                input_hint(&model, "Pasted text · Enter sends · Ctrl+G edits");
+                            }
+                            Ok(text) if text.is_empty() => input_hint(
+                                &model,
+                                "No clipboard text · use /attach clipboard for an image",
+                            ),
+                            Ok(_) => input_hint(&model, "Prompt exceeds the 5 MiB paste limit"),
+                            Err(error) => input_hint(&model, &error.to_string()),
+                        }
+                    }
+                }
+                ClipboardReply::Copy(result) => match result {
+                    Ok(result) => {
+                        if let Some(sequence) = result.terminal_sequence {
+                            write!(io::stdout(), "{sequence}")?;
+                            io::stdout().flush()?;
+                        }
+                        input_hint(&model, &result.message);
+                    }
+                    Err(error) => input_hint(&model, &error.to_string()),
+                },
             }
         }
         if follow && dirty {
@@ -490,6 +564,180 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         )?;
                     }
                 }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && history_search.is_some()
+                        && !(key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    let search = history_search.as_mut().unwrap();
+                    match key.code {
+                        KeyCode::Esc => {
+                            (input, cursor) = search.draft.clone();
+                            history_search = None;
+                            input_hint(&model, "History search cancelled");
+                        }
+                        KeyCode::Enter => {
+                            history_search = None;
+                            prompt_history.reset();
+                            input_hint(&model, "History selected · Enter sends · Ctrl+G edits");
+                        }
+                        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            let hint =
+                                search.preview(&prompt_history, &mut input, &mut cursor, true);
+                            input_hint(&model, &hint);
+                        }
+                        KeyCode::Backspace => {
+                            search.query.pop();
+                            let hint =
+                                search.preview(&prompt_history, &mut input, &mut cursor, false);
+                            input_hint(&model, &hint);
+                        }
+                        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            search.query.push(ch);
+                            let hint =
+                                search.preview(&prompt_history, &mut input, &mut cursor, false);
+                            input_hint(&model, &hint);
+                        }
+                        _ => {}
+                    }
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && stdio
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('g')
+                        && editable(&model, focus_panel, detail_card) =>
+                {
+                    restore();
+                    paste_origin = None;
+                    let edited = composer::edit_in_editor(&input);
+                    enable_raw_mode()?;
+                    terminal = open_terminal(inline_mode)?;
+                    if mouse_enabled {
+                        execute!(io::stdout(), EnableMouseCapture)?;
+                    }
+                    execute!(
+                        io::stdout(),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                        crossterm::cursor::MoveTo(0, 0)
+                    )?;
+                    report_capabilities(
+                        &command_writer,
+                        &capabilities,
+                        inline_mode,
+                        terminal.get_frame().area(),
+                        &model,
+                    )?;
+                    match edited {
+                        Ok(Some(text)) => {
+                            input = text;
+                            cursor = input.len();
+                            prompt_history.reset();
+                            input_hint(&model, "Editor draft loaded · Enter sends");
+                        }
+                        Ok(None) => {
+                            input_hint(&model, "Editor cancelled · original draft preserved")
+                        }
+                        Err(error) => input_hint(
+                            &model,
+                            &format!("Editor: {error} · original draft preserved"),
+                        ),
+                    }
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && stdio
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('r')
+                        && editable(&model, focus_panel, detail_card) =>
+                {
+                    paste_origin = None;
+                    let mut search = composer::Search::new(&input, cursor);
+                    let hint = search.preview(&prompt_history, &mut input, &mut cursor, false);
+                    input_hint(&model, &hint);
+                    history_search = Some(search);
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && stdio
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('v')
+                        && editable(&model, focus_panel, detail_card) =>
+                {
+                    if clipboard_job.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        paste_origin = Some((input.clone(), cursor, seen_transcript_revision));
+                        clipboard_job = Some(rx);
+                        input_hint(&model, "Reading clipboard…");
+                        thread::spawn(move || {
+                            let _ = tx.send(ClipboardReply::Paste(clipboard::read_text()));
+                        });
+                    }
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && stdio
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('y') =>
+                {
+                    if clipboard_job.is_none() {
+                        let index = detail_card.unwrap_or(focused_card);
+                        let mut payload = None;
+                        let text = if editable(&model, focus_panel, detail_card) {
+                            Some(input.clone())
+                        } else {
+                            model.lock().ok().and_then(|mut state| {
+                                let card = state.cards.get(index)?;
+                                if card.payload_ref.is_some() && card.detail.is_none() {
+                                    payload = state.request_details(index);
+                                    None
+                                } else {
+                                    Some(card.detail.as_ref().unwrap_or(&card.body).clone())
+                                }
+                            })
+                        };
+                        if let Some(payload_ref) = payload {
+                            write_command(
+                                &command_writer,
+                                serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+                            )?;
+                        }
+                        match text {
+                            Some(text) if !text.is_empty() => {
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                clipboard_job = Some(rx);
+                                input_hint(&model, "Copying complete content…");
+                                thread::spawn(move || {
+                                    let _ =
+                                        tx.send(ClipboardReply::Copy(clipboard::copy_text(&text)));
+                                });
+                            }
+                            Some(_) => input_hint(&model, "Nothing to copy"),
+                            None => input_hint(
+                                &model,
+                                "Loading full result · press Ctrl+Y again when loaded",
+                            ),
+                        }
+                    }
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && editable(&model, focus_panel, detail_card)
+                        && composer::is_edit_key(key) =>
+                {
+                    composer::edit(&mut input, &mut cursor, key);
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && focus_panel == 0
+                        && model.lock().is_ok_and(|m| m.approval.is_some())
+                        && !matches!(
+                            key.code,
+                            KeyCode::Char('1'..='9') | KeyCode::Esc | KeyCode::Tab
+                        )
+                        && !(key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)) => {}
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('c')
                         if key.modifiers.contains(KeyModifiers::CONTROL) && stdio =>
@@ -504,6 +752,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         last_ctrl_c = Some(now);
                         input.clear();
                         cursor = 0;
+                        history_search = None;
+                        paste_origin = None;
+                        prompt_history.reset();
+                        input_hint(&model, "");
                         write_command(&command_writer, serde_json::json!({"type":"interrupt"}))?;
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -774,7 +1026,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Enter if focus_panel == 0 && !input.trim().is_empty() => {
+                        paste_origin = None;
                         let prompt = std::mem::take(&mut input);
+                        prompt_history.remember(&prompt);
+                        input_hint(&model, "");
                         cursor = 0;
                         let view_command = prompt
                             .split_whitespace()
@@ -896,6 +1151,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                     }
+                    KeyCode::Up | KeyCode::Down if editable(&model, focus_panel, detail_card) => {
+                        prompt_history.navigate(key.code == KeyCode::Down, &mut input, &mut cursor);
+                        input_hint(&model, "↑↓ prompt history · Ctrl+R search · Ctrl+G editor");
+                    }
                     KeyCode::Up | KeyCode::Down => {}
                     KeyCode::PageUp | KeyCode::PageDown => {
                         if let Some(g) = geometry() {
@@ -938,8 +1197,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .lock()
                         .map(|state| state.interaction.is_none() && state.approval.is_none())
                         .unwrap_or(false);
-                    if can_paste {
-                        insert_paste(&mut input, &mut cursor, &text);
+                    if can_paste && history_search.is_none() {
+                        if input.len().saturating_add(text.len()) <= composer::MAX_INPUT_BYTES {
+                            insert_paste(&mut input, &mut cursor, &text);
+                        } else {
+                            input_hint(&model, "Prompt exceeds the 5 MiB paste limit");
+                        }
                     }
                 }
                 Event::Mouse(mouse) if mouse_enabled => {
