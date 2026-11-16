@@ -1246,6 +1246,14 @@ fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
         }
         rows.push(Line::from(spans).style(line.style));
     }
+    // Paragraph styles only occupied cells. Fill tinted user rows to the
+    // content edge, including wrapped/empty lines, without adding any rows.
+    for row in &mut rows {
+        if row.style.bg.is_some() {
+            row.spans
+                .push(Span::raw(" ".repeat(width.saturating_sub(row.width()))));
+        }
+    }
     rows
 }
 
@@ -1520,7 +1528,11 @@ fn card_lines(
     if !metadata.is_empty() {
         heading.push(Span::styled(metadata, Style::default().fg(p.muted)));
     }
-    let mut lines = vec![Line::from(heading)];
+    let mut heading = Line::from(heading);
+    if is_user {
+        heading.style = heading.style.bg(p.input_bg);
+    }
+    let mut lines = vec![heading];
     if budget <= 1 {
         return lines;
     }
@@ -1617,6 +1629,7 @@ fn card_lines(
         }
     } else if is_user {
         for line in &mut rendered_body {
+            line.style = line.style.bg(p.input_bg);
             line.spans
                 .insert(0, Span::styled("  │ ", Style::default().fg(p.muted)));
         }

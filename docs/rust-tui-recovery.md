@@ -715,3 +715,8 @@ errors/removals. Purple remains on branding and focus/selection accents rather
 than coloring most code and headings. This reassigns Rust's use of existing
 shared light/dark tokens; Node's palette and renderer are unchanged. Existing
 color-depth conversion and no-color behavior remain in place.
+
+Sent user messages, including resumed history, now use the composer's background
+tint on their heading and content rows in both Rust layouts. The tint fills the
+conversation's content width, including wrapped lines. Existing margins and the
+blank separator between cards remain unchanged; assistant/tool cards are untinted.
