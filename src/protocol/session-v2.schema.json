@@ -784,6 +784,10 @@
         "reason": {
           "type": "string"
         },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["once", "session", "project", "type"] }
+        },
         "warnings": {
           "type": "array",
           "items": {}

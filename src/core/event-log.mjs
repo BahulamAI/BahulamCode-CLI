@@ -131,7 +131,7 @@ export function createEventLog({
       fs.writeFileSync(path.join(dir, payloadRef), serialized, { mode: 0o600 });
       // Keep bounded scalar metadata for cards; the complete payload is available on expand.
       payload = Object.fromEntries(Object.entries(payload).filter(([key, value]) =>
-        key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
+        key !== 'args' && ((key === 'scopes' && Array.isArray(value) && value.length <= 4 && value.every(scope => ['once', 'session', 'project', 'type'].includes(scope))) || typeof value === 'boolean' || typeof value === 'number' ||
           (typeof value === 'string' && Buffer.byteLength(value) <= (key === 'preview' ? 2400 : 256)))));
       if (Buffer.byteLength(JSON.stringify(payload)) > 3072) payload = {};
     }

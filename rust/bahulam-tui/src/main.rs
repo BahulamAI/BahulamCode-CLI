@@ -310,6 +310,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             last_refresh = std::time::Instant::now();
         }
+        if dirty && stdio {
+            let requests = model
+                .lock()
+                .ok()
+                .map(|mut m| {
+                    let indices: Vec<_> = m
+                        .cards
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, card)| {
+                            card.is_message()
+                                && card.payload_ref.is_some()
+                                && card.detail.is_none()
+                                && !card.detail_loading
+                        })
+                        .take(4)
+                        .map(|(i, _)| i)
+                        .collect();
+                    indices
+                        .into_iter()
+                        .filter_map(|i| m.request_details(i))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for payload_ref in requests {
+                write_command(
+                    &command_writer,
+                    serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+                )?;
+            }
+        }
         if follow && dirty {
             focused_card = model
                 .lock()
@@ -448,7 +479,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Esc if detail_card.is_some() => {
                         detail_card = None;
                         detail_scroll = 0;
-                        focus_panel = 1;
+                        focus_panel = if model.lock().ok().is_some_and(|m| m.approval.is_some()) {
+                            0
+                        } else {
+                            1
+                        };
                     }
                     KeyCode::Esc if agent_filter.is_some() => {
                         agent_filter = None;
@@ -613,6 +648,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             cursor += 1;
                         }
                     }
+                    KeyCode::Char(ch @ '3'..='9')
+                        if stdio
+                            && focus_panel == 0
+                            && model.lock().ok().is_some_and(|m| m.approval.is_some()) =>
+                    {
+                        if let Some(approval) = model.lock().ok().and_then(|m| m.approval.clone()) {
+                            if !approval.command.trim().is_empty() {
+                                if let Some(scope) = approval
+                                    .scopes
+                                    .iter()
+                                    .filter(|scope| scope.as_str() != "once")
+                                    .nth(ch as usize - '3' as usize)
+                                {
+                                    write_command(
+                                        &command_writer,
+                                        serde_json::json!({"type":"approve","data":{"apr_id":approval.id,"scope":scope}}),
+                                    )?;
+                                }
+                            }
+                        }
+                    }
                     KeyCode::Char(ch)
                         if focus_panel == 0 && !key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
@@ -640,6 +696,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Enter if detail_card.is_some() => {}
                     KeyCode::Enter if focus_panel == 1 => {
+                        if model.lock().ok().is_some_and(|m| {
+                            m.cards
+                                .get(focused_card)
+                                .is_some_and(|card| card.is_message())
+                        }) {
+                            continue;
+                        }
                         detail_card = Some(focused_card);
                         detail_scroll = 0;
                         follow = false;

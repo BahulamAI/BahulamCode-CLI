@@ -547,3 +547,52 @@ through each merge. Scoped approvals and remaining lifecycle controls still need
 review. Image protocols, bounded transcript retention/incremental Markdown, richer
 agent navigation and the real VS Code/iTerm2/Ghostty/Windows Terminal/tmux matrix
 remain release work. No parity or release-ready claim is made by this batch.
+
+
+## Approval handoff and full assistant messages (next reviewed batch)
+
+The screenshot exposed a backend `approval_required` frame using `tool` and
+`tool_id`, while the renderer expected `name` and a local `apr_id`. Such a frame
+is now normalized for display but cannot become an actionable Rust prompt without
+its local approval handle. More seriously, Rust's old remote-only interception
+bypassed `ApprovalManager.check()`. This unnecessarily asked about read-only
+`bahulam_info`, which Node already auto-approves, and bypassed other shared policy
+checks. Rust now replaces only the manager's prompt presentation. The same Node
+manager still classifies tools, enforces plan/safety restrictions, checks trust,
+applies decisions and records audit history. Node's own prompt renderer is unchanged.
+
+The Rust adapter serializes concurrent prompts, uses the existing pending-approval registry and
+rejects stale IDs or unoffered scopes. Socket/mobile/timeout decisions still
+resolve the same pending request as the Rust keys. Its composer panel shows tool, risk,
+working directory, argument preview and reason. `[1]` allows once, `[2]` denies;
+additional numbered actions mirror the choices Node offers (similar shell calls
+for this session, or this tool for this session). It does not invent a project
+trust option when Node doesn't offer one. Inspect the approval card using Tab and
+Enter; Escape from details returns to approval controls. Missing stored arguments
+must be loaded before approval. Cancellation/renderer closure denies pending
+choices; historical approval frames remain inactive. Large-argument metadata
+retains the allowed scopes when the full payload is stored separately.
+
+Per the user's updated rendering requirement, full user/assistant messages and
+sub-agent messages/reports stay in the conversation in both Rust layouts. The
+six-line assistant preview is removed. Scrolling reveals the complete reply;
+Enter no longer opens a separate details overlay for a message. Tool/command,
+check, diff and other operational cards retain compact previews and details.
+Stored assistant payloads hydrate automatically instead of requiring a click.
+The existing 2 MiB loaded-detail display cap still applies. Inline remains a
+bounded viewport with history navigation, not a duplicate native scrollback dump.
+
+Validation: 27 Rust tests, Node's existing 17 approval tests, seven new policy/queue/
+request-identity regressions, the existing socket approval relay test, generated-protocol checks and request-invariance
+checks. A real Rust/Node PTY test exercises read-only auto-approval, scoped approval,
+denial and automatic assistant hydration in both views. CLI command, resume and
+handoff tests pass, as do command details, mouse and popup/resize tests. No actual
+tool executes and no model call is made in the new approval fixture. Full-message
+cell tests reach every line of a 200-line reply, both streaming and finalized.
+The larger 1,000-message fixture now measures full rather than folded assistant
+messages: zero idle writes, about 466 ms first measurement, 18 ms subsequent
+page-back and 122 ms command/popup response locally. This is a changed workload;
+it is not directly comparable to the preceding folded-message measurements.
+
+This batch addresses approvals and conversation rendering. Capability/clipboard/
+editor/OS/image integrations and real-terminal acceptance remain separate work.

@@ -31,6 +31,7 @@ import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemo
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { rustTranscriptItems, rustResumeItems } from '../daemon/rust-tui-snapshot.mjs';
+import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
@@ -2121,6 +2122,7 @@ function flushFoldedSubAgentTools(key = null) {
 let _submitExternalPrompt = null;
 let _rustTuiActive = false;
 let _rustTuiHost = null;
+let _rustApprovalBridge = null;
 let _rustTuiOutputCapture = null;
 let _rustTuiEnsureSessionId = null;
 const _rustTuiInteractions = new Map();
@@ -2825,7 +2827,9 @@ function renderEvent(event) {
               try {
                 if (approval && !approval._prd092Intercepted) {
                   const orig = approval.check.bind(approval);
-                  approval.check = (tool, args, req, ctx) => interceptApproval(orig, {
+                  approval.check = (tool, args, req, ctx) => _rustTuiActive
+                    ? orig(tool, args, req, ctx)
+                    : interceptApproval(orig, {
                     tool, args, req, ctx,
                     sessionId: _sid,
                     remoteOnly: _rustTuiActive,
@@ -4653,7 +4657,8 @@ export async function startTerminalRepl() {
   }
   let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
-  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
 
   // Session manager — persists conversation messages to .bahulam/conversations/
   let sessionMgr = new SessionManager(safeCwd());
@@ -4725,7 +4730,8 @@ export async function startTerminalRepl() {
     hookRunner = new HookRunner({ cwd: safeCwd() });
     toolExecutor = makeToolExecutor();
     await attachPluginMcp(toolExecutor);
-    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgrRef.current = sessionMgr;
@@ -4880,7 +4886,8 @@ export async function startTerminalRepl() {
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
     toolExecutor = makeToolExecutor();
     await attachPluginMcp(toolExecutor);
-    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgr.activateSession(sessionId, {
@@ -5692,13 +5699,14 @@ export async function startTerminalRepl() {
               break;
             }
             case 'interrupt':
+              _rustApprovalBridge?.cancel();
               streamClient?.cancel?.();
               break;
             case 'approve':
-              resolvePending('approve', data.apr_id, 'rust-tui', data.instruction);
+              if (!_rustApprovalBridge?.answer('approve', data)) resolvePending('approve', data.apr_id, 'rust-tui', data.instruction);
               break;
             case 'deny':
-              resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
+              if (!_rustApprovalBridge?.answer('deny', data)) resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
               break;
             case 'interaction_response': {
               const id = String(data.request_id || '');
@@ -5785,6 +5793,8 @@ export async function startTerminalRepl() {
           }
         },
         onExit: () => {
+          _rustApprovalBridge?.close();
+          _rustApprovalBridge = null;
           _rustTuiActive = false;
           ctx._rustChoose = null;
           _rustTuiEnsureSessionId = null;
@@ -5812,6 +5822,7 @@ export async function startTerminalRepl() {
           showPrompt();
         },
       });
+      _rustApprovalBridge = createRustApprovalBridge({ emit: (type, data) => tapSseEvent({ type, data }, { sessionId: session.id || _rustTuiEnsureSessionId?.() }) });
       _rustTuiActive = true;
       ctx._rustChoose = rustTuiChoose;
       inputActive = false;

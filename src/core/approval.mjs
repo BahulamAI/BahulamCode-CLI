@@ -127,7 +127,8 @@ const write = (s) => process.stderr.write(s);
 // ── Approval Manager ──
 
 export class ApprovalManager {
-    constructor({ autoApprove = false, planMode = false, cwd = process.cwd(), policy = null, trustStore = null, approvalLog = null } = {}) {
+    constructor({ autoApprove = false, planMode = false, cwd = process.cwd(), policy = null, trustStore = null, approvalLog = null, getPromptHandler = null } = {}) {
+        this.getPromptHandler = getPromptHandler;
         this.autoApprove = autoApprove;
         this.planMode = planMode;
         this.cwd = cwd;
@@ -264,6 +265,7 @@ export class ApprovalManager {
         const tier = context.tier || classifyTier(toolName, args);
         const why = context.reason || context.why || defaultWhy(tier, toolName, args);
         const options = this._optionsFor(tier, toolName, args);
+        const promptHandler = this.getPromptHandler?.();
 
         let selected = 0; // arrow-driven cursor
         let printedHeight = 0;
@@ -289,7 +291,7 @@ export class ApprovalManager {
 
         // For TTYs we redraw in place on every arrow key so the prompt feels
         // live. For non-TTYs / pipes we just print once and read a line.
-        if (!isInteractive) {
+        if (!promptHandler && !isInteractive) {
             write(renderApprovalPrompt({ tool: toolName, args, tier, why, selected, options, showDetails }) + '\n');
         }
 
@@ -344,10 +346,10 @@ export class ApprovalManager {
             printedHeight = block.split('\n').length;
         };
 
-        const ownsApprovalInput = isInteractive ? this._beginApprovalInput() : false;
+        const ownsApprovalInput = !promptHandler && isInteractive ? this._beginApprovalInput() : false;
 
         try {
-        if (isInteractive) {
+        if (!promptHandler && isInteractive) {
             drawPrompt();
             unsubscribeResize = onResize(() => { if (!promptClosed) drawPrompt(); });
         }
@@ -399,7 +401,13 @@ export class ApprovalManager {
             }
         };
 
-        const value = await choose();
+        const offered = options.filter(option =>
+            (option.value !== 'allow-session' || this.policy.hitl?.allowSessionTrust) &&
+            (option.value !== 'allow-project' || this.policy.hitl?.allowProjectTrust));
+        const answer = promptHandler ? await promptHandler({ tool: toolName, args, tier, why,
+            cwd: context.cwd || this.cwd, options: offered }) : await choose();
+        // Renderer responses cannot invent broader policy choices.
+        const value = promptHandler && !offered.some(option => option.value === answer) ? 'reject' : answer;
         promptClosed = true;
         unsubscribeResize?.();
         if (useDockPrompt) dismissDockOverlay();

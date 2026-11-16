@@ -88,6 +88,8 @@ pub struct ApprovalRequiredData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<serde_json::Value>>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

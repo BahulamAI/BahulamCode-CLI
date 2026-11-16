@@ -128,14 +128,15 @@ export function registerPending(meta = {}) {
  * @param {string} apr_id
  * @param {string} decided_by  attach_id of the answering client
  * @param {string} [note]
+ * @param {string} [scope] Requested scope; the owning approval manager validates it.
  */
-export function resolvePending(decision, apr_id, decided_by, note = '') {
+export function resolvePending(decision, apr_id, decided_by, note = '', scope = 'once') {
   const entry = _pending.get(apr_id);
   if (!entry || entry.consumed) return false;
   entry.consumed = true;
   _pending.delete(apr_id);
   if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
-  entry.resolve({ decision, decided_by, note });
+  entry.resolve({ decision, decided_by, note, scope });
   return true;
 }
 

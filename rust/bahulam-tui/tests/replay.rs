@@ -385,80 +385,118 @@ fn parallel_agents_do_not_overwrite_each_others_tools() {
 }
 
 #[test]
-fn long_replies_have_compact_previews_and_complete_scrollable_details() {
-    let mut model = Model::default();
-    let body = (1..=200)
-        .map(|n| format!("Reply line {n:03}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    model
-        .apply(&event(1, "message_end", "main", json!({"text":body})))
-        .unwrap();
-    let screen = |model: &Model, details: Option<usize>, offset: u16| {
-        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_with_input(
-                    frame,
-                    model,
-                    0,
-                    false,
-                    "dark",
-                    "draft kept",
-                    0,
-                    &HashSet::new(),
-                    Some(0),
-                    true,
-                    None,
-                    None,
+fn assistant_replies_are_complete_and_scrollable_in_both_views() {
+    use bahulam_tui::render::{draw_with_view, history_geometry};
+    for inline in [true, false] {
+        for kind in ["text_delta", "message_end"] {
+            let mut model = Model::default();
+            let body = (1..=200)
+                .map(|n| format!("Reply line {n:03}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            model
+                .apply(&event(
                     1,
-                    details,
-                    offset,
-                )
-            })
-            .unwrap();
-        terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
-    };
-    let preview = screen(&model, None, 0);
-    assert!(preview.contains("Reply line 001") && preview.contains("Reply line 006"));
-    assert!(!preview.contains("Reply line 007"));
-    assert!(preview.contains("Show details") && preview.contains("194 more lines"));
-    assert!(screen(&model, Some(0), 190).contains("Reply line 200"));
-    assert_eq!(
-        screen(&model, None, 0),
-        preview,
-        "closing details must restore the preview and draft"
-    );
-    assert_eq!(model.cards[0].detail.as_deref(), Some(body.as_str()));
+                    kind,
+                    "main",
+                    if kind == "text_delta" {
+                        json!({"chunk":body})
+                    } else {
+                        json!({"text":body})
+                    },
+                ))
+                .unwrap();
+            let render = |offset| {
+                let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        draw_with_view(
+                            frame,
+                            &model,
+                            offset,
+                            true,
+                            "dark",
+                            "draft",
+                            0,
+                            &HashSet::new(),
+                            Some(0),
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            };
+            let first = render(0);
+            assert!(first.contains("Reply line 001") && first.contains("Reply line 007"));
+            assert!(!first.contains("Show details"));
+            let geometry = history_geometry(
+                &model,
+                Rect::new(0, 0, 100, 32),
+                "draft",
+                inline,
+                &HashSet::new(),
+                "dark",
+                None,
+            );
+            let all = (0..=geometry.end)
+                .step_by(geometry.page as usize)
+                .chain(std::iter::once(geometry.end))
+                .map(render)
+                .collect::<String>();
+            for n in 1..=200 {
+                assert!(
+                    all.contains(&format!("Reply line {n:03}")),
+                    "missing line {n} in inline={inline}"
+                );
+            }
+            assert!(render(u16::MAX).contains("Reply line 200"));
+        }
+    }
+}
 
-    let mut streaming = Model::default();
-    streaming
-        .apply(&event(1, "text_delta", "main", json!({"chunk":body})))
-        .unwrap();
-    let tail = screen(&streaming, None, 0);
-    assert!(tail.contains("Reply line 200") && tail.contains("Show details"));
-    assert!(!tail.contains("Reply line 193"));
-    assert_eq!(streaming.detail_line_count(0), 200);
-
-    let mut wrapped = Model::default();
-    wrapped
+#[test]
+fn backend_approval_is_not_an_actionable_local_handle_and_details_hydrate_messages() {
+    let mut model = Model::default();
+    model
         .apply(&event(
             1,
-            "message_end",
+            "approval_required",
             "main",
-            json!({"text":"Long paragraph words ".repeat(100)}),
+            json!({"tool":"bahulam_info","tool_id":"backend-call","args":{}}),
         ))
         .unwrap();
-    assert!(
-        screen(&wrapped, None, 0).contains("Show details"),
-        "wrapped prose must retain its details action"
-    );
+    assert!(model.approval.is_none());
+    model.apply(&event(2, "approval_required", "main", json!({"apr_id":"local-id","tool":"bahulam_info","args":{},"risk_tier":"unknown","scopes":["once","type"]}))).unwrap();
+    let approval = model.approval.as_ref().unwrap();
+    assert_eq!(approval.tool, "bahulam_info");
+    assert_eq!(approval.scopes, vec!["once", "type"]);
+    let mut reply = event(3, "message_end", "main", json!({}));
+    reply.payload_ref = Some("memory:reply".into());
+    model.apply(&reply).unwrap();
+    model
+        .apply(&event(
+            1,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"memory:reply","detail":"COMPLETE_SAVED_REPLY"}),
+        ))
+        .unwrap();
+    assert!(model
+        .cards
+        .iter()
+        .any(|card| card.title == "Assistant" && card.body == "COMPLETE_SAVED_REPLY"));
 }
 
 #[test]

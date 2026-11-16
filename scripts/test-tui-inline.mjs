@@ -20,7 +20,7 @@ const host = startRustTuiHost({ onCommand: command => {
   fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(commands));
 }});
 host.send({v:2,seq:1,ts:'',type:'transcript_snapshot',session_id:'inline-test',agent_id:'main',data:{
-  replace:true,mode:'full',items:[{kind:'history',role:'assistant',content:Array.from({length:200},(_,i)=>'REPLY_'+String(i+1).padStart(3,'0')).join('\\n')}]
+  replace:true,mode:'full',items:[{kind:'event',event:{type:'command_result',data:{name:'/fixture',result:Array.from({length:200},(_,i)=>'REPLY_'+String(i+1).padStart(3,'0')).join('\\n')}}}]
 }});
 setTimeout(()=>host.close(),15000).unref();
 `);
@@ -99,5 +99,5 @@ try {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   const commands = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
   assert.deepEqual(commands.filter(command => command.type === 'prompt').map(command => command.data.text), ['after switch']);
-  console.log('PASS: inline preview, complete details, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
+  console.log('PASS: inline command preview, complete details, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

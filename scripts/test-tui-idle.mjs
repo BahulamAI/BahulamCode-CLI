@@ -22,7 +22,7 @@ const host = startRustTuiHost({mode:'fullscreen',onCommand: command => {
 }});
 host.send({v:2,seq:1,ts:'',type:'transcript_snapshot',session_id:'idle',agent_id:'main',data:{
  replace:true,mode:'full',items:Array.from({length:1000},(_,i)=>({kind:'history',role:'assistant',
- content:'MESSAGE_'+i+'\\n'+Array.from({length:30},(_,j)=>'Result '+j+' with **formatting** and ` + '`code`' + `').join('\\n')}))
+ content:'MESSAGE_'+i+'\\n'+Array.from({length:30},(_,j)=>'Result '+j+' with **formatting** and ` + '`code`' + `').join('\\n')+'\\nTAIL_'+i}))
 }});
 setTimeout(()=>host.close(),10000).unref();
 `);
@@ -51,16 +51,16 @@ def read_for(seconds,until=None):
  if until: raise Exception('Missing '+until+'\n'+screen.text())
  return count
 try:
- read_for(5,'MESSAGE_999')
+ read_for(5,'TAIL_999')
  read_for(0.3)
  idle_bytes=read_for(2)
  sent=time.monotonic()
  os.write(master,b'\x1b[5~')
- read_for(5,'MESSAGE_994')
+ read_for(5,'MESSAGE_999')
  scroll_ms=round((time.monotonic()-sent)*1000,1)
  sent=time.monotonic()
  os.write(master,b'\x1b[5~')
- read_for(2,'MESSAGE_991')
+ read_for(2,'MESSAGE_998')
  warm_scroll_ms=round((time.monotonic()-sent)*1000,1)
  sent=time.monotonic()
  os.write(master,b'/help\r')

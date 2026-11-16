@@ -54,6 +54,7 @@ export interface ApprovalRequiredData {
   cwd?: string;
   risk_tier?: string;
   reason?: string;
+  scopes?: unknown[];
   warnings?: unknown[];
 }
 export interface ApprovalDecidedData {

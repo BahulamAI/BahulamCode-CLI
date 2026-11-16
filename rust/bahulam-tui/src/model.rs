@@ -14,6 +14,14 @@ pub struct Card {
     pub detail: Option<String>,
     pub detail_loading: bool,
 }
+impl Card {
+    pub fn is_message(&self) -> bool {
+        self.title == "Assistant"
+            || self.title == "Prompt"
+            || self.title == "Agent report"
+            || self.title.starts_with("Agent: ")
+    }
+}
 #[derive(Debug, Clone)]
 pub struct Agent {
     pub id: String,
@@ -26,6 +34,8 @@ pub struct Agent {
 }
 #[derive(Debug, Clone)]
 pub struct Approval {
+    pub scopes: Vec<String>,
+    pub risk: String,
     pub id: String,
     pub tool: String,
     pub command: String,
@@ -454,19 +464,21 @@ impl Model {
         if event.r#type == "detail_loaded" {
             let reference = text(&event.data, "payload_ref");
             let detail = text(&event.data, "detail");
-            if let Some(card) = self
+            for card in self
                 .cards
                 .iter_mut()
-                .find(|card| card.payload_ref.as_deref() == Some(reference.as_str()))
+                .filter(|card| card.payload_ref.as_deref() == Some(reference.as_str()))
             {
-                card.detail = Some(command_output(&card.title, &detail));
-                card.detail_loading = false;
-                if event.data.get("error").is_some() {
-                    card.detail = Some(format!(
-                        "Could not load details: {}",
-                        text(&event.data, "error")
-                    ));
+                let detail = if event.data.get("error").is_some() {
+                    format!("Could not load details: {}", text(&event.data, "error"))
+                } else {
+                    command_output(&card.title, &detail)
+                };
+                if card.is_message() {
+                    card.body = detail.clone();
                 }
+                card.detail = Some(detail);
+                card.detail_loading = false;
             }
             if self
                 .approval
@@ -916,10 +928,32 @@ impl Model {
                     };
             }
             "approval_required" => {
+                // Backend tool IDs are not local approval handles. Only Node's
+                // policy-approved prompt adapter creates an actionable apr_id.
+                if text(data, "apr_id").is_empty() {
+                    return Ok(());
+                }
+                let name = ["name", "tool", "tool_name", "kind"]
+                    .iter()
+                    .map(|key| text(data, key))
+                    .find(|name| !name.is_empty())
+                    .unwrap_or_else(|| "tool".into());
                 if !self.replaying_history {
                     self.approval = Some(Approval {
                         id: text(data, "apr_id"),
-                        tool: text(data, "name"),
+                        tool: name.clone(),
+                        scopes: data
+                            .get("scopes")
+                            .and_then(Value::as_array)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_else(|| vec!["once".into()]),
+                        risk: text(data, "risk_tier"),
                         command: data.get("args").map(safe_text_json).unwrap_or_default(),
                         cwd: text(data, "cwd"),
                         reason: text(data, "reason"),
@@ -932,6 +966,14 @@ impl Model {
                     "waiting"
                 };
                 let index = self.card(agent, "Approval", text(data, "reason"), status);
+                self.cards[index].primary = name;
+                if let Some(args) = data.get("args") {
+                    self.cards[index].detail = Some(format!(
+                        "{}\n{}",
+                        safe_text_json(args),
+                        text(data, "reason")
+                    ));
+                }
                 self.approvals
                     .insert(format!("{origin}/{}", text(data, "apr_id")), index);
                 if self.replaying_history {

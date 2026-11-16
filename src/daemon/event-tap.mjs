@@ -120,7 +120,7 @@ function retainTransientPayload(ref, serialized) {
 
 function boundedMetadata(data) {
   const safe = Object.fromEntries(Object.entries(data).filter(([key, value]) =>
-    key !== 'args' && (typeof value === 'boolean' || typeof value === 'number' ||
+    key !== 'args' && ((key === 'scopes' && Array.isArray(value) && value.length <= 4 && value.every(scope => ['once', 'session', 'project', 'type'].includes(scope))) || typeof value === 'boolean' || typeof value === 'number' ||
       (typeof value === 'string' && Buffer.byteLength(value) <= (['preview', 'result'].includes(key) ? 2400 : 256)))));
   return Buffer.byteLength(JSON.stringify(safe)) <= 3072 ? safe : {};
 }
@@ -303,6 +303,9 @@ function project(type, src, identity) {
     }
     case 'test_result':
       return { ...src, ok: !src.error && src.ok !== false && src.success !== false && !(Number(src.failed) > 0) };
+    case 'approval_required':
+      return { ...src, apr_id: src.apr_id || '', name: src.name || src.tool || src.tool_name || src.kind,
+        risk_tier: src.risk_tier || src.risk, cwd: src.cwd };
     case 'approval_decided':
       return { ...src, apr_id: src.apr_id || src.approval_id || src.request_id,
         decision: src.decision || (identity.sourceType === 'approval_denied' ? 'deny' : identity.sourceType === 'approval_granted' ? 'allow' : undefined) };

@@ -748,10 +748,14 @@ pub fn draw_with_view(
                     Style::default().fg(p.warning).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "{} · {}",
-                        safe_text(&approval.tool),
-                        safe_text(&approval.cwd)
+                    middle_ellipsis(
+                        &[&approval.tool, &approval.risk, &approval.cwd]
+                            .into_iter()
+                            .filter(|value| !value.is_empty())
+                            .map(|value| safe_text(value))
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                        rows[3].width.saturating_sub(6) as usize,
                     ),
                     Style::default().fg(p.text),
                 ),
@@ -764,16 +768,46 @@ pub fn draw_with_view(
                         "  Command details unavailable · approval is blocked".to_owned()
                     }
                 } else {
-                    format!("  {}", safe_text(&approval.command))
+                    format!(
+                        "  {}",
+                        middle_ellipsis(
+                            &safe_text(&approval.command).replace('\n', " "),
+                            rows[3].width.saturating_sub(6) as usize
+                        )
+                    )
                 },
                 Style::default().fg(p.text),
             )),
             Line::from(Span::styled(
-                format!("  Reason: {}", safe_text(&approval.reason)),
+                format!(
+                    "  Reason: {}",
+                    middle_ellipsis(
+                        &safe_text(&approval.reason).replace('\n', " "),
+                        rows[3].width.saturating_sub(14) as usize
+                    )
+                ),
                 Style::default().fg(p.muted),
             )),
             Line::from(Span::styled(
-                "  [1] allow once    [2] deny",
+                format!(
+                    "  [1] allow once    [2] deny{}",
+                    approval
+                        .scopes
+                        .iter()
+                        .filter(|scope| scope.as_str() != "once")
+                        .enumerate()
+                        .map(|(i, scope)| format!(
+                            "    [{}] {}",
+                            i + 3,
+                            match scope.as_str() {
+                                "type" => "allow tool this session",
+                                "session" => "trust similar this session",
+                                "project" => "trust this project",
+                                _ => "unavailable",
+                            }
+                        ))
+                        .collect::<String>()
+                ),
                 Style::default().fg(p.warning),
             )),
         ]
@@ -1279,7 +1313,7 @@ fn card_lines(
     };
     let focus = if focused == Some(index) { "›" } else { " " };
     let agent_message = card.title.strip_prefix("Agent: ");
-    let is_assistant = card.title == "Assistant" || agent_message.is_some();
+    let is_assistant = card.is_message() && card.title != "Prompt";
     let is_user = card.title == "Prompt";
     let glyph = if is_assistant {
         "•"
@@ -1332,7 +1366,7 @@ fn card_lines(
         format!("{focus}{glyph} "),
         Style::default().fg(color),
     )];
-    if !is_assistant {
+    if !is_assistant || card.title == "Agent report" {
         heading.push(Span::styled(
             format!("{:<12} ", safe_text(display_title)),
             Style::default()
@@ -1371,13 +1405,10 @@ fn card_lines(
                 .lines()
                 .any(|line| UnicodeWidthStr::width(line) > content_width)
         });
-    // Keep the complete reply in the model/details view. Only its card preview
-    // is folded, so long replies cannot consume the whole conversation pane.
+    // Conversation messages stay complete; only tool/command/status cards fold.
     let is_message = is_assistant || is_user;
-    let limit = if is_user {
+    let limit = if is_message {
         usize::MAX
-    } else if is_assistant {
-        6
     } else {
         match card.status.as_str() {
             "running" | "streaming" => 2,
@@ -1387,15 +1418,15 @@ fn card_lines(
         }
     };
     let is_expanded = expanded.contains(&index);
-    let has_more = if is_user {
-        card.payload_ref.is_some() && card.detail.is_none()
+    let has_more = if is_message {
+        false
     } else {
         card.payload_ref.is_some() || total > limit || details_total > limit || long_line
     };
     let body_room = budget
         .saturating_sub(1)
         .saturating_sub(usize::from(has_more));
-    let show = if is_expanded || is_user {
+    let show = if is_expanded || is_message {
         body_room.min(total)
     } else {
         limit.min(body_room).min(total)
@@ -1403,7 +1434,7 @@ fn card_lines(
     let failure_tail =
         matches!(card.status.as_str(), "failed" | "error") && !expanded.contains(&index);
     // A reply that is still streaming shows its newest lines, not its first.
-    let tail = failure_tail || (is_assistant && card.status == "streaming");
+    let tail = failure_tail;
     let selected_lines: Vec<&str> = if tail {
         card.body
             .lines()
@@ -1431,11 +1462,7 @@ fn card_lines(
             }
             wrapped.extend(wrap_text(line, wrap_width, in_code));
         }
-        let visible_rows = if is_assistant && !is_expanded {
-            limit.min(body_room)
-        } else {
-            body_room
-        };
+        let visible_rows = body_room;
         if tail && wrapped.len() > visible_rows {
             wrapped.drain(..wrapped.len() - visible_rows);
         }
@@ -1792,7 +1819,7 @@ mod row_measurement_tests {
     fn history_measurements_follow_streams_resize_fold_and_replacement() {
         let mut card = Card {
             agent: "main".into(),
-            title: "Assistant".into(),
+            title: "shell".into(),
             primary: String::new(),
             metadata: String::new(),
             body: "short".into(),
