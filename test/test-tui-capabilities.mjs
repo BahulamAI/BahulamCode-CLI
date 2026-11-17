@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-const binary = fileURLToPath(new URL('../rust/target/debug/bahulam-tui', import.meta.url));
+const binary = fileURLToPath(new URL(`../rust/target/debug/bahulam-tui${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url));
 
 test('standalone doctor is plain, reports hints honestly and never dumps unrelated environment', () => {
   const result = spawnSync(binary, ['--doctor','--json'], {encoding:'utf8', env:{...process.env,

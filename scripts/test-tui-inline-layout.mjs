@@ -60,13 +60,15 @@ try:
  pump(lambda text:'draft kept' in text)
  resize(56,150,'LINE_080')
  assert len(re.findall('LINE_\\d+',screen.text()))>40, 'History did not grow with height'
- for i in range(30):
+ for i in range(85):
+  if 'LINE_001' in screen.text():break
   os.write(master,b'\x1b[<64;10;4M')
   start=time.monotonic()
   pump(lambda text: time.monotonic()-start>0.03)
  pump(lambda text:'LINE_001' in text)
  resize(20,60,'LINE_001')
- for i in range(30):
+ for i in range(85):
+  if 'LINE_080' in screen.text():break
   os.write(master,b'\x1b[<65;10;4M')
   start=time.monotonic()
   pump(lambda text: time.monotonic()-start>0.03)
@@ -85,7 +87,7 @@ finally:
 try {
  const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),process.execPath,driver],{
   encoding:'utf8',timeout:18000,maxBuffer:2*1024*1024,
-  env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
+  env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_SCROLL_LINES:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
  });
  assert.equal(result.status,0,`${result.stdout}\n${result.stderr}`);
  console.log('PASS: inline fills 120x40, 150x56, 60x20 and 100x36; header scrolls away, composer stays at bottom, history and draft survive.');

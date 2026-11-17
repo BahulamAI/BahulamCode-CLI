@@ -51,6 +51,9 @@ const SKIPPED = new Map([
 // Must pass on any contributor machine with `node >= 18` and `npm install`.
 const UNIT_TESTS = [
     'test/test-rust-interactions.mjs',
+    'test/test-rust-approval.mjs',
+    'test/test-rust-event-parity.mjs',
+    'test/test-rust-usage.mjs',
     'test/test-display-sanitize.mjs',
     'test/test-resume-display-stability.mjs',
     'test/test-rust-tui-settings.mjs',
@@ -141,6 +144,7 @@ const UNIT_TESTS = [
 // Spawn real processes, bind sockets, or test multi-process coordination.
 // Require no external services but do require a working OS environment.
 const INTEGRATION_TESTS = [
+    'test/test-tui-capabilities.mjs', // requires the compiled Rust binary
     'test/test-followup-repl.mjs',
     'test/test-socket-server.mjs',
     'test/test-session-attach.mjs',

@@ -1,75 +1,98 @@
 # Rust terminal recovery review
 
-## Backport completion checkpoint — 2026-11-16
+## Backport completion checkpoint — 2026-11-17
 
-The accepted runtime checkpoint is `ef58ed2` on `recovery/rust-tui-staged`.
-The user has explicitly held publication: the existing TypeScript release stays
-live; no new version is published until Rust is ready. Finish selective backports
-from `16ac966..3e16f9e` first, then close the remaining PRD/spec work. Preserve
-Node's visual renderer and the accepted recovery transcript/composer; do not
-wholesale replace them with the original combined implementation.
+The selective backport pass from `16ac966..3e16f9e` is complete on
+`recovery/rust-tui-staged`; the runtime checkpoint is `db4ae50`. Every original
+commit has a disposition below. There are no unreviewed commits left in that
+range to cherry-pick. The following PRD work is separate from this source-commit
+queue, and Rust is **not release-ready**.
 
-The seven original commits are not seven untouched patches still to apply:
+The existing TypeScript release remains live. Package version stays `0.2.1`;
+no publication or version bump was performed. Node still owns commands, agent
+execution, tools, approvals and sessions. Rust owns terminal presentation.
+Shared adapters were backported; the existing Node visual renderer was preserved.
 
-| Source | Recovered already | Still to adapt / disposition |
-| --- | --- | --- |
-| `8112157` | Golden fixtures and live host/cache-invariance checks | Lifecycle/disconnect acceptance still needed. |
-| `5c04734` | Shared approvals, model command handoff, mouse and diagnostics | Review advanced lifecycle controls; keep the stronger shared approval bridge. |
-| `7e81afb` | Recovery `/new` and `/clear` use the shared core correctly | Original Node redraw changes intentionally excluded; not a pending Rust feature. |
-| `377dd2d` | Check/test events and completion metadata | Job subscription/state, running timers, background controls. |
-| `b37c586` | Shared palette, event parity, clipboard text, history/search/editor, viewport work | Host backpressure/crash recovery, native Windows transport, OS/file/link/notification integrations, settings, copy picker, setup/completions, grouping/status/streaming refinements. |
-| `7cd8933` | Startup ownership, paste classification, session identity, resume picker, input geometry | Agent questions with free text/cancel, remaining composer completion/paste/attachment/mouse integrations. |
-| `3e16f9e` | Historical approval isolation and inline duplicate-exit prevention, with newer ordering/status fixes | Preserve these recovery implementations; audit lifecycle and retained payloads across detach. |
+| Original source | Final disposition |
+| --- | --- |
+| `8112157` | Protocol/golden fixtures and request/cache invariance retained; bounded-pipe and process recovery tests now restored. |
+| `5c04734` | Shared model commands, policy-owned approvals, mouse and diagnostics adapted. Recovery's stronger approval bridge supersedes the original duplicate trust path. |
+| `7e81afb` | Shared `/new` and `/clear` behavior retained. The original Node redraw/scrollback rewrite is intentionally excluded under the user's Node-renderer constraint. |
+| `377dd2d` | Background job state/subscriptions, same-process shell promotion, live timing and check results restored. Historical tools do not acquire live timers or control handles. |
+| `b37c586` | Clipboard/copy picker, history/search/editor, settings/setup/completions, file/link opening, notification/focus/shell integrations, Windows pipe adapter, recovery/backpressure, status customization, bounded Markdown/tool previews and artifact metadata adapted. Renderer replacement and read-only-tool coalescing are superseded by accepted individual cards, spacing, ordering and inline details. |
+| `7cd8933` | Startup ownership, paste classification, stable session identity, resume picker, shared questions/free text/cancel, slash dropdown, caret placement/navigation, paste chips and attachment references restored. Recovery viewport geometry remains authoritative. |
+| `3e16f9e` | Historical controls remain inert; accepted resume reconstruction, message ordering and inline exit-output suppression retained. This source did not solve retention across detach; that remains PRD work. |
 
-Order of work: question ownership → host/process recovery and Windows transport
-→ jobs/timing → remaining composer integrations → OS integrations and remaining
-render/status slices. Commit and validate each adapted slice. Fix the strict
-Clippy gate while integrating; the current gate fails (including test-module
-ordering, needless borrows, argument-count and style lints). Local behavioral
-tests passing does not mean CI is green.
+Additional intentional adaptations:
 
-Release audit evidence at this checkpoint:
+- Typed commands retain their exact text through the shared `prompt` handoff;
+  `run_slash` and `switch_model` adapters are also available. The original
+  whitespace-splitting command rewrite is not required for command parity.
+- Queued follow-ups use a status count. They become transcript messages only
+  when the core starts their turn, preserving the final-answer ordering fix.
+- File lookup runs on explicit Alt+O/Alt+L actions away from the input loop;
+  automatic filesystem scanning on every frame was not restored.
+- Protocol names such as `set_mode`, `rewind` and `open_item` did not have working
+  host implementations in the original source. They are not missing backports;
+  any expanded control contract must be specified and validated in PRD work.
+- Environment/profile capability hints and overrides were restored. They are
+  not active capability probes or evidence of native terminal acceptance.
 
-- `npm pack --dry-run --ignore-scripts --json`: 253 files, no Rust source or binary;
-  only the Node host is included. The host resolves `rust/target/debug/bahulam-tui`
-  unless `BAHULAM_TUI_BINARY` is supplied. The existing publish script does not
-  build or distribute Rust. Cross-platform binary packages/resolution, version
-  matching, signing and clean-install checks remain PRD distribution work.
-- Native Windows `--stdio` explicitly errors in recovery; Windows replay CI is
-  not proof that the live terminal works there. Original Windows pipe code is
-  available to adapt from `b37c586` and later corrections.
-- `ask_user` still invokes the Node stdin overlay; its attached-renderer route
-  from `7cd8933` is a required ownership backport.
-- Last live-subscriber detach clears transient payloads; snapshot reopening adds
-  messages, not all live tool/detail state. This is not complete detach parity.
-- The CI workflow currently runs Rust replay/roundtrip, not the newer Unix PTY
-  input, resume, focus, scrolling and approval suites. Add appropriate regression
-  gates as backports land; real terminal/OS acceptance remains separate.
+Completed recovery commits in this pass:
+
+| Commit | Batch |
+| --- | --- |
+| `a647228` | Shared questions and picker ownership |
+| `524a28e` | Renderer crash recovery, bounded pipes and process lifecycle |
+| `fee2480` | Background jobs and live tool timing |
+| `462f522` | Strict Rust lint gate |
+| `99843b6` | Composer completion, navigation, paste chips and attachments |
+| `cd126bb` | Presentation settings, completions and terminal setup |
+| `ca85fa1` | OS integrations, copy picker and status controls |
+| `268ca1b` | Display-copy isolation and stable session identity |
+| `db4ae50` | Remaining render/status/stream refinements |
+
+Validation at this checkpoint:
+
+- 54 Rust tests pass, including cell-buffer/replay, ordering, Unicode geometry,
+  complete assistant hydration, historical approval isolation, streaming limits,
+  artifact metadata, queued follow-ups and cache state/palette isolation.
+- Formatting, strict Clippy, generated-protocol checks, request/cache invariance,
+  capability reporting and Node-to-Rust round trips pass.
+- Ten real CLI cases pass: startup, resume, diagnostics, missing-binary fallback,
+  return to Node, and re-entry into either Rust view.
+- Unix PTY suites cover both Rust views, resize, scrolling, inline expansion and
+  collapse, input recovery, approvals, questions, clipboard/editor, resume popup,
+  fake OS helpers and idle writes. CI now runs these on Linux/macOS; Windows
+  retains compile/replay/capability checks pending native live acceptance.
+- The full Node runner reports **86 passing files, two failing files, eight
+  explicitly skipped files**. The failures are `test-terminal-rendering.mjs:275`
+  (shell preview ellipsis) and `test-code-cards.mjs:93` (scoped command/cwd text).
+  Both reproduce with the same assertions in an isolated `ef58ed2` checkout.
+  They were not hidden, skipped, or fixed by changing the Node renderer. Thus the
+  full CI suite is not green, despite the Rust/backport gates passing.
+- The new CI workflow has been added locally; a remote CI run and real emulator
+  acceptance have not been claimed.
+
+## PRD work after backports
+
+This table supersedes older pending tables below. The historical batch sections
+record intermediate states; they are not the current pending-commit list.
+
+| Workstream | Remaining acceptance/work |
+| --- | --- |
+| Capability detection | Bounded active query/reply probes, fallbacks and actual per-terminal validation. |
+| Rich output | Image/diagram/document presentation with protocol choice, resource limits and readable fallback. Artifact metadata/opening and image attachments are already separate supported paths. |
+| Long sessions | Payload retention across detach/reopen, bounded transcript memory, incremental viewport measurement, scrolling beyond the current u16 row limit and sustained workload benchmarks. Bounded row caching/tool tails alone do not close this. |
+| Runtime parity | End-to-end producer/route coverage, including background promotion outside the stream-client route; lifecycle, question routing and support/agent-summary UX acceptance against the PRD. |
+| Native integrations | Real clipboard, external editor, file/link opening, desktop notification, focus/keyboard and signal checks on supported OS/emulators; fake helpers establish routing only. |
+| Distribution | Platform binaries/packages, release resolution instead of a debug build, protocol/version compatibility, clean-install/upgrade checks and signing where needed. Current npm package still does not contain Rust binaries. |
+| Release gates | Resolve the two pre-existing Node test failures without regressing the live renderer; run macOS/Linux/Windows and VS Code/iTerm2/Ghostty/Windows Terminal/SSH/tmux acceptance. |
 
 The external specs' November 15 implementation notes describe the original
-branch and cannot be read as a completion report for recovery. Active probes,
-rich image/diagram/document display, long-session retention/memory/performance,
-remaining support/agent-summary UX, packaging and the real emulator matrix are
-still open PRD work after backports. No release, version bump or preview publish
-is authorized by this audit.
-
-## Current remaining-work queue
-
-This summary supersedes the historical pending tables below. Continue one
-reviewed functional batch at a time, with the user's live acceptance between
-batches; the expanded scope includes release work as well as original backports.
-
-| Batch | Current disposition |
-| --- | --- |
-| Clipboard text, external editor, history/search and basic editing | Implemented in the latest input batch; awaiting live acceptance. See shortcuts and limits at the end of this document. |
-| Remaining composer and question routing | Pending: large-paste chips, richer completion/caret navigation, attachment paste presentation, and a review of every shared question route. |
-| Jobs, tool timing, background promotion | Pending producer/subscription/control review; existing check/event rendering is retained. |
-| Disconnect, signals and lifecycle controls | Pending recovery and child-process lifecycle review; preserve shared interrupt/exit behavior. |
-| File/link opening and desktop notifications | Pending selective backports and native validation. |
-| Active capability probes | Pending bounded query/reply routing, fallbacks and per-terminal validation. Current diagnostics are environment/profile hints. |
-| Image display | Pending protocol selection, decoding/resource limits and text fallback. Existing Node image attachments are a separate input feature. |
-| Long sessions | Pending payload retention across detach, bounded transcript memory, incremental formatting and sustained tool/stream performance measurements. |
-| Release matrix | Real macOS/Linux/Windows, VS Code/iTerm2/Ghostty/Windows Terminal, SSH/tmux acceptance remains open. |
+branch, not release acceptance for this recovery branch. Start the next phase
+from this verified backport inventory rather than importing the old combined
+renderer again.
 
 ## Accepted baseline
 

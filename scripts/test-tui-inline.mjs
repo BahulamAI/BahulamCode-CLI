@@ -17,7 +17,8 @@ import { startRustTuiHost } from ${JSON.stringify(new URL('../src/daemon/rust-tu
 const commands = [];
 const host = startRustTuiHost({ onCommand: command => {
   commands.push(command);
-  fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(commands));
+  fs.writeFileSync(${JSON.stringify(resultFile)} + ".tmp", JSON.stringify(commands));
+  fs.renameSync(${JSON.stringify(resultFile)} + ".tmp", ${JSON.stringify(resultFile)});
 }});
 host.send({v:2,seq:1,ts:'',type:'transcript_snapshot',session_id:'inline-test',agent_id:'main',data:{
   replace:true,mode:'full',items:[{kind:'event',event:{type:'command_result',data:{name:'/fixture',result:Array.from({length:200},(_,i)=>'REPLY_'+String(i+1).padStart(3,'0')).join('\\n')}}},{kind:'history',role:'assistant',content:'AFTER_COMMAND'}]
