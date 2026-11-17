@@ -2,6 +2,7 @@ use bahulam_tui::{
     capabilities::TerminalCapabilities,
     clipboard, composer,
     model::safe_text,
+    paste::{self, display_paste_chips, expand_paste_chips, insert_paste_chip},
     render::{details_at, draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
 };
@@ -67,19 +68,6 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
     )
 }
 
-fn normalize_paste(text: &str) -> String {
-    composer::normalize(text)
-}
-
-fn insert_paste(input: &mut String, cursor: &mut usize, text: &str) {
-    let pasted = normalize_paste(text);
-    if pasted.is_empty() {
-        return;
-    }
-    let at = (*cursor).min(input.len());
-    input.insert_str(at, &pasted);
-    *cursor = at + pasted.len();
-}
 enum ClipboardReply {
     Paste(io::Result<String>),
     Copy(io::Result<clipboard::Copied>),
@@ -345,6 +333,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_refresh = std::time::Instant::now();
     let mut input = String::new();
     let mut cursor = 0usize;
+    let mut paste_chips = Vec::new();
+    let mut paste_sequence = 0u64;
     let mut prompt_history = composer::History::load();
     let mut history_search: Option<composer::Search> = None;
     let mut clipboard_job: Option<std::sync::mpsc::Receiver<ClipboardReply>> = None;
@@ -457,10 +447,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         match result {
                             Ok(text)
                                 if !text.is_empty()
-                                    && input.len().saturating_add(text.len())
+                                    && expand_paste_chips(&input, &paste_chips)
+                                        .len()
+                                        .saturating_add(text.len())
                                         <= composer::MAX_INPUT_BYTES =>
                             {
-                                insert_paste(&mut input, &mut cursor, &text);
+                                insert_paste_chip(
+                                    &mut input,
+                                    &mut cursor,
+                                    &text,
+                                    &mut paste_chips,
+                                    &mut paste_sequence,
+                                );
                                 input_hint(&model, "Pasted text · Enter sends · Ctrl+G edits");
                             }
                             Ok(text) if text.is_empty() => input_hint(
@@ -495,13 +493,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .unwrap_or(0);
         }
+        if let Ok(mut state) = model.lock() {
+            state.slash_menu.sync(&input);
+        }
+        let display_input = display_paste_chips(&input, &paste_chips);
+        let display_cursor = display_paste_chips(&input[..cursor], &paste_chips).len();
         let viewport = terminal.get_frame().area();
         let geometry = || {
             model.lock().ok().map(|m| {
                 history_geometry(
                     &m,
                     viewport,
-                    &input,
+                    &display_input,
                     inline_mode,
                     &expanded,
                     &theme,
@@ -519,8 +522,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         visible_scroll,
                         stdio || watch,
                         &theme,
-                        &input,
-                        cursor,
+                        &display_input,
+                        display_cursor,
                         &expanded,
                         Some(focused_card),
                         stdio,
@@ -701,6 +704,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     restore();
                     report_terminal_state(&command_writer, false, inline_mode)?;
                     paste_origin = None;
+                    paste::materialize(&mut input, &mut cursor, &mut paste_chips);
                     let edited = composer::edit_in_editor(&input);
                     enable_raw_mode()?;
                     terminal = open_terminal(inline_mode)?;
@@ -743,10 +747,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && editable(&model, focus_panel, detail_card) =>
                 {
                     paste_origin = None;
+                    paste::materialize(&mut input, &mut cursor, &mut paste_chips);
                     let mut search = composer::Search::new(&input, cursor);
                     let hint = search.preview(&prompt_history, &mut input, &mut cursor, false);
                     input_hint(&model, &hint);
                     history_search = Some(search);
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('v')
+                        && key
+                            .modifiers
+                            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                        && editable(&model, focus_panel, detail_card) =>
+                {
+                    paste::insert_clipboard_image_reference(
+                        &mut input,
+                        &mut cursor,
+                        &mut paste_chips,
+                        &mut paste_sequence,
+                    );
+                    input_hint(&model, "Clipboard image attached · Enter sends through the shared attachment parser");
                 }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
@@ -774,7 +795,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let index = detail_card.unwrap_or(focused_card);
                     let mut payload = None;
                     let text = if editable(&model, focus_panel, detail_card) {
-                        Some(input.clone())
+                        Some(expand_paste_chips(&input, &paste_chips))
                     } else {
                         model.lock().ok().and_then(|mut state| {
                             let card = state.cards.get(index)?;
@@ -881,6 +902,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             )?;
                         }
                         input.clear();
+                        paste_chips.clear();
                         cursor = 0;
                         history_search = None;
                         paste_origin = None;
@@ -894,6 +916,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if !stdio && key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
                         break
+                    }
+                    KeyCode::Up | KeyCode::Down | KeyCode::Esc
+                        if focus_panel == 0
+                            && detail_card.is_none()
+                            && model.lock().is_ok_and(|state| {
+                                !state
+                                    .slash_menu
+                                    .matches(&input, &state.command_catalog)
+                                    .is_empty()
+                            }) =>
+                    {
+                        if let Ok(mut state) = model.lock() {
+                            if key.code == KeyCode::Esc {
+                                state.slash_menu.dismiss();
+                            } else {
+                                let count = state
+                                    .slash_menu
+                                    .matches(&input, &state.command_catalog)
+                                    .len();
+                                state
+                                    .slash_menu
+                                    .move_selection(key.code == KeyCode::Down, count);
+                            }
+                        }
                     }
                     KeyCode::Esc if detail_card.is_some() => {
                         detail_card = None;
@@ -930,17 +976,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Tab
                         if stdio && focus_panel == 0 && input.trim_start().starts_with('/') =>
                     {
-                        let prefix = input.trim();
-                        let completion = model.lock().ok().and_then(|m| {
-                            m.command_catalog
-                                .iter()
-                                .map(|(name, _)| name)
-                                .filter(|name| name.starts_with(prefix) && name.as_str() != prefix)
-                                .min_by_key(|name| {
-                                    (!name.starts_with(&format!("{prefix} ")), name.len())
-                                })
-                                .cloned()
-                        });
+                        let completion = model
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.slash_menu.completion(&input, &m.command_catalog));
                         if let Some(completion) = completion {
                             input = completion;
                             cursor = input.len();
@@ -948,6 +987,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Tab => {
                         focus_panel = (focus_panel + 1) % if inline_mode { 2 } else { 3 }
+                    }
+                    KeyCode::Char('o')
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && focus_panel == 0
+                            && !paste_chips.is_empty() =>
+                    {
+                        paste::expand_last_paste_chip(&mut input, &mut cursor, &mut paste_chips);
                     }
                     KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
@@ -1187,7 +1233,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Enter if focus_panel == 0 && !input.trim().is_empty() => {
                         paste_origin = None;
-                        let prompt = std::mem::take(&mut input);
+                        paste::materialize(&mut input, &mut cursor, &mut paste_chips);
+                        let prompt = model
+                            .lock()
+                            .map(|state| {
+                                state.slash_menu.submission(&input, &state.command_catalog)
+                            })
+                            .unwrap_or_else(|_| input.clone());
+                        input.clear();
                         prompt_history.remember(&prompt);
                         input_hint(&model, "");
                         cursor = 0;
@@ -1312,7 +1365,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Up | KeyCode::Down if editable(&model, focus_panel, detail_card) => {
-                        prompt_history.navigate(key.code == KeyCode::Down, &mut input, &mut cursor);
+                        paste::materialize(&mut input, &mut cursor, &mut paste_chips);
+                        let width = terminal
+                            .get_frame()
+                            .area()
+                            .width
+                            .saturating_sub(if inline_mode { 2 } else { 4 })
+                            as usize;
+                        let layout = composer::PromptLayout::new(&input, width);
+                        let (row, column) = layout.cursor(cursor);
+                        if key.code == KeyCode::Up && row > 0 {
+                            cursor = layout.offset_at(row - 1, column);
+                        } else if key.code == KeyCode::Down && row + 1 < layout.lines.len() {
+                            cursor = layout.offset_at(row + 1, column);
+                        } else {
+                            prompt_history.navigate(
+                                key.code == KeyCode::Down,
+                                &mut input,
+                                &mut cursor,
+                            );
+                        }
                         input_hint(&model, "↑↓ prompt history · Ctrl+R search · Ctrl+G editor");
                     }
                     KeyCode::Up | KeyCode::Down => {}
@@ -1370,8 +1442,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|state| state.interaction.is_none() && state.approval.is_none())
                         .unwrap_or(false);
                     if can_paste && history_search.is_none() {
-                        if input.len().saturating_add(text.len()) <= composer::MAX_INPUT_BYTES {
-                            insert_paste(&mut input, &mut cursor, &text);
+                        let cwd = model
+                            .lock()
+                            .map(|state| state.cwd.clone())
+                            .unwrap_or_default();
+                        let text = paste::pasted_attachment_references(&text, &cwd).unwrap_or(text);
+                        if expand_paste_chips(&input, &paste_chips)
+                            .len()
+                            .saturating_add(text.len())
+                            <= composer::MAX_INPUT_BYTES
+                        {
+                            insert_paste_chip(
+                                &mut input,
+                                &mut cursor,
+                                &text,
+                                &mut paste_chips,
+                                &mut paste_sequence,
+                            );
                         } else {
                             input_hint(&model, "Prompt exceeds the 5 MiB paste limit");
                         }
@@ -1385,7 +1472,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             details_at(
                                 &state,
                                 terminal.get_frame().area(),
-                                &input,
+                                &display_input,
                                 inline_mode,
                                 &expanded,
                                 &theme,
@@ -1414,13 +1501,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             mouse_panel_at_view(
                                 terminal.get_frame().area(),
                                 &state,
-                                &input,
+                                &display_input,
                                 ratatui::layout::Position::new(mouse.column, mouse.row),
                                 inline_mode,
                             ) == Some(MousePanel::Composer)
                         }) && history_search.is_none()
                         {
                             focus_panel = 0;
+                            if let Ok(state) = model.lock() {
+                                if let Some(offset) = bahulam_tui::render::prompt_cursor_at(
+                                    terminal.get_frame().area(),
+                                    &state,
+                                    &display_input,
+                                    display_cursor,
+                                    ratatui::layout::Position::new(mouse.column, mouse.row),
+                                    inline_mode,
+                                ) {
+                                    cursor = paste::raw_cursor_from_display(
+                                        &input,
+                                        &paste_chips,
+                                        offset,
+                                    );
+                                }
+                            }
                             input_hint(&model, "");
                         }
                         continue;
@@ -1435,7 +1538,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         match mouse_panel_at_view(
                             area,
                             &state,
-                            &input,
+                            &display_input,
                             ratatui::layout::Position::new(mouse.column, mouse.row),
                             inline_mode,
                         ) {
@@ -1457,7 +1560,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 let g = history_geometry(
                                     &state,
                                     area,
-                                    &input,
+                                    &display_input,
                                     inline_mode,
                                     &expanded,
                                     &theme,
@@ -1520,7 +1623,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let g = history_geometry(
                                 &state,
                                 terminal.get_frame().area(),
-                                &input,
+                                &display_input,
                                 inline_mode,
                                 &expanded,
                                 &theme,
@@ -1690,7 +1793,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_paste, normalize_paste, scroll_history};
+    use super::scroll_history;
 
     #[test]
     fn wheel_history_starts_at_visible_tail_and_returns_to_follow() {
@@ -1703,22 +1806,5 @@ mod tests {
         assert_eq!((scroll, follow), (95, true));
         scroll_history(&mut scroll, &mut follow, 0, false, 3);
         assert_eq!((scroll, follow), (0, false));
-    }
-
-    #[test]
-    fn paste_normalizes_newlines_and_drops_terminal_controls() {
-        assert_eq!(
-            normalize_paste("one\r\ntwo\rthree\u{1b}[31m"),
-            "one\ntwo\nthree[31m"
-        );
-    }
-
-    #[test]
-    fn paste_inserts_once_at_the_cursor_and_preserves_multiline_text() {
-        let mut input = "abef".to_owned();
-        let mut cursor = 2;
-        insert_paste(&mut input, &mut cursor, "cd\n界");
-        assert_eq!(input, "abcd\n界ef");
-        assert_eq!(cursor, "abcd\n界".len());
     }
 }

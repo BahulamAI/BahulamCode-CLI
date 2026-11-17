@@ -362,9 +362,105 @@ impl PromptLayout {
     }
 }
 
+/// Local completion state. The host supplies the command catalog used by both clients.
+#[derive(Debug, Default)]
+pub struct SlashMenu {
+    query: String,
+    pub selected: usize,
+    dismissed: bool,
+}
+
+impl SlashMenu {
+    pub fn sync(&mut self, input: &str) {
+        if self.query != input {
+            self.query = input.to_owned();
+            self.selected = 0;
+            self.dismissed = false;
+        }
+    }
+
+    pub fn matches<'a>(
+        &self,
+        input: &str,
+        catalog: &'a [(String, String)],
+    ) -> Vec<&'a (String, String)> {
+        let prefix = input.trim_start();
+        if !prefix.starts_with('/')
+            || prefix.contains('\n')
+            || (self.query == input && self.dismissed)
+        {
+            return Vec::new();
+        }
+        let subcommand = prefix.contains(' ');
+        catalog
+            .iter()
+            .filter(|(name, _)| {
+                name.to_ascii_lowercase()
+                    .starts_with(&prefix.to_ascii_lowercase())
+                    && (subcommand || !name.contains(' '))
+                    && !name.contains(['<', '[', '|'])
+            })
+            .collect()
+    }
+
+    pub fn move_selection(&mut self, down: bool, count: usize) {
+        if count > 0 {
+            self.selected = (self.selected + if down { 1 } else { count - 1 }) % count;
+        }
+    }
+
+    pub fn dismiss(&mut self) {
+        self.dismissed = true;
+    }
+
+    pub fn completion(&self, input: &str, catalog: &[(String, String)]) -> Option<String> {
+        let matches = self.matches(input, catalog);
+        matches
+            .get(self.selected.min(matches.len().saturating_sub(1)))
+            .map(|row| row.0.clone())
+    }
+
+    pub fn submission(&self, input: &str, catalog: &[(String, String)]) -> String {
+        // Explicit commands and arguments must never be replaced by a suggestion.
+        if input.trim().contains(char::is_whitespace)
+            || catalog
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(input.trim()))
+        {
+            return input.to_owned();
+        }
+        self.completion(input, catalog)
+            .unwrap_or_else(|| input.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn slash_selection_preserves_explicit_commands_and_arguments() {
+        let catalog = vec![
+            ("/resume".into(), "history".into()),
+            ("/report".into(), "report".into()),
+            ("/resume <id>".into(), "argument".into()),
+        ];
+        let mut menu = SlashMenu::default();
+        menu.sync("/re");
+        assert_eq!(menu.matches("/re", &catalog).len(), 2);
+        menu.move_selection(true, 2);
+        assert_eq!(menu.submission("/re", &catalog), "/report");
+        assert_eq!(
+            menu.submission("/resume saved-id", &catalog),
+            "/resume saved-id"
+        );
+        menu.dismiss();
+        assert!(menu.matches("/re", &catalog).is_empty());
+        menu.sync("/res");
+        assert_eq!(
+            menu.completion("/res", &catalog).as_deref(),
+            Some("/resume")
+        );
+    }
     #[test]
     fn history_recalls_prompts_and_restores_exact_draft_cursor() {
         let mut history = History {

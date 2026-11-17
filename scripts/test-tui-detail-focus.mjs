@@ -17,7 +17,8 @@ const host=startRustTuiHost({onCommand:command=>{
  if(command.type==='prompt') {prompts.push(command.data.text);fs.writeFileSync(process.argv[2],JSON.stringify(prompts));}
 }});
 host.send({v:2,seq:1,ts:'',type:'command_result',session_id:'focus',agent_id:'main',data:{name:'/fixture',result:'one\\ntwo\\nthree\\nfour'}});
-setTimeout(()=>host.close(),15000).unref();
+host.send({v:2,seq:1,ts:'',type:'command_catalog',session_id:'focus',agent_id:'main',data:{commands:[{name:'/resume',description:'history'},{name:'/report',description:'report'}]}});
+setTimeout(()=>host.close(),20000).unref();
 `);
 const python = String.raw`
 import os,pty,fcntl,termios,struct,subprocess,select,time,signal,sys,json
@@ -57,6 +58,13 @@ def submit(text,keys):
  raise Exception('Prompt handoff mismatch: '+repr((actual,expected))+'\n'+screen.text())
 try:
  wait('Show details')
+ send(b'/re');wait('/resume');send(b'\x1b[B');wait('/report');submit('/report',b'')
+ submit('/resume saved-id',b'/resume saved-id')
+ large='界 line\n'*24
+ send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 25 lines')
+ submit(large,b'')
+ send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 25 lines');send(b'\x0f')
+ submit(large,b'')
  send(b'draft')
  click('Show details');wait('Show less')
  click('Message',1)
@@ -86,7 +94,7 @@ try {
  for (const mode of ['inline','fullscreen']) {
   const resultFile=path.join(temp,mode+'.json');
   const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),resultFile,process.execPath,driver,resultFile],{
-   encoding:'utf8',timeout:20000,maxBuffer:2*1024*1024,
+   encoding:'utf8',timeout:25000,maxBuffer:2*1024*1024,
    env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
   });
   assert.equal(result.status,0,`${mode}: ${result.stdout}\n${result.stderr}`);

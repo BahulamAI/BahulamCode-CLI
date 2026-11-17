@@ -278,6 +278,38 @@ function hasUsableFile(filePath) {
   }
 }
 
+function hasPngSignature(filePath) {
+  try {
+    const signature = fs.readFileSync(filePath).subarray(0, 8);
+    return signature.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  } catch {
+    return false;
+  }
+}
+
+function convertClipboardImageToPng(sourcePath, outputPath, runner) {
+  const converters = [
+    ['magick', [sourcePath, outputPath]],
+    ['convert', [sourcePath, outputPath]],
+  ];
+  for (const [command, args] of converters) {
+    try {
+      runner(command, args, {
+        stdio: 'pipe',
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 5_000,
+      });
+      if (hasUsableFile(outputPath) && hasPngSignature(outputPath)) {
+        try { fs.chmodSync(outputPath, 0o600); } catch { /* Keep the usable conversion if chmod is unavailable. */ }
+        return outputPath;
+      }
+    } catch {
+      // Try the next installed converter.
+    }
+  }
+  return null;
+}
+
 export function writeClipboardImageToTemp({
   baseDir = os.tmpdir(),
   runner = execFileSync,
@@ -310,6 +342,55 @@ export function writeClipboardImageToTemp({
       throw new Error(`Clipboard does not contain a readable image. Copy an image, or save it and use /attach <path>. ${err.message || err}`);
     }
     throw new Error('Clipboard image import did not produce an image file.');
+  }
+
+  if (platform === 'linux') {
+    const formats = [
+      ['image/png', '.png', false],
+      ['image/jpeg', '.jpg', false],
+      ['image/webp', '.webp', false],
+      ['image/gif', '.gif', false],
+      ['image/bmp', '.bmp', true],
+      ['image/x-bmp', '.bmp', true],
+      ['image/tiff', '.tiff', true],
+      ['image/x-tiff', '.tiff', true],
+    ];
+    const readers = [
+      ['wl-paste', mime => ['--no-newline', '--type', mime]],
+      ['xclip', mime => ['-selection', 'clipboard', '-t', mime, '-o']],
+    ];
+    let conversionUnavailable = false;
+    for (const [command, argsForMime] of readers) {
+      for (const [mime, extension, needsPngConversion] of formats) {
+        try {
+          const bytes = runner(command, argsForMime(mime), {
+            stdio: 'pipe',
+            timeout: 5_000,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+          if (!Buffer.isBuffer(bytes) || bytes.length === 0) continue;
+          const outputPath = path.join(dir, `clipboard-${stamp}${extension}`);
+          fs.writeFileSync(outputPath, bytes, { flag: 'wx', mode: 0o600 });
+          if (needsPngConversion) {
+            const convertedPath = convertClipboardImageToPng(
+              outputPath,
+              path.join(dir, `clipboard-${stamp}-converted.png`),
+              runner,
+            );
+            if (convertedPath) return convertedPath;
+            conversionUnavailable = true;
+            continue;
+          }
+          return outputPath;
+        } catch {
+          // Try the next image MIME type and clipboard backend.
+        }
+      }
+    }
+    if (conversionUnavailable) {
+      throw new Error('The clipboard provided BMP/TIFF, but no ImageMagick converter (magick or convert) could convert it to PNG. Install ImageMagick, or save the image and use /attach <image-path>.');
+    }
+    throw new Error('No supported clipboard image was available through wl-paste or xclip. Save the image and use /attach <image-path>.');
   }
 
   if (platform !== 'darwin') {

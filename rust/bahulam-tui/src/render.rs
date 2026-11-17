@@ -500,6 +500,52 @@ pub fn mouse_panel_at(
     mouse_panel_at_view(area, model, input, position, false)
 }
 
+pub fn prompt_cursor_at(
+    area: Rect,
+    model: &Model,
+    input: &str,
+    cursor: usize,
+    position: Position,
+    inline: bool,
+) -> Option<usize> {
+    if model.approval.is_some() || model.interaction.is_some() {
+        return None;
+    }
+    let layout = if inline {
+        inline_layout(area, input, false)
+    } else {
+        view_layout(area, input, false)
+    };
+    let bounds = layout.rows[3];
+    if !bounds.contains(position) {
+        return None;
+    }
+    let padding = if inline { 1 } else { 2 };
+    let prompt = PromptLayout::new(
+        input,
+        bounds.width.saturating_sub(padding * 2).max(1) as usize,
+    );
+    let suggestions = u16::from(
+        !model
+            .slash_menu
+            .matches(input, &model.command_catalog)
+            .is_empty(),
+    );
+    let visible = bounds
+        .height
+        .saturating_sub(2)
+        .saturating_sub(suggestions)
+        .max(1);
+    let scroll = prompt
+        .cursor(cursor)
+        .0
+        .saturating_sub(visible.saturating_sub(1) as usize);
+    Some(prompt.offset_at(
+        position.y.saturating_sub(bounds.y + 1) as usize + scroll,
+        position.x.saturating_sub(bounds.x + padding) as usize,
+    ))
+}
+
 pub fn mouse_panel_at_view(
     area: Rect,
     model: &Model,
@@ -937,21 +983,23 @@ pub fn draw_with_view(
         }
     };
     if model.approval.is_none() && input.trim_start().starts_with('/') {
-        let prefix = input.trim();
-        let suggestions = model
-            .command_catalog
-            .iter()
-            .filter(|(name, _)| name.starts_with(prefix))
-            .take(3)
-            .map(|(name, description)| format!("{name}  {description}"))
-            .collect::<Vec<_>>();
-        if !suggestions.is_empty() {
+        let matches = model.slash_menu.matches(input, &model.command_catalog);
+        let selected = model
+            .slash_menu
+            .selected
+            .min(matches.len().saturating_sub(1));
+        if let Some((name, description)) = matches.get(selected) {
             prompt.push(Line::from(Span::styled(
-                format!("  {}", suggestions.join("   ·   ")),
-                Style::default().fg(p.muted),
+                format!(
+                    "  › {name}  {description} · {}/{} · ↑↓ select · Tab complete",
+                    selected + 1,
+                    matches.len()
+                ),
+                Style::default().fg(p.info),
             )));
         }
     }
+
     let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
     let suggestion_rows = prompt.len().saturating_sub(input_layout.lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);

@@ -963,3 +963,17 @@ or clock. Completed turns clear clocks and promotion handles.
 Validation: 44 Rust tests, shared request/cache invariance, process-identity and
 output continuity, single completion on kill, and output-log failure recovery.
 Idle redraw and JSONL round-trip tests remain part of the regression checks.
+
+## Backport: composer completion, paste and caret controls
+
+Adapted `7cd8933` composer behavior to the accepted viewport and focus model:
+selectable slash suggestions (arrows, Tab, Enter; Esc dismisses), Unicode wrapped
+row navigation, click-to-place caret, large-paste chips with Ctrl+O expansion,
+file-drop `@path` references, and explicit Ctrl+Shift+V image references. Submission,
+history, copying and the external editor receive expanded content, not chip markers.
+Shared clipboard-image loading includes bounded Wayland/X11 reads and optional
+BMP/TIFF conversion from `b37c586`; Node presentation remains unchanged.
+
+Validation: strict Clippy, 45 Rust tests, both-view clipboard/editor/focus PTYs,
+including exact large-paste submission before/after expansion and slash selection;
+shared attachment tests use fake clipboard helpers, including Wayland/X11 fallback.

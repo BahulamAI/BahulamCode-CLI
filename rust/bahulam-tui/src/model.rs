@@ -72,6 +72,7 @@ pub struct Model {
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
     pub command_catalog: Vec<(String, String)>,
+    pub slash_menu: crate::composer::SlashMenu,
     pub interaction: Option<Interaction>,
     tools: HashMap<String, usize>,
     messages: HashMap<String, usize>,
