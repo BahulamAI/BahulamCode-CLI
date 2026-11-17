@@ -1513,6 +1513,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 theme = next_theme.to_owned();
                             }
                         } else if stdio {
+                            // Record before sending so a fast turn_started cannot outrun its acknowledgement.
+                            if let Ok(mut state) = model.lock() {
+                                if state
+                                    .agents
+                                    .iter()
+                                    .any(|agent| agent.id == "main" && agent.started_at.is_some())
+                                {
+                                    state.queue_prompt(&prompt);
+                                }
+                            }
                             write_command(
                                 &command_writer,
                                 serde_json::json!({"type":"prompt","data":{"text":prompt}}),

@@ -14,7 +14,17 @@ import fs from 'node:fs';
 import { startRustTuiHost } from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs', import.meta.url).href)};
 const prompts=[];
 const host=startRustTuiHost({onCommand:command=>{
- if(command.type==='prompt') {prompts.push(command.data.text);fs.writeFileSync(process.argv[2],JSON.stringify(prompts));}
+ if(command.type==='prompt') {
+  prompts.push(command.data.text);fs.writeFileSync(process.argv[2]+".tmp",JSON.stringify(prompts));fs.renameSync(process.argv[2]+".tmp",process.argv[2]);
+  const send=(seq,type,data)=>host.send({v:2,seq,ts:'',type,session_id:'focus',turn_id:'queue-test',agent_id:'main',data});
+  if(command.data.text==='start queued fixture') send(10,'turn_started',{text:'start queued fixture'});
+  if(command.data.text==='queued followup') setTimeout(()=>{
+   send(11,'message_end',{text:'QUEUE_FINAL'});
+   send(12,'turn_ended',{ok:true});
+   send(13,'turn_started',{text:'queued followup'});
+  },700);
+ }
+
 }});
 host.send({v:2,seq:1,ts:'',type:'command_result',session_id:'focus',agent_id:'main',data:{name:'/fixture',result:'one\\ntwo\\nthree\\nfour'}});
 host.send({v:2,seq:1,ts:'',type:'command_catalog',session_id:'focus',agent_id:'main',data:{commands:[{name:'/resume',description:'history'},{name:'/report',description:'report'}]}});
@@ -83,6 +93,11 @@ try:
  send(b'\t\x1b\r');wait('Details')
  send(b'\x1b');wait('Show details')
  submit('after separate details',b'after separate details')
+ submit('start queued fixture',b'start queued fixture')
+ submit('queued followup',b'queued followup');wait('1 queued')
+ wait('QUEUE_FINAL');pump(.2)
+ assert '1 queued' not in screen.text(),screen.text()
+ assert screen.text().index('QUEUE_FINAL') < screen.text().rindex('queued followup'),screen.text()
  send(b'\x03\x03')
  child.wait(timeout=3)
  assert child.returncode==0

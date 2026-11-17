@@ -10,13 +10,13 @@ use ratatui::{
 use std::sync::OnceLock;
 use std::{
     cell::RefCell,
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Palette {
     accent: Color,
     text: Color,
@@ -30,6 +30,49 @@ struct Palette {
     danger: Color,
     code: Color,
     agent_colors: [Color; 5],
+}
+
+fn ascii_glyphs() -> bool {
+    static ASCII: OnceLock<bool> = OnceLock::new();
+    *ASCII.get_or_init(|| {
+        if let Ok(value) = std::env::var("BAHULAM_ASCII") {
+            return matches!(value.trim(), "1" | "true" | "yes" | "on");
+        }
+        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        !locale.contains("utf-8") && !locale.contains("utf8")
+    })
+}
+
+fn status_glyph(unicode: &'static str) -> &'static str {
+    if !ascii_glyphs() {
+        return unicode;
+    }
+    match unicode {
+        "○" => ".",
+        "◐" => "*",
+        "✓" => "+",
+        "✗" => "x",
+        "⊘" => "-",
+        "•" => "*",
+        "›" => ">",
+        _ => unicode,
+    }
+}
+
+fn model_label_text(model: &Model) -> String {
+    let mut label = middle_ellipsis(&safe_text(&model.model), 28);
+    if !model.model_mode.is_empty() {
+        label.push_str(&format!(" · {}", safe_text(&model.model_mode)));
+    }
+    if model.model_route.eq_ignore_ascii_case("byok") {
+        label.push_str(" · BYOK");
+    }
+    label
 }
 
 fn palette(theme: &str) -> Palette {
@@ -673,7 +716,7 @@ pub fn draw_with_view(
             Style::default().fg(if live { p.success } else { p.muted }),
         ),
         Span::styled(
-            format!("  {}", middle_ellipsis(&safe_text(&model.model), 28)),
+            format!("  {}", model_label_text(model)),
             Style::default().fg(p.text),
         ),
         Span::styled(
@@ -805,6 +848,7 @@ pub fn draw_with_view(
                 .take(8)
                 .map(|(index, agent)| {
                     let (glyph, color) = agent_state(&agent.status, p);
+                    let glyph = status_glyph(glyph);
                     let elapsed = agent
                         .started_at
                         .map(|at| format!("{}s", at.elapsed().as_secs()))
@@ -1095,6 +1139,9 @@ pub fn draw_with_view(
         "cost —".into()
     };
     let mut status_parts = Vec::new();
+    if model.pending_prompt_count() > 0 {
+        status_parts.push(format!("{} queued", model.pending_prompt_count()));
+    }
     let configured = std::env::var("BAHULAM_TUI_STATUS_SEGMENTS")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1116,7 +1163,7 @@ pub fn draw_with_view(
             "jobs" if model.active_background_jobs > 0 => {
                 Some(format!("{} jobs", model.active_background_jobs))
             }
-            "model" => Some(model.model.clone()),
+            "model" => Some(model_label_text(model)),
             "directory" => Some(model.cwd.clone()),
             "branch" => Some(model.git_branch.clone()),
             "custom" => Some(model.custom_status.clone()),
@@ -1352,7 +1399,10 @@ fn plan_line(item: &str, p: Palette) -> Line<'static> {
             _ => ("○", p.muted),
         };
         return Line::from(vec![
-            Span::styled(format!(" {glyph} "), Style::default().fg(color)),
+            Span::styled(
+                format!(" {} ", status_glyph(glyph)),
+                Style::default().fg(color),
+            ),
             Span::styled(
                 safe_text(text),
                 Style::default().fg(if glyph == "›" { p.text } else { p.muted }),
@@ -1641,7 +1691,11 @@ fn card_lines(
         "done" | "complete" | "ready" => ("✓", p.success),
         _ => ("•", p.accent),
     };
-    let focus = if focused == Some(index) { "›" } else { " " };
+    let focus = if focused == Some(index) {
+        status_glyph("›")
+    } else {
+        " "
+    };
     let agent_message = card.title.strip_prefix("Agent: ");
     let is_assistant = card.is_message() && card.title != "Prompt";
     let is_user = card.title == "Prompt";
@@ -1652,6 +1706,7 @@ fn card_lines(
     } else {
         glyph
     };
+    let glyph = status_glyph(glyph);
     let display_title = if card.title == "Assistant" {
         ""
     } else if let Some(agent) = agent_message {
@@ -1986,109 +2041,189 @@ fn middle_ellipsis(value: &str, max_width: usize) -> String {
     format!("{left}…{right}")
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct MarkdownLineKey {
+    text: String,
+    code: bool,
+    language: String,
+    diff: bool,
+    palette: String,
+}
+
+struct MarkdownLineCache {
+    entries: HashMap<MarkdownLineKey, (Line<'static>, bool, String)>,
+    insertion_order: VecDeque<MarkdownLineKey>,
+}
+
+impl MarkdownLineCache {
+    const MAX_ENTRIES: usize = 512;
+    const MAX_LINE_BYTES: usize = 2048;
+
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            insertion_order: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, key: &MarkdownLineKey) -> Option<(Line<'static>, bool, String)> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: MarkdownLineKey, value: (Line<'static>, bool, String)) {
+        if key.text.len() > Self::MAX_LINE_BYTES
+            || key.language.len() > 256
+            || self.entries.contains_key(&key)
+        {
+            return;
+        }
+        while self.entries.len() >= Self::MAX_ENTRIES {
+            if let Some(oldest) = self.insertion_order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.insertion_order.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+}
+
+thread_local! {
+    static MARKDOWN_LINES: RefCell<MarkdownLineCache> = RefCell::new(MarkdownLineCache::new());
+}
+
 fn format_markdown(lines: &[&str], p: Palette, diff: bool) -> Vec<Line<'static>> {
     let mut code = false;
     let mut language = String::new();
-    lines
-        .iter()
-        .map(|raw| {
-            let line = safe_text(raw);
-            if line.trim_start().starts_with("```") {
-                code = !code;
-                let fence_language = line.trim().trim_matches('`');
-                if code {
-                    language = fence_language.to_owned();
-                }
-                return Line::from(Span::styled(
-                    if code {
-                        format!("   {}", language)
-                    } else {
-                        String::new()
-                    },
-                    Style::default().fg(p.muted).add_modifier(Modifier::ITALIC),
-                ));
-            }
-            if diff || (code && matches!(language.as_str(), "diff" | "patch")) {
-                let color = if line.starts_with('+') {
-                    p.success
-                } else if line.starts_with('-') {
-                    p.danger
-                } else if line.starts_with("@@") {
-                    p.info
-                } else {
-                    p.text
+    let palette = format!("{p:?}");
+    MARKDOWN_LINES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        lines
+            .iter()
+            .map(|raw| {
+                let key = MarkdownLineKey {
+                    text: (*raw).to_owned(),
+                    code,
+                    language: language.clone(),
+                    diff,
+                    palette: palette.clone(),
                 };
-                return Line::from(format!("   {line}")).style(Style::default().fg(color));
-            }
-            if code {
-                return Line::from(code_spans(&line, p));
-            }
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("error:")
-                || trimmed.starts_with("fatal:")
-                || trimmed.starts_with("exception:")
-            {
-                return Line::from(format!("   {line}")).style(Style::default().fg(p.danger));
-            }
-            if let Some(heading) = trimmed
-                .strip_prefix("### ")
-                .or_else(|| trimmed.strip_prefix("## "))
-                .or_else(|| trimmed.strip_prefix("# "))
-            {
-                return Line::from(Span::styled(
-                    format!("   {}", heading.trim_matches('#').trim()),
-                    Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-                ));
-            }
-            if let Some(quote) = trimmed.strip_prefix("> ") {
-                return Line::from(format!("   │ {quote}"))
-                    .style(Style::default().fg(p.muted).add_modifier(Modifier::ITALIC));
-            }
-            if let Some(item) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-            {
-                return Line::from(vec![
-                    Span::styled("   • ", Style::default().fg(p.muted)),
-                    Span::styled(item.to_owned(), Style::default().fg(p.text)),
-                ]);
-            }
-            if trimmed.starts_with('|') && trimmed.ends_with('|') {
-                let cells: Vec<&str> = trimmed
-                    .trim_matches('|')
-                    .split('|')
-                    .map(str::trim)
-                    .collect();
-                if cells.iter().all(|cell| {
-                    cell.chars()
-                        .all(|c| c == '-' || c == ':' || c.is_whitespace())
-                }) {
-                    return Line::from(Span::styled(
-                        "   ─────────────────────────────────",
-                        Style::default().fg(p.border),
-                    ));
+                if let Some((line, next_code, next_language)) = cache.get(&key) {
+                    code = next_code;
+                    language = next_language;
+                    return line;
                 }
-                let spans = cells
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, cell)| {
-                        let mut parts = Vec::new();
-                        if i > 0 {
-                            parts.push(Span::styled(" │ ", Style::default().fg(p.border)));
-                        }
-                        parts.extend(inline_markdown(cell, p));
-                        parts
-                    })
-                    .collect::<Vec<_>>();
-                let mut all = vec![Span::raw("   ")];
-                all.extend(spans);
-                return Line::from(all);
-            }
-            let mut spans = vec![Span::raw("   ")];
-            spans.extend(inline_markdown(&line, p));
-            Line::from(spans)
-        })
-        .collect()
+                let line = format_markdown_line(raw, p, &mut code, &mut language, diff);
+                cache.insert(key, (line.clone(), code, language.clone()));
+                line
+            })
+            .collect()
+    })
+}
+
+fn format_markdown_line(
+    raw: &str,
+    p: Palette,
+    code: &mut bool,
+    language: &mut String,
+    diff: bool,
+) -> Line<'static> {
+    let line = safe_text(raw);
+    if line.trim_start().starts_with("```") {
+        *code = !*code;
+        let fence_language = line.trim().trim_matches('`');
+        if *code {
+            *language = fence_language.to_owned();
+        }
+        return Line::from(Span::styled(
+            if *code {
+                format!("   {}", language)
+            } else {
+                String::new()
+            },
+            Style::default().fg(p.muted).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    if diff || (*code && matches!(language.as_str(), "diff" | "patch")) {
+        let color = if line.starts_with('+') {
+            p.success
+        } else if line.starts_with('-') {
+            p.danger
+        } else if line.starts_with("@@") {
+            p.info
+        } else {
+            p.text
+        };
+        return Line::from(format!("   {line}")).style(Style::default().fg(color));
+    }
+    if *code {
+        return Line::from(code_spans(&line, p));
+    }
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("error:")
+        || trimmed.starts_with("fatal:")
+        || trimmed.starts_with("exception:")
+    {
+        return Line::from(format!("   {line}")).style(Style::default().fg(p.danger));
+    }
+    if let Some(heading) = trimmed
+        .strip_prefix("### ")
+        .or_else(|| trimmed.strip_prefix("## "))
+        .or_else(|| trimmed.strip_prefix("# "))
+    {
+        return Line::from(Span::styled(
+            format!("   {}", heading.trim_matches('#').trim()),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(quote) = trimmed.strip_prefix("> ") {
+        return Line::from(format!("   │ {quote}"))
+            .style(Style::default().fg(p.muted).add_modifier(Modifier::ITALIC));
+    }
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Line::from(vec![
+            Span::styled("   • ", Style::default().fg(p.muted)),
+            Span::styled(item.to_owned(), Style::default().fg(p.text)),
+        ]);
+    }
+    if trimmed.starts_with('|') && trimmed.ends_with('|') {
+        let cells: Vec<&str> = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        if cells.iter().all(|cell| {
+            cell.chars()
+                .all(|c| c == '-' || c == ':' || c.is_whitespace())
+        }) {
+            return Line::from(Span::styled(
+                "   ─────────────────────────────────",
+                Style::default().fg(p.border),
+            ));
+        }
+        let spans = cells
+            .iter()
+            .enumerate()
+            .flat_map(|(i, cell)| {
+                let mut parts = Vec::new();
+                if i > 0 {
+                    parts.push(Span::styled(" │ ", Style::default().fg(p.border)));
+                }
+                parts.extend(inline_markdown(cell, p));
+                parts
+            })
+            .collect::<Vec<_>>();
+        let mut all = vec![Span::raw("   ")];
+        all.extend(spans);
+        return Line::from(all);
+    }
+    let mut spans = vec![Span::raw("   ")];
+    spans.extend(inline_markdown(&line, p));
+    Line::from(spans)
 }
 
 fn code_spans(line: &str, p: Palette) -> Vec<Span<'static>> {
@@ -2208,6 +2343,65 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
 mod row_measurement_tests {
     use super::*;
     use crate::model::Card;
+
+    #[test]
+    fn markdown_cache_preserves_fence_state_diff_mode_and_palette() {
+        let lines = [
+            "# Heading",
+            "```rust",
+            "let x = 42;",
+            "```",
+            "- ordinary bullet",
+            "```diff",
+            "- removed",
+            "@@ context",
+            "```",
+            "**bold** `code`",
+        ];
+        for theme in ["dark", "light", "ansi", "high-contrast"] {
+            for diff in [false, true] {
+                let p = resolved_palette(theme, "truecolor", &serde_json::Value::Null);
+                let mut code = false;
+                let mut language = String::new();
+                let expected: Vec<_> = lines
+                    .iter()
+                    .map(|raw| format_markdown_line(raw, p, &mut code, &mut language, diff))
+                    .collect();
+                assert_eq!(format_markdown(&lines, p, diff), expected);
+                assert_eq!(format_markdown(&lines, p, diff), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_cache_bounds_lines_and_fence_state() {
+        let mut cache = MarkdownLineCache::new();
+        let key = |text: String| MarkdownLineKey {
+            text,
+            code: false,
+            language: String::new(),
+            diff: false,
+            palette: String::new(),
+        };
+        for n in 0..600 {
+            cache.insert(
+                key(n.to_string()),
+                (Line::from("line"), false, String::new()),
+            );
+        }
+        assert_eq!(cache.entries.len(), MarkdownLineCache::MAX_ENTRIES);
+        assert!(cache.get(&key("0".into())).is_none());
+        let large = key("x".repeat(MarkdownLineCache::MAX_LINE_BYTES + 1));
+        cache.insert(large.clone(), (Line::from("large"), false, String::new()));
+        assert!(cache.get(&large).is_none());
+        let mut large_fence = key("small".into());
+        large_fence.language = "x".repeat(257);
+        cache.insert(
+            large_fence.clone(),
+            (Line::from("fenced"), true, large_fence.language.clone()),
+        );
+        assert!(cache.get(&large_fence).is_none());
+    }
 
     #[test]
     fn markdown_bullets_use_text_and_diff_rows_use_change_colors() {

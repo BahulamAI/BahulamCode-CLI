@@ -1021,3 +1021,23 @@ Validation: display-copy immutability, four JSONL writer tests, nineteen approva
 tests (including hold/deny timeout), protocol/request invariance and the Node to
 Rust replay round trip pass. Resume display stability is now registered in the
 standard unit runner rather than remaining an orphan test.
+
+## Backport: remaining render and streaming refinements
+
+Restored bounded Markdown row caching (512 entries, 2 KiB lines, bounded fence
+state) while preserving accepted prose, code and diff colors. Running tool output
+keeps a 20-line/12-KiB tail; completed results and loaded details remain complete.
+Artifacts show MIME/type, page count, size and open targets. Model mode and BYOK
+route are delivered through the display protocol and shown with the model label.
+The original ASCII status-marker fallback is available through `BAHULAM_ASCII`.
+
+Queued follow-ups appear as a status count, acknowledged by subsequent live main
+turns. They do not insert future prompts above the current answer. Historical
+replay cannot consume that count, and changing sessions clears it. Node remains
+the instruction queue owner. This intentionally replaces the source commit's
+in-place conversion of early queued cards, which conflicted with accepted order.
+
+Validation: 54 Rust tests, strict Clippy, protocol/request invariance and replay
+round trips pass. Tests cover cache/fence/palette isolation, bounded streamed tool
+previews followed by complete results, artifact metadata, model labels and queued
+prompt ordering. The both-view focus PTY also checks live queue acknowledgement.

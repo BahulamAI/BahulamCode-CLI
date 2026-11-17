@@ -57,6 +57,8 @@ pub struct Model {
     pub permission_mode: String,
     pub custom_status: String,
     pub model: String,
+    pub model_mode: String,
+    pub model_route: String,
     pub last_seq: i64,
     pub cards: Vec<Card>,
     pub agents: Vec<Agent>,
@@ -73,6 +75,7 @@ pub struct Model {
     pub active_background_jobs: usize,
     pub status: String,
     pub composer_hint: String,
+    queued_prompts: usize,
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
     pub command_catalog: Vec<(String, String)>,
@@ -108,6 +111,38 @@ fn text(data: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .map(safe_text)
         .unwrap_or_default()
+}
+
+// Keep a bounded running preview; tool_finished/detail_loaded supplies the full result.
+fn append_running_tool_output(body: &mut String, chunk: &str) {
+    const MAX_BYTES: usize = 12 * 1024;
+    const MAX_LINES: usize = 20;
+    const MARKER: &str = "[earlier tool output omitted]\n";
+    let mut truncated = body.starts_with(MARKER);
+    let mut tail = std::mem::take(body);
+    if truncated {
+        tail.drain(..MARKER.len());
+    }
+    tail.push_str(chunk);
+    let mut cut = tail.len().saturating_sub(MAX_BYTES);
+    while !tail.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let extra_lines = tail.lines().count().saturating_sub(MAX_LINES);
+    if extra_lines > 0 {
+        if let Some((index, _)) = tail.match_indices('\n').nth(extra_lines - 1) {
+            cut = cut.max(index + 1);
+        }
+    }
+    if cut > 0 {
+        tail.drain(..cut);
+        truncated = true;
+    }
+    *body = if truncated {
+        format!("{MARKER}{tail}")
+    } else {
+        tail
+    };
 }
 
 // Match the Node event tap's truth-value check: an optional error:null or
@@ -341,6 +376,17 @@ impl Model {
         remaining
     }
 
+    // Presentation acknowledgement only: Node remains the instruction queue owner.
+    pub fn queue_prompt(&mut self, prompt: &str) {
+        if !prompt.trim().is_empty() && !prompt.trim_start().starts_with('/') {
+            self.queued_prompts += 1;
+        }
+    }
+
+    pub fn pending_prompt_count(&self) -> usize {
+        self.queued_prompts
+    }
+
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
         if self.replaying_history
             && matches!(
@@ -371,6 +417,7 @@ impl Model {
                 self.progress.clear();
                 self.approvals.clear();
                 if self.session != event.session_id {
+                    self.queued_prompts = 0;
                     self.approval = None;
                     self.interaction = None;
                 }
@@ -542,6 +589,8 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "session_state" {
+            self.model_mode = text(&event.data, "model_mode");
+            self.model_route = text(&event.data, "model_route");
             self.git_branch = text(&event.data, "git_branch");
             self.permission_mode = text(&event.data, "permission_mode");
             self.active_background_jobs = event
@@ -702,7 +751,13 @@ impl Model {
                     main.status = "working".into();
                     main.started_at = (!self.replaying_history).then(Instant::now);
                 }
-                self.card(agent, "Prompt", text(data, "text"), "sent");
+                let prompt = text(data, "text");
+                if !self.replaying_history && agent == "main" {
+                    // Node drains its serial queue in order. Display text may be
+                    // redacted or attachment-expanded, so never match by bytes.
+                    self.queued_prompts = self.queued_prompts.saturating_sub(1);
+                }
+                self.card(agent, "Prompt", prompt, "sent");
             }
             "thinking_delta" => {
                 let progress_key = format!("{message_key}/thinking");
@@ -882,7 +937,7 @@ impl Model {
                         row.current_tool = self.cards[index].title.clone();
                     }
                 } else if kind == "tool_output_delta" {
-                    self.cards[index].body.push_str(&text(data, "chunk"));
+                    append_running_tool_output(&mut self.cards[index].body, &text(data, "chunk"));
                 } else {
                     self.cards[index].status = if tool_succeeded(data) {
                         "done"
@@ -1205,7 +1260,6 @@ impl Model {
                         main.elapsed_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
                     }
                     main.current_tool.clear();
-                    main.current_tool.clear();
                 }
                 // A terminal event must not leave tools or streamed text spinning forever.
                 let prefix = format!("{origin}/{turn}/{agent}/");
@@ -1262,13 +1316,43 @@ impl Model {
                 self.cards[index].metadata = metadata.join(" · ");
             }
             "artifact_created" => {
-                let index = self.card(
-                    agent,
-                    &text(data, "title"),
-                    text(data, "path"),
-                    &text(data, "kind"),
-                );
-                self.cards[index].open_url = data.get("url").and_then(Value::as_str).map(safe_text);
+                let title = text(data, "title");
+                let title = if title.is_empty() { "Artifact" } else { &title };
+                let kind = text(data, "kind");
+                let mime = text(data, "mime");
+                let pages = data.get("pages").and_then(Value::as_u64);
+                let bytes = data.get("bytes").and_then(Value::as_u64);
+                let mut metadata = Vec::new();
+                if !mime.is_empty() {
+                    metadata.push(mime);
+                } else if !kind.is_empty() {
+                    metadata.push(kind.clone());
+                }
+                if let Some(pages) = pages {
+                    metadata.push(format!("{pages} page{}", if pages == 1 { "" } else { "s" }));
+                }
+                if let Some(bytes) = bytes {
+                    metadata.push(format_artifact_size(bytes));
+                }
+                let path = text(data, "path");
+                let preview = if path.is_empty() {
+                    "Alt+O opens this artifact".to_owned()
+                } else {
+                    path
+                };
+                let index = self.card(agent, title, preview, "done");
+                self.cards[index].primary = if kind.is_empty() {
+                    "artifact".into()
+                } else {
+                    kind
+                };
+                self.cards[index].metadata = metadata.join(" · ");
+                self.cards[index].open_url = data
+                    .get("open_url")
+                    .or_else(|| data.get("url"))
+                    .and_then(Value::as_str)
+                    .map(safe_text)
+                    .filter(|value| value.starts_with("https://") || value.starts_with("http://"));
                 if let Some(reference) = &event.payload_ref {
                     self.cards[index].payload_ref = Some(reference.clone());
                 }
@@ -1311,6 +1395,16 @@ fn command_output(name: &str, output: &str) -> String {
         .filter(|line| !(line.contains('%') && (line.contains('█') || line.contains('░'))))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn format_artifact_size(bytes: u64) -> String {
+    if bytes < 1_000 {
+        format!("{bytes} B")
+    } else if bytes < 1_000_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    }
 }
 
 fn safe_text_json(value: &Value) -> String {

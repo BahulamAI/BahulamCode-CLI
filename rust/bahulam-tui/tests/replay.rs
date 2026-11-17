@@ -1683,3 +1683,168 @@ fn job_state_and_tool_timers_are_live_only_and_stop_with_the_turn() {
         .iter()
         .all(|card| card.started_at.is_none() && card.tool_id.is_empty()));
 }
+
+#[test]
+fn queued_followups_do_not_reorder_history_or_acknowledge_historical_turns() {
+    let mut model = Model::default();
+    model
+        .apply(&event(1, "turn_started", "main", json!({"text":"first"})))
+        .unwrap();
+    model.queue_prompt("next");
+    model.queue_prompt("next");
+    model.queue_prompt("/help");
+    assert_eq!(model.pending_prompt_count(), 2);
+    assert!(!model.cards.iter().any(|card| card.body == "next"));
+    model
+        .apply(&event(
+            2,
+            "message_end",
+            "main",
+            json!({"text":"first final"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(3, "turn_started", "worker", json!({"text":"next"})))
+        .unwrap();
+    assert_eq!(model.pending_prompt_count(), 2);
+    model
+        .apply(&event(
+            4,
+            "turn_started",
+            "main",
+            json!({"text":"next (host-normalized)"}),
+        ))
+        .unwrap();
+    assert_eq!(model.pending_prompt_count(), 1);
+    let final_pos = model
+        .cards
+        .iter()
+        .position(|card| card.body == "first final")
+        .unwrap();
+    let prompt_pos = model
+        .cards
+        .iter()
+        .position(|card| card.body == "next (host-normalized)")
+        .unwrap();
+    assert!(final_pos < prompt_pos);
+    model.apply(&event(0, "transcript_snapshot", "main", json!({"replace":true,"mode":"full","items":[
+        {"kind":"event","event":{"type":"turn_started","turn_id":"old","data":{"text":"next"}}}
+    ]}))).unwrap();
+    assert_eq!(model.pending_prompt_count(), 1);
+    model
+        .apply(&event(5, "turn_started", "main", json!({"text":"next"})))
+        .unwrap();
+    assert_eq!(model.pending_prompt_count(), 0);
+    model.queue_prompt("not in another session");
+    let mut replacement = event(
+        0,
+        "transcript_snapshot",
+        "main",
+        json!({"replace":true,"mode":"full","items":[]}),
+    );
+    replacement.session_id = "another-session".into();
+    model.apply(&replacement).unwrap();
+    assert_eq!(model.pending_prompt_count(), 0);
+}
+
+#[test]
+fn running_tool_preview_is_bounded_but_final_output_is_complete() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"tail","name":"shell","args":{}}),
+        ))
+        .unwrap();
+    let output = (0..500)
+        .map(|n| format!("line {n} 界\n"))
+        .collect::<String>();
+    model
+        .apply(&event(
+            2,
+            "tool_output_delta",
+            "main",
+            json!({"tool_id":"tail","chunk":output}),
+        ))
+        .unwrap();
+    let preview = &model.cards.last().unwrap().body;
+    assert!(preview.starts_with("[earlier tool output omitted]"));
+    assert!(preview.lines().count() <= 21);
+    assert!(preview.ends_with("line 499 界\n"));
+    model
+        .apply(&event(
+            3,
+            "tool_output_delta",
+            "main",
+            json!({"tool_id":"tail","chunk":"界".repeat(10000)}),
+        ))
+        .unwrap();
+    let preview = &model.cards.last().unwrap().body;
+    assert!(preview.len() <= 12 * 1024 + 40);
+    assert!(preview.ends_with('界'));
+    model
+        .apply(&event(
+            4,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"tail","ok":true,"output":output}),
+        ))
+        .unwrap();
+    assert_eq!(
+        model.cards.last().unwrap().detail.as_deref(),
+        Some(output.as_str())
+    );
+    assert_eq!(model.cards.last().unwrap().status, "done");
+}
+
+#[test]
+fn artifacts_show_metadata_and_open_valid_urls_without_claiming_image_rendering() {
+    let mut model = Model::default();
+    model.apply(&event(1,"artifact_created","main",json!({"title":"Report","kind":"document","mime":"application/pdf","pages":2,"bytes":2500,"path":"reports/output.pdf","open_url":"https://example.test/report"}))).unwrap();
+    let card = model.cards.last().unwrap();
+    assert_eq!(card.title, "Report");
+    assert_eq!(card.status, "done");
+    assert_eq!(card.metadata, "application/pdf · 2 pages · 2.5 KB");
+    assert_eq!(card.body, "reports/output.pdf");
+    assert_eq!(
+        card.open_url.as_deref(),
+        Some("https://example.test/report")
+    );
+    model
+        .apply(&event(
+            2,
+            "artifact_created",
+            "main",
+            json!({"url":"javascript:bad()"}),
+        ))
+        .unwrap();
+    assert!(model.cards.last().unwrap().open_url.is_none());
+    assert_eq!(model.cards.last().unwrap().title, "Artifact");
+}
+
+#[test]
+fn session_state_retains_model_mode_and_route_for_display() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "session_state",
+            "main",
+            json!({"model":"provider/model","model_mode":"thinking","model_route":"byok"}),
+        ))
+        .unwrap();
+    assert_eq!(model.model_mode, "thinking");
+    assert_eq!(model.model_route, "byok");
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| draw(frame, &model, 0)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("thinking · BYOK"));
+}

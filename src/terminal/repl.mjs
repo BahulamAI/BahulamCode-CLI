@@ -2203,7 +2203,7 @@ function sendRustSessionState() {
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
-    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', model_mode: session.modelMode || '', model_route: session.routePreference || (session.isByok ? 'byok' : 'platform'), git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
 }
 
 function renderEvent(event) {

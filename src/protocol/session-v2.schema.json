@@ -1111,7 +1111,7 @@
     },
     "SessionStateData": {
       "type": "object",
-      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "status": {"type": "string"}, "usage": {"type": "object"}, "active_background_jobs": {"type": "integer", "minimum": 0}},
+      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "git_branch": {"type": "string"}, "permission_mode": {"type": "string"}, "model_mode": {"type": "string"}, "model_route": {"type": "string"}, "status": {"type": "string"}, "usage": {"type": "object"}, "active_background_jobs": {"type": "integer", "minimum": 0}},
       "required": [],
       "additionalProperties": true
     },

@@ -157,6 +157,10 @@ export interface TranscriptSnapshotData {
 export interface SessionStateData {
   cwd?: string;
   model?: string;
+  git_branch?: string;
+  permission_mode?: string;
+  model_mode?: string;
+  model_route?: string;
   status?: string;
   usage?: Record<string, unknown>;
   active_background_jobs?: number;
