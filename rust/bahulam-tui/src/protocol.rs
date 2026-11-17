@@ -260,6 +260,8 @@ pub struct SessionStateData {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_background_jobs: Option<i64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommandCatalogData {

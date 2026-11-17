@@ -1,6 +1,6 @@
 use crate::protocol::{EventEnvelope, EVENT_TYPES};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 #[derive(Debug, Clone, Hash)]
 pub struct Card {
@@ -13,6 +13,9 @@ pub struct Card {
     pub payload_ref: Option<String>,
     pub detail: Option<String>,
     pub detail_loading: bool,
+    pub started_at: Option<Instant>,
+    pub tool_id: String,
+    pub tool_name: String,
 }
 impl Card {
     pub fn is_message(&self) -> bool {
@@ -31,6 +34,7 @@ pub struct Agent {
     pub current_tool: String,
     pub elapsed_ms: Option<f64>,
     pub tokens: String,
+    pub started_at: Option<Instant>,
 }
 #[derive(Debug, Clone)]
 pub struct Approval {
@@ -62,6 +66,7 @@ pub struct Model {
     pub context_known: bool,
     pub context_estimated: bool,
     pub cost_estimated: bool,
+    pub active_background_jobs: usize,
     pub status: String,
     pub composer_hint: String,
     pub warnings: Vec<String>,
@@ -303,6 +308,9 @@ impl Model {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            started_at: None,
+            tool_id: String::new(),
+            tool_name: String::new(),
         });
         index
     }
@@ -528,6 +536,11 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "session_state" {
+            self.active_background_jobs = event
+                .data
+                .get("active_background_jobs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
             if let Some(usage) = event.data.get("usage") {
                 self.apply_usage(usage);
             }
@@ -657,6 +670,7 @@ impl Model {
                 current_tool: String::new(),
                 elapsed_ms: None,
                 tokens: String::new(),
+                started_at: None,
             });
         }
         let tool_id = text(data, "tool_id");
@@ -678,6 +692,7 @@ impl Model {
                 self.status = "working".into();
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
                     main.status = "working".into();
+                    main.started_at = (!self.replaying_history).then(Instant::now);
                 }
                 self.card(agent, "Prompt", text(data, "text"), "sent");
             }
@@ -825,6 +840,12 @@ impl Model {
                 };
                 let index = self.card(agent, &name, body, "requested");
                 self.cards[index].primary = primary;
+                self.cards[index].tool_id = if self.replaying_history {
+                    String::new()
+                } else {
+                    tool_id.clone()
+                };
+                self.cards[index].tool_name = name.clone();
                 if let Some(arguments) = data.get("args") {
                     self.cards[index].detail = Some(tool_arguments_detail(&name, arguments));
                     self.cards[index].payload_ref = None;
@@ -848,6 +869,7 @@ impl Model {
                 };
                 if kind == "tool_started" {
                     self.cards[index].status = "running".into();
+                    self.cards[index].started_at = (!self.replaying_history).then(Instant::now);
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
                         row.current_tool = self.cards[index].title.clone();
                     }
@@ -882,7 +904,10 @@ impl Model {
                     }
                     if let Some(ms) = data.get("duration_ms").and_then(Value::as_f64) {
                         metadata.push(format!("{:.1}s", ms / 1000.0));
+                    } else if let Some(started) = self.cards[index].started_at {
+                        metadata.push(format!("{:.1}s", started.elapsed().as_secs_f64()));
                     }
+                    self.cards[index].started_at = None;
                     if let Some(stats) = data.get("diff_stats") {
                         let added = stats.get("added").and_then(Value::as_u64).unwrap_or(0);
                         let removed = stats.get("removed").and_then(Value::as_u64).unwrap_or(0);
@@ -903,8 +928,12 @@ impl Model {
                 if kind == "agent_spawned" || kind == "sub_agent_start" {
                     row.label = format!("{}: {}", text(data, "type"), text(data, "task"));
                     row.status = "working".into();
+                    row.started_at = (!self.replaying_history).then(Instant::now);
                 } else if kind == "agent_status" {
                     row.status = text(data, "status");
+                    if !matches!(row.status.as_str(), "working" | "running") {
+                        row.started_at = None;
+                    }
                     let current_tool_id = text(data, "current_tool_id");
                     if !current_tool_id.is_empty() {
                         row.current_tool = self
@@ -917,6 +946,9 @@ impl Model {
                     row.tokens = data.get("tokens").map(safe_text_json).unwrap_or_default();
                 } else {
                     row.current_tool.clear();
+                    if let Some(started) = row.started_at.take() {
+                        row.elapsed_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                    }
                     row.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
                         "failed"
                     } else {
@@ -1163,6 +1195,10 @@ impl Model {
                 .into();
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
                     main.status = self.status.clone();
+                    if let Some(started) = main.started_at.take() {
+                        main.elapsed_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    main.current_tool.clear();
                     main.current_tool.clear();
                 }
                 // A terminal event must not leave tools or streamed text spinning forever.
@@ -1194,6 +1230,12 @@ impl Model {
                             "done"
                         }
                         .into();
+                    }
+                }
+                for (key, index) in &self.tools {
+                    if key.starts_with(&prefix) {
+                        self.cards[*index].started_at = None;
+                        self.cards[*index].tool_id.clear();
                     }
                 }
                 self.messages.remove(&message_key);

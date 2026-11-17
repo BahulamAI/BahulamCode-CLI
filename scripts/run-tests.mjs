@@ -52,6 +52,7 @@ const SKIPPED = new Map([
 const UNIT_TESTS = [
     'test/test-rust-interactions.mjs',
     'test/test-rust-tui-backpressure.mjs',
+    'test/test-background-promotion.mjs',
     'test/test-backend-url.mjs',
     'test/test-auth-sessions.mjs',
     'test/test-auth-repl.mjs',

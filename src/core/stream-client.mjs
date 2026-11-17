@@ -160,6 +160,7 @@ export class BahulamStreamClient {
         this.lastEventId = null;
         this.retryDelayMs = null;
         this.pendingToolCallbacks = new Map();
+        this.activeBackgroundPromotions = new Map();
         this.reconnectMaxElapsedMs = reconnectMaxElapsedMs
             ?? Number(process.env.BAHULAM_RECONNECT_MAX_ELAPSED_MS || 300_000);
         // Set by backend on first turn, reused on subsequent turns. Headless mode
@@ -949,6 +950,8 @@ export class BahulamStreamClient {
         // Execute tool locally — framework already approved this
         const startTime = Date.now();
         let result;
+        const activeTool = callId ? { promote: null } : null;
+        if (activeTool) this.activeBackgroundPromotions.set(String(callId), activeTool);
         try {
             result = await this.toolExecutor.execute(toolName, args || {}, {
                 signal: this._toolAbort?.signal,
@@ -956,6 +959,9 @@ export class BahulamStreamClient {
                 internal: isInternal,
                 subAgent: data?.sub_agent || null,
                 subAgentRunId,
+                registerBackgroundPromotion: promote => {
+                    if (activeTool && typeof promote === 'function') activeTool.promote = promote;
+                },
             });
         } catch (err) {
             if (err?.name === 'AbortError' || this._cancelled) {
@@ -963,6 +969,8 @@ export class BahulamStreamClient {
             } else {
                 result = { success: false, output: `Tool execution error: ${err.message}` };
             }
+        } finally {
+            if (activeTool) this.activeBackgroundPromotions.delete(String(callId));
         }
         const durationMs = Date.now() - startTime;
 
@@ -1076,6 +1084,13 @@ export class BahulamStreamClient {
         }
 
         return null; // Approved — framework continues with tool execution
+    }
+
+    /** Transfer a running shell call to the managed background registry. */
+    async promoteRunningToolToBackground(callId) {
+        const active = this.activeBackgroundPromotions.get(String(callId || ''));
+        if (typeof active?.promote !== 'function') return null;
+        return active.promote();
     }
 
     /** Cancel the current stream. */

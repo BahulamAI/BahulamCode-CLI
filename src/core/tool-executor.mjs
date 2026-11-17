@@ -1468,7 +1468,9 @@ export function createToolExecutor({
                 timeout: effectiveTimeout,
                 description: args.description || `Run: ${(args.command || '').slice(0, 50)}`,
                 cwd,
+            }, {
                 signal: options.signal,
+                registerBackgroundPromotion: options.registerBackgroundPromotion,
             });
             const rawOutput = typeof result === 'string' ? result : String(result);
             const cancelled = /^Error:\s*Command cancelled by user/i.test(rawOutput);

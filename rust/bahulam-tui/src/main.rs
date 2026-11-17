@@ -360,6 +360,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Live mode: one Ctrl+C interrupts the agent, a second within two
     // seconds quits. One accidental press never ends the session.
     let mut last_ctrl_c: Option<std::time::Instant> = None;
+    let mut last_timer_draw = std::time::Instant::now();
     let mut dirty = true;
     let mut drawn_revision = 0;
     loop {
@@ -368,6 +369,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let frame_revision = render_revision.load(Ordering::Acquire);
         dirty |= frame_revision != drawn_revision;
+        if last_timer_draw.elapsed() >= Duration::from_secs(1) {
+            dirty |= model.lock().is_ok_and(|state| {
+                state.cards.iter().any(|card| card.started_at.is_some())
+                    || state.agents.iter().any(|agent| agent.started_at.is_some())
+            });
+            last_timer_draw = std::time::Instant::now();
+        }
         if stdio && !core_connected.load(Ordering::Acquire) {
             break;
         }
@@ -821,6 +829,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && !(key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL)) => {}
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char('b')
+                        if stdio && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        let tool_id = model.lock().ok().and_then(|state| {
+                            let eligible = |card: &&bahulam_tui::model::Card| {
+                                card.tool_name == "shell"
+                                    && card.status == "running"
+                                    && !card.tool_id.is_empty()
+                            };
+                            if let Some(card) = state.cards.get(focused_card) {
+                                if card.tool_name == "shell"
+                                    && card.status == "running"
+                                    && !card.tool_id.is_empty()
+                                {
+                                    return Some(card.tool_id.clone());
+                                }
+                            }
+                            let mut running = state.cards.iter().filter(eligible);
+                            let only = running.next()?;
+                            running.next().is_none().then(|| only.tool_id.clone())
+                        });
+                        if let Some(tool_id) = tool_id {
+                            write_command(
+                                &command_writer,
+                                serde_json::json!({"type":"background","data":{"tool_id":tool_id}}),
+                            )?;
+                        } else {
+                            input_hint(
+                                    &model,
+                                    "Focus a running shell card, or leave only one running shell command, then press Ctrl+B.",
+                                );
+                        }
+                    }
                     KeyCode::Char('c')
                         if key.modifiers.contains(KeyModifiers::CONTROL) && stdio =>
                     {

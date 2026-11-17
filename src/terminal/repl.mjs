@@ -29,6 +29,7 @@ import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { backgroundTasks } from '../core/background-tasks.mjs';
 import { stripTerminalControls } from '../core/display-sanitize.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage } from '../daemon/rust-tui-snapshot.mjs';
@@ -2190,7 +2191,7 @@ function sendRustSessionState() {
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
-    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', usage: rustSessionUsage(session) } });
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
 }
 
 function renderEvent(event) {
@@ -3677,6 +3678,45 @@ async function handleCommand(input, ctx) {
     case '/tasks':
       handleTasksCommand(rest, ctx);
       return;
+
+    case '/jobs': {
+      const [action, id] = rest.trim().split(/\s+/, 2);
+      const oneLine = value => stripAnsi(String(value || '')).replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+      if (action === 'show' && id) {
+        const job = backgroundTasks.describe(id);
+        if (!job) process.stderr.write(`  ${c.gray(`No background job found: ${id}`)}\n`);
+        else {
+          process.stderr.write(`\n  ${c.bold(oneLine(job.id))} · ${oneLine(job.status)} · ${job.duration_s}s · ${oneLine(job.name)}\n`);
+          process.stderr.write(`  ${c.dim(oneLine(job.command))}\n\n`);
+          const output = stripAnsi(job.tail || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+          process.stderr.write(`${output || '(no captured output)'}\n`);
+        }
+        return;
+      }
+      if (action === 'kill' && id) {
+        const job = backgroundTasks.kill(id);
+        process.stderr.write(job
+          ? `  ${c.yellow('⊘')} ${c.dim(`${job.id} · ${job.status}`)}\n`
+          : `  ${c.gray(`No background job found: ${id}`)}\n`);
+        return;
+      }
+      const jobs = backgroundTasks.list();
+      if (!jobs.length) {
+        process.stderr.write(`  ${c.gray('No background jobs.')}\n`);
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Background jobs')}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(56))}\n`);
+      for (const job of jobs) {
+        const glyph = job.status === 'running' ? c.yellow('◐')
+          : job.status === 'completed' ? c.green('✓')
+          : c.red('✗');
+        process.stderr.write(`  ${glyph} ${c.bold(oneLine(job.id))} · ${oneLine(job.status)} · ${job.duration_s}s · ${oneLine(job.name)}\n`);
+        process.stderr.write(`      ${c.dim(oneLine(job.command))}\n`);
+      }
+      process.stderr.write(`\n  ${c.dim('/jobs show <id> for output · /jobs kill <id> to stop.')}\n`);
+      return;
+    }
 
     case '/run':
       await handleRunCommand(rest, ctx);
@@ -5718,6 +5758,7 @@ export async function startTerminalRepl() {
         }
         return session.id;
       };
+      let stopBackgroundJobsSubscription = null;
       let rustQuitRequested = false;
       let rustDefaultRequested = false;
       _rustTuiHost = startRustTuiHost({
@@ -5738,6 +5779,22 @@ export async function startTerminalRepl() {
               _rustApprovalBridge?.cancel();
               streamClient?.cancel?.();
               break;
+            case 'background': {
+              const toolId = String(data.tool_id || '').trim();
+              if (!toolId) throw new Error('background requires the running shell tool id');
+              const job = await streamClient?.promoteRunningToolToBackground?.(toolId);
+              if (!job) throw new Error('That shell command can no longer be moved to the background.');
+              tapSseEvent({
+                type: 'notice',
+                data: {
+                  level: 'success',
+                  title: 'Command sent to background',
+                  cause: `${job.id} · ${job.name}`,
+                  next_step: 'Track it with /jobs or job_output.',
+                },
+              }, { sessionId: session.id });
+              break;
+            }
             case 'approve':
               if (!_rustApprovalBridge?.answer('approve', data)) resolvePending('approve', data.apr_id, 'rust-tui', data.instruction);
               break;
@@ -5832,6 +5889,8 @@ export async function startTerminalRepl() {
           } }, { sessionId: session.id });
         },
         onExit: ({ code, signal, failure, recentEvents, terminalState }) => {
+          stopBackgroundJobsSubscription?.();
+          stopBackgroundJobsSubscription = null;
           _rustApprovalBridge?.close();
           _rustApprovalBridge = null;
           _rustTuiActive = false;
@@ -5876,6 +5935,8 @@ export async function startTerminalRepl() {
       });
       _rustApprovalBridge = createRustApprovalBridge({ emit: (type, data) => tapSseEvent({ type, data }, { sessionId: session.id || _rustTuiEnsureSessionId?.() }) });
       _rustTuiActive = true;
+      stopBackgroundJobsSubscription = backgroundTasks.onChange(() => sendRustSessionState());
+      sendRustSessionState();
       _rustTuiInteractions = createRustInteractions({
         send: event => _rustTuiHost?.send(event) ?? false,
         getSessionId: () => session.id || _rustTuiEnsureSessionId?.(),

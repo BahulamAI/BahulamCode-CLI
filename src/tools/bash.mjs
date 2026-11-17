@@ -9,6 +9,7 @@
  * - ANSI code stripping by default
  */
 import { spawn } from 'child_process';
+import { backgroundTasks } from '../core/background-tasks.mjs';
 
 /**
  * Resolve shell binary and args for the current platform.
@@ -59,9 +60,9 @@ export const BashTool = {
         if (!input.command) errors.push('command is required');
         return errors;
     },
-    async call(input) {
+    async call(input, options = {}) {
         const timeout = Math.min(input.timeout || 120000, 600000);
-        const abortSignal = input.signal || input._signal || null;
+        const abortSignal = options.signal || input.signal || input._signal || null;
 
         if (input.run_in_background) {
             return runBackground(trimShellBackgroundOperator(input.command), input.cwd);
@@ -83,6 +84,8 @@ export const BashTool = {
             let exitCode = null;
             let killTimer = null;
             let settled = false;
+            let promoted = false;
+            const startedAt = Date.now();
 
             const [shellBin, shellArgs] = shellSpawnArgs(input.command);
             const proc = spawn(shellBin, shellArgs, {
@@ -112,6 +115,7 @@ export const BashTool = {
             }
 
             function onAbort() {
+                if (promoted) return;
                 terminate('cancelled');
             }
 
@@ -121,6 +125,7 @@ export const BashTool = {
             }
 
             proc.stdout.on('data', (chunk) => {
+                if (promoted) return;
                 const text = chunk.toString();
                 const next = appendHead(stdout, text, MAX_OUTPUT_BYTES);
                 if (next.length < stdout.length + text.length) stdoutTruncated = true;
@@ -129,6 +134,7 @@ export const BashTool = {
             });
 
             proc.stderr.on('data', (chunk) => {
+                if (promoted) return;
                 const text = chunk.toString();
                 const next = appendHead(stderr, text, MAX_OUTPUT_BYTES);
                 if (next.length < stderr.length + text.length) stderrTruncated = true;
@@ -141,7 +147,33 @@ export const BashTool = {
                 terminate('timeout');
             }, timeout);
 
+            options.registerBackgroundPromotion?.(async () => {
+                if (settled || killed || promoted) return null;
+                const initialTail = [
+                    stdoutTail ? `[output before backgrounding: stdout]\n${stdoutTail}` : '',
+                    stderrTail ? `[output before backgrounding: stderr]\n${stderrTail}` : '',
+                ].filter(Boolean).join('\n');
+                let job;
+                try {
+                    job = backgroundTasks.adopt({
+                        proc,
+                        command: input.command,
+                        cwd: input.cwd,
+                        startedAt,
+                        initialTail,
+                    });
+                } catch {
+                    return null;
+                }
+                promoted = true;
+                clearTimeout(timer);
+                finish(`Foreground command moved to background job ${job.id} (pid ${job.pid}). `
+                    + `Check progress with job_output {"job_id": "${job.id}"}; stop with job_kill.`);
+                return job;
+            });
+
             proc.on('close', (code) => {
+                if (promoted) return;
                 exitCode = code;
 
                 if (stdoutTruncated) stdout += TRUNCATION_MARKER;

@@ -1645,3 +1645,41 @@ fn resumed_tool_status_matches_live_for_null_errors_and_real_failures() {
         }
     }
 }
+
+#[test]
+fn job_state_and_tool_timers_are_live_only_and_stop_with_the_turn() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "session_state",
+            "main",
+            json!({"active_background_jobs":2}),
+        ))
+        .unwrap();
+    assert_eq!(model.active_background_jobs, 2);
+    let request = event(
+        1,
+        "tool_requested",
+        "main",
+        json!({"tool_id":"shell-1", "name":"shell", "args":{"command":"sleep 5"}}),
+    );
+    let start = event(2, "tool_started", "main", json!({"tool_id":"shell-1"}));
+    model.apply(&event(1,"transcript_snapshot","main",json!({"replace":true,"items":[{"kind":"event","event":request},{"kind":"event","event":start}]}))).unwrap();
+    assert!(model
+        .cards
+        .iter()
+        .all(|card| card.started_at.is_none() && card.tool_id.is_empty()));
+    model.apply(&request).unwrap();
+    model.apply(&start).unwrap();
+    let running = model.cards.last().unwrap();
+    assert!(running.started_at.is_some());
+    assert_eq!(running.tool_id, "shell-1");
+    model
+        .apply(&event(3, "turn_ended", "main", json!({"ok":false})))
+        .unwrap();
+    assert!(model
+        .cards
+        .iter()
+        .all(|card| card.started_at.is_none() && card.tool_id.is_empty()));
+}

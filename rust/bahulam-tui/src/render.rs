@@ -763,7 +763,10 @@ pub fn draw_with_view(
                 .take(8)
                 .map(|(index, agent)| {
                     let (glyph, color) = agent_state(&agent.status, p);
-                    let elapsed = agent.elapsed_ms.map(|ms| format!("{:.0}s", ms / 1000.0));
+                    let elapsed = agent
+                        .started_at
+                        .map(|at| format!("{}s", at.elapsed().as_secs()))
+                        .or_else(|| agent.elapsed_ms.map(|ms| format!("{:.0}s", ms / 1000.0)));
                     let detail = [
                         (!agent.current_tool.is_empty()).then(|| safe_text(&agent.current_tool)),
                         elapsed,
@@ -1065,7 +1068,12 @@ pub fn draw_with_view(
     } else {
         "cost —".into()
     };
-    let metrics = format!("{tokens} · {context} · {cost}");
+    let jobs = if model.active_background_jobs > 0 {
+        format!(" · {} jobs", model.active_background_jobs)
+    } else {
+        String::new()
+    };
+    let metrics = format!("{tokens} · {context} · {cost}{jobs}");
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("● ", Style::default().fg(p.info)),
@@ -1559,7 +1567,11 @@ fn card_lines(
     } else {
         p.text
     };
-    let metadata_width = UnicodeWidthStr::width(card.metadata.as_str()).min(18);
+    let metadata_text = card
+        .started_at
+        .map(|at| format!("{}s", at.elapsed().as_secs()))
+        .unwrap_or_else(|| card.metadata.clone());
+    let metadata_width = UnicodeWidthStr::width(metadata_text.as_str()).min(18);
     let heading_width = if !is_assistant || card.title == "Agent report" {
         3 + UnicodeWidthStr::width(display_title).max(12)
             + 1
@@ -1573,11 +1585,11 @@ fn card_lines(
         &safe_text(&card.primary),
         width.saturating_sub(fixed_width + 2),
     );
-    let metadata = if card.metadata.is_empty() {
+    let metadata = if metadata_text.is_empty() {
         String::new()
     } else {
         middle_ellipsis(
-            &safe_text(&card.metadata),
+            &safe_text(&metadata_text),
             width.saturating_sub(heading_width).min(18),
         )
     };
@@ -2118,6 +2130,9 @@ mod row_measurement_tests {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            started_at: None,
+            tool_id: String::new(),
+            tool_name: String::new(),
         };
         let mut expanded = HashSet::new();
         let p = palette("dark");
@@ -2155,6 +2170,9 @@ mod row_measurement_tests {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            started_at: None,
+            tool_id: String::new(),
+            tool_name: String::new(),
         };
         assert!(card_row_count(&card, 0, &HashSet::new(), palette("dark"), 80) > 1);
         ROW_MEASUREMENTS.with(|cache| assert!(cache.borrow().len() <= MAX_ROW_MEASUREMENTS));

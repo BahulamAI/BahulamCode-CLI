@@ -159,6 +159,7 @@ export interface SessionStateData {
   model?: string;
   status?: string;
   usage?: Record<string, unknown>;
+  active_background_jobs?: number;
 }
 export interface CommandCatalogData {
   commands: unknown[];

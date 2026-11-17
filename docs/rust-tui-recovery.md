@@ -949,3 +949,17 @@ Node session. No npm version or publishing changes.
 Validated the stalled pipe, direct snapshot budget, SIGKILL/stty recovery, protocol
 request invariance, 43 Rust tests, both-view approval and details/composer PTYs.
 Native Windows execution remains a real-platform acceptance requirement.
+
+## Backport: background jobs and live timers
+
+Adapted `377dd2d` and the background-process portion of `b37c586`. Rust receives
+job-count changes, shows elapsed time for live tools/agents, and Ctrl+B promotes
+a focused running shell (or the only running shell) through Node's existing tool
+executor. `/jobs`, `/jobs show <id>`, and `/jobs kill <id>` use the shared registry.
+The original child is adopted rather than restarted; foreground cancellation and
+timeout ownership end on promotion. Historical cards have no live promotion ID
+or clock. Completed turns clear clocks and promotion handles.
+
+Validation: 44 Rust tests, shared request/cache invariance, process-identity and
+output continuity, single completion on kill, and output-log failure recovery.
+Idle redraw and JSONL round-trip tests remain part of the regression checks.
