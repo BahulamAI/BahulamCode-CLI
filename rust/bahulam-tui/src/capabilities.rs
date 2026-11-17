@@ -175,9 +175,10 @@ impl TerminalCapabilities {
             "mouse_capture": view.is_some() && self.mouse_capture,
             "mouse_requested": self.mouse_capture, "bracketed_paste": view.is_some(),
             "scroll_lines": self.scroll_lines,
-            "synchronized_output": "inactive; not probed", "focus_reporting": "inactive; not probed",
-            "osc8_links": "not restored", "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": "not restored",
-            "notifications": "not restored", "report": self.report(view, size),
+            "integrations": crate::integrations::Config::from_caps(self).report(),
+            "synchronized_output": crate::integrations::Config::from_caps(self).sync, "focus_reporting": crate::integrations::Config::from_caps(self).focus,
+            "osc8_links": crate::integrations::Config::from_caps(self).links, "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": "not restored",
+            "notifications": crate::integrations::Config::from_caps(self).notifications, "report": self.report(view, size),
         })
     }
 
@@ -234,16 +235,15 @@ impl TerminalCapabilities {
                 yes_no(self.ssh),
                 yes_no(self.wsl)
             ),
-            "Synchronized output  inactive; not probed".to_owned(),
-            "Focus reporting      inactive; not probed".to_owned(),
-            "Links                not restored".to_owned(),
+            crate::integrations::Config::from_caps(self).report(),
+            "Links                Alt+L link · Alt+O open selected file/URL".to_owned(),
             format!(
                 "Clipboard text       {} · Ctrl+V paste · Ctrl+Y copy",
                 self.clipboard_mode
             ),
             "Prompt editor        Ctrl+G · VISUAL/EDITOR".to_owned(),
             "Prompt history       ↑↓ recall · Ctrl+R search".to_owned(),
-            "Images / notifications  not restored".to_owned(),
+            "Image rendering      not restored".to_owned(),
         ]
         .join("\n")
     }

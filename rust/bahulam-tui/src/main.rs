@@ -1,7 +1,8 @@
 use bahulam_tui::{
     capabilities::TerminalCapabilities,
-    clipboard, composer,
+    clipboard, composer, copy_menu, integrations,
     model::safe_text,
+    open_target,
     paste::{self, display_paste_chips, expand_paste_chips, insert_paste_chip},
     render::{details_at, draw_with_view, history_geometry, mouse_panel_at_view, MousePanel},
     replay,
@@ -34,6 +35,7 @@ use unicode_segmentation::UnicodeSegmentation;
 static ALT_SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn restore() {
+    integrations::restore();
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
@@ -60,6 +62,9 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
         ALT_SCREEN_ACTIVE.store(true, Ordering::Release);
     }
     execute!(io::stdout(), EnableBracketedPaste)?;
+    integrations::enter(&integrations::Config::from_caps(
+        &TerminalCapabilities::detect(),
+    ))?;
     Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
@@ -71,6 +76,8 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
 enum ClipboardReply {
     Paste(io::Result<String>),
     Copy(io::Result<clipboard::Copied>),
+    Notice(String),
+    Link(Option<open_target::LinkTarget>, u64, usize),
 }
 fn toggle_expansion(
     model: &Arc<Mutex<bahulam_tui::model::Model>>,
@@ -296,6 +303,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let capabilities = TerminalCapabilities::detect();
+    let integration_config = integrations::Config::from_caps(&capabilities);
+    let mut integration_state = integrations::SessionState::default();
+    let mut terminal_focused = true;
+    let mut reported_integration_state = (false, false);
+    let mut visible_link: Option<open_target::LinkTarget> = None;
     // Use the same resolved color level for standalone replay and diagnostics.
     // Hosted mode keeps Node's canonical palette selection authoritative.
     std::env::set_var("BAHULAM_TUI_COLOR_LEVEL", &capabilities.color_depth);
@@ -335,6 +347,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut cursor = 0usize;
     let mut paste_chips = Vec::new();
     let mut paste_sequence = 0u64;
+    let mut pending_copy: Option<(String, usize, u64)> = None;
+    let status_command = std::env::var("BAHULAM_TUI_STATUS_COMMAND").unwrap_or_default();
+    let mut status_worker: Option<std::sync::mpsc::Receiver<(u64, String)>> = None;
+    let mut status_checked = std::time::Instant::now() - Duration::from_secs(5);
     let mut prompt_history = composer::History::load();
     let mut history_search: Option<composer::Search> = None;
     let mut clipboard_job: Option<std::sync::mpsc::Receiver<ClipboardReply>> = None;
@@ -370,6 +386,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         if let Ok(state) = model.lock() {
+            integration_state.update(&state, &integration_config, terminal_focused)?;
+            let terminal_modes = integrations::terminal_state();
+            if terminal_modes != reported_integration_state {
+                report_terminal_state(&command_writer, true, inline_mode)?;
+                reported_integration_state = terminal_modes;
+            }
             if (state.interaction.is_some() || state.approval.is_some()) && history_search.is_some()
             {
                 if let Some(search) = history_search.take() {
@@ -379,6 +401,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if state.transcript_revision != seen_transcript_revision {
                 dirty = true;
                 seen_transcript_revision = state.transcript_revision;
+                visible_link = None;
                 expanded.clear();
                 scroll = 0;
                 follow = true;
@@ -427,10 +450,106 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
         }
+        if stdio && !status_command.trim().is_empty() {
+            if let Some((revision, text)) = status_worker
+                .as_ref()
+                .and_then(|worker| worker.try_recv().ok())
+            {
+                status_worker = None;
+                if let Ok(mut state) = model.lock() {
+                    if state.transcript_revision == revision && state.custom_status != text {
+                        state.custom_status = text;
+                        dirty = true;
+                    }
+                }
+            }
+            if status_worker.is_none() && status_checked.elapsed() >= Duration::from_secs(5) {
+                status_checked = std::time::Instant::now();
+                let (tx, rx) = std::sync::mpsc::channel();
+                status_worker = Some(rx);
+                let (cwd, revision) = model
+                    .lock()
+                    .map(|state| (state.cwd.clone(), state.transcript_revision))
+                    .unwrap_or_default();
+                let command = status_command.clone();
+                thread::spawn(move || {
+                    let _ = tx.send((revision, integrations::run_status_command(&command, &cwd)));
+                });
+            }
+        }
+        if let Some((selection, index, revision)) =
+            pending_copy.clone().filter(|_| clipboard_job.is_none())
+        {
+            if revision != seen_transcript_revision {
+                pending_copy = None;
+            } else {
+                let mut request = None;
+                let mut waiting = false;
+                let content = if let Ok(mut state) = model.lock() {
+                    let target_index = if selection == "last" {
+                        state.cards.iter().rposition(|c| c.title == "Assistant")
+                    } else if selection == "card" || selection == "code" {
+                        Some(index)
+                    } else {
+                        selection.split(':').nth(1).and_then(|v| v.parse().ok())
+                    };
+                    let needed = state
+                        .cards
+                        .iter()
+                        .enumerate()
+                        .find(|(i, c)| {
+                            (selection == "transcript" || Some(*i) == target_index)
+                                && c.payload_ref.is_some()
+                                && c.detail.is_none()
+                        })
+                        .map(|(i, c)| (i, c.detail_loading));
+                    if let Some((i, loading)) = needed {
+                        waiting = true;
+                        if !loading {
+                            request = state.request_details(i);
+                        }
+                        None
+                    } else {
+                        copy_menu::selection_text(&state, &selection, index)
+                    }
+                } else {
+                    None
+                };
+                if let Some(payload_ref) = request {
+                    write_command(
+                        &command_writer,
+                        serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+                    )?;
+                }
+                if !waiting {
+                    pending_copy = None;
+                    if let Some(text) = content.filter(|text| !text.is_empty()) {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        clipboard_job = Some(rx);
+                        thread::spawn(move || {
+                            let _ = tx.send(ClipboardReply::Copy(clipboard::copy_text(&text)));
+                        });
+                    } else {
+                        input_hint(&model, "No content is available for that copy choice");
+                    }
+                }
+            }
+        }
         if let Some(reply) = clipboard_job.as_ref().and_then(|job| job.try_recv().ok()) {
             clipboard_job = None;
             dirty = true;
             match reply {
+                ClipboardReply::Notice(message) => input_hint(&model, &message),
+                ClipboardReply::Link(target, revision, card) => {
+                    if revision != seen_transcript_revision || card != focused_card {
+                        continue;
+                    }
+                    visible_link = target;
+                    input_hint(
+                        &model,
+                        "Alt+O opens selected file/URL · terminal link available below",
+                    );
+                }
                 ClipboardReply::Paste(result) => {
                     let unchanged = paste_origin.take().is_some_and(|(draft, at, revision)| {
                         draft == input && at == cursor && revision == seen_transcript_revision
@@ -514,6 +633,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let visible_scroll = if follow { u16::MAX } else { scroll };
         if dirty {
+            if integration_config.sync {
+                write!(io::stdout(), "\x1b[?2026h")?;
+            }
             terminal.draw(|frame| {
                 if let Ok(model) = model.lock() {
                     draw_with_view(
@@ -536,6 +658,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             })?;
+            if let Some(target) = visible_link.as_ref().filter(|_| integration_config.links) {
+                let area = terminal.get_frame().area();
+                let mut cells = 0usize;
+                let label: String = safe_text(&target.label)
+                    .graphemes(true)
+                    .take_while(|g| {
+                        cells += unicode_width::UnicodeWidthStr::width(*g);
+                        cells <= area.width.saturating_sub(5) as usize
+                    })
+                    .collect();
+                execute!(
+                    io::stdout(),
+                    crossterm::cursor::SavePosition,
+                    crossterm::cursor::MoveTo(1, area.bottom().saturating_sub(1))
+                )?;
+                write!(
+                    io::stdout(),
+                    "\x1b]8;;{}\x1b\\↗ {}\x1b]8;;\x1b\\",
+                    target.uri,
+                    label
+                )?;
+                execute!(io::stdout(), crossterm::cursor::RestorePosition)?;
+            }
+            if integration_config.sync {
+                write!(io::stdout(), "\x1b[?2026l")?;
+                io::stdout().flush()?;
+            }
             // A core event arriving during paint remains newer and triggers the next frame.
             drawn_revision = frame_revision;
             dirty = false;
@@ -576,6 +725,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 input_hint(&model, "");
             }
             match event {
+                Event::FocusGained => {
+                    terminal_focused = true;
+                }
+                Event::FocusLost => {
+                    terminal_focused = false;
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && key.modifiers.contains(KeyModifiers::ALT)
+                        && matches!(key.code, KeyCode::Char('o' | 'l'))
+                        && model
+                            .lock()
+                            .is_ok_and(|m| m.interaction.is_none() && m.approval.is_none()) =>
+                {
+                    if clipboard_job.is_some() {
+                        input_hint(
+                            &model,
+                            "Clipboard operation still running; retry the open/link shortcut",
+                        );
+                        continue;
+                    }
+                    let target = model.lock().ok().and_then(|state| {
+                        state
+                            .cards
+                            .get(detail_card.unwrap_or(focused_card))
+                            .cloned()
+                            .map(|card| (card, state.cwd.clone()))
+                    });
+                    if let Some((card, cwd)) = target {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        clipboard_job = Some(rx);
+                        thread::spawn(move || {
+                            let reply = if key.code == KeyCode::Char('o') {
+                                ClipboardReply::Notice(
+                                    open_target::open_card_target(&card, &cwd)
+                                        .unwrap_or_else(|e| e.to_string()),
+                                )
+                            } else {
+                                ClipboardReply::Link(
+                                    open_target::card_link_target(&card, &cwd),
+                                    seen_transcript_revision,
+                                    focused_card,
+                                )
+                            };
+                            let _ = tx.send(reply);
+                        });
+                    }
+                }
+
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && !(key.code == KeyCode::Char('c')
@@ -650,6 +848,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         response
                     };
                     if let Some((request_id, value, cancelled)) = response {
+                        if request_id == "local-copy" {
+                            if let Some(value) = value.filter(|_| !cancelled) {
+                                pending_copy =
+                                    Some((value, focused_card, seen_transcript_revision));
+                            }
+                            continue;
+                        }
                         write_command(
                             &command_writer,
                             serde_json::json!({"type":"interaction_response","data":{"request_id":request_id,"value":value,"cancelled":cancelled}}),
@@ -1249,7 +1454,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .collect::<Vec<_>>()
                             .join(" ")
                             .to_ascii_lowercase();
-                        if stdio
+                        if prompt.trim() == "/copy" {
+                            if let Ok(mut state) = model.lock() {
+                                state.interaction=Some(bahulam_tui::model::Interaction {
+                                    request_id:"local-copy".into(),title:"Copy conversation content".into(),message:"Choose a response, code block, command, diff, or transcript.".into(),
+                                    options:copy_menu::options(&state,focused_card),selected:0,allow_free_text:false,editing:false,free_text:String::new(),
+                                });
+                            }
+                        } else if let Some(selection) = prompt.trim().strip_prefix("/copy ") {
+                            pending_copy = Some((
+                                selection.to_owned(),
+                                focused_card,
+                                seen_transcript_revision,
+                            ));
+                        } else if stdio
                             && [
                                 "/tui inline",
                                 "/tui fullscreen",
@@ -1740,10 +1958,11 @@ fn report_terminal_state(
     active: bool,
     inline: bool,
 ) -> io::Result<()> {
+    let (keyboard, marked) = integrations::terminal_state();
     write_command(
         writer,
         serde_json::json!({"type":"terminal_state","data": {
-            "active":active,"alternate_screen":active && !inline,"keyboard_enhancement":false
+            "active":active,"alternate_screen":active && !inline,"keyboard_enhancement":active && keyboard,"shell_command_marked":active && marked
         }}),
     )
 }

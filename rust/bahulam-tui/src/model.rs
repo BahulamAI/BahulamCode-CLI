@@ -11,6 +11,7 @@ pub struct Card {
     pub body: String,
     pub status: String,
     pub payload_ref: Option<String>,
+    pub open_url: Option<String>,
     pub detail: Option<String>,
     pub detail_loading: bool,
     pub started_at: Option<Instant>,
@@ -52,6 +53,9 @@ pub struct Model {
     pub transcript_revision: u64,
     pub session: String,
     pub cwd: String,
+    pub git_branch: String,
+    pub permission_mode: String,
+    pub custom_status: String,
     pub model: String,
     pub last_seq: i64,
     pub cards: Vec<Card>,
@@ -309,6 +313,7 @@ impl Model {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            open_url: None,
             started_at: None,
             tool_id: String::new(),
             tool_name: String::new(),
@@ -537,6 +542,8 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "session_state" {
+            self.git_branch = text(&event.data, "git_branch");
+            self.permission_mode = text(&event.data, "permission_mode");
             self.active_background_jobs = event
                 .data
                 .get("active_background_jobs")
@@ -1261,6 +1268,7 @@ impl Model {
                     text(data, "path"),
                     &text(data, "kind"),
                 );
+                self.cards[index].open_url = data.get("url").and_then(Value::as_str).map(safe_text);
                 if let Some(reference) = &event.payload_ref {
                     self.cards[index].payload_ref = Some(reference.clone());
                 }

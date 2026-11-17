@@ -1,7 +1,10 @@
 pub mod capabilities;
 pub mod clipboard;
 pub mod composer;
+pub mod copy_menu;
+pub mod integrations;
 pub mod model;
+pub mod open_target;
 pub mod paste;
 #[rustfmt::skip]
 pub mod protocol;

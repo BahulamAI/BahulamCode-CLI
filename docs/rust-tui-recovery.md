@@ -987,3 +987,24 @@ presentation settings when attaching, with environment overrides taking priority
 The accepted inline/full-mouse defaults are retained; these values are passed only
 to the Rust child. Settings, completion and JSONC merge tests pass. Capability and
 custom-status settings are consumed by the following OS/status backport slice.
+
+## Backport: OS integration, copy picker and status
+
+Adapted `b37c586` file/link targets, native/OSC approval notifications, focus and
+keyboard reporting, synchronized output, CWD/title/shell/progress hints, copy
+picker and configurable status segments/command. Alt+O opens the selected target;
+Alt+L exposes its terminal hyperlink. File arguments remain literal, path searches
+are bounded, and helpers run away from the input loop. Copy loads required stored
+payloads before using the bounded clipboard worker. Notifications occur once per
+pending approval while unfocused; historical approvals remain inert. Status
+commands use a restricted environment, output cap and timeout.
+
+Also restored the full slash dropdown above the composer and the host's existing
+`run_slash` / `switch_model` protocol adapters. Core commands still use the shared
+Node dispatcher. Crash cleanup covers the additional terminal modes.
+
+Validation: strict Clippy, 48 Rust tests; both-view fake-OS PTYs cover copy picker,
+code extraction, literal file paths, OSC8 and one unfocused-approval notification.
+Question/focus and protocol/cache-invariance suites pass. Idle writes remain zero.
+Native desktop delivery and emulator behavior still need the release matrix;
+profile/config choices are explicitly not active capability probes.

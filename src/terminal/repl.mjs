@@ -2187,13 +2187,23 @@ function formatRustFallbackTranscript(events = []) {
   return lines.slice(-100);
 }
 
+let _rustApprovalPolicyState = null;
+function ctxRustPermissionMode() {
+  const manager = _rustApprovalPolicyState?.();
+  if (!manager) return 'ask';
+  if (manager.planMode) return 'plan';
+  if (manager.autoApprove && manager.approveAll) return 'full';
+  if (manager.autoApprove) return 'unattended';
+  if (manager.approveAll) return 'auto';
+  return 'ask';
+}
 function sendRustSessionState() {
   if (!_rustTuiActive || !_rustTuiHost) return;
   const sessionId = session.id || _rustTuiEnsureSessionId?.();
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
-    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
 }
 
 function renderEvent(event) {
@@ -5815,6 +5825,26 @@ export async function startTerminalRepl() {
               if (instruction) _submitExternalPrompt?.(instruction);
               break;
             }
+            case 'run_slash': {
+              const name = String(data.name || '').trim();
+              const args = Array.isArray(data.args) ? data.args.map(value => String(value).trim()) : [];
+              if (!/^\/[a-z][a-z0-9_-]*$/i.test(name) || args.some(value => /[\r\n]/.test(value))) {
+                throw new Error('run_slash requires a slash command name and single-line arguments');
+              }
+              if (typeof _submitExternalPrompt !== 'function') throw new Error('terminal input is not ready');
+              _submitExternalPrompt([name, ...args].filter(Boolean).join(' '));
+              break;
+            }
+            case 'switch_model': {
+              const rawRole = String(data.role || 'reasoning').trim();
+              const role = normalizeModelRole(rawRole);
+              if (!role) throw new Error(`switch_model received an unsupported model role: ${rawRole}`);
+              const model = String(data.model || '').trim();
+              if (!model || /[\r\n]/.test(model)) throw new Error('switch_model requires a model ID');
+              if (typeof _submitExternalPrompt !== 'function') throw new Error('terminal input is not ready');
+              _submitExternalPrompt(`/model ${role} ${model}`);
+              break;
+            }
             case 'interrupt':
               _rustTuiInteractions?.cancel();
               _rustApprovalBridge?.cancel();
@@ -5935,6 +5965,7 @@ export async function startTerminalRepl() {
           _rustApprovalBridge?.close();
           _rustApprovalBridge = null;
           _rustTuiActive = false;
+          _rustApprovalPolicyState = null;
           ctx.rustTuiCapabilities = null;
           ctx._rustChoose = null;
           _rustTuiEnsureSessionId = null;
@@ -5944,8 +5975,10 @@ export async function startTerminalRepl() {
           // A killed child cannot run its terminal guard. Restore only modes
           // that this renderer reported owning, after unpatching output.
           if (terminalState?.active) {
+            if (terminalState.keyboard_enhancement) process.stderr.write('\x1b[<u');
+            if (terminalState.shell_command_marked || terminalState.shell_prompt_marked) process.stderr.write('\x1b]133;D\x1b\\');
             if (terminalState.alternate_screen) process.stderr.write('\x1b[?1049l');
-            process.stderr.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h');
+            process.stderr.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[?2026l\x1b[0m\x1b[?25h');
           }
           if (!rustQuitRequested && !rustDefaultRequested) {
             const reason = failure || (signal ? `signal ${signal}` : `exit ${code}`);
@@ -5976,6 +6009,7 @@ export async function startTerminalRepl() {
       });
       _rustApprovalBridge = createRustApprovalBridge({ emit: (type, data) => tapSseEvent({ type, data }, { sessionId: session.id || _rustTuiEnsureSessionId?.() }) });
       _rustTuiActive = true;
+      _rustApprovalPolicyState = () => approval;
       stopBackgroundJobsSubscription = backgroundTasks.onChange(() => sendRustSessionState());
       sendRustSessionState();
       _rustTuiInteractions = createRustInteractions({
@@ -5987,6 +6021,10 @@ export async function startTerminalRepl() {
       rl.pause();
       const rustSessionId = _rustTuiEnsureSessionId();
       const rustCompletions = [...new Set([
+        '/copy',
+        '/copy last',
+        '/copy code',
+        '/copy transcript',
         '/tui',
         '/tui default',
         '/tui doctor',
@@ -6158,7 +6196,7 @@ export async function startTerminalRepl() {
           await sendRustTranscriptSnapshot(command === '/new' ? 'new session' : 'cleared');
         } else if (command === '/resume') {
           await sendRustTranscriptSnapshot(session.historyMode || 'current');
-        } else if (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg)) {
+        } else if (['/auto', '/approvals', '/plan'].includes(command) || (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg))) {
           sendRustSessionState();
         }
         if (command === '/resume' && ok && session.history !== historyBeforeCommand) return;

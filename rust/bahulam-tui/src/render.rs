@@ -525,12 +525,7 @@ pub fn prompt_cursor_at(
         input,
         bounds.width.saturating_sub(padding * 2).max(1) as usize,
     );
-    let suggestions = u16::from(
-        !model
-            .slash_menu
-            .matches(input, &model.command_catalog)
-            .is_empty(),
-    );
+    let suggestions = 0;
     let visible = bounds
         .height
         .saturating_sub(2)
@@ -891,7 +886,7 @@ pub fn draw_with_view(
         .saturating_sub(if inline { 2 } else { 4 })
         .max(1) as usize;
     let input_layout = PromptLayout::new(input, input_width);
-    let mut prompt = if let Some(approval) = &model.approval {
+    let prompt = if let Some(approval) = &model.approval {
         vec![
             Line::from(vec![
                 Span::styled(
@@ -982,24 +977,6 @@ pub fn draw_with_view(
                 .collect()
         }
     };
-    if model.approval.is_none() && input.trim_start().starts_with('/') {
-        let matches = model.slash_menu.matches(input, &model.command_catalog);
-        let selected = model
-            .slash_menu
-            .selected
-            .min(matches.len().saturating_sub(1));
-        if let Some((name, description)) = matches.get(selected) {
-            prompt.push(Line::from(Span::styled(
-                format!(
-                    "  › {name}  {description} · {}/{} · ↑↓ select · Tab complete",
-                    selected + 1,
-                    matches.len()
-                ),
-                Style::default().fg(p.info),
-            )));
-        }
-    }
-
     let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
     let suggestion_rows = prompt.len().saturating_sub(input_layout.lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
@@ -1117,17 +1094,42 @@ pub fn draw_with_view(
     } else {
         "cost —".into()
     };
-    let jobs = if model.active_background_jobs > 0 {
-        format!(" · {} jobs", model.active_background_jobs)
-    } else {
-        String::new()
-    };
-    let metrics = format!("{tokens} · {context} · {cost}{jobs}");
+    let mut status_parts = Vec::new();
+    let configured = std::env::var("BAHULAM_TUI_STATUS_SEGMENTS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "activity,permission,tokens,context,cost,jobs".into());
+    let mut seen = HashSet::new();
+    for key in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|key| seen.insert(*key))
+    {
+        let part = match key {
+            "activity" => Some(state.clone()),
+            "permission" if !model.permission_mode.is_empty() => {
+                Some(format!("perm {}", model.permission_mode))
+            }
+            "tokens" => Some(tokens.clone()),
+            "context" => Some(context.clone()),
+            "cost" => Some(cost.clone()),
+            "jobs" if model.active_background_jobs > 0 => {
+                Some(format!("{} jobs", model.active_background_jobs))
+            }
+            "model" => Some(model.model.clone()),
+            "directory" => Some(model.cwd.clone()),
+            "branch" => Some(model.git_branch.clone()),
+            "custom" => Some(model.custom_status.clone()),
+            _ => None,
+        };
+        if let Some(part) = part.filter(|p| !p.is_empty()) {
+            status_parts.push(safe_text(&part));
+        }
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("● ", Style::default().fg(p.info)),
-            Span::styled(state, Style::default().fg(p.text)),
-            Span::styled(format!("  ·  {metrics}"), Style::default().fg(p.muted)),
+            Span::styled(status_parts.join(" · "), Style::default().fg(p.muted)),
         ])),
         rows[4],
     );
@@ -1136,6 +1138,9 @@ pub fn draw_with_view(
             .style(Style::default().fg(p.muted).add_modifier(Modifier::DIM)),
         rows[5],
     );
+    if interactive && focus_panel == 0 && detail_card.is_none() {
+        render_slash_menu(frame, model, input, rows[3], p);
+    }
     if let Some(interaction) = &model.interaction {
         let width = area.width.saturating_sub(2).clamp(1, 88);
         let height = (interaction.options.len().min(12) as u16 + 6)
@@ -1250,6 +1255,61 @@ pub fn draw_with_view(
             popup,
         );
     }
+}
+
+/// Render completion above the composer so it cannot be clipped by the one-row input.
+fn render_slash_menu(frame: &mut Frame, model: &Model, input: &str, prompt: Rect, p: Palette) {
+    if model.approval.is_some() || model.interaction.is_some() {
+        return;
+    }
+    let matches = model.slash_menu.matches(input, &model.command_catalog);
+    if matches.is_empty() {
+        return;
+    }
+    let available = prompt.y.saturating_sub(frame.area().y) as usize;
+    let visible = matches.len().min(5).min(available.saturating_sub(1));
+    if visible == 0 {
+        return;
+    }
+    let selected = model.slash_menu.selected.min(matches.len() - 1);
+    let start = selected.saturating_sub(visible - 1);
+    let area = Rect::new(
+        prompt.x,
+        prompt.y - visible as u16 - 1,
+        prompt.width,
+        visible as u16 + 1,
+    );
+    frame.render_widget(ratatui::widgets::Clear, area);
+    let mut lines: Vec<Line> = matches
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .map(|(index, row)| {
+            Line::from(Span::styled(
+                format!(
+                    "{} {}  {}",
+                    if index == selected { "›" } else { " " },
+                    safe_text(&row.0),
+                    safe_text(&row.1)
+                ),
+                if index == selected {
+                    Style::default()
+                        .fg(p.accent)
+                        .bg(p.input_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.text)
+                },
+            ))
+        })
+        .collect();
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ select · Tab complete · Enter run · Esc close",
+        Style::default().fg(p.muted),
+    )));
+    // Truncate each option instead of wrapping it over the next selectable row.
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
@@ -2178,6 +2238,7 @@ mod row_measurement_tests {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            open_url: None,
             started_at: None,
             tool_id: String::new(),
             tool_name: String::new(),
@@ -2218,6 +2279,7 @@ mod row_measurement_tests {
             payload_ref: None,
             detail: None,
             detail_loading: false,
+            open_url: None,
             started_at: None,
             tool_id: String::new(),
             tool_name: String::new(),
