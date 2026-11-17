@@ -20,6 +20,7 @@
 import { createEventLog } from '../core/event-log.mjs';
 import { createHash } from 'node:crypto';
 import { toLegacyEvent } from '../protocol/compat.mjs';
+import { sanitizeDisplayValue } from '../core/display-sanitize.mjs';
 import { isSensitiveConfigPath } from '../core/safety.mjs';
 
 // ── env-var gate ─────────────────────────────────────────────────────
@@ -364,7 +365,7 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
       _wireState.agentTurns.set(agentId, eventTurnId);
     }
     if (type === 'turn_ended' && agentId !== 'main') type = 'agent_status';
-    let data = structuredClone(project(type, src, { agentId, nextSeq, sourceType: event.type }));
+    let data = sanitizeDisplayValue(project(type, src, { agentId, nextSeq, sourceType: event.type }));
     let wireEvent;
     if (log) {
       wireEvent = log.appendEvent(type, data, {

@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
+import { sanitizeDisplayValue } from './display-sanitize.mjs';
 import { bahulamHome } from './paths.mjs';
 
 const BAHULAM_DIR = bahulamHome();
@@ -48,7 +49,7 @@ function sanitizeEventValue(value, depth = 0) {
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeEventValue(item, depth + 1));
   if (typeof value === 'object') {
-    const out = {};
+    const out = Object.create(null);
     for (const [key, item] of Object.entries(value).slice(0, 100)) {
       out[key] = sanitizeEventValue(item, depth + 1);
     }
@@ -117,6 +118,7 @@ export class JsonlWriter {
     if (!this.sessionId) {
       this.setSessionId(randomUUID());
     }
+    return this.sessionId;
   }
 
   // ── Write Methods (called from REPL) ──
@@ -171,10 +173,10 @@ export class JsonlWriter {
    */
   writeBahulamEvent(event) {
     if (!event || !event.type) return;
-    const sanitized = sanitizeEventValue({
+    const sanitized = sanitizeEventValue(sanitizeDisplayValue({
       type: event.type,
       data: event.data || {},
-    });
+    }));
 
     if (!this.sessionId) {
       this._pendingBahulamEvents.push(sanitized);

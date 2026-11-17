@@ -1008,3 +1008,16 @@ code extraction, literal file paths, OSC8 and one unfocused-approval notificatio
 Question/focus and protocol/cache-invariance suites pass. Idle writes remain zero.
 Native desktop delivery and emulator behavior still need the release matrix;
 profile/config choices are explicitly not active capability probes.
+
+## Backport: display-copy safeguards and stable session IDs
+
+Restored the original display sanitizer for the live event tap and saved display
+events. It clones before redacting sensitive fields/config contents and removing
+terminal controls; execution arguments and canonical model history stay intact.
+`ensureSessionId()` now returns the same stable ID it initializes, while the
+accepted host still reads the writer's current identity after session changes.
+
+Validation: display-copy immutability, four JSONL writer tests, nineteen approval
+tests (including hold/deny timeout), protocol/request invariance and the Node to
+Rust replay round trip pass. Resume display stability is now registered in the
+standard unit runner rather than remaining an orphan test.

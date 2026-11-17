@@ -3,6 +3,7 @@
  */
 
 import { ApprovalManager } from '../src/core/approval.mjs';
+import { getTimeoutPolicy, interceptApproval, listPending, resolvePending, setTimeoutPolicy } from '../src/daemon/approval-store.mjs';
 import assert from 'node:assert';
 
 let passed = 0;
@@ -286,6 +287,46 @@ await test('approval cancel does not prompt for a reason', async () => {
     assert.strictEqual(result.approved, false);
     assert.strictEqual(prompted, false);
     assert.ok(result.reason.includes('stopped'));
+});
+
+await test('hold timeout policy keeps Rust-hosted approval pending until a decision', async () => {
+    const original = getTimeoutPolicy();
+    const emitted = [];
+    setTimeoutPolicy({ mode: 'hold' });
+    try {
+        const approval = interceptApproval(async () => assert.fail('remote approval must not open local prompt'), {
+            tool: 'shell', args: { command: 'npm test' }, remoteOnly: true,
+            emit: (type, data) => emitted.push({ type, data }),
+        });
+        const request = emitted.find(event => event.type === 'approval_required');
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.ok(listPending().some(entry => entry.apr_id === request.data.apr_id));
+        assert.equal(emitted.some(event => event.type === 'approval_decided'), false);
+        assert.equal(resolvePending('deny', request.data.apr_id, 'rust-test'), true);
+        assert.equal((await approval).approved, false);
+    } finally {
+        setTimeoutPolicy(original);
+    }
+});
+
+await test('configured deny timeout resolves a remote approval and clears pending state', async () => {
+    const original = getTimeoutPolicy();
+    const emitted = [];
+    setTimeoutPolicy({ mode: 'deny', durationSec: 0.02 });
+    const keepProcessAlive = setTimeout(() => {}, 1000);
+    try {
+        const approval = interceptApproval(async () => assert.fail('remote approval must not open local prompt'), {
+            tool: 'shell', args: { command: 'npm test' }, remoteOnly: true,
+            emit: (type, data) => emitted.push({ type, data }),
+        });
+        const result = await approval;
+        assert.equal(result.approved, false);
+        assert.equal(emitted.find(event => event.type === 'approval_decided')?.data.decided_by, 'timeout');
+        assert.equal(listPending().length, 0);
+    } finally {
+        clearTimeout(keepProcessAlive);
+        setTimeoutPolicy(original);
+    }
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
