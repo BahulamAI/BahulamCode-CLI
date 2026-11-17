@@ -51,6 +51,7 @@ const SKIPPED = new Map([
 // Must pass on any contributor machine with `node >= 18` and `npm install`.
 const UNIT_TESTS = [
     'test/test-rust-interactions.mjs',
+    'test/test-rust-tui-backpressure.mjs',
     'test/test-backend-url.mjs',
     'test/test-auth-sessions.mjs',
     'test/test-auth-repl.mjs',

@@ -29,6 +29,7 @@ import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { stripTerminalControls } from '../core/display-sanitize.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage } from '../daemon/rust-tui-snapshot.mjs';
 import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
@@ -2147,6 +2148,40 @@ async function sendRustTranscriptSnapshot(mode = 'current') {
       agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: index === 0, items: chunks[index] } });
   }
   sendRustSessionState();
+}
+
+function formatRustFallbackTranscript(events = []) {
+  const clean = value => stripTerminalControls(String(value || ''))
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+  const lines = [];
+  const block = (label, value, color = c.gray, maxLines = 3) => {
+    const content = clean(value);
+    if (!content) return;
+    const rows = content.split('\n').slice(0, maxLines);
+    lines.push(`  ${color(label)}`);
+    for (const row of rows) lines.push(`    ${c.dim(row.slice(0, 240))}`);
+    if (content.split('\n').length > maxLines || content.length > maxLines * 240) {
+      lines.push(`    ${c.dim('… more available with /resume')}`);
+    }
+  };
+  for (const event of events.slice(-40)) {
+    const data = event?.data || {};
+    switch (event?.type) {
+      case 'turn_started': block('You ›', data.text, c.brand, 2); break;
+      case 'message_end': block(event.agent_id === 'main' ? 'Bahulam ›' : `${event.agent_id || 'Agent'} ›`, data.text, c.white, 4); break;
+      case 'tool_requested': block(`Tool · ${clean(data.name) || 'command'}`, [data.primary, data.preview].filter(Boolean).join('\n'), c.cyan, 3); break;
+      case 'tool_finished': block(data.ok === false ? 'Tool result · failed' : 'Tool result', data.preview || data.summary, data.ok === false ? c.red : c.gray, 3); break;
+      case 'agent_spawned': block(`Subagent · ${clean(data.type) || 'agent'}`, data.task, c.magenta || c.brand, 2); break;
+      case 'agent_finished': block(data.ok === false ? 'Subagent · failed' : 'Subagent · complete', data.report, data.ok === false ? c.red : c.gray, 2); break;
+      case 'turn_ended': block(data.ok === false ? 'Turn · failed' : 'Turn · complete', data.summary, data.ok === false ? c.red : c.gray, 2); break;
+      case 'notice': block(data.title || 'Notice', [data.cause, data.next_step].filter(Boolean).join('\n'), data.level === 'error' ? c.red : c.yellow, 2); break;
+      case 'command_result': block(`Command · ${clean(data.name) || 'result'}`, data.result, data.ok === false ? c.red : c.gray, 3); break;
+      default: break;
+    }
+  }
+  return lines.slice(-100);
 }
 
 function sendRustSessionState() {
@@ -5790,7 +5825,13 @@ export async function startTerminalRepl() {
               throw new Error(`unsupported command ${String(command?.type)}`);
           }
         },
-        onExit: () => {
+        onCommandFailure: (error, command) => {
+          tapSseEvent({ type: 'error', data: {
+            message: `Terminal command ${command?.type || 'unknown'} failed: ${stripTerminalControls(error.message)}`,
+            next_step: 'Retry the command or use /tui default to return to the default view.',
+          } }, { sessionId: session.id });
+        },
+        onExit: ({ code, signal, failure, recentEvents, terminalState }) => {
           _rustApprovalBridge?.close();
           _rustApprovalBridge = null;
           _rustTuiActive = false;
@@ -5800,6 +5841,17 @@ export async function startTerminalRepl() {
           process.stderr.write = restoreStderr;
           process.stdout.write = restoreStdout;
           _rustTuiOutputCapture = null;
+          // A killed child cannot run its terminal guard. Restore only modes
+          // that this renderer reported owning, after unpatching output.
+          if (terminalState?.active) {
+            if (terminalState.alternate_screen) process.stderr.write('\x1b[?1049l');
+            process.stderr.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h');
+          }
+          if (!rustQuitRequested && !rustDefaultRequested) {
+            const reason = failure || (signal ? `signal ${signal}` : `exit ${code}`);
+            process.stderr.write(`\n  Rust terminal disconnected (${stripTerminalControls(reason)}). Session preserved in the default view.\n`);
+            for (const line of formatRustFallbackTranscript(recentEvents)) process.stderr.write(`${line}\n`);
+          }
           _rustTuiHost = null;
           _rustTuiInteractions?.close();
           _rustTuiInteractions = null;

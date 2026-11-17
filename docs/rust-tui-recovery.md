@@ -936,3 +936,16 @@ and subsequent draft submission; protocol/request invariance; existing resume,
 approval and details-focus regressions. Native Node form code below the adapter
 is unchanged. This closes the question-transport slice, not the other backports
 or the separate PRD acceptance gates.
+
+## Backport: renderer process recovery and transport
+
+Adapted `b37c586` / `3e16f9e`: bounded broadcast and snapshot pipes, failure
+callbacks, a bounded sanitized recovery transcript, saved terminal-mode restore,
+renderer terminal-ownership reporting, Unix termination cleanup, and the original
+Windows inherited-pipe adapter. Shared `/exit`, `/tui default`, approval and agent
+question ownership remain intact. Unexpected renderer exit returns to the existing
+Node session. No npm version or publishing changes.
+
+Validated the stalled pipe, direct snapshot budget, SIGKILL/stty recovery, protocol
+request invariance, 43 Rust tests, both-view approval and details/composer PTYs.
+Native Windows execution remains a real-platform acceptance requirement.

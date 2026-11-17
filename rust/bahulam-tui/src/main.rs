@@ -266,33 +266,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let render_revision = Arc::new(AtomicU64::new(0));
     let core_connected = Arc::new(AtomicBool::new(true));
     let command_writer = if stdio {
-        #[cfg(unix)]
-        {
-            let events = unsafe { File::from_raw_fd(3) };
-            let shared = Arc::clone(&model);
-            let connected = Arc::clone(&core_connected);
-            let revision = Arc::clone(&render_revision);
-            thread::spawn(move || {
-                for line in BufReader::new(events).lines().map_while(Result::ok) {
-                    if let Ok(event) =
-                        serde_json::from_str::<bahulam_tui::protocol::EventEnvelope>(&line)
-                    {
-                        if let Ok(mut model) = shared.lock() {
-                            let _ = model.apply(&event);
-                            revision.fetch_add(1, Ordering::Release);
-                        }
+        let events = child_stdio_file(3)?;
+        let shared = Arc::clone(&model);
+        let connected = Arc::clone(&core_connected);
+        let revision = Arc::clone(&render_revision);
+        thread::spawn(move || {
+            for line in BufReader::new(events).lines().map_while(Result::ok) {
+                if let Ok(event) =
+                    serde_json::from_str::<bahulam_tui::protocol::EventEnvelope>(&line)
+                {
+                    if let Ok(mut model) = shared.lock() {
+                        let _ = model.apply(&event);
+                        revision.fetch_add(1, Ordering::Release);
                     }
                 }
-                connected.store(false, Ordering::Release);
-            });
-            Some(Arc::new(Mutex::new(BufWriter::new(unsafe {
-                File::from_raw_fd(4)
-            }))))
-        }
-        #[cfg(not(unix))]
-        {
-            return Err("--stdio mode is not supported on this platform yet".into());
-        }
+            }
+            connected.store(false, Ordering::Release);
+        });
+        Some(Arc::new(Mutex::new(BufWriter::new(child_stdio_file(4)?))))
     } else {
         None
     };
@@ -325,6 +316,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         restore();
         original_hook(info);
     }));
+    let termination_requested = install_termination_handler()?;
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     let mut inline_mode =
@@ -371,6 +363,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut dirty = true;
     let mut drawn_revision = 0;
     loop {
+        if termination_requested.load(Ordering::Relaxed) {
+            break;
+        }
         let frame_revision = render_revision.load(Ordering::Acquire);
         dirty |= frame_revision != drawn_revision;
         if stdio && !core_connected.load(Ordering::Acquire) {
@@ -696,6 +691,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && editable(&model, focus_panel, detail_card) =>
                 {
                     restore();
+                    report_terminal_state(&command_writer, false, inline_mode)?;
                     paste_origin = None;
                     let edited = composer::edit_in_editor(&input);
                     enable_raw_mode()?;
@@ -1512,6 +1508,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         inline_mode.then(|| terminal.get_frame().area().bottom().saturating_sub(1));
     drop(terminal);
     restore();
+    let _ = report_terminal_state(&command_writer, false, inline_mode);
     if let Some(row) = inline_exit_row {
         // The shell/Node prompt starts below the viewport, not inside the old
         // composer. Keep the existing transcript; do not print it again.
@@ -1531,6 +1528,89 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, RawHandle};
+
+#[cfg(unix)]
+fn child_stdio_file(fd: i32) -> io::Result<File> {
+    // Node/libuv maps the extra child stdio entries to Unix descriptors 3 and 4.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(windows)]
+fn child_stdio_file(fd: i32) -> io::Result<File> {
+    use std::ffi::c_void;
+
+    #[link(name = "ucrt")]
+    unsafe extern "C" {
+        fn _get_osfhandle(fd: i32) -> isize;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn DuplicateHandle(
+            source_process: *mut c_void,
+            source_handle: *mut c_void,
+            target_process: *mut c_void,
+            target_handle: *mut *mut c_void,
+            desired_access: u32,
+            inherit_handle: i32,
+            options: u32,
+        ) -> i32;
+    }
+
+    let source = unsafe { _get_osfhandle(fd) };
+    if source == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let process = unsafe { GetCurrentProcess() };
+    let mut duplicate: RawHandle = std::ptr::null_mut();
+    let duplicated = unsafe {
+        DuplicateHandle(
+            process,
+            source as RawHandle,
+            process,
+            &mut duplicate,
+            0,
+            0,
+            0x0000_0002, // DUPLICATE_SAME_ACCESS
+        )
+    };
+    if duplicated == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_handle(duplicate) })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn child_stdio_file(_fd: i32) -> io::Result<File> {
+    Err(io::Error::other(
+        "live stdio transport is not supported on this platform",
+    ))
+}
+
+fn install_termination_handler() -> io::Result<Arc<AtomicBool>> {
+    let requested = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    {
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&requested))?;
+        signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&requested))?;
+    }
+    Ok(requested)
+}
+
+fn report_terminal_state(
+    writer: &Option<Arc<Mutex<BufWriter<File>>>>,
+    active: bool,
+    inline: bool,
+) -> io::Result<()> {
+    write_command(
+        writer,
+        serde_json::json!({"type":"terminal_state","data": {
+            "active":active,"alternate_screen":active && !inline,"keyboard_enhancement":false
+        }}),
+    )
+}
 
 fn report_capabilities(
     writer: &Option<Arc<Mutex<BufWriter<File>>>>,
@@ -1539,6 +1619,7 @@ fn report_capabilities(
     area: ratatui::layout::Rect,
     model: &Arc<Mutex<bahulam_tui::model::Model>>,
 ) -> io::Result<()> {
+    report_terminal_state(writer, true, inline)?;
     write_command(
         writer,
         serde_json::json!({"type":"hello","data":{
