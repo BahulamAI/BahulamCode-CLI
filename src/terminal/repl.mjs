@@ -31,6 +31,8 @@ import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemo
 import { startSocketServer } from '../daemon/socket-server.mjs';
 import { backgroundTasks } from '../core/background-tasks.mjs';
 import { stripTerminalControls } from '../core/display-sanitize.mjs';
+import { installBahulamShiftEnterKeybinding, terminalSetupSnippet, vscodeKeybindingsPath } from './vscode-keybindings.mjs';
+import { rustTuiEnvironment } from '../daemon/rust-tui-settings.mjs';
 import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage } from '../daemon/rust-tui-snapshot.mjs';
 import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
@@ -3807,6 +3809,43 @@ async function handleCommand(input, ctx) {
       return;
     }
 
+    case '/terminal-setup': {
+      const action = rest.trim().toLowerCase();
+      if (action && !['install', 'write', 'show'].includes(action)) {
+        process.stderr.write(`  ${c.yellow('Usage:')} /terminal-setup ${c.dim('[install|show]')}\n`);
+        return;
+      }
+      if (action === 'install' || action === 'write') {
+        try {
+          const result = installBahulamShiftEnterKeybinding();
+          if (result.reason === 'added') {
+            process.stderr.write(`  ${c.green('✓')} Shift+Enter and safe terminal Ctrl+Q bindings added to ${result.filePath}\n`);
+          } else if (result.reason === 'already-installed') {
+            process.stderr.write(`  ${c.dim('✓ Bahulam terminal keybindings are already configured in')} ${result.filePath}\n`);
+          } else if (result.reason === 'partial') {
+            process.stderr.write(`  ${c.green('✓')} Missing Bahulam terminal keybindings added to ${result.filePath}\n`);
+            process.stderr.write(`  ${c.yellow('!')} Existing ${result.conflicts.join(', ')} keybinding conflict left unchanged. Review the suggested rules below.\n`);
+            process.stderr.write(`  ${c.dim('Suggested Bahulam rules:')}\n${terminalSetupSnippet().split('\n').map(line => `    ${line}`).join('\n')}\n`);
+          } else {
+            process.stderr.write(`  ${c.yellow('!')} Existing ${result.conflicts.join(', ')} keybinding conflict in ${result.filePath}; left it unchanged.\n`);
+            process.stderr.write(`  ${c.dim('Suggested Bahulam rules:')}\n${terminalSetupSnippet().split('\n').map(line => `    ${line}`).join('\n')}\n`);
+          }
+        } catch (error) {
+          process.stderr.write(`  ${c.red('✗')} Could not update VS Code keybindings: ${error.message}\n`);
+          process.stderr.write(`  ${c.dim(`Settings file: ${vscodeKeybindingsPath()}`)}\n`);
+        }
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Terminal setup')}\n`);
+      process.stderr.write(`  ${c.dim('TERM')}       ${process.env.TERM || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Terminal')}   ${process.env.TERM_PROGRAM || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Size')}       ${process.stdout.columns || 'unknown'} × ${process.stdout.rows || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Color')}      ${process.stdout.hasColors?.() ? 'available' : 'limited'}\n`);
+      process.stderr.write(`  ${c.dim('VS Code')}    ${vscodeKeybindingsPath()}\n`);
+      process.stderr.write(`  ${c.dim('Install Shift+Enter and safe terminal Ctrl+Q handling with')} ${c.brand('/terminal-setup install')}\n\n`);
+      return;
+    }
+
     case '/status': {
       await ctx.refreshAuth();
       if (rest.trim() === 'help') {
@@ -5711,7 +5750,7 @@ export async function startTerminalRepl() {
       _dockTickTimer.unref?.();
     }
   }
-  async function openRustView(view = process.env.BAHULAM_TUI_MODE || 'inline', snapshotMode = session.historyMode || 'current') {
+  async function openRustView(view, snapshotMode = session.historyMode || 'current') {
     if (_rustTuiActive) return;
     ctx.rustTuiCapabilities = null;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -5761,7 +5800,9 @@ export async function startTerminalRepl() {
       let stopBackgroundJobsSubscription = null;
       let rustQuitRequested = false;
       let rustDefaultRequested = false;
+      const rustTuiEnv = rustTuiEnvironment({cwd:safeCwd(), userTui:auth.getRawConfig()?.tui});
       _rustTuiHost = startRustTuiHost({
+        env: rustTuiEnv,
         mode: view,
         onCommand: async command => {
           const data = command?.data || {};

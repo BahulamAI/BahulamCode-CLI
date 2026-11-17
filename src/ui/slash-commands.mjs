@@ -13,6 +13,7 @@
 
 // name -> one-line description (bare string).
 export const COMMANDS = {
+  '/terminal-setup': 'Inspect terminal setup or install VS Code keybindings',
   '/tui':         'Switch terminal view: inline, fullscreen or default',
   '/help':        'Show commands',
   '/login':       'Sign in via browser',

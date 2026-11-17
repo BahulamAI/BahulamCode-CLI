@@ -977,3 +977,13 @@ BMP/TIFF conversion from `b37c586`; Node presentation remains unchanged.
 Validation: strict Clippy, 45 Rust tests, both-view clipboard/editor/focus PTYs,
 including exact large-paste submission before/after expansion and slash selection;
 shared attachment tests use fake clipboard helpers, including Wayland/X11 fallback.
+
+## Backport: settings and terminal setup
+
+Restored the `b37c586` shell completion generators and `/terminal-setup` helpers.
+Setup only writes editor bindings when explicitly invoked with `install`; JSONC,
+unrelated bindings and conflicts are preserved. Rust reads user/project/local
+presentation settings when attaching, with environment overrides taking priority.
+The accepted inline/full-mouse defaults are retained; these values are passed only
+to the Rust child. Settings, completion and JSONC merge tests pass. Capability and
+custom-status settings are consumed by the following OS/status backport slice.
