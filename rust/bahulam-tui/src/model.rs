@@ -752,8 +752,8 @@ impl Model {
                 let index = if let Some(index) = self.messages.get(&message_key) {
                     *index
                 } else {
-                    let title = self.message_title(&agent);
-                    let index = self.card(&agent, &title, String::new(), "streaming");
+                    let title = self.message_title(agent);
+                    let index = self.card(agent, &title, String::new(), "streaming");
                     self.messages.insert(message_key.clone(), index);
                     self.message_segments
                         .entry(message_key.clone())
@@ -786,16 +786,16 @@ impl Model {
                     }
                     self.cards[index].status = "done".into();
                 } else if !final_text.is_empty() {
-                    let title = self.message_title(&agent);
-                    let index = self.card(&agent, &title, final_text, "done");
+                    let title = self.message_title(agent);
+                    let index = self.card(agent, &title, final_text, "done");
                     self.cards[index].detail = Some(self.cards[index].body.clone());
                     self.message_segments
                         .entry(message_key.clone())
                         .or_default()
                         .push(index);
                 } else if let Some(reference) = &event.payload_ref {
-                    let title = self.message_title(&agent);
-                    let index = self.card(&agent, &title, String::new(), "done");
+                    let title = self.message_title(agent);
+                    let index = self.card(agent, &title, String::new(), "done");
                     self.cards[index].payload_ref = Some(reference.clone());
                     self.message_segments
                         .entry(message_key.clone())
@@ -1012,10 +1012,8 @@ impl Model {
                     self.cards[index].payload_ref = Some(reference.clone());
                 }
             }
-            "usage_update" | "tokens_used" => {
-                if !self.replaying_history && agent == "main" {
-                    self.apply_usage(data);
-                }
+            "usage_update" | "tokens_used" if !self.replaying_history && agent == "main" => {
+                self.apply_usage(data);
             }
             "notice" => {
                 let activity = text(data, "activity");

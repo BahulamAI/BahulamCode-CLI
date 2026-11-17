@@ -299,68 +299,6 @@ pub fn edit(input: &mut String, cursor: &mut usize, key: KeyEvent) -> bool {
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn history_recalls_prompts_and_restores_exact_draft_cursor() {
-        let mut history = History {
-            entries: vec!["newer".into(), "older\nmultiline".into()],
-            ..History::default()
-        };
-        let mut input = "draft 界".to_owned();
-        let mut cursor = 5;
-        history.navigate(false, &mut input, &mut cursor);
-        assert_eq!(input, "newer");
-        history.navigate(false, &mut input, &mut cursor);
-        assert_eq!(input, "older\nmultiline");
-        history.navigate(true, &mut input, &mut cursor);
-        assert_eq!(input, "newer");
-        history.navigate(true, &mut input, &mut cursor);
-        assert_eq!((input.as_str(), cursor), ("draft 界", 5));
-        let mut search = Search::new(&input, cursor);
-        search.query = "older".into();
-        search.preview(&history, &mut input, &mut cursor, false);
-        assert_eq!(input, "older\nmultiline");
-        assert_eq!(search.draft, ("draft 界".into(), 5));
-    }
-    #[test]
-    fn editor_arguments_are_literal_and_readline_edits_preserve_unicode() {
-        assert_eq!(
-            split_command("\"/tmp/editor with spaces\" --wait 'literal $(id)' C:\\work\\file")
-                .unwrap(),
-            vec![
-                "/tmp/editor with spaces",
-                "--wait",
-                "literal $(id)",
-                "C:\\work\\file"
-            ]
-        );
-        assert!(split_command("'broken").is_err());
-        let mut input = "hello 👨‍👩‍👧 界".to_owned();
-        let mut cursor = 6;
-        edit(
-            &mut input,
-            &mut cursor,
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-        );
-        assert_eq!(input, "hello  界");
-        cursor = input.len();
-        edit(
-            &mut input,
-            &mut cursor,
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(input, "hello  ");
-        edit(
-            &mut input,
-            &mut cursor,
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(cursor, 0);
-    }
-}
-
 /// A single geometry for painting, cursor placement and mouse hit testing.
 pub struct PromptLayout {
     pub lines: Vec<String>,
@@ -421,5 +359,67 @@ impl PromptLayout {
             .or_else(|| self.positions.first())
             .map(|(byte, _, _)| *byte)
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn history_recalls_prompts_and_restores_exact_draft_cursor() {
+        let mut history = History {
+            entries: vec!["newer".into(), "older\nmultiline".into()],
+            ..History::default()
+        };
+        let mut input = "draft 界".to_owned();
+        let mut cursor = 5;
+        history.navigate(false, &mut input, &mut cursor);
+        assert_eq!(input, "newer");
+        history.navigate(false, &mut input, &mut cursor);
+        assert_eq!(input, "older\nmultiline");
+        history.navigate(true, &mut input, &mut cursor);
+        assert_eq!(input, "newer");
+        history.navigate(true, &mut input, &mut cursor);
+        assert_eq!((input.as_str(), cursor), ("draft 界", 5));
+        let mut search = Search::new(&input, cursor);
+        search.query = "older".into();
+        search.preview(&history, &mut input, &mut cursor, false);
+        assert_eq!(input, "older\nmultiline");
+        assert_eq!(search.draft, ("draft 界".into(), 5));
+    }
+    #[test]
+    fn editor_arguments_are_literal_and_readline_edits_preserve_unicode() {
+        assert_eq!(
+            split_command("\"/tmp/editor with spaces\" --wait 'literal $(id)' C:\\work\\file")
+                .unwrap(),
+            vec![
+                "/tmp/editor with spaces",
+                "--wait",
+                "literal $(id)",
+                "C:\\work\\file"
+            ]
+        );
+        assert!(split_command("'broken").is_err());
+        let mut input = "hello 👨‍👩‍👧 界".to_owned();
+        let mut cursor = 6;
+        edit(
+            &mut input,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        );
+        assert_eq!(input, "hello  界");
+        cursor = input.len();
+        edit(
+            &mut input,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(input, "hello  ");
+        edit(
+            &mut input,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(cursor, 0);
     }
 }

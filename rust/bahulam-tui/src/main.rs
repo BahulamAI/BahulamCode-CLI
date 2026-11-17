@@ -595,7 +595,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 KeyCode::Backspace => {
                                     if let Some((at, _)) =
-                                        menu.free_text.grapheme_indices(true).last()
+                                        menu.free_text.grapheme_indices(true).next_back()
                                     {
                                         menu.free_text.truncate(at);
                                     }
@@ -753,62 +753,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && stdio
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('v')
-                        && editable(&model, focus_panel, detail_card) =>
+                        && editable(&model, focus_panel, detail_card)
+                        && clipboard_job.is_none() =>
                 {
-                    if clipboard_job.is_none() {
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        paste_origin = Some((input.clone(), cursor, seen_transcript_revision));
-                        clipboard_job = Some(rx);
-                        input_hint(&model, "Reading clipboard…");
-                        thread::spawn(move || {
-                            let _ = tx.send(ClipboardReply::Paste(clipboard::read_text()));
-                        });
-                    }
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    paste_origin = Some((input.clone(), cursor, seen_transcript_revision));
+                    clipboard_job = Some(rx);
+                    input_hint(&model, "Reading clipboard…");
+                    thread::spawn(move || {
+                        let _ = tx.send(ClipboardReply::Paste(clipboard::read_text()));
+                    });
                 }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && stdio
                         && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('y') =>
+                        && key.code == KeyCode::Char('y')
+                        && clipboard_job.is_none() =>
                 {
-                    if clipboard_job.is_none() {
-                        let index = detail_card.unwrap_or(focused_card);
-                        let mut payload = None;
-                        let text = if editable(&model, focus_panel, detail_card) {
-                            Some(input.clone())
-                        } else {
-                            model.lock().ok().and_then(|mut state| {
-                                let card = state.cards.get(index)?;
-                                if card.payload_ref.is_some() && card.detail.is_none() {
-                                    payload = state.request_details(index);
-                                    None
-                                } else {
-                                    Some(card.detail.as_ref().unwrap_or(&card.body).clone())
-                                }
-                            })
-                        };
-                        if let Some(payload_ref) = payload {
-                            write_command(
-                                &command_writer,
-                                serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
-                            )?;
-                        }
-                        match text {
-                            Some(text) if !text.is_empty() => {
-                                let (tx, rx) = std::sync::mpsc::channel();
-                                clipboard_job = Some(rx);
-                                input_hint(&model, "Copying complete content…");
-                                thread::spawn(move || {
-                                    let _ =
-                                        tx.send(ClipboardReply::Copy(clipboard::copy_text(&text)));
-                                });
+                    let index = detail_card.unwrap_or(focused_card);
+                    let mut payload = None;
+                    let text = if editable(&model, focus_panel, detail_card) {
+                        Some(input.clone())
+                    } else {
+                        model.lock().ok().and_then(|mut state| {
+                            let card = state.cards.get(index)?;
+                            if card.payload_ref.is_some() && card.detail.is_none() {
+                                payload = state.request_details(index);
+                                None
+                            } else {
+                                Some(card.detail.as_ref().unwrap_or(&card.body).clone())
                             }
-                            Some(_) => input_hint(&model, "Nothing to copy"),
-                            None => input_hint(
-                                &model,
-                                "Loading full result · press Ctrl+Y again when loaded",
-                            ),
+                        })
+                    };
+                    if let Some(payload_ref) = payload {
+                        write_command(
+                            &command_writer,
+                            serde_json::json!({"type":"show_details","data":{"payload_ref":payload_ref}}),
+                        )?;
+                    }
+                    match text {
+                        Some(text) if !text.is_empty() => {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            clipboard_job = Some(rx);
+                            input_hint(&model, "Copying complete content…");
+                            thread::spawn(move || {
+                                let _ = tx.send(ClipboardReply::Copy(clipboard::copy_text(&text)));
+                            });
                         }
+                        Some(_) => input_hint(&model, "Nothing to copy"),
+                        None => input_hint(
+                            &model,
+                            "Loading full result · press Ctrl+Y again when loaded",
+                        ),
                     }
                 }
                 Event::Key(key)
@@ -1023,29 +1020,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('1') if stdio && focus_panel == 0 => {
-                        let action = model
-                            .lock()
-                            .ok()
-                            .map(|mut model| {
-                                model.approval.clone().map(|approval| {
-                                    if approval.command.trim().is_empty() {
-                                        let index = model.cards.iter().rposition(|card| {
-                                            card.title == "Approval"
-                                                && approval.payload_ref.as_deref()
-                                                    == card.payload_ref.as_deref()
-                                        });
-                                        let request = index.and_then(|index| {
-                                            model
-                                                .request_details(index)
-                                                .map(|reference| (index, reference))
-                                        });
-                                        (approval, request)
-                                    } else {
-                                        (approval, None)
-                                    }
-                                })
+                        let action = model.lock().ok().and_then(|mut model| {
+                            model.approval.clone().map(|approval| {
+                                if approval.command.trim().is_empty() {
+                                    let index = model.cards.iter().rposition(|card| {
+                                        card.title == "Approval"
+                                            && approval.payload_ref.as_deref()
+                                                == card.payload_ref.as_deref()
+                                    });
+                                    let request = index.and_then(|index| {
+                                        model
+                                            .request_details(index)
+                                            .map(|reference| (index, reference))
+                                    });
+                                    (approval, request)
+                                } else {
+                                    (approval, None)
+                                }
                             })
-                            .flatten();
+                        });
                         match action {
                             Some((_, Some((index, payload_ref)))) => {
                                 detail_card = Some(index);
@@ -1108,17 +1101,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         input.insert(cursor, ch);
                         cursor += ch.len_utf8();
                     }
-                    KeyCode::Backspace if focus_panel == 0 => {
-                        if cursor > 0 {
-                            if let Some((start, _)) = input[..cursor].grapheme_indices(true).last()
-                            {
-                                input.replace_range(start..cursor, "");
-                                cursor = start;
-                            }
+                    KeyCode::Backspace if focus_panel == 0 && cursor > 0 => {
+                        if let Some((start, _)) = input[..cursor].grapheme_indices(true).next_back()
+                        {
+                            input.replace_range(start..cursor, "");
+                            cursor = start;
                         }
                     }
                     KeyCode::Left if stdio && focus_panel == 0 => {
-                        if let Some((start, _)) = input[..cursor].grapheme_indices(true).last() {
+                        if let Some((start, _)) = input[..cursor].grapheme_indices(true).next_back()
+                        {
                             cursor = start;
                         }
                     }
@@ -1686,6 +1678,16 @@ fn write_command(
     Ok(())
 }
 
+fn main() {
+    if let Err(error) = run() {
+        eprintln!(
+            "Replay failed: {}\nCheck the log and its payloads directory; use --help for usage.",
+            safe_text(&error.to_string())
+        );
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{insert_paste, normalize_paste, scroll_history};
@@ -1718,15 +1720,5 @@ mod tests {
         insert_paste(&mut input, &mut cursor, "cd\n界");
         assert_eq!(input, "abcd\n界ef");
         assert_eq!(cursor, "abcd\n界".len());
-    }
-}
-
-fn main() {
-    if let Err(error) = run() {
-        eprintln!(
-            "Replay failed: {}\nCheck the log and its payloads directory; use --help for usage.",
-            safe_text(&error.to_string())
-        );
-        std::process::exit(1);
     }
 }

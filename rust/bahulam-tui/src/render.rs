@@ -554,6 +554,7 @@ pub fn draw(frame: &mut Frame, model: &Model, scroll: u16) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_with_input(
     frame: &mut Frame,
     model: &Model,
@@ -1088,7 +1089,7 @@ pub fn draw_with_view(
         rows[5],
     );
     if let Some(interaction) = &model.interaction {
-        let width = area.width.saturating_sub(2).min(88).max(1);
+        let width = area.width.saturating_sub(2).clamp(1, 88);
         let height = (interaction.options.len().min(12) as u16 + 6)
             .min(area.height.saturating_sub(2))
             .max(1);
@@ -1377,6 +1378,7 @@ pub fn history_geometry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transcript_lines(
     model: &Model,
     expanded: &HashSet<usize>,
@@ -1562,8 +1564,6 @@ fn card_lines(
         p.accent
     } else if is_assistant {
         agent_identity_color(&card.agent, p)
-    } else if is_user {
-        p.text
     } else {
         p.text
     };
