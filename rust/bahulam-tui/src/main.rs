@@ -373,6 +373,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut mouse_enabled = capabilities.mouse_capture;
     let mut selecting_text = false;
     let mut selection_frame_pending = false;
+    let mut drag_selection: Option<bahulam_tui::text_selection::TextSelection> = None;
+    let mut painted_buffer: Option<ratatui::buffer::Buffer> = None;
     let mut terminal = open_terminal(inline_mode)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
@@ -693,7 +695,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if integration_config.sync {
                 write!(io::stdout(), "\x1b[?2026h")?;
             }
-            terminal.draw(|frame| {
+            let completed = terminal.draw(|frame| {
+                if let Some(selection) = drag_selection.as_ref().filter(|s| s.dragging) {
+                    selection.paint(frame.buffer_mut());
+                    let hint = if selection.released {
+                        model
+                            .lock()
+                            .ok()
+                            .map(|state| state.composer_hint.clone())
+                            .filter(|hint| !hint.is_empty())
+                            .unwrap_or_else(|| "Text selected".into())
+                    } else {
+                        "Release mouse to copy".into()
+                    };
+                    let area = frame.area();
+                    let footer = ratatui::layout::Rect::new(
+                        area.x,
+                        area.bottom().saturating_sub(1),
+                        area.width,
+                        1,
+                    );
+                    frame.render_widget(ratatui::widgets::Clear, footer);
+                    frame.render_widget(
+                        ratatui::widgets::Paragraph::new(format!(
+                            "  {hint} · Esc clears selection"
+                        )),
+                        footer,
+                    );
+                    return;
+                }
                 if let Ok(model) = model.lock() {
                     draw_with_view(
                         frame,
@@ -715,10 +745,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             })?;
-            if integration_config.links {
+            if !drag_selection.as_ref().is_some_and(|s| s.dragging) {
+                painted_buffer = Some(completed.buffer.clone());
+            }
+            if integration_config.links && !drag_selection.as_ref().is_some_and(|s| s.dragging) {
                 paint_browser_hyperlinks()?;
             }
-            if let Some(target) = visible_link.as_ref().filter(|_| integration_config.links) {
+            if let Some(target) = visible_link.as_ref().filter(|_| {
+                integration_config.links && !drag_selection.as_ref().is_some_and(|s| s.dragging)
+            }) {
                 let area = terminal.get_frame().area();
                 let mut cells = 0usize;
                 let label: String = safe_text(&target.label)
@@ -758,10 +793,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     MouseEventKind::ScrollUp
                         | MouseEventKind::ScrollDown
                         | MouseEventKind::Down(MouseButton::Left)
+                        | MouseEventKind::Drag(MouseButton::Left)
+                        | MouseEventKind::Up(MouseButton::Left)
                 ),
                 Event::Paste(_) | Event::Resize(_, _) | Event::FocusGained => true,
                 _ => false,
             };
+            if matches!(&event, Event::Key(_) | Event::Resize(..) | Event::Paste(_)) {
+                let had_selection = drag_selection.take().is_some_and(|s| s.dragging);
+                if had_selection && matches!(&event, Event::Key(key) if key.code == KeyCode::Esc) {
+                    input_hint(&model, "");
+                    continue;
+                }
+            }
             // History inspection must not swallow the first character/paste of
             // a new draft. Questions, approvals and separate details still own input.
             let starts_input = match &event {
@@ -1795,14 +1839,81 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::Mouse(mouse) if mouse_enabled => {
                     let position = ratatui::layout::Position::new(mouse.column, mouse.row);
-                    let frame_current = drawn_revision == render_revision.load(Ordering::Acquire);
-                    let browser_hit =
-                        if frame_current && detail_card.is_none() && mouse.modifiers.is_empty() {
-                            bahulam_tui::render::browser_link_at(position)
-                        } else {
-                            None
-                        };
+                    if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
+                        if let Some(selection) = drag_selection.as_mut().filter(|s| !s.released) {
+                            selection.update(position);
+                        }
+                        pressed_browser_link = None;
+                        continue;
+                    }
+                    if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                        if let Some(selection) = drag_selection
+                            .as_mut()
+                            .filter(|s| s.dragging && !s.released)
+                        {
+                            selection.release(position);
+                            pressed_browser_link = None;
+                            let text = selection.text();
+                            if !text.trim().is_empty() && clipboard_job.is_none() {
+                                input_hint(&model, "Copying selected text…");
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                clipboard_job = Some(rx);
+                                thread::spawn(move || {
+                                    let result = clipboard::copy_text(&text).map(|mut copied| {
+                                        copied.message = copied
+                                            .message
+                                            .replace("complete content", "selected text");
+                                        copied
+                                    });
+                                    let _ = tx.send(ClipboardReply::Copy(result));
+                                });
+                            } else if clipboard_job.is_some() {
+                                input_hint(&model, "Copy operation busy · select again shortly");
+                            }
+                            continue;
+                        }
+                    }
+                    if matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) {
+                        drag_selection = None;
+                    }
+                    // Click what is visibly painted, even if another streaming
+                    // event is waiting to be drawn. Modals still own input.
+                    let view_accepts_mouse = model.lock().ok().is_some_and(|state| {
+                        state.interaction.is_none() && state.approval.is_none()
+                    });
+                    let browser_hit = if view_accepts_mouse
+                        && detail_card.is_none()
+                        && mouse.modifiers.is_empty()
+                    {
+                        bahulam_tui::render::browser_link_at(position)
+                    } else {
+                        None
+                    };
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        drag_selection = None;
+                        if view_accepts_mouse && detail_card.is_none() && history_search.is_none() {
+                            if let (Ok(state), Some(buffer)) =
+                                (model.lock(), painted_buffer.as_ref())
+                            {
+                                let area = bahulam_tui::render::conversation_area(
+                                    terminal.get_frame().area(),
+                                    &state,
+                                    &display_input,
+                                    inline_mode,
+                                );
+                                if state.interaction.is_none() && area.contains(position) {
+                                    drag_selection =
+                                        Some(bahulam_tui::text_selection::TextSelection::new(
+                                            buffer.clone(),
+                                            area,
+                                            position,
+                                        ));
+                                }
+                            }
+                        }
                         pressed_browser_link = browser_hit.clone();
                         if browser_hit.is_some() {
                             continue;
@@ -1842,6 +1953,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             )
                         });
                         if let Some(index) = hit {
+                            drag_selection = None;
                             focused_card = index;
                             focus_panel = 1;
                             expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));

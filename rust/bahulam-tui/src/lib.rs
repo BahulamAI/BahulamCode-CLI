@@ -10,6 +10,7 @@ pub mod paste;
 #[rustfmt::skip]
 pub mod protocol;
 pub mod render;
+pub mod text_selection;
 
 use model::Model;
 use protocol::EventEnvelope;

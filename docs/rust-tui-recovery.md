@@ -144,6 +144,18 @@ After filtering, a local measurement returned 25 current-folder sessions in
 Tests cover cross-folder exclusion before transcript reads, slug collisions,
 linked fragments, limits, trailing separators, cwd changes and empty folders.
 
+Dragging within either Rust conversation highlights the painted text in black
+on white and copies the selected range on release through the existing clipboard route (native on
+macOS/Windows/Linux when available). The selection freezes its frame while core
+events continue. The highlight remains after release; Esc, a new click, typing,
+scrolling or resizing clears it. The footer reports the copy result. A drag never opens a
+browser link. Selection is limited to the visible conversation, excluding the
+composer and agent sidebar. Alt+M remains available for native terminal selection.
+Markdown browser links render as an underlined label and destination, without
+raw Markdown punctuation. Both this text and bare URLs are click targets; wrapped
+pieces retain the correct destination, including repeated labels. These clicks
+do not require OSC8 support, so the same route works in macOS Terminal and VS Code.
+
 Alt+M enters native text-selection mode: release mouse capture, show the mode
 hint, and pause screen repainting while incoming events continue updating the
 model. Alt+M again or another key restores live controls, preserving the draft.

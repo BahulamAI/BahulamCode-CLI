@@ -9,6 +9,12 @@ if (process.platform === 'win32') process.exit(0);
 const root=fileURLToPath(new URL('../',import.meta.url));
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'bahulam-browser-'));
 const driver=path.join(temp,'driver.mjs');
+for(const name of ['pbcopy','wl-copy','xclip','xsel']) fs.writeFileSync(path.join(temp,name),`#!/usr/bin/env python3
+import os,sys
+target=os.path.join(os.environ['BAHULAM_HOME'],'copied')
+with open(target+'.tmp','w') as f:f.write(sys.stdin.read())
+os.replace(target+'.tmp',target)
+`,{mode:0o700});
 for(const name of ['open','xdg-open']) fs.writeFileSync(path.join(temp,name),`#!/usr/bin/env python3
 import os,sys,json
 target=os.path.join(os.environ['BAHULAM_HOME'],'opened')
@@ -33,6 +39,8 @@ screen=Screen(36,120);output=bytearray()
 master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
 child=subprocess.Popen(sys.argv[3:],stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
 opened=os.path.join(os.environ['BAHULAM_HOME'],'opened')
+copied=os.path.join(os.environ['BAHULAM_HOME'],'copied')
+if os.path.exists(copied):os.unlink(copied)
 def pump(seconds=.15):
  end=time.monotonic()+seconds
  while time.monotonic()<end and child.poll() is None:
@@ -56,6 +64,23 @@ try:
  wait(lambda:'Open 2' in screen.text());send(b'draft')
  enabled=json.loads(os.environ['BAHULAM_TUI_CAPABILITIES'])['osc8_links']
  assert (b'\x1b]8;;https://' in output)==enabled
+ assert '[Docs](' not in screen.text(),screen.text()
+ # The formatted inline label opens directly, including with OSC8 disabled.
+ x,y=coords('Docs')
+ mouse(0,x,y);mouse(0,x,y,'m');check_open('https://example.test/wiki_(page)')
+ # A normal drag copies the painted text, without a terminal-specific modifier.
+ x,y=coords('Browser fixture');x-=2
+ mouse(0,x,y);mouse(32,x+6,y);mouse(0,x+6,y,'m')
+ wait(lambda:os.path.exists(copied));assert open(copied).read()=='Browser',open(copied).read()
+ wait(lambda:'Copied selected text' in screen.text())
+ pump(.3)
+ assert 'Esc clears selection' in screen.text(),'Selection disappeared after mouse release'
+ mouse(35,x+20,y) # moving without a pressed button preserves the selection
+ assert 'Esc clears selection' in screen.text()
+ send(b'\x1b')
+ assert 'Esc clears selection' not in screen.text(),'Esc did not clear the selection'
+ assert 'draft' in screen.text(),'Clearing selection lost the draft'
+ os.unlink(copied);pump(.25)
  x,y=coords('Open 2')
  mouse(0,x,y);mouse(32,x+2,y);mouse(0,x+2,y,'m');assert not os.path.exists(opened)
  mouse(0,x,y);mouse(0,1,1,'m');assert not os.path.exists(opened)
@@ -83,9 +108,9 @@ try {
   const resultFile=path.join(temp,mode+osc8);
   const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),resultFile,process.execPath,driver,resultFile],{
    encoding:'utf8',timeout:25000,maxBuffer:2*1024*1024,
-   env:{...process.env,PATH:temp+path.delimiter+process.env.PATH,BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui'),BAHULAM_TUI_CAPABILITIES:JSON.stringify({osc8_links:osc8,keyboard_protocol:false})},
+   env:{...process.env,PATH:temp+path.delimiter+process.env.PATH,BAHULAM_CLIPBOARD:'native',BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui'),BAHULAM_TUI_CAPABILITIES:JSON.stringify({osc8_links:osc8,keyboard_protocol:false})},
   });
   assert.equal(result.status,0,`${mode}, OSC8 ${osc8}: ${result.stdout}\n${result.stderr}`);
  }
- console.log('PASS: browser click, drag isolation, modal ownership, Alt+L selection, resize and draft handoff in both Rust views with/without OSC8.');
+ console.log('PASS: inline/action browser clicks, drag-to-copy, drag isolation, modal ownership, Alt+L selection, resize and draft handoff in both Rust views with/without OSC8.');
 } finally {fs.rmSync(temp,{recursive:true,force:true});}

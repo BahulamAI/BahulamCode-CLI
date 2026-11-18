@@ -525,6 +525,15 @@ fn transcript_rect(area: Rect, inline: bool) -> Rect {
     })
 }
 
+pub fn conversation_area(area: Rect, model: &Model, input: &str, inline: bool) -> Rect {
+    let layout = if inline {
+        inline_layout(area, input, model.approval.is_some())
+    } else {
+        view_layout(area, input, model.approval.is_some())
+    };
+    transcript_rect(layout.columns[0], inline)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserLinkHit {
     pub area: Rect,
@@ -882,29 +891,17 @@ pub fn draw_with_view(
             let hits = rendered
                 .iter()
                 .enumerate()
-                .filter_map(|(row, (line, target))| {
-                    let target = target.clone()?;
-                    let text = line
-                        .spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect::<String>();
-                    // Leading indentation is not a browser action.
-                    let label = text.strip_prefix("   ")?.to_owned();
-                    Some(BrowserLinkHit {
+                .flat_map(|(row, (_, links))| {
+                    links.iter().map(move |link| BrowserLinkHit {
                         area: Rect::new(
-                            inner.x + 3,
+                            inner.x + link.column as u16,
                             inner.y + row as u16,
-                            UnicodeWidthStr::width(label.as_str()) as u16,
+                            UnicodeWidthStr::width(link.text.as_str()) as u16,
                             1,
                         ),
-                        target,
-                        text: label,
-                        style: line
-                            .spans
-                            .first()
-                            .map(|span| span.style)
-                            .unwrap_or_default(),
+                        target: link.target.clone(),
+                        text: link.text.clone(),
+                        style: link.style,
                     })
                 })
                 .collect();
@@ -1261,8 +1258,7 @@ pub fn draw_with_view(
     } else if inline && area.width < 78 {
         "Tab history/input · Enter send · Ctrl+C twice quit".to_owned()
     } else if inline {
-        "Tab history · Alt+M select text · Ctrl+V paste · Ctrl+G editor · Ctrl+C twice quit"
-            .to_owned()
+        "Tab history · Drag to copy · Alt+M native selection · Ctrl+C twice quit".to_owned()
     } else if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
@@ -1270,8 +1266,7 @@ pub fn draw_with_view(
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        "Enter send · Alt+M select text · Ctrl+V paste · Ctrl+G editor · Ctrl+C twice quit"
-            .to_owned()
+        "Enter send · Drag to copy · Alt+M native selection · Ctrl+C twice quit".to_owned()
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };
@@ -1809,29 +1804,78 @@ pub fn history_geometry(
     }
 }
 
-type BrowserRow = (Line<'static>, Option<crate::open_target::LinkTarget>);
+struct BrowserSpan {
+    column: usize,
+    text: String,
+    style: Style,
+    target: crate::open_target::LinkTarget,
+}
+type BrowserRow = (Line<'static>, Vec<BrowserSpan>);
 fn browser_card_rows(
     lines: Vec<Line<'static>>,
     card: &crate::model::Card,
     width: usize,
 ) -> Vec<BrowserRow> {
     let targets = crate::browser_links::for_card(card);
-    wrap_rows(lines, width)
-        .into_iter()
-        .map(|line| {
-            let target = line
-                .spans
-                .first()
-                .filter(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
-                .and_then(|span| span.content.strip_prefix("   ↗ Open "))
-                .and_then(|text| text.split_once(" · "))
-                .and_then(|(number, _)| number.parse::<usize>().ok())
-                .and_then(|index| index.checked_sub(1))
-                .and_then(|index| targets.get(index))
-                .cloned();
-            (line, target)
-        })
-        .collect()
+    let mut output = Vec::new();
+    for line in lines {
+        // Carry each original link through styled wrapping, including multiple
+        // links on one row and a single URL split over several rows.
+        let mut pending: VecDeque<_> = line
+            .spans
+            .iter()
+            .filter_map(|span| {
+                if !span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                    return None;
+                }
+                let target = span
+                    .content
+                    .strip_prefix("   ↗ Open ")
+                    .and_then(|text| text.split_once(" · "))
+                    .and_then(|(number, _)| number.parse::<usize>().ok())
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| targets.get(index))
+                    .or_else(|| {
+                        targets.iter().find(|link| {
+                            span.content == crate::browser_links::display_label(link)
+                                || span.content == link.uri
+                        })
+                    })?;
+                Some((span.content.to_string(), target.clone()))
+            })
+            .collect();
+        for row in wrap_rows(vec![line], width) {
+            let mut column = 0;
+            let mut links = Vec::new();
+            for span in &row.spans {
+                if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                    if let Some((remaining, target)) = pending.front_mut() {
+                        if !remaining.starts_with(span.content.as_ref()) {
+                            *remaining = remaining.trim_start().to_owned();
+                        }
+                        if let Some(tail) = remaining.strip_prefix(span.content.as_ref()) {
+                            let text = span.content.trim_start();
+                            if !text.is_empty() {
+                                links.push(BrowserSpan {
+                                    column: column + span.width() - UnicodeWidthStr::width(text),
+                                    text: text.to_owned(),
+                                    style: span.style,
+                                    target: target.clone(),
+                                });
+                            }
+                            *remaining = tail.to_owned();
+                            if remaining.is_empty() {
+                                pending.pop_front();
+                            }
+                        }
+                    }
+                }
+                column += span.width();
+            }
+            output.push((row, links));
+        }
+    }
+    output
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2194,7 +2238,11 @@ fn card_lines(
                 wrapped.push((*line).to_owned());
                 continue;
             }
-            if !in_code && card.title != "Diff" && list_marker_len(line.trim_start()).is_some() {
+            if !in_code
+                && card.title != "Diff"
+                && (list_marker_len(line.trim_start()).is_some()
+                    || !crate::browser_links::extract(line).is_empty())
+            {
                 // Parse the complete item before wrapping: splitting raw Markdown
                 // loses the list context and can cut emphasis/code delimiters.
                 wrapped.push((*line).to_owned());
@@ -2678,6 +2726,40 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
                     .map(|index| (index, *mark, *modifier, *color))
             })
             .min_by_key(|entry| entry.0);
+        let link = crate::browser_links::extract(rest)
+            .into_iter()
+            .filter_map(|link| {
+                let markdown = format!("[{}]({})", link.label, link.uri);
+                if let Some(index) = rest.find(&markdown) {
+                    Some((
+                        index,
+                        markdown.len(),
+                        crate::browser_links::display_label(&link),
+                    ))
+                } else {
+                    rest.find(&link.uri)
+                        .map(|index| (index, link.uri.len(), link.uri))
+                }
+            })
+            .min_by_key(|link| link.0);
+        if let Some((index, length, label)) =
+            link.filter(|link| next.is_none_or(|mark| link.0 < mark.0))
+        {
+            if index > 0 {
+                out.push(Span::styled(
+                    rest[..index].to_owned(),
+                    Style::default().fg(p.text),
+                ));
+            }
+            out.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(p.info)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+            rest = &rest[index + length..];
+            continue;
+        }
         let Some((index, marker, modifier, color)) = next else {
             out.push(Span::styled(rest.to_owned(), Style::default().fg(p.text)));
             break;

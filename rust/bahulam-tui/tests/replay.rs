@@ -747,7 +747,7 @@ fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
     assert!(all_text.contains("Message"));
     assert!(all_text.contains("Ready"));
     assert!(all_text.contains("100 in · 0 out"));
-    assert!(all_text.contains("Enter send · Alt+M select text"));
+    assert!(all_text.contains("Enter send · Drag to copy"));
 
     let width = buffer.area.width as usize;
     let input_row = buffer
@@ -1926,7 +1926,19 @@ fn browser_targets_match_painted_rows_after_wrap_scroll_resize_and_replacement()
                             .contains("↗ Open ")
                     })
                     .count();
-                assert_eq!(hits.len(), visible, "{inline} {width} {scroll}");
+                assert_eq!(
+                    hits.iter()
+                        .filter(|hit| hit.text.starts_with("↗ Open "))
+                        .count(),
+                    visible,
+                    "{inline} {width} {scroll}"
+                );
+                if scroll == 0 {
+                    assert!(
+                        hits.iter().any(|hit| hit.text.starts_with("Docs 界")),
+                        "inline Markdown label must be clickable"
+                    );
+                }
                 if scroll == u16::MAX {
                     assert!(!hits.is_empty());
                 }
@@ -2004,7 +2016,7 @@ fn browser_actions_respect_tool_folding_and_modal_ownership() {
             )
         })
         .unwrap();
-    assert_eq!(painted_browser_links().len(), 1);
+    assert_eq!(painted_browser_links().len(), 2); // visible URL and its Open action
     model
         .apply(&event(
             2,

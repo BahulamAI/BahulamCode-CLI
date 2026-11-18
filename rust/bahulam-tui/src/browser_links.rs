@@ -5,6 +5,14 @@ use crate::{
 };
 use std::collections::HashSet;
 
+pub fn display_label(link: &LinkTarget) -> String {
+    if link.label == link.uri {
+        link.uri.clone()
+    } else {
+        format!("{} ↗ {}", link.label, link.uri)
+    }
+}
+
 pub fn valid_url(value: &str) -> bool {
     if value.len() > 2048
         || value.chars().any(|c| {
