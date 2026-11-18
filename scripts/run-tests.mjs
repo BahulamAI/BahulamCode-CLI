@@ -56,6 +56,7 @@ const UNIT_TESTS = [
     'test/test-rust-usage.mjs',
     'test/test-display-sanitize.mjs',
     'test/test-resume-display-stability.mjs',
+    'test/test-resume-folder-scope.mjs',
     'test/test-rust-tui-settings.mjs',
     'test/test-rust-tui-backpressure.mjs',
     'test/test-background-promotion.mjs',

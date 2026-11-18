@@ -1,4 +1,5 @@
 use bahulam_tui::{
+    browser_links,
     capabilities::TerminalCapabilities,
     clipboard, composer, copy_menu, integrations,
     model::safe_text,
@@ -79,6 +80,47 @@ enum ClipboardReply {
     Notice(String),
     Link(Option<open_target::LinkTarget>, u64, usize),
 }
+fn browser_open_job(uri: String) -> std::sync::mpsc::Receiver<ClipboardReply> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let result = open_target::open_browser_url(&uri).unwrap_or_else(|error| error.to_string());
+        let _ = tx.send(ClipboardReply::Notice(result));
+    });
+    rx
+}
+
+fn paint_browser_hyperlinks() -> io::Result<()> {
+    use ratatui::backend::IntoCrossterm;
+    let hits = bahulam_tui::render::painted_browser_links();
+    if hits.is_empty() {
+        return Ok(());
+    }
+    let mut stdout = io::stdout().lock();
+    crossterm::queue!(stdout, crossterm::cursor::SavePosition)?;
+    for hit in hits {
+        if !browser_links::valid_url(&hit.target.uri) {
+            continue;
+        }
+        let style: crossterm::style::ContentStyle = hit.style.into_crossterm();
+        crossterm::queue!(
+            stdout,
+            crossterm::cursor::MoveTo(hit.area.x, hit.area.y),
+            crossterm::style::SetStyle(style)
+        )?;
+        write!(
+            stdout,
+            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            hit.target.uri, hit.text
+        )?;
+    }
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
+        crossterm::cursor::RestorePosition
+    )?;
+    stdout.flush()
+}
+
 fn toggle_expansion(
     model: &Arc<Mutex<bahulam_tui::model::Model>>,
     index: usize,
@@ -86,7 +128,11 @@ fn toggle_expansion(
     writer: &Option<Arc<Mutex<BufWriter<File>>>>,
 ) -> io::Result<()> {
     let reference = if let Ok(mut state) = model.lock() {
-        if state.cards.get(index).is_none_or(|card| card.is_message()) {
+        if state
+            .cards
+            .get(index)
+            .is_none_or(|card| !card.is_foldable())
+        {
             return Ok(());
         }
         if expanded.remove(&index) {
@@ -308,6 +354,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal_focused = true;
     let mut reported_integration_state = (false, false);
     let mut visible_link: Option<open_target::LinkTarget> = None;
+    let mut pressed_browser_link = None;
     // Use the same resolved color level for standalone replay and diagnostics.
     // Hosted mode keeps Node's canonical palette selection authoritative.
     std::env::set_var("BAHULAM_TUI_COLOR_LEVEL", &capabilities.color_depth);
@@ -322,9 +369,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut inline_mode =
         stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline");
     // Wheel navigation belongs to the Rust conversation in both views.
-    // Hold Shift for native selection, or explicitly disable reporting with =0.
-    let mouse_requested = capabilities.mouse_capture;
-    let mut mouse_enabled = mouse_requested;
+    // Alt+M suspends capture and repainting for native terminal text selection.
+    let mut mouse_enabled = capabilities.mouse_capture;
+    let mut selecting_text = false;
+    let mut selection_frame_pending = false;
     let mut terminal = open_terminal(inline_mode)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
@@ -338,6 +386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut scroll: u16 = 0;
     let mut follow = stdio;
+    let mut expansion_anchor = None;
     let mut seen_transcript_revision = model
         .lock()
         .map(|state| state.transcript_revision)
@@ -403,6 +452,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 seen_transcript_revision = state.transcript_revision;
                 visible_link = None;
                 expanded.clear();
+                expansion_anchor = None;
                 scroll = 0;
                 follow = true;
                 focused_card = state.cards.len().saturating_sub(1);
@@ -429,7 +479,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .iter()
                         .enumerate()
                         .filter(|(i, card)| {
-                            (card.is_message() || expanded.contains(i))
+                            (!card.is_foldable() || expanded.contains(i))
                                 && card.payload_ref.is_some()
                                 && card.detail.is_none()
                                 && !card.detail_loading
@@ -631,8 +681,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
         };
+        if let Some(anchor) = expansion_anchor.take() {
+            if let Some(layout) = geometry() {
+                scroll = layout.anchored_scroll(anchor);
+            }
+            follow = false;
+        }
         let visible_scroll = if follow { u16::MAX } else { scroll };
-        if dirty {
+        if dirty && (!selecting_text || selection_frame_pending) {
+            selection_frame_pending = false;
             if integration_config.sync {
                 write!(io::stdout(), "\x1b[?2026h")?;
             }
@@ -658,6 +715,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             })?;
+            if integration_config.links {
+                paint_browser_hyperlinks()?;
+            }
             if let Some(target) = visible_link.as_ref().filter(|_| integration_config.links) {
                 let area = terminal.get_frame().area();
                 let mut cells = 0usize;
@@ -724,7 +784,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 focus_panel = 0;
                 input_hint(&model, "");
             }
+            // Keep streaming data in the model while a native selection is on
+            // screen. Any other key returns to live controls before processing it.
+            if selecting_text
+                && matches!(&event, Event::Key(key)
+                if key.kind == KeyEventKind::Press && !(key.code == KeyCode::Char('m')
+                    && key.modifiers.contains(KeyModifiers::ALT)))
+            {
+                selecting_text = false;
+                mouse_enabled = capabilities.mouse_capture;
+                if mouse_enabled {
+                    execute!(io::stdout(), EnableMouseCapture)?;
+                }
+                if let Ok(mut state) = model.lock() {
+                    state.selecting_text = false;
+                }
+            }
+            if selecting_text && matches!(&event, Event::Resize(..)) {
+                selection_frame_pending = true;
+            }
             match event {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('m')
+                        && key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    selecting_text = !selecting_text;
+                    selection_frame_pending = true;
+                    mouse_enabled = !selecting_text && capabilities.mouse_capture;
+                    pressed_browser_link = None;
+                    if mouse_enabled {
+                        execute!(io::stdout(), EnableMouseCapture)?;
+                    } else {
+                        execute!(io::stdout(), DisableMouseCapture)?;
+                    }
+                    if let Ok(mut state) = model.lock() {
+                        state.selecting_text = selecting_text;
+                    }
+                }
                 Event::FocusGained => {
                     terminal_focused = true;
                 }
@@ -754,6 +851,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|card| (card, state.cwd.clone()))
                     });
                     if let Some((card, cwd)) = target {
+                        if key.code == KeyCode::Char('l') {
+                            let links = browser_links::for_card(&card);
+                            if !links.is_empty() {
+                                if let Ok(mut state) = model.lock() {
+                                    state.interaction = Some(browser_links::picker(links));
+                                }
+                                continue;
+                            }
+                        }
                         let (tx, rx) = std::sync::mpsc::channel();
                         clipboard_job = Some(rx);
                         thread::spawn(move || {
@@ -848,6 +954,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         response
                     };
                     if let Some((request_id, value, cancelled)) = response {
+                        if request_id == "local-browser-links" {
+                            if let Some(uri) = value.filter(|_| !cancelled) {
+                                clipboard_job = Some(browser_open_job(uri));
+                            }
+                            continue;
+                        }
                         if request_id == "local-copy" {
                             if let Some(value) = value.filter(|_| !cancelled) {
                                 pending_copy =
@@ -1153,14 +1265,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         input_hint(&model, "");
                     }
                     KeyCode::Esc if expanded.contains(&focused_card) => {
-                        scroll = geometry()
-                            .and_then(|g| {
-                                g.cards
-                                    .into_iter()
-                                    .find(|(i, _)| *i == focused_card)
-                                    .map(|(_, row)| row)
-                            })
-                            .unwrap_or(scroll);
+                        expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
                         expanded.remove(&focused_card);
                         follow = false;
                         focus_panel = 0;
@@ -1201,6 +1306,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         paste::expand_last_paste_chip(&mut input, &mut cursor, &mut paste_chips);
                     }
                     KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
+                        follow = false;
                         let count = model.lock().map(|m| m.cards.len()).unwrap_or(0);
                         if expanded.len() == count {
                             expanded.clear();
@@ -1209,6 +1316,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
+                        follow = false;
                         let indices = model
                             .lock()
                             .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
@@ -1377,18 +1486,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if model.lock().ok().is_some_and(|m| {
                             m.cards
                                 .get(focused_card)
-                                .is_some_and(|card| card.is_message())
+                                .is_some_and(|card| !card.is_foldable())
                         }) {
                             continue;
                         }
-                        scroll = geometry()
-                            .and_then(|g| {
-                                g.cards
-                                    .into_iter()
-                                    .find(|(i, _)| *i == focused_card)
-                                    .map(|(_, row)| row)
-                            })
-                            .unwrap_or(scroll);
+                        expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
                         follow = false;
                         toggle_expansion(&model, focused_card, &mut expanded, &command_writer)?;
                         if !expanded.contains(&focused_card) {
@@ -1399,7 +1501,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if model.lock().ok().is_some_and(|m| {
                             m.cards
                                 .get(focused_card)
-                                .is_some_and(|card| card.is_message())
+                                .is_some_and(|card| !card.is_foldable())
                         }) {
                             continue;
                         }
@@ -1491,7 +1593,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     terminal.get_frame().area(),
                                     &model,
                                 )?;
-                                mouse_enabled = mouse_requested;
                                 if mouse_enabled {
                                     execute!(io::stdout(), EnableMouseCapture)?;
                                 }
@@ -1693,6 +1794,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::Mouse(mouse) if mouse_enabled => {
+                    let position = ratatui::layout::Position::new(mouse.column, mouse.row);
+                    let frame_current = drawn_revision == render_revision.load(Ordering::Acquire);
+                    let browser_hit =
+                        if frame_current && detail_card.is_none() && mouse.modifiers.is_empty() {
+                            bahulam_tui::render::browser_link_at(position)
+                        } else {
+                            None
+                        };
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        pressed_browser_link = browser_hit.clone();
+                        if browser_hit.is_some() {
+                            continue;
+                        }
+                    } else if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                        if let Some(pressed) = pressed_browser_link.take() {
+                            if browser_hit.as_ref() == Some(&pressed) {
+                                if clipboard_job.is_none() {
+                                    clipboard_job = Some(browser_open_job(pressed.target.uri));
+                                } else {
+                                    input_hint(
+                                        &model,
+                                        "Open/copy operation still running; try again shortly",
+                                    );
+                                }
+                            }
+                        }
+                        continue;
+                    } else if !matches!(mouse.kind, MouseEventKind::Moved) {
+                        pressed_browser_link = None;
+                    }
+
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                         && detail_card.is_none()
                     {
@@ -1712,14 +1844,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(index) = hit {
                             focused_card = index;
                             focus_panel = 1;
-                            scroll = geometry()
-                                .and_then(|g| {
-                                    g.cards
-                                        .into_iter()
-                                        .find(|(i, _)| *i == index)
-                                        .map(|(_, row)| row)
-                                })
-                                .unwrap_or(scroll);
+                            expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
                             follow = false;
                             toggle_expansion(&model, index, &mut expanded, &command_writer)?;
                             if !expanded.contains(&index) {
@@ -1825,6 +1950,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::Resize(width, height) => {
+                    pressed_browser_link = None;
                     // Keep the visible message anchored when reflow changes row
                     // counts. Following output continues to track the new tail.
                     let anchor = if !follow && detail_card.is_none() {

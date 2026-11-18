@@ -26,7 +26,7 @@ for (const mode of ['inline','fullscreen']) {
     'commands.push(c);fs.writeFileSync('+JSON.stringify(path.join(temp,'commands.json'))+',JSON.stringify(commands));',
     "if(c.type==='show_details')host.send({v:2,seq:1,ts:'',type:'detail_loaded',session_id:'composer',agent_id:'main',data:{payload_ref:'fixture:full',detail:"+JSON.stringify(full)+"}});",
     '}});',
-    "host.send({v:2,seq:1,ts:'',type:'command_result',session_id:'composer',agent_id:'main',payload_ref:'fixture:full',data:{name:'/fixture',result:'TOOL_PREVIEW',ok:true}});",
+    "host.send({v:2,seq:1,ts:'',type:'tool_finished',session_id:'composer',agent_id:'main',payload_ref:'fixture:full',data:{tool_id:'fixture',preview:'TOOL_PREVIEW',ok:true}});",
     'setTimeout(()=>host.close(),20000).unref();',
   ].join('\n'));
   try {

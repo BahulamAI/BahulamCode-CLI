@@ -16,19 +16,10 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
 import { sanitizeDisplayValue } from './display-sanitize.mjs';
-import { bahulamHome } from './paths.mjs';
+import { bahulamHome, transcriptProjectSlug } from './paths.mjs';
 
 const BAHULAM_DIR = bahulamHome();
 const FLUSH_INTERVAL_MS = 500;
-
-/**
- * Sanitize a cwd path into a project slug for the directory name.
- * /Users/sree/Sites/myproject → -Users-sree-Sites-myproject
- * Mirrors the Claude Code / Bahulam CLI convention.
- */
-function sanitizePath(p) {
-  return p.replace(/\//g, '-').replace(/^-/, '-');
-}
 
 function normalizeToolResultContent(output) {
   if (typeof output === 'string') return output;
@@ -67,7 +58,7 @@ export class JsonlWriter {
     this.cwd = cwd;
     this.version = version;
     this.sessionId = null; // set by setSessionId() when backend assigns it
-    this.slug = sanitizePath(cwd);
+    this.slug = transcriptProjectSlug(cwd);
     this.projectDir = path.join(BAHULAM_DIR, 'projects', this.slug);
 
     // UUID chain for parent linking (cc-lens replay)

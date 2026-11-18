@@ -25,6 +25,9 @@ struct Palette {
     selection: Color,
     input_bg: Color,
     info: Color,
+    details: Color,
+    tool: Color,
+    error: Color,
     success: Color,
     warning: Color,
     danger: Color,
@@ -99,6 +102,9 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             selection: Color::Reset,
             input_bg: Color::Reset,
             info: Color::Reset,
+            details: Color::Reset,
+            tool: Color::Reset,
+            error: Color::Reset,
             success: Color::Reset,
             warning: Color::Reset,
             danger: Color::Reset,
@@ -115,6 +121,9 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             selection: Color::Rgb(226, 235, 246),
             input_bg: Color::Rgb(242, 246, 251),
             info: Color::Rgb(49, 91, 154),
+            details: Color::Rgb(92, 101, 114),
+            tool: Color::Rgb(48, 59, 160),
+            error: Color::Rgb(173, 54, 63),
             success: Color::Rgb(35, 114, 76),
             warning: Color::Rgb(132, 82, 0),
             danger: Color::Rgb(165, 42, 50),
@@ -134,7 +143,10 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             border: Color::Gray,
             selection: Color::Rgb(0, 54, 112),
             input_bg: Color::Rgb(0, 0, 0),
-            info: Color::Cyan,
+            info: Color::LightBlue,
+            details: Color::Gray,
+            tool: Color::LightBlue,
+            error: Color::Red,
             success: Color::Green,
             warning: Color::Yellow,
             danger: Color::Red,
@@ -154,7 +166,10 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             border: Color::DarkGray,
             selection: Color::Blue,
             input_bg: Color::Reset,
-            info: Color::Cyan,
+            info: Color::LightBlue,
+            details: Color::Gray,
+            tool: Color::LightBlue,
+            error: Color::Red,
             success: Color::Green,
             warning: Color::Yellow,
             danger: Color::Red,
@@ -174,7 +189,10 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             border: Color::Rgb(57, 69, 82),
             selection: Color::Rgb(43, 61, 84),
             input_bg: Color::Rgb(28, 38, 51),
-            info: Color::Rgb(120, 166, 232),
+            info: Color::Rgb(146, 197, 255),
+            details: Color::Rgb(188, 196, 208),
+            tool: Color::Rgb(48, 59, 160),
+            error: Color::Rgb(173, 54, 63),
             success: Color::Rgb(114, 184, 148),
             warning: Color::Rgb(216, 173, 99),
             danger: Color::Rgb(216, 121, 121),
@@ -197,11 +215,9 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             (&mut p.accent, "brand.primary"),
             (&mut p.text, "text.primary"),
             (&mut p.muted, "text.muted"),
-            (&mut p.info, "brand.data"),
             (&mut p.success, "state.success"),
             (&mut p.warning, "state.warn"),
             (&mut p.danger, "state.danger"),
-            (&mut p.code, "syntax.string"),
         ] {
             if let Some(value) = token_color(&values[name], level) {
                 *color = value;
@@ -219,6 +235,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             }
         }
     }
+    // Rust actions have their own roles: blue tools/links/code, quieter grey details.
+    p.code = p.info;
+    if !matches!(theme, "ansi" | "high-contrast") {
+        p.danger = Color::Rgb(255, 176, 182);
+    }
     for color in [
         &mut p.accent,
         &mut p.text,
@@ -227,6 +248,9 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         &mut p.selection,
         &mut p.input_bg,
         &mut p.info,
+        &mut p.details,
+        &mut p.tool,
+        &mut p.error,
         &mut p.success,
         &mut p.warning,
         &mut p.danger,
@@ -348,6 +372,9 @@ mod palette_tests {
                     p.selection,
                     p.input_bg,
                     p.info,
+                    p.details,
+                    p.tool,
+                    p.error,
                     p.success,
                     p.warning,
                     p.danger,
@@ -451,6 +478,61 @@ fn transcript_rect(area: Rect, inline: bool) -> Rect {
         horizontal: if inline { 1 } else { 2 },
         vertical: if inline { 0 } else { 1 },
     })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserLinkHit {
+    pub area: Rect,
+    pub target: crate::open_target::LinkTarget,
+    pub text: String,
+    pub style: Style,
+}
+thread_local! {
+    static BROWSER_LINK_HITS: RefCell<Vec<BrowserLinkHit>> = const { RefCell::new(Vec::new()) };
+}
+/// Targets come from this frame's clipped rows, never from guessed card positions.
+pub fn painted_browser_links() -> Vec<BrowserLinkHit> {
+    BROWSER_LINK_HITS.with(|hits| hits.borrow().clone())
+}
+pub fn browser_link_at(position: Position) -> Option<BrowserLinkHit> {
+    BROWSER_LINK_HITS.with(|hits| {
+        hits.borrow()
+            .iter()
+            .find(|hit| hit.area.contains(position))
+            .cloned()
+    })
+}
+
+fn browser_actions(card: &crate::model::Card, p: Palette, width: usize) -> Vec<Line<'static>> {
+    if width < 16 {
+        return Vec::new();
+    }
+    crate::browser_links::for_card(card)
+        .into_iter()
+        .enumerate()
+        .map(|(i, link)| {
+            let prefix = format!("   ↗ Open {} · ", i + 1);
+            let remaining = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            let label = if link.label == link.uri || remaining < 12 {
+                String::new()
+            } else {
+                format!(
+                    "{} · ",
+                    middle_ellipsis(&safe_text(&link.label), (remaining / 4).min(24))
+                )
+            };
+            let url = middle_ellipsis(
+                &link.uri,
+                remaining.saturating_sub(UnicodeWidthStr::width(label.as_str())),
+            );
+            Line::from(Span::styled(
+                format!("{prefix}{label}{url}"),
+                Style::default()
+                    .fg(p.info)
+                    .add_modifier(Modifier::UNDERLINED),
+            ))
+        })
+        .collect()
 }
 
 /// Locate the actual painted details action, including wrapped rows and tail-follow.
@@ -695,6 +777,7 @@ pub fn draw_with_view(
     detail_scroll: u16,
     inline: bool,
 ) {
+    BROWSER_LINK_HITS.with(|hits| hits.borrow_mut().clear());
     let p = palette(theme);
     let area = frame.area();
     let ViewLayout {
@@ -739,16 +822,50 @@ pub fn draw_with_view(
             .map(|card| detail_lines(card, p))
             .unwrap_or_default()
     } else {
-        transcript_lines(
+        let inner = transcript_rect(columns[0], inline);
+        let rendered = transcript_lines(
             model,
             expanded,
             focused,
             p,
-            transcript_rect(columns[0], inline).width as usize,
+            inner.width as usize,
             agent_filter,
             scroll,
-            rows[1].height.saturating_sub(if inline { 0 } else { 2 }) as usize,
-        )
+            inner.height as usize,
+        );
+        if model.interaction.is_none() && model.approval.is_none() {
+            let hits = rendered
+                .iter()
+                .enumerate()
+                .filter_map(|(row, (line, target))| {
+                    let target = target.clone()?;
+                    let text = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>();
+                    // Leading indentation is not a browser action.
+                    let label = text.strip_prefix("   ")?.to_owned();
+                    Some(BrowserLinkHit {
+                        area: Rect::new(
+                            inner.x + 3,
+                            inner.y + row as u16,
+                            UnicodeWidthStr::width(label.as_str()) as u16,
+                            1,
+                        ),
+                        target,
+                        text: label,
+                        style: line
+                            .spans
+                            .first()
+                            .map(|span| span.style)
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect();
+            BROWSER_LINK_HITS.with(|cache| *cache.borrow_mut() = hits);
+        }
+        rendered.into_iter().map(|(line, _)| line).collect()
     };
     let title = if let Some(index) = detail_card {
         model
@@ -1079,7 +1196,9 @@ pub fn draw_with_view(
         ));
     }
 
-    let shortcuts = if detail_card.is_some() {
+    let shortcuts = if model.selecting_text {
+        "Text selection · drag to select/copy · Alt+M restore mouse controls".to_owned()
+    } else if detail_card.is_some() {
         format!(
             "Esc return · Ctrl+Y copy · {}",
             if model.composer_hint.is_empty() {
@@ -1097,7 +1216,8 @@ pub fn draw_with_view(
     } else if inline && area.width < 78 {
         "Tab history/input · Enter send · Ctrl+C twice quit".to_owned()
     } else if inline {
-        "Tab history · Ctrl+V paste · Ctrl+G editor · Ctrl+R search · Ctrl+C twice quit".to_owned()
+        "Tab history · Alt+M select text · Ctrl+V paste · Ctrl+G editor · Ctrl+C twice quit"
+            .to_owned()
     } else if interactive && agent_filter.is_some() {
         "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
     } else if interactive && focus_panel == 2 {
@@ -1105,7 +1225,7 @@ pub fn draw_with_view(
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
-        "Enter send · Ctrl+J new line · Ctrl+V paste · Ctrl+G editor · Ctrl+R search · Ctrl+C twice quit"
+        "Enter send · Alt+M select text · Ctrl+V paste · Ctrl+G editor · Ctrl+C twice quit"
             .to_owned()
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
@@ -1493,9 +1613,48 @@ fn card_row_count(
 }
 
 pub struct HistoryGeometry {
+    pub total_rows: usize,
     pub end: u16,
     pub page: u16,
     pub cards: Vec<(usize, u16)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryAnchor {
+    card: usize,
+    offset: usize,
+}
+impl HistoryGeometry {
+    pub fn anchor(&self, scroll: u16, follow: bool) -> Option<HistoryAnchor> {
+        let top = if follow { self.end } else { scroll } as usize;
+        let (card, row) = self
+            .cards
+            .iter()
+            .rev()
+            .find(|(_, row)| *row as usize <= top)?;
+        Some(HistoryAnchor {
+            card: *card,
+            offset: top - *row as usize,
+        })
+    }
+    pub fn anchored_scroll(&self, anchor: HistoryAnchor) -> u16 {
+        let Some(index) = self.cards.iter().position(|(card, _)| *card == anchor.card) else {
+            return 0;
+        };
+        let start = self.cards[index].1 as usize;
+        let end = self
+            .cards
+            .get(index + 1)
+            .map(|(_, row)| *row as usize)
+            .unwrap_or(self.total_rows);
+        // If collapse removed the very row being viewed, keep that tool in view.
+        let offset = if anchor.offset < end.saturating_sub(start) {
+            anchor.offset
+        } else {
+            0
+        };
+        (start + offset).min((u16::MAX - 1) as usize) as u16
+    }
 }
 
 pub fn history_geometry(
@@ -1528,12 +1687,38 @@ pub fn history_geometry(
         total += card_row_count(card, index, expanded, p, width);
     }
     HistoryGeometry {
+        total_rows: total,
         end: total
             .saturating_sub(page as usize)
             .min((u16::MAX - 1) as usize) as u16,
         page,
         cards,
     }
+}
+
+type BrowserRow = (Line<'static>, Option<crate::open_target::LinkTarget>);
+fn browser_card_rows(
+    lines: Vec<Line<'static>>,
+    card: &crate::model::Card,
+    width: usize,
+) -> Vec<BrowserRow> {
+    let targets = crate::browser_links::for_card(card);
+    wrap_rows(lines, width)
+        .into_iter()
+        .map(|line| {
+            let target = line
+                .spans
+                .first()
+                .filter(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+                .and_then(|span| span.content.strip_prefix("   ↗ Open "))
+                .and_then(|text| text.split_once(" · "))
+                .and_then(|(number, _)| number.parse::<usize>().ok())
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| targets.get(index))
+                .cloned();
+            (line, target)
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1546,7 +1731,7 @@ fn transcript_lines(
     agent_filter: Option<&str>,
     scroll: u16,
     visible_rows: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<BrowserRow> {
     let budget = visible_rows.max(1);
     let mut output = Vec::with_capacity(budget);
     let cards = model
@@ -1557,8 +1742,9 @@ fn transcript_lines(
     if scroll == u16::MAX {
         // Only render enough cards to fill the tail, even in very long sessions.
         for (index, card) in cards.rev() {
-            let lines = wrap_rows(
+            let lines = browser_card_rows(
                 card_lines(card, index, expanded, focused, p, width, usize::MAX),
+                card,
                 width,
             );
             for line in lines.into_iter().rev() {
@@ -1580,8 +1766,9 @@ fn transcript_lines(
                     continue;
                 }
             }
-            let rows = wrap_rows(
+            let rows = browser_card_rows(
                 card_lines(card, index, expanded, focused, p, width, usize::MAX),
+                card,
                 width,
             );
             output.extend(rows.into_iter().skip(skip).take(budget - output.len()));
@@ -1686,8 +1873,9 @@ fn card_lines(
         "requested" | "queued" => ("○", p.muted),
         "running" | "streaming" | "working" => ("◐", p.info),
         "waiting" => ("?", p.warning),
-        "failed" | "error" => ("✗", p.danger),
-        "denied" | "cancelled" => ("⊘", p.muted),
+        "failed" | "error" => ("✗", p.error),
+        "denied" | "rejected" => ("⊘", p.danger),
+        "cancelled" => ("⊘", p.muted),
         "done" | "complete" | "ready" => ("✓", p.success),
         _ => ("•", p.accent),
     };
@@ -1716,7 +1904,11 @@ fn card_lines(
     } else {
         &card.title
     };
-    let display_status = if is_assistant && card.status == "streaming" {
+    let completed_tool =
+        card.is_foldable() && matches!(card.status.as_str(), "done" | "complete" | "ready");
+    let display_status = if completed_tool {
+        ""
+    } else if is_assistant && card.status == "streaming" {
         "responding"
     } else if is_assistant || is_user {
         ""
@@ -1727,6 +1919,8 @@ fn card_lines(
         p.accent
     } else if is_assistant {
         agent_identity_color(&card.agent, p)
+    } else if !card.tool_name.is_empty() {
+        p.tool
     } else {
         p.text
     };
@@ -1735,11 +1929,13 @@ fn card_lines(
         .map(|at| format!("{}s", at.elapsed().as_secs()))
         .unwrap_or_else(|| card.metadata.clone());
     let metadata_width = UnicodeWidthStr::width(metadata_text.as_str()).min(18);
+    let status_width = if display_status.is_empty() {
+        0
+    } else {
+        UnicodeWidthStr::width(display_status).max(9) + 1
+    };
     let heading_width = if !is_assistant || card.title == "Agent report" {
-        3 + UnicodeWidthStr::width(display_title).max(12)
-            + 1
-            + UnicodeWidthStr::width(display_status).max(9)
-            + 1
+        3 + UnicodeWidthStr::width(display_title).max(12) + 1 + status_width
     } else {
         3
     };
@@ -1776,10 +1972,12 @@ fn card_lines(
                 .fg(identity_color)
                 .add_modifier(Modifier::BOLD),
         ));
-        heading.push(Span::styled(
-            format!("{:<9} ", safe_text(display_status)),
-            Style::default().fg(color),
-        ));
+        if !display_status.is_empty() {
+            heading.push(Span::styled(
+                format!("{:<9} ", safe_text(display_status)),
+                Style::default().fg(color),
+            ));
+        }
     }
     if !primary.is_empty() {
         heading.push(Span::styled(primary, Style::default().fg(p.muted)));
@@ -1796,8 +1994,9 @@ fn card_lines(
     if budget <= 1 {
         return lines;
     }
-    let is_expanded = expanded.contains(&index);
-    let expanded_text = if is_expanded && !card.is_message() {
+    let foldable = card.is_foldable();
+    let is_expanded = foldable && expanded.contains(&index);
+    let expanded_text = if (is_expanded || !foldable) && !card.is_message() {
         Some(if card.detail_loading && card.detail.is_none() {
             "Loading complete result…".to_owned()
         } else {
@@ -1823,9 +2022,10 @@ fn card_lines(
                 .lines()
                 .any(|line| UnicodeWidthStr::width(line) > content_width)
         });
-    // Conversation messages stay complete; only tool/command/status cards fold.
+    // Restore compact previews and access to every separately stored tool result.
+    // Commands and conversation messages remain complete.
     let is_message = is_assistant || is_user;
-    let limit = if is_message {
+    let limit = if !foldable {
         usize::MAX
     } else {
         match card.status.as_str() {
@@ -1835,7 +2035,7 @@ fn card_lines(
             _ => 2,
         }
     };
-    let has_more = if is_message {
+    let has_more = if !foldable {
         false
     } else {
         is_expanded
@@ -1851,15 +2051,12 @@ fn card_lines(
     let body_room = budget
         .saturating_sub(1)
         .saturating_sub(usize::from(has_more));
-    let show = if is_expanded || is_message {
+    let show = if is_expanded || !foldable {
         body_room.min(total)
     } else {
         limit.min(body_room).min(total)
     };
-    let failure_tail =
-        matches!(card.status.as_str(), "failed" | "error") && !expanded.contains(&index);
-    // A reply that is still streaming shows its newest lines, not its first.
-    let tail = failure_tail;
+    let tail = foldable && matches!(card.status.as_str(), "failed" | "error") && !is_expanded;
     let selected_lines: Vec<&str> = if tail {
         body.lines()
             .rev()
@@ -1871,7 +2068,7 @@ fn card_lines(
     } else {
         body.lines().take(show).collect()
     };
-    let body_lines: Vec<String> = if is_message || is_expanded {
+    let body_lines: Vec<String> = if !foldable || is_expanded {
         // Message lines get a 4-column speaker gutter plus the 3-column
         // markdown indent; wrap to what remains so the paragraph widget
         // never re-wraps and pushes the newest line out of the viewport.
@@ -1932,7 +2129,7 @@ fn card_lines(
                         "＋ Show details"
                     }
                 ),
-                Style::default().fg(p.info).add_modifier(Modifier::BOLD),
+                Style::default().fg(p.details),
             ),
             Span::styled(" · Click / Enter", Style::default().fg(p.muted)),
             if card.detail_loading {
@@ -1946,6 +2143,9 @@ fn card_lines(
             Line::from(format!("   … {} more lines", total - show))
                 .style(Style::default().fg(p.muted)),
         );
+    }
+    if !foldable || !has_more || is_expanded || card.open_url.is_some() {
+        lines.extend(browser_actions(card, p, width));
     }
     lines.push(Line::default());
     lines
@@ -2435,7 +2635,7 @@ mod row_measurement_tests {
             open_url: None,
             started_at: None,
             tool_id: String::new(),
-            tool_name: String::new(),
+            tool_name: "shell".into(),
         };
         let mut expanded = HashSet::new();
         let p = palette("dark");

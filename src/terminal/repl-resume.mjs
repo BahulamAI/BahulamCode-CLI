@@ -44,7 +44,7 @@ export async function listResumableSessions(sessionIdPrefix) {
   // per-project state-only entries never had a transcript, so they can't be
   // replayed — silently dropping them removes a source of "picked a session
   // and got a flat history" surprises.
-  const rich = (await getRecentSessions(Infinity, { sessionIdPrefix })).map(normalizeResumableSession);
+  const rich = (await getRecentSessions(Infinity, { sessionIdPrefix, projectPath: safeCwd() })).map(normalizeResumableSession);
   return rich.sort((a, b) => {
     const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
     const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;

@@ -8,7 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { bahulamHome } from './paths.mjs';
+import { bahulamHome, transcriptProjectSlug } from './paths.mjs';
 import { readAllEvents } from './event-log.mjs';
 import { followupsFromTranscript } from './followups.mjs';
 
@@ -183,20 +183,23 @@ function entryToolResults(entry) {
 }
 
 /**
- * List all session JSONL files across all projects.
+ * List session JSONL files, optionally restricted before directory traversal.
  * Returns [{slug, sessionId, filePath, mtime}] sorted by mtime desc.
  */
-function listSessionFiles() {
+function listSessionFiles(projectSlugs) {
   const results = [];
-  try {
-    const slugs = fs.readdirSync(PROJECTS_DIR);
-    for (const slug of slugs) {
+  let slugs;
+  try { slugs = projectSlugs || fs.readdirSync(PROJECTS_DIR); }
+  catch { return results; }
+  for (const slug of slugs) {
+    try {
       const slugDir = path.join(PROJECTS_DIR, slug);
       if (!fs.statSync(slugDir).isDirectory()) continue;
       const files = fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl'));
       for (const file of files) {
         const filePath = path.join(slugDir, file);
-        const stat = fs.statSync(filePath);
+        let stat;
+        try { stat = fs.statSync(filePath); } catch { continue; }
         results.push({
           slug,
           sessionId: file.replace('.jsonl', ''),
@@ -204,8 +207,8 @@ function listSessionFiles() {
           mtime: stat.mtimeMs,
         });
       }
-    }
-  } catch { /* projects dir may not exist yet */ }
+    } catch { /* project may not exist yet or have been removed */ }
+  }
   results.sort((a, b) => b.mtime - a.mtime);
   return results;
 }
@@ -220,7 +223,7 @@ async function linkedTranscriptIds(file, entries, visited) {
   const missingParents = new Set([...parents].filter(id => !own.has(id)));
   if (!unresolved.size && !missingParents.size) return [];
   const links = [];
-  for (const candidate of listSessionFiles().filter(candidate => candidate.slug === file.slug && !visited.has(candidate.sessionId))) {
+  for (const candidate of listSessionFiles([file.slug]).filter(candidate => !visited.has(candidate.sessionId))) {
     const stat = fs.statSync(candidate.filePath);
     let cached = lineageCache.get(candidate.filePath);
     if (!cached || cached.mtime !== stat.mtimeMs || cached.size !== stat.size) {
@@ -499,12 +502,22 @@ async function parseSessionMeta(filePath) {
  * Get recent sessions with metadata.
  * @param {number} n — max sessions to return
  */
-export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
-  const files = listSessionFiles().filter(file => !sessionIdPrefix || file.sessionId.startsWith(sessionIdPrefix)).slice(0, n);
+export async function getRecentSessions(n = 10, { sessionIdPrefix, projectPath } = {}) {
+  const canonicalPath = value => {
+    const resolved = path.resolve(value);
+    try { return fs.realpathSync(resolved); } catch { return resolved; }
+  };
+  const scope = projectPath ? canonicalPath(projectPath) : null;
+  // Restrict directory discovery before parsing JSONL. Slugs are lossy, so
+  // verify the recorded cwd as well (e.g. /a-b/c and /a/b-c share a slug).
+  const projectSlugs = scope ? new Set([projectPath, path.resolve(projectPath), scope].map(transcriptProjectSlug)) : undefined;
+  const candidates = listSessionFiles(projectSlugs).filter(file => !sessionIdPrefix || file.sessionId.startsWith(sessionIdPrefix));
+  const files = scope ? candidates : candidates.slice(0, n);
   const sessions = [];
   const fragments = new Set();
   for (const f of files) {
     let meta = await parseSessionMeta(f.filePath);
+    if (scope && (!meta.project || canonicalPath(meta.project) !== scope)) continue;
     if (meta.userMessages && (!meta.assistantMessages || (meta.backendSessionId && meta.backendSessionId !== f.sessionId))) {
       const detail = await getSessionDetail(f.sessionId, { filePath: f.filePath });
       if (detail?.linkedSessionIds?.length) {
@@ -519,7 +532,7 @@ export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
       mtime: f.mtime,
     });
   }
-  return sessions.filter(session => !fragments.has(session.sessionId));
+  return sessions.filter(session => !fragments.has(session.sessionId)).slice(0, n);
 }
 
 /**

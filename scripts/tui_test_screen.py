@@ -9,6 +9,7 @@ class Screen:
         self.rows, self.columns = rows, columns
         self.cells = [[' '] * columns for _ in range(rows)]
         self.row = self.column = 0
+        self.saved_cursor = (0, 0)
         self.decoder = codecs.getincrementaldecoder('utf8')('replace')
         self.pending = ''
 
@@ -51,6 +52,10 @@ class Screen:
             if self.pending[0] == '\x1b':
                 if len(self.pending) < 2:
                     return
+                if self.pending[1] == '7':
+                    self.saved_cursor = (self.row, self.column)
+                elif self.pending[1] == '8':
+                    self.row, self.column = self.saved_cursor
                 self.pending = self.pending[2:]
                 continue
             char, self.pending = self.pending[0], self.pending[1:]

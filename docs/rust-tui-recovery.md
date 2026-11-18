@@ -74,6 +74,90 @@ Validation at this checkpoint:
 - The new CI workflow has been added locally; a remote CI run and real emulator
   acceptance have not been claimed.
 
+## Next live-test batch: links, viewport anchoring and palette
+
+The user confirmed resume/history and mouse expansion/collapse at the backport
+checkpoint. This batch preserves those routes and addresses the subsequent
+viewport jump: expansion previously moved the selected card to the top. Mouse,
+Enter, Esc and expand-all now retain the top visible card/row and expand below.
+If collapse removes that exact row, the collapsed card becomes the anchor.
+
+Rust tool names use the requested workspace primary `#303BA0`; browser links
+and inline code retain light blue. Show details/Show less use lighter grey
+without bold emphasis. Success checkmarks have no background box or redundant
+`done` label. Denied/rejected states use `#FFB0B6`, and failed/error statuses use
+`#AD363F`. Exact RGB applies to true-color normal themes; limited color terminals
+use approximations, and high-contrast/NO_COLOR remain supported. Shared Node
+tokens do not override these Rust roles; Node rendering stays unchanged.
+
+At the user's request, the previous tool-details presentation is restored:
+compact saved previews, with Show details whenever a separate/full stored result,
+extra lines or truncated text is available. Expansion shows the complete readable
+result inline; Show less/Esc collapses it without jumping the viewport. The
+subsequent actual-result normalization and three-changed-line diff preview were
+reverted. Commands such as `/status` and assistant replies remain fully displayed.
+Completed tools still clear prior argument details before loading result payloads.
+Older JSONL `tool_done`/`tool_result` records also preserve string or structured
+`result` values as full output. They must not be reduced to a string-only summary,
+which can make a resumed result look empty and remove its Show details action.
+Repeated-resume tests exercise both result/output shapes in both Rust views.
+
+Resume listing now passes the current working folder into the shared session
+reader. Directory discovery is scoped before parsing JSONL; recorded cwd is
+checked too because different paths can produce the same directory slug. Child
+folders and other folders with the same name are excluded. Empty folders return
+an empty list instead of falling back globally. Linked transcript fragments
+within the project remain merged. This applies to both Rust views and the shared
+command path; the Node visual renderer is unchanged.
+
+The earlier global scan measured 293 sessions across 34 project paths in 8,342 ms.
+After filtering, a local measurement returned 25 current-folder sessions in
+1,326 ms. These are single-run measurements, not startup latency guarantees.
+Tests cover cross-folder exclusion before transcript reads, slug collisions,
+linked fragments, limits, trailing separators, cwd changes and empty folders.
+
+Alt+M enters native text-selection mode: release mouse capture, show the mode
+hint, and pause screen repainting while incoming events continue updating the
+model. Alt+M again or another key restores live controls, preserving the draft.
+Resize repaints the selection view to fit the terminal. Automated PTYs verify
+capture release/restore and zero writes while selected; actual mouse highlighting
+and copying remain terminal-emulator acceptance checks.
+
+Assistant messages and expanded tool results expose separate browser Open rows,
+with deduplicated HTTP(S) destinations and per-frame hit regions. Alt+L selects
+among the focused card's links; Alt+O retains its file/first-link behavior. Source
+message/copy text stays complete. Mouse activation requires a press and release
+on the same current target; dragging, resize and modal ownership invalidate it.
+Supported/configured terminals also receive OSC8 hyperlinks, with full source
+URLs and keyboard selection available as fallbacks. OS open runs off the input
+loop with a literal argument, never a shell command.
+
+Validation includes Rust replay/cell-buffer checks for clipped/wrapped targets,
+resizes, transcript replacement and modal isolation; both-view PTYs cover pinned
+expansion/collapse, draft handoff, browser clicks, selection drags and Alt+L with
+OSC8 enabled/disabled. Browser tests use fake OS helpers. Actual desktop browser
+delivery and emulator acceptance remain live checks. Active capability probes
+are a separate next batch: existing profile/override support is not probing, and
+the dependency's two-second keyboard query does not satisfy the PRD's bounded
+startup budget.
+
+### Browser link authoring and presentation
+
+Agents use ordinary message text: `[Open dashboard](http://localhost:3000)` or
+a bare absolute HTTP(S) URL. Markdown labels become the Open action's label;
+bare URLs use the destination itself. No Rust-specific prompt, tool call or
+terminal escape sequence is required. The renderer extracts destinations from
+the same stored message, so both Rust views use the same presentation path.
+An existing `artifact_created` event can also carry `open_url` for a structured
+artifact destination; ordinary reply links do not require artifact events.
+
+For example, the message `[Open dashboard](http://localhost:3000)` gains an action
+row `↗ Open 1 · Open dashboard · http://localhost:3000`. Clicking it opens the
+system browser; Alt+L offers destinations from the focused card. Tool results
+expose link actions when fully visible or expanded. Rendering a link never opens it
+automatically or verifies that its server is running. Agent/model instructions,
+commands and canonical JSONL messages stay unchanged.
+
 ## PRD work after backports
 
 This table supersedes older pending tables below. The historical batch sections

@@ -26,7 +26,7 @@ const host=startRustTuiHost({onCommand:command=>{
  }
 
 }});
-host.send({v:2,seq:1,ts:'',type:'command_result',session_id:'focus',agent_id:'main',data:{name:'/fixture',result:'one\\ntwo\\nthree\\nfour'}});
+host.send({v:2,seq:1,ts:'',type:'tool_finished',session_id:'focus',agent_id:'main',data:{tool_id:'fixture',preview:'one\\ntwo',output:'one\\ntwo\\nthree\\nfour'}});
 host.send({v:2,seq:1,ts:'',type:'command_catalog',session_id:'focus',agent_id:'main',data:{commands:[{name:'/resume',description:'history'},{name:'/report',description:'report'}]}});
 setTimeout(()=>host.close(),20000).unref();
 `);

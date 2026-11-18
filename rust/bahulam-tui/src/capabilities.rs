@@ -236,7 +236,8 @@ impl TerminalCapabilities {
                 yes_no(self.wsl)
             ),
             crate::integrations::Config::from_caps(self).report(),
-            "Links                Alt+L link · Alt+O open selected file/URL".to_owned(),
+            "Links                Click Open · Alt+L choose link · Alt+O open file/URL".to_owned(),
+            "Text selection       Alt+M release mouse capture and pause redraws".to_owned(),
             format!(
                 "Clipboard text       {} · Ctrl+V paste · Ctrl+Y copy",
                 self.clipboard_mode

@@ -19,6 +19,10 @@ pub struct Card {
     pub tool_name: String,
 }
 impl Card {
+    pub fn is_foldable(&self) -> bool {
+        !self.tool_name.is_empty() || self.title.starts_with("Tool ") || self.title == "Diff"
+    }
+
     pub fn is_message(&self) -> bool {
         self.title == "Assistant"
             || self.title == "Prompt"
@@ -75,6 +79,7 @@ pub struct Model {
     pub active_background_jobs: usize,
     pub status: String,
     pub composer_hint: String,
+    pub selecting_text: bool,
     queued_prompts: usize,
     pub warnings: Vec<String>,
     pub approval: Option<Approval>,
@@ -951,7 +956,14 @@ impl Model {
                     } else {
                         preview
                     };
-                    if let Some(output) = data.get("output") {
+                    // Older JSONL completions use `result`, sometimes as an
+                    // object. Preserve it as the full result, not a string-only
+                    // summary that silently drops structured saved output.
+                    if let Some(output) = data
+                        .get("output")
+                        .filter(|value| !value.is_null())
+                        .or_else(|| data.get("result").filter(|value| !value.is_null()))
+                    {
                         let detail = output
                             .as_str()
                             .map(safe_text)
@@ -959,7 +971,11 @@ impl Model {
                         self.cards[index].detail = Some(detail);
                         self.cards[index].payload_ref = None;
                     } else if let Some(reference) = &event.payload_ref {
+                        self.cards[index].detail = None;
                         self.cards[index].payload_ref = Some(reference.clone());
+                    } else {
+                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                        self.cards[index].payload_ref = None;
                     }
                     let mut metadata = Vec::new();
                     if let Some(code) = data.get("exit_code").and_then(Value::as_i64) {

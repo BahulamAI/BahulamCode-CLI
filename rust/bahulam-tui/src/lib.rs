@@ -1,3 +1,4 @@
+pub mod browser_links;
 pub mod capabilities;
 pub mod clipboard;
 pub mod composer;

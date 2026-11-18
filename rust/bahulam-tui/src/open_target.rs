@@ -12,7 +12,7 @@ pub enum OpenError {
     Unsupported,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkTarget {
     pub label: String,
     pub uri: String,
@@ -61,16 +61,18 @@ fn clean_path_candidate(value: &str) -> String {
 }
 
 fn first_url(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .filter_map(|word| {
-            let start = [word.find("https://"), word.find("http://")]
-                .into_iter()
-                .flatten()
-                .min()?;
-            Some(trim_candidate(&word[start..]))
-        })
-        .find(|word| !word.chars().any(char::is_control))
-        .map(str::to_owned)
+    crate::browser_links::extract(text)
+        .into_iter()
+        .next()
+        .map(|link| link.uri)
+}
+
+pub fn open_browser_url(url: &str) -> Result<String, OpenError> {
+    if !crate::browser_links::valid_url(url) {
+        return Err(OpenError::NoTarget);
+    }
+    open_url(url)?;
+    Ok(format!("Opened {url}"))
 }
 
 fn split_location(candidate: &str) -> (&str, Option<u32>, Option<u32>) {

@@ -8,6 +8,7 @@ if (process.platform === 'win32') {
 }
 const suites = [
   'inline', 'inline-layout', 'mouse', 'approval', 'composer', 'detail-focus',
+  'expansion-anchor', 'browser-links', 'presentation',
   'questions', 'resume-popup', 'integrations', 'commands', 'idle',
 ];
 for (const suite of suites) {

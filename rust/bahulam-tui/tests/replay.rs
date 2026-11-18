@@ -583,7 +583,7 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
 }
 
 #[test]
-fn tool_results_are_compact_and_status_color_does_not_tint_the_tool_name() {
+fn tool_results_restore_compact_previews_and_grey_details_actions() {
     let mut model = Model::default();
     model
         .apply(&event(
@@ -642,6 +642,23 @@ fn tool_results_are_compact_and_status_color_does_not_tint_the_tool_name() {
     assert!(!all_text.contains("full result line one"));
     assert!(all_text.contains("Show details"));
 
+    if std::env::var_os("NO_COLOR").is_none() {
+        let action = buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .find(|row| {
+                row.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .contains("Show details")
+            })
+            .unwrap();
+        let cell = action.iter().position(|c| c.symbol() == "S").unwrap();
+        assert_eq!(action[cell].fg, ratatui::style::Color::Rgb(188, 196, 208));
+        assert!(!action[cell]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD));
+    }
     let width = buffer.area.width as usize;
     let tool_row = buffer
         .content
@@ -658,7 +675,19 @@ fn tool_results_are_compact_and_status_color_does_not_tint_the_tool_name() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     let tool_name = row_text.find("Bash").unwrap();
-    let done_status = row_text.find("done").unwrap();
+    assert!(
+        !row_text.contains("done"),
+        "success checkmark should not have a redundant done badge"
+    );
+    let done_status = tool_row
+        .iter()
+        .position(|cell| cell.symbol() == "✓")
+        .unwrap();
+    assert_eq!(
+        tool_row[done_status].bg,
+        ratatui::style::Color::Reset,
+        "success glyph must not have a box"
+    );
     if std::env::var_os("NO_COLOR").is_some() {
         assert_eq!(
             tool_row[tool_name].style().fg,
@@ -671,7 +700,7 @@ fn tool_results_are_compact_and_status_color_does_not_tint_the_tool_name() {
     } else {
         assert_eq!(
             tool_row[tool_name].style().fg,
-            Some(ratatui::style::Color::Rgb(215, 222, 232))
+            Some(ratatui::style::Color::Rgb(48, 59, 160))
         );
         assert_eq!(
             tool_row[done_status].style().fg,
@@ -718,7 +747,7 @@ fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
     assert!(all_text.contains("Message"));
     assert!(all_text.contains("Ready"));
     assert!(all_text.contains("100 in · 0 out"));
-    assert!(all_text.contains("Enter send · Ctrl+J new line"));
+    assert!(all_text.contains("Enter send · Alt+M select text"));
 
     let width = buffer.area.width as usize;
     let input_row = buffer
@@ -809,10 +838,10 @@ fn details_click_targets_the_painted_card_after_scroll_resize_and_approval() {
         model
             .apply(&event(
                 i + 1,
-                "command_result",
+                "tool_finished",
                 "main",
                 json!({
-                    "name": format!("/tool-{i}"), "result": "result\n".repeat(20)
+                    "tool_id": format!("tool-{i}"), "output": "result\n".repeat(20)
                 }),
             ))
             .unwrap();
@@ -1351,8 +1380,7 @@ fn expanded_tool_json_is_readable_and_keeps_neighbor_messages_and_raw_copy() {
             );
             if expanded.contains(&index) {
                 assert!(
-                    text.contains("exit code")
-                        && text.contains("stdout")
+                    text.contains("FIRST_LINE")
                         && text.contains("FINAL_LINE")
                         && text.contains("two.rs")
                 );
@@ -1847,4 +1875,383 @@ fn session_state_retains_model_mode_and_route_for_display() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(text.contains("thinking · BYOK"));
+}
+
+#[test]
+fn browser_targets_match_painted_rows_after_wrap_scroll_resize_and_replacement() {
+    use bahulam_tui::render::{browser_link_at, draw_with_view, painted_browser_links};
+    let mut model = Model::default();
+    for n in 1..=15 {
+        model.apply(&event(n,"message_end","main",json!({"text":format!("Card {n}\n[Docs 界](https://example.test/{n}) and https://other.test/{n}?x=1&y=2\n{}\n", "prose ".repeat(40))}))).unwrap();
+    }
+    let before = model.transcript();
+    for inline in [true, false] {
+        for (width, height) in [(120, 36), (60, 24), (40, 20)] {
+            for scroll in [0, 12, u16::MAX] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|f| {
+                        draw_with_view(
+                            f,
+                            &model,
+                            scroll,
+                            true,
+                            "dark",
+                            "draft",
+                            5,
+                            &HashSet::new(),
+                            None,
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let hits = painted_browser_links();
+                let visible = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .filter(|row| {
+                        row.iter()
+                            .map(|cell| cell.symbol())
+                            .collect::<String>()
+                            .contains("↗ Open ")
+                    })
+                    .count();
+                assert_eq!(hits.len(), visible, "{inline} {width} {scroll}");
+                if scroll == u16::MAX {
+                    assert!(!hits.is_empty());
+                }
+                for hit in hits {
+                    let buffer = terminal.backend().buffer();
+                    let mut x = hit.area.x;
+                    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(
+                        hit.text.as_str(),
+                        true,
+                    ) {
+                        assert_eq!(buffer[(x, hit.area.y)].symbol(), grapheme);
+                        x += unicode_width::UnicodeWidthStr::width(grapheme) as u16;
+                    }
+                    assert_eq!(x, hit.area.right());
+                    assert_eq!(
+                        browser_link_at(Position::new(hit.area.x, hit.area.y)),
+                        Some(hit.clone())
+                    );
+                    assert!(browser_link_at(Position::new(hit.area.right(), hit.area.y)).is_none());
+                    assert!(
+                        hit.target.uri.starts_with("https://example.test/")
+                            || hit.target.uri.starts_with("https://other.test/")
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        model.transcript(),
+        before,
+        "presentation must not rewrite messages or copied text"
+    );
+    model
+        .apply(&event(
+            0,
+            "transcript_snapshot",
+            "main",
+            json!({"replace":true,"mode":"full","items":[]}),
+        ))
+        .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    terminal.draw(|f| draw(f, &model, 0)).unwrap();
+    assert!(painted_browser_links().is_empty());
+}
+
+#[test]
+fn browser_actions_respect_tool_folding_and_modal_ownership() {
+    use bahulam_tui::render::{draw_with_view, painted_browser_links};
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"fixture","output":"one\ntwo\nhttps://example.test/full-details"}),
+        ))
+        .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    let mut expanded = HashSet::new();
+    terminal
+        .draw(|f| {
+            draw_with_view(
+                f, &model, 0, true, "dark", "draft", 5, &expanded, None, true, None, None, 0, None,
+                0, true,
+            )
+        })
+        .unwrap();
+    assert!(painted_browser_links().is_empty());
+    expanded.insert(0);
+    terminal
+        .draw(|f| {
+            draw_with_view(
+                f, &model, 0, true, "dark", "draft", 5, &expanded, None, true, None, None, 0, None,
+                0, true,
+            )
+        })
+        .unwrap();
+    assert_eq!(painted_browser_links().len(), 1);
+    model
+        .apply(&event(
+            2,
+            "approval_required",
+            "main",
+            json!({"apr_id":"a","name":"shell","args":{},"reason":"review"}),
+        ))
+        .unwrap();
+    terminal
+        .draw(|f| {
+            draw_with_view(
+                f, &model, 0, true, "dark", "draft", 5, &expanded, None, true, None, None, 0, None,
+                0, true,
+            )
+        })
+        .unwrap();
+    assert!(painted_browser_links().is_empty());
+    model.approval = None;
+    model.interaction = Some(bahulam_tui::browser_links::picker(
+        bahulam_tui::browser_links::extract("https://example.test/"),
+    ));
+    terminal
+        .draw(|f| {
+            draw_with_view(
+                f, &model, 0, true, "dark", "draft", 5, &expanded, None, true, None, None, 0, None,
+                0, true,
+            )
+        })
+        .unwrap();
+    assert!(painted_browser_links().is_empty());
+}
+
+#[test]
+fn tools_restore_details_for_separate_results_and_commands_never_fold() {
+    use bahulam_tui::render::draw_with_view;
+    for inline in [true, false] {
+        for (kind, data, visible, hidden, folds) in [
+            (
+                "tool_finished",
+                json!({"tool_id":"short","preview":"FIRST\nSECOND","output":"FIRST\nSECOND"}),
+                "SECOND",
+                "THIRD",
+                false,
+            ),
+            (
+                "tool_finished",
+                json!({"tool_id":"long","preview":"FIRST\nSECOND","output":"FIRST\nSECOND\nTHIRD"}),
+                "SECOND",
+                "THIRD",
+                true,
+            ),
+            (
+                "tool_finished",
+                json!({"tool_id":"failed","ok":false,"preview":"FIRST\nSECOND","output":"FIRST\nSECOND\nTHIRD"}),
+                "SECOND",
+                "THIRD",
+                true,
+            ),
+            (
+                "diff",
+                json!({"path":"src/main.rs","hunks":[{"text":"--- a/main.rs\n+++ b/main.rs\n@@ -1 +1,2 @@\n-old\n+new\n+THIRD"}]}),
+                "src/main.rs",
+                "+THIRD",
+                true,
+            ),
+            (
+                "diff",
+                json!({"path":"src/main.rs","hunks":[{"text":"@@ -1 +1,3 @@\n-old\n+new\n+THIRD\n+FOURTH"}]}),
+                "-old",
+                "+FOURTH",
+                true,
+            ),
+            (
+                "command_result",
+                json!({"name":"/status","result":"short preview","output":"FIRST\nSECOND\nTHIRD\nFOURTH\nSTATUS_FINAL"}),
+                "STATUS_FINAL",
+                "short preview",
+                false,
+            ),
+            (
+                "tool_finished",
+                json!({"tool_id":"wrapped","preview":"summary only","output":{"stdout":"FIRST\nSECOND","exit_code":0,"success":true}}),
+                "summary only",
+                "SECOND",
+                true,
+            ),
+        ] {
+            let mut model = Model::default();
+            model.apply(&event(1, kind, "main", data)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_with_view(
+                        f,
+                        &model,
+                        0,
+                        true,
+                        "dark",
+                        "draft",
+                        5,
+                        &HashSet::new(),
+                        None,
+                        true,
+                        None,
+                        None,
+                        0,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains(visible), "{kind}, inline={inline}: {text}");
+            assert!(!text.contains(hidden), "{kind}, inline={inline}: {text}");
+            assert_eq!(text.contains("Show details"), folds, "{kind}: {text}");
+        }
+    }
+}
+
+#[test]
+fn completed_tool_payload_replaces_arguments_before_hydration() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"read","name":"read_file","args":{"path":"demo.rs"}}),
+        ))
+        .unwrap();
+    let mut completed = event(
+        2,
+        "tool_finished",
+        "main",
+        json!({"tool_id":"read","preview":"short"}),
+    );
+    completed.payload_ref = Some("memory:result".into());
+    model.apply(&completed).unwrap();
+    assert!(
+        model.cards[0].detail.is_none(),
+        "request arguments must not masquerade as a loaded result"
+    );
+    assert_eq!(model.request_details(0).as_deref(), Some("memory:result"));
+    model
+        .apply(&event(
+            3,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"memory:result","detail":"actual result"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].detail.as_deref(), Some("actual result"));
+}
+
+#[test]
+fn resumed_legacy_results_keep_previews_details_and_success_checkmark() {
+    use bahulam_tui::render::draw_with_view;
+    for inline in [true, false] {
+        for result in [
+            json!("FIRST\nSECOND\nTHIRD\nLAST"),
+            json!({"stdout":"FIRST\nSECOND\nTHIRD\nLAST","exit_code":0}),
+        ] {
+            for output_key in ["result", "output"] {
+                let mut data = json!({"call_id":"saved-read","success":true});
+                data[output_key] = result.clone();
+                let snapshot = event(
+                    1,
+                    "transcript_snapshot",
+                    "main",
+                    json!({
+                        "replace":true,"mode":"full","items":[
+                            {"kind":"event","event":{"type":"tool_call","data":{
+                                "call_id":"saved-read","tool":"read_file","args":{"path":"saved.rs"}}}},
+                            {"kind":"event","event":{"type":"tool_done","data":data}}
+                        ]
+                    }),
+                );
+                let mut model = Model::default();
+                // Repeated resume must reconstruct the same result and controls.
+                for _ in 0..2 {
+                    model.apply(&snapshot).unwrap();
+                    let index = model
+                        .cards
+                        .iter()
+                        .position(|card| card.title == "read_file")
+                        .unwrap();
+                    assert!(model.cards[index].tool_id.is_empty());
+                    assert!(model.cards[index].started_at.is_none());
+                    assert_eq!(model.cards[index].status, "done");
+                    assert!(model.cards[index]
+                        .detail
+                        .as_deref()
+                        .unwrap()
+                        .contains("LAST"));
+                    for expanded in [HashSet::new(), HashSet::from([index])] {
+                        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+                        terminal
+                            .draw(|f| {
+                                draw_with_view(
+                                    f,
+                                    &model,
+                                    0,
+                                    true,
+                                    "dark",
+                                    "draft",
+                                    5,
+                                    &expanded,
+                                    Some(index),
+                                    true,
+                                    None,
+                                    None,
+                                    0,
+                                    None,
+                                    1,
+                                    inline,
+                                )
+                            })
+                            .unwrap();
+                        let text: String = terminal
+                            .backend()
+                            .buffer()
+                            .content
+                            .iter()
+                            .map(|c| c.symbol())
+                            .collect();
+                        assert!(!text.contains("done"), "{text}");
+                        if expanded.is_empty() {
+                            assert!(
+                                text.contains("Show details") && !text.contains("LAST"),
+                                "{text}"
+                            );
+                        } else {
+                            assert!(
+                                text.contains("FIRST")
+                                    && text.contains("LAST")
+                                    && text.contains("Show less"),
+                                "{text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
