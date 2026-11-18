@@ -20,6 +20,11 @@ use unicode_width::UnicodeWidthStr;
 struct Palette {
     accent: Color,
     text: Color,
+    heading: Color,
+    emphasis: Color,
+    bullet_emphasis: Color,
+    numbered_emphasis: Color,
+    italic: Color,
     muted: Color,
     border: Color,
     selection: Color,
@@ -97,6 +102,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         return Palette {
             accent: Color::Reset,
             text: Color::Reset,
+            heading: Color::Reset,
+            emphasis: Color::Reset,
+            bullet_emphasis: Color::Reset,
+            numbered_emphasis: Color::Reset,
+            italic: Color::Reset,
             muted: Color::Reset,
             border: Color::Reset,
             selection: Color::Reset,
@@ -116,6 +126,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "light" => Palette {
             accent: Color::Rgb(49, 91, 154),
             text: Color::Rgb(32, 42, 56),
+            heading: Color::Rgb(0, 105, 180),
+            emphasis: Color::Rgb(0, 128, 0),
+            bullet_emphasis: Color::Rgb(175, 85, 0),
+            numbered_emphasis: Color::Rgb(175, 85, 0),
+            italic: Color::Rgb(151, 66, 101),
             muted: Color::Rgb(82, 98, 118),
             border: Color::Rgb(195, 205, 217),
             selection: Color::Rgb(226, 235, 246),
@@ -139,6 +154,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "high-contrast" => Palette {
             accent: Color::Cyan,
             text: Color::White,
+            heading: Color::LightBlue,
+            emphasis: Color::LightGreen,
+            bullet_emphasis: Color::LightYellow,
+            numbered_emphasis: Color::LightYellow,
+            italic: Color::LightMagenta,
             muted: Color::Rgb(220, 230, 242),
             border: Color::Gray,
             selection: Color::Rgb(0, 54, 112),
@@ -162,6 +182,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "ansi" => Palette {
             accent: Color::Cyan,
             text: Color::Reset,
+            heading: Color::LightBlue,
+            emphasis: Color::LightGreen,
+            bullet_emphasis: Color::LightYellow,
+            numbered_emphasis: Color::LightYellow,
+            italic: Color::LightMagenta,
             muted: Color::DarkGray,
             border: Color::DarkGray,
             selection: Color::Blue,
@@ -185,16 +210,21 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         _ => Palette {
             accent: Color::Rgb(120, 166, 232),
             text: Color::Rgb(215, 222, 232),
+            heading: Color::Rgb(0, 191, 255),
+            emphasis: Color::Rgb(50, 205, 50),
+            bullet_emphasis: Color::Rgb(255, 159, 28),
+            numbered_emphasis: Color::Rgb(255, 159, 28),
+            italic: Color::Rgb(218, 166, 187),
             muted: Color::Rgb(153, 165, 178),
             border: Color::Rgb(57, 69, 82),
             selection: Color::Rgb(43, 61, 84),
             input_bg: Color::Rgb(28, 38, 51),
-            info: Color::Rgb(146, 197, 255),
-            details: Color::Rgb(188, 196, 208),
-            tool: Color::Rgb(48, 59, 160),
-            error: Color::Rgb(173, 54, 63),
-            success: Color::Rgb(114, 184, 148),
-            warning: Color::Rgb(216, 173, 99),
+            info: Color::Rgb(128, 216, 255),
+            details: Color::Rgb(206, 214, 224),
+            tool: Color::Rgb(148, 175, 255),
+            error: Color::Rgb(255, 133, 151),
+            success: Color::Rgb(112, 255, 173),
+            warning: Color::Rgb(255, 221, 128),
             danger: Color::Rgb(216, 121, 121),
             code: Color::Rgb(181, 193, 210),
             agent_colors: [
@@ -235,6 +265,12 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             }
         }
     }
+    // Give dark Rust views a light neon accent while preserving light/accessible themes.
+    // These status roles deliberately override the shared host's softer colors.
+    if !matches!(theme, "light" | "ansi" | "high-contrast") {
+        p.success = Color::Rgb(112, 255, 173);
+        p.warning = Color::Rgb(255, 221, 128);
+    }
     // Rust actions have their own roles: blue tools/links/code, quieter grey details.
     p.code = p.info;
     if !matches!(theme, "ansi" | "high-contrast") {
@@ -243,6 +279,11 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
     for color in [
         &mut p.accent,
         &mut p.text,
+        &mut p.heading,
+        &mut p.emphasis,
+        &mut p.bullet_emphasis,
+        &mut p.numbered_emphasis,
+        &mut p.italic,
         &mut p.muted,
         &mut p.border,
         &mut p.selection,
@@ -367,6 +408,11 @@ mod palette_tests {
                 for color in [
                     p.accent,
                     p.text,
+                    p.heading,
+                    p.emphasis,
+                    p.bullet_emphasis,
+                    p.numbered_emphasis,
+                    p.italic,
                     p.muted,
                     p.border,
                     p.selection,
@@ -402,23 +448,27 @@ struct ViewLayout {
     compact: bool,
 }
 
+fn composer_height(area: Rect, input: &str, inline: bool) -> u16 {
+    let width = area.width.saturating_sub(if inline { 2 } else { 4 });
+    // Two editable rows at rest, up to six before scrolling inside the field.
+    // Clamp before narrowing: a large expanded paste can exceed u16 line counts.
+    let text_rows = PromptLayout::new(input, width as usize)
+        .lines
+        .len()
+        .clamp(2, 6) as u16;
+    (text_rows + 2).min(
+        area.height
+            .saturating_sub(if inline { 5 } else { 12 })
+            .max(4),
+    )
+}
+
 fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let compact = area.width < 72 || area.height < 16;
     let prompt_height = if approval {
         7.min(area.height.saturating_sub(12).max(4))
-    } else if PromptLayout::new(input, area.width.saturating_sub(4) as usize)
-        .lines
-        .len()
-        > 1
-    {
-        (PromptLayout::new(input, area.width.saturating_sub(4) as usize)
-            .lines
-            .len() as u16
-            + 3)
-        .clamp(5, 8)
-        .min(area.height.saturating_sub(12).max(4))
     } else {
-        4
+        composer_height(area, input, false)
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -450,12 +500,7 @@ fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let prompt_height = if approval {
         7
     } else {
-        (PromptLayout::new(input, area.width.saturating_sub(2) as usize)
-            .lines
-            .len() as u16
-            + 2
-            + u16::from(input.trim_start().starts_with('/')))
-        .clamp(3, 7)
+        composer_height(area, input, true)
     };
     let rows = Layout::vertical([
         Constraint::Length(0),
@@ -926,7 +971,7 @@ pub fn draw_with_view(
     if compact {
         plan_and_agents.push(Line::from(Span::styled(
             "PLAN",
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
         )));
         plan_and_agents.extend(model.plan.iter().take(2).map(|item| plan_line(item, p)));
         if let Some(agent) = model
@@ -1317,7 +1362,7 @@ pub fn draw_with_view(
         frame.render_widget(ratatui::widgets::Clear, popup);
         let mut lines = vec![Line::from(Span::styled(
             safe_text(&interaction.title),
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
         ))];
         if !interaction.message.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -1385,10 +1430,17 @@ pub fn draw_with_view(
                         } else {
                             " "
                         },
-                        middle_ellipsis(
-                            &safe_text(&option.label),
-                            width.saturating_sub(4) as usize
-                        )
+                        if interaction.title == "Resume a session" {
+                            end_ellipsis(
+                                &safe_text(&option.label),
+                                width.saturating_sub(4) as usize,
+                            )
+                        } else {
+                            middle_ellipsis(
+                                &safe_text(&option.label),
+                                width.saturating_sub(4) as usize,
+                            )
+                        }
                     ),
                     if index == interaction.selected {
                         Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
@@ -1535,23 +1587,84 @@ fn plan_line(item: &str, p: Palette) -> Line<'static> {
     ])
 }
 
+fn list_marker_len(text: &str) -> Option<usize> {
+    if ["- ", "* ", "+ ", "• "]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        return Some(text.chars().next()?.len_utf8() + 1);
+    }
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    ((1..=9).contains(&digits)
+        && (text[digits..].starts_with(". ") || text[digits..].starts_with(") ")))
+    .then_some(digits + 2)
+}
+
+// The formatter emits a separate marker span, optionally after a speaker gutter.
+// Use its painted width so multi-digit numbers and Unicode content align too.
+fn list_hanging_indent(line: &Line<'_>) -> usize {
+    let mut indent = 0;
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        indent += UnicodeWidthStr::width(text);
+        if text.trim().is_empty() {
+            continue;
+        }
+        let marker = text.trim_start();
+        return if list_marker_len(marker) == Some(marker.len()) {
+            indent
+        } else {
+            0
+        };
+    }
+    0
+}
+
 // Scroll in painted rows, never in cards: one message may occupy many rows.
 fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let mut rows = Vec::new();
     for line in lines {
+        let indent = list_hanging_indent(&line);
+        // Leave room for a wide grapheme even in extremely narrow terminals.
+        let indent = if indent + 2 <= width { indent } else { 0 };
         let mut spans = Vec::new();
         let mut used = 0;
+        let mut continuation = false;
         for span in line.spans {
             let mut text = String::new();
-            for grapheme in span.content.graphemes(true) {
+            let mut graphemes = span.content.graphemes(true);
+            let mut word_start = true;
+            while let Some(grapheme) = graphemes.next() {
                 let size = UnicodeWidthStr::width(grapheme);
-                if used + size > width && used > 0 {
+                let whitespace = grapheme.chars().all(char::is_whitespace);
+                let word_width = if indent > 0 && word_start && !whitespace {
+                    size + graphemes
+                        .clone()
+                        .take_while(|part| !part.chars().all(char::is_whitespace))
+                        .map(UnicodeWidthStr::width)
+                        .sum::<usize>()
+                } else {
+                    size
+                };
+                word_start = whitespace;
+                let wrap_word = indent > 0
+                    && used > indent
+                    && word_width <= width - indent
+                    && used + word_width > width;
+                if (used + size > width && used > 0) || wrap_word {
                     if !text.is_empty() {
                         spans.push(Span::styled(std::mem::take(&mut text), span.style));
                     }
                     rows.push(Line::from(std::mem::take(&mut spans)).style(line.style));
-                    used = 0;
+                    used = indent;
+                    continuation = true;
+                    if indent > 0 {
+                        spans.push(Span::raw(" ".repeat(indent)));
+                    }
+                }
+                if indent > 0 && continuation && used == indent && whitespace {
+                    continue;
                 }
                 text.push_str(grapheme);
                 used += size;
@@ -2081,6 +2194,12 @@ fn card_lines(
                 wrapped.push((*line).to_owned());
                 continue;
             }
+            if !in_code && card.title != "Diff" && list_marker_len(line.trim_start()).is_some() {
+                // Parse the complete item before wrapping: splitting raw Markdown
+                // loses the list context and can cut emphasis/code delimiters.
+                wrapped.push((*line).to_owned());
+                continue;
+            }
             wrapped.extend(wrap_text(line, wrap_width, in_code));
         }
         let visible_rows = body_room;
@@ -2211,6 +2330,27 @@ fn format_token_count(tokens: u64) -> String {
     };
     let rounded = format!("{value:.1}");
     format!("{}{suffix}", rounded.strip_suffix(".0").unwrap_or(&rounded))
+}
+
+fn end_ellipsis(value: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in value.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if used + width > max_width - 1 {
+            break;
+        }
+        result.push_str(grapheme);
+        used += width;
+    }
+    result.push('…');
+    result
 }
 
 fn middle_ellipsis(value: &str, max_width: usize) -> String {
@@ -2374,7 +2514,7 @@ fn format_markdown_line(
     {
         return Line::from(Span::styled(
             format!("   {}", heading.trim_matches('#').trim()),
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
         ));
     }
     if let Some(quote) = trimmed.strip_prefix("> ") {
@@ -2384,11 +2524,36 @@ fn format_markdown_line(
     if let Some(item) = trimmed
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
     {
-        return Line::from(vec![
-            Span::styled("   • ", Style::default().fg(p.muted)),
-            Span::styled(item.to_owned(), Style::default().fg(p.text)),
-        ]);
+        let mut spans = vec![Span::styled("       • ", Style::default().fg(p.muted))];
+        spans.extend(inline_markdown(
+            item,
+            Palette {
+                emphasis: p.bullet_emphasis,
+                ..p
+            },
+        ));
+        return Line::from(spans);
+    }
+    // Only treat a leading integer and a list delimiter as a numbered item;
+    // decimal numbers and version strings remain ordinary sentence text.
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if (1..=9).contains(&digits)
+        && (trimmed[digits..].starts_with(". ") || trimmed[digits..].starts_with(") "))
+    {
+        let mut spans = vec![Span::styled(
+            format!("       {}", &trimmed[..digits + 2]),
+            Style::default().fg(p.muted),
+        )];
+        spans.extend(inline_markdown(
+            &trimmed[digits + 2..],
+            Palette {
+                emphasis: p.numbered_emphasis,
+                ..p
+            },
+        ));
+        return Line::from(spans);
     }
     if trimmed.starts_with('|') && trimmed.ends_with('|') {
         let cells: Vec<&str> = trimmed
@@ -2502,9 +2667,9 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
     let mut rest = input;
     while !rest.is_empty() {
         let candidates = [
-            ("**", Modifier::BOLD, p.text),
+            ("**", Modifier::empty(), p.emphasis),
             ("`", Modifier::empty(), p.code),
-            ("*", Modifier::ITALIC, p.text),
+            ("*", Modifier::ITALIC, p.italic),
         ];
         let next = candidates
             .iter()
@@ -2608,9 +2773,39 @@ mod row_measurement_tests {
         for theme in ["dark", "light", "ansi", "high-contrast"] {
             let p = resolved_palette(theme, "truecolor", &serde_json::Value::Null);
             let prose = format_markdown(&["- completed a task", "ordinary text"], p, false);
-            assert_eq!(prose[0].spans[0].content, "   • ");
+            assert_eq!(prose[0].spans[0].content, "       • ");
             assert_eq!(prose[0].spans[1].style.fg, Some(p.text));
             assert_eq!(prose[1].spans[1].style.fg, Some(p.text));
+            // Strong emphasis uses context color without bold weight;
+            // code and italics retain their roles.
+            for (prefix, marker, bold) in [
+                ("- ", "       • ", p.bullet_emphasis),
+                ("* ", "       • ", p.bullet_emphasis),
+                ("+ ", "       • ", p.bullet_emphasis),
+                ("1. ", "       1. ", p.numbered_emphasis),
+                ("12) ", "       12) ", p.numbered_emphasis),
+            ] {
+                let raw = format!("{prefix}**important** and `code` with *emphasis*");
+                let rich = format_markdown(&[raw.as_str()], p, false);
+                let inline = inline_markdown(
+                    "**important** and `code` with *emphasis*",
+                    Palette {
+                        emphasis: bold,
+                        ..p
+                    },
+                );
+                assert_eq!(rich[0].spans[0].content, marker);
+                assert_eq!(&rich[0].spans[1..], inline.as_slice());
+                assert!(rich[0].spans.iter().any(|span| span.content == "important"
+                    && span.style.fg == Some(bold)
+                    && !span.style.add_modifier.contains(Modifier::BOLD)));
+            }
+            for raw in ["Sentence **bold**", "1.2 **bold**", "v2. **bold**"] {
+                let prose = format_markdown(&[raw], p, false);
+                assert!(prose[0].spans.iter().any(|span| span.content == "bold"
+                    && span.style.fg == Some(p.emphasis)
+                    && !span.style.add_modifier.contains(Modifier::BOLD)));
+            }
             let diff = format_markdown(&["- removed", "+ added"], p, true);
             assert_eq!(diff[0].style.fg, Some(p.danger));
             assert_eq!(diff[1].style.fg, Some(p.success));
@@ -2618,6 +2813,93 @@ mod row_measurement_tests {
             assert_eq!(fenced[1].style.fg, Some(p.danger));
             assert_eq!(fenced[2].style.fg, Some(p.success));
         }
+    }
+
+    #[test]
+    fn list_wrapping_preserves_indent_styles_and_measurements_after_resize() {
+        let p = resolved_palette("dark", "truecolor", &serde_json::Value::Null);
+        let content = "text界".repeat(24);
+        for (marker, painted, color) in [
+            ("- ", "• ", p.bullet_emphasis),
+            ("1. ", "1. ", p.numbered_emphasis),
+            ("123) ", "123) ", p.numbered_emphasis),
+        ] {
+            let card = Card {
+                agent: "main".into(),
+                title: "Assistant".into(),
+                primary: String::new(),
+                metadata: String::new(),
+                body: format!("{marker}**{content}**`code`"),
+                status: "done".into(),
+                payload_ref: None,
+                detail: None,
+                detail_loading: false,
+                open_url: None,
+                started_at: None,
+                tool_id: String::new(),
+                tool_name: String::new(),
+            };
+            for width in [80, 32, 22, 80] {
+                let lines = card_lines(&card, 0, &HashSet::new(), None, p, width, usize::MAX);
+                let rows = wrap_rows(lines, width);
+                assert_eq!(
+                    card_row_count(&card, 0, &HashSet::new(), p, width),
+                    rows.len()
+                );
+                let prefix = format!("           {painted}");
+                let indent = UnicodeWidthStr::width(prefix.as_str());
+                let start = rows
+                    .iter()
+                    .position(|line| line.to_string().starts_with(&prefix))
+                    .unwrap();
+                let mut restored = String::new();
+                for (index, row) in rows[start..].iter().enumerate() {
+                    let text = row.to_string();
+                    if text.trim().is_empty() {
+                        break;
+                    }
+                    assert!(row.width() <= width);
+                    if index == 0 {
+                        restored.push_str(text.strip_prefix(&prefix).unwrap());
+                    } else {
+                        restored.push_str(text.strip_prefix(&" ".repeat(indent)).unwrap());
+                    }
+                    for span in &row.spans {
+                        if span.content.contains("text") {
+                            assert_eq!(span.style.fg, Some(color));
+                        }
+                        if span.content.contains("code") {
+                            assert_eq!(span.style.fg, Some(p.code));
+                        }
+                    }
+                }
+                assert_eq!(restored, format!("{content}code"));
+            }
+        }
+        let words = "alpha bravo charlie delta echo foxtrot golf hotel";
+        let source = format!("- {words}");
+        let rows = wrap_rows(format_markdown(&[source.as_str()], p, false), 22);
+        let mut rendered_words = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let text = row.to_string();
+            let body = text
+                .strip_prefix(if index == 0 {
+                    "       • "
+                } else {
+                    "         "
+                })
+                .unwrap();
+            assert!(!body.starts_with(' '));
+            rendered_words.extend(body.split_whitespace().map(str::to_owned));
+        }
+        assert_eq!(rendered_words.join(" "), words);
+        // Ordinary paragraphs and fenced code must not acquire a list gutter.
+        let code = format_markdown(
+            &["```", "- not a list", "```", "ordinary paragraph"],
+            p,
+            false,
+        );
+        assert!(code.iter().all(|line| list_hanging_indent(line) == 0));
     }
 
     #[test]

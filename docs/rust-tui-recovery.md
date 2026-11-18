@@ -74,7 +74,35 @@ Validation at this checkpoint:
 - The new CI workflow has been added locally; a remote CI run and real emulator
   acceptance have not been claimed.
 
-## Next live-test batch: links, viewport anchoring and palette
+## Palette preview after checkpoint `9c0def8`
+
+The current fixes are committed at `9c0def8`. The next visual preview lightens
+dark-theme accents: tool names `#94AFFF`, links/code `#80D8FF`, success ticks
+`#70FFAD`, failures `#FF8597`, warnings `#FFDD80`, and details actions `#CED6E0`.
+Success ticks remain plain, with no background box. Light, ANSI, high-contrast
+and NO_COLOR behavior retain their existing contrast/fallback rules. This palette
+preview changes no interaction, resume or expansion behavior.
+
+Agent-message emphasis uses context-specific color in dark mode: headings
+`#00BFFF` (neon blue), sentence emphasis `#32CD32` (green), bullet/numbered-list
+emphasis `#FF9F1C` (orange), and italics `#DAA6BB` (muted rose).
+Markdown strong emphasis uses color without bold weight; headings remain bold.
+Body text remains neutral; inline code keeps ice blue. Light mode uses darker
+equivalents, and limited-color/NO_COLOR rules still apply. Bullet items now use
+inline bold, italic and code formatting; numbered lists preserve their markers.
+List markers are inset four spaces from prose. Wrapped rows align with the item
+text after the marker, preserving emphasis/code styles and recalculating the
+hanging indent at the current viewport width.
+
+The following composer adjustment uses two editable rows at rest in both Rust
+views. Typed newlines and soft wraps grow it to six rows, subject to terminal
+height; longer drafts scroll internally to keep the caret visible. Ctrl+J inserts
+a newline and Enter submits. Existing paste chips summarize pastes over 20 lines;
+Ctrl+O expands them, while submission restores the complete content. Both-view
+PTY tests now verify a 1,000-line paste reaches the prompt handler intact in
+collapsed and expanded form, and cell-buffer tests cover its caret after resize.
+
+## Checkpoint: links, viewport anchoring and palette
 
 The user confirmed resume/history and mouse expansion/collapse at the backport
 checkpoint. This batch preserves those routes and addresses the subsequent

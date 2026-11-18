@@ -219,7 +219,7 @@ import {
   clearCards,
 } from '../ui/tool-card.mjs';
 import { detailFor } from '../ui/tool-details.mjs';
-import { paint } from '../ui/palette.mjs';
+import { paint, width as visibleWidth } from '../ui/palette.mjs';
 import {
   renderSubAgentOpen,
   renderSubAgentClose,
@@ -4481,9 +4481,24 @@ async function handleCommand(input, ctx) {
         }
       } else {
         if (_rustTuiActive) {
-          const choice = await rustTuiChoose('Resume a session', resumable.map(item => ({
+          // Keep the numeric columns compact. Checkpoint explanations belong
+          // after the preview, so one summarized session cannot widen every row.
+          const rows = resumable.map(item => ({
+            item,
+            project: stripTerminalControls(item.project || '(unknown)').replace(/[\r\n\t]/g, ' '),
+            messages: String(item.messageCount),
+            context: formatCtxTokens(Number(item.resumeSummary?.sourceMessageCount)
+              ? projectedTokensForChoice('checkpoint-full', item.contextTokens || 0, { resumeSummary: item.resumeSummary })
+              : item.contextTokens || 0),
+            checkpoint: Number(item.resumeSummary?.sourceMessageCount)
+              ? ` · ${stripAnsi(formatResumeContextStatus(item)).trim()}` : '',
+          }));
+          const projectWidth = Math.max(...rows.map(row => visibleWidth(row.project)));
+          const messageWidth = Math.max(...rows.map(row => row.messages.length));
+          const contextWidth = Math.max(...rows.map(row => visibleWidth(row.context)));
+          const choice = await rustTuiChoose('Resume a session', rows.map(({ item, project, messages, context, checkpoint }) => ({
             value: item.sessionId,
-            label: `${item.project || '(unknown)'} · ${item.messageCount} msgs · ${formatResumeContextStatus(item).replace(/\x1b\[[0-9;]*m/g, '')} · ${oneLineInstruction(item.instruction, 44)}`,
+            label: `${project}${' '.repeat(projectWidth - visibleWidth(project))}  ${messages.padStart(messageWidth)} msgs  ${context.padStart(contextWidth)} ctx  ${oneLineInstruction(item.instruction, 1000)}${checkpoint}`,
           })), 'Choose a saved transcript.');
           if (!choice) { process.stderr.write(`  ${c.dim('Cancelled.')}\n`); return; }
           picked = resumable.find(item => item.sessionId === choice) || null;

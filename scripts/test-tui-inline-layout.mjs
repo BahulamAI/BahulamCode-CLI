@@ -38,8 +38,8 @@ def pump(until):
  raise Exception('Layout did not settle; child='+str(child.poll())+'\n'+screen.text()+'\nRAW '+repr(bytes(output[-500:])))
 def check(draft=False):
  lines=screen.text().splitlines()
- assert 'Message' in lines[rows-5], 'Composer is not at the bottom'
- assert ('draft kept' if draft else 'Ask Bahulam') in lines[rows-4], 'Input row misplaced'
+ assert 'Message' in lines[rows-6], 'Composer is not at the bottom'
+ assert ('draft kept' if draft else 'Ask Bahulam') in lines[rows-5], 'Input row misplaced'
  assert 'Ctrl+C twice quit' in lines[-1], 'Footer not on final row'
  assert 'BAHULAM STARTUP HEADER' not in screen.text(), 'Startup header remained pinned'
  assert 'Rust inline' not in screen.text(), 'Brand heading remained in composer'

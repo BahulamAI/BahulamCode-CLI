@@ -50,6 +50,11 @@ def wait(text):
  while text not in screen.text() and time.monotonic()<end:pump(.03)
  assert text in screen.text(),'Missing '+text+'\n'+screen.text()
 def send(keys):os.write(master,keys);pump()
+def composer_rows():
+ lines=screen.text().splitlines()
+ start=next(i for i,line in enumerate(lines) if 'Message' in line)
+ end=next(i for i,line in enumerate(lines) if 'usage —' in line)
+ return end-start-2
 def click(label,offset=0):
  wait(label)
  row,line=next((i,line) for i,line in enumerate(screen.text().splitlines()) if label in line)
@@ -68,12 +73,18 @@ def submit(text,keys):
  raise Exception('Prompt handoff mismatch: '+repr((actual,expected))+'\n'+screen.text())
 try:
  wait('Show details')
+ assert composer_rows()==2,screen.text()
  send(b'/re');wait('/resume');send(b'\x1b[B');wait('/report');submit('/report',b'')
  submit('/resume saved-id',b'/resume saved-id')
- large='界 line\n'*24
- send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 25 lines')
+ send(b'line one\nline two');assert composer_rows()==2,screen.text()
+ send(b'\nline three');assert composer_rows()==3,screen.text()
+ submit('line one\nline two\nline three',b'')
+ large='\n'.join('line %04d 界'%i for i in range(1000))
+ send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 1000 lines')
+ assert composer_rows()==2,screen.text()
  submit(large,b'')
- send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 25 lines');send(b'\x0f')
+ send(b'\x1b[200~'+large.encode()+b'\x1b[201~');wait('Pasted 1000 lines');send(b'\x0f')
+ wait('line 0999');assert composer_rows()==6,screen.text()
  submit(large,b'')
  send(b'draft')
  click('Show details');wait('Show less')
@@ -114,5 +125,5 @@ try {
   });
   assert.equal(result.status,0,`${mode}: ${result.stdout}\n${result.stderr}`);
  }
- console.log('PASS: composer click, Show less, Esc, keyboard collapse, direct typing and paste all preserve prompt handoff in both views.');
+ console.log('PASS: two-row composer, newline growth, intact 1000-line collapsed/expanded paste, details controls and draft handoff in both views.');
 } finally {fs.rmSync(temp,{recursive:true,force:true});}

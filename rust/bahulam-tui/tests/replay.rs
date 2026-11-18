@@ -654,7 +654,7 @@ fn tool_results_restore_compact_previews_and_grey_details_actions() {
             })
             .unwrap();
         let cell = action.iter().position(|c| c.symbol() == "S").unwrap();
-        assert_eq!(action[cell].fg, ratatui::style::Color::Rgb(188, 196, 208));
+        assert_eq!(action[cell].fg, ratatui::style::Color::Rgb(206, 214, 224));
         assert!(!action[cell]
             .modifier
             .contains(ratatui::style::Modifier::BOLD));
@@ -700,11 +700,11 @@ fn tool_results_restore_compact_previews_and_grey_details_actions() {
     } else {
         assert_eq!(
             tool_row[tool_name].style().fg,
-            Some(ratatui::style::Color::Rgb(48, 59, 160))
+            Some(ratatui::style::Color::Rgb(148, 175, 255))
         );
         assert_eq!(
             tool_row[done_status].style().fg,
-            Some(ratatui::style::Color::Rgb(114, 184, 148))
+            Some(ratatui::style::Color::Rgb(112, 255, 173))
         );
     }
 }
@@ -1252,6 +1252,7 @@ fn composer_cursor_matches_painted_graphemes_spaces_and_wrap_after_resize() {
     let model = Model::default();
     // Put a visible marker at the caret, including after preserved indentation,
     // tabs, multi-cell characters and long lines that wrap in a narrow terminal.
+    let large = "line 界\n".repeat(1000);
     for prefix in [
         "",
         "    ",
@@ -1260,6 +1261,7 @@ fn composer_cursor_matches_painted_graphemes_spaces_and_wrap_after_resize() {
         "界👩‍💻é ",
         "first\n    ",
         "a very long line with spaces that must wrap many times in a narrow composer ",
+        large.as_str(),
     ] {
         let input = format!("{prefix}X");
         for inline in [true, false] {
