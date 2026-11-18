@@ -78,7 +78,7 @@ try {
   const request = Object.freeze({ tool: 'read_file', call_id: 'tc_1', sub_agent_run_id: 'run_review', args: Object.freeze({ path: 'app.js' }) });
   tap('tool_request', request);
   tap('tool_result', { call_id: 'tc_1', run_id: 'run_review', success: false, output: 'failed', duration_ms: 0 });
-  tap('sub_agent_complete', { run_id: 'run_review', summary: 'Review done' });
+  tap('sub_agent_complete', { run_id: 'run_review', summary: 'Review done', tokens: 2400, cost_usd: 0.012, duration_ms: 1250 });
   tap('plan_created', { items: [{ id: 'p1', text: 'Fix test', state: 'pending' }] });
   tap('complete', { summary: 'Done' });
   tap('content_partial', { text: 'Next turn' });
@@ -97,8 +97,26 @@ try {
   assert.equal(disk[5].data.tool_id, disk[6].data.tool_id);
   assert.equal(disk[6].data.ok, false);
   assert.equal(disk[6].data.duration_ms, 0);
+  assert.equal(disk[7].agent_id, 'run_review');
+  assert.deepEqual(disk[7].data.tokens, { total: 2400 });
+  assert.equal(disk[7].data.cost_usd, 0.012);
+  assert.equal(disk[7].data.elapsed_ms, 1250);
   assert.notEqual(disk[9].turn_id, disk[10].turn_id, 'separate turns receive separate IDs');
   assert.equal(new Set(disk.map(e => e.id)).size, disk.length);
+  tap('sub_agent_tool', {run_id:'worker-large-report',tool:'grep'});
+  tap('sub_agent_tool_result', {run_id:'worker-large-report',tool:'grep',success:true});
+  tap('sub_agent_complete', {run_id:'worker-large-report',summary:'Report line\n'.repeat(1000),tokens:{input_tokens:12000,output_tokens:4000},cost_usd:0.15,duration_ms:4200});
+  await closeActiveEventLog();
+  const finalEvents = await readAllEvents({sessionId});
+  assert.equal(finalEvents.at(-3).agent_id,'worker-large-report');
+  assert.equal(finalEvents.at(-3).data.current_tool,'grep');
+  assert.equal(finalEvents.at(-3).data.tool_active,true);
+  assert.equal(finalEvents.at(-2).data.tool_active,false);
+  const large = finalEvents.at(-1);
+  assert.ok(large.payload_ref, 'large report retains its complete payload');
+  assert.equal(large.data.total_tokens,16000,'bounded metadata retains available worker usage');
+  assert.equal(large.data.cost_usd,0.15);
+  assert.equal(large.data.elapsed_ms,4200);
   console.log('PASS: generated schema/types, golden events/commands, v1 replay, v2 identities, payload references, crash recovery, agent attribution and identical live/replay frames.');
 } finally {
   await closeActiveEventLog();

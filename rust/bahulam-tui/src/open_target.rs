@@ -10,6 +10,7 @@ pub enum OpenError {
     NoTarget,
     NotFound(String),
     Unsupported,
+    LaunchFailed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +32,7 @@ impl std::fmt::Display for OpenError {
             Self::NoTarget => write!(f, "No URL or file path found in this item."),
             Self::NotFound(path) => write!(f, "File does not exist: {path}"),
             Self::Unsupported => write!(f, "No supported URL or file opener is available."),
+            Self::LaunchFailed(status) => write!(f, "Browser opener failed ({status}). Check your default browser; Alt+L lists the URL."),
         }
     }
 }
@@ -296,7 +298,33 @@ fn open_url(url: &str) -> Result<(), OpenError> {
     let args = vec!["url.dll,FileProtocolHandler".to_owned(), url.to_owned()];
     #[cfg(not(target_os = "windows"))]
     let args = vec![url.to_owned()];
-    spawn_detached(command, &args)
+    // Report immediate launcher errors instead of claiming success on spawn.
+    // This runs on the browser worker; an opener that stays running is reaped
+    // in the background after a bounded observation period.
+    let mut child = Command::new(command)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| OpenError::Unsupported)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if let Some(status) = child.try_wait().map_err(|_| OpenError::Unsupported)? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(OpenError::LaunchFailed(status.to_string()))
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn open_file(reference: &FileReference) -> Result<(), OpenError> {

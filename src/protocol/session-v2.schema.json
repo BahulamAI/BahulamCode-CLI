@@ -924,6 +924,12 @@
         },
         "elapsed_ms": {
           "type": "number"
+        },
+        "total_tokens": {
+          "type": "number"
+        },
+        "cost_usd": {
+          "type": "number"
         }
       },
       "required": [
@@ -952,6 +958,12 @@
         },
         "error": {
           "type": "string"
+        },
+        "total_tokens": {
+          "type": "number"
+        },
+        "elapsed_ms": {
+          "type": "number"
         }
       },
       "required": [

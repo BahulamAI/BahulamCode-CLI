@@ -87,7 +87,7 @@ finally:
 try {
  const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),process.execPath,driver],{
   encoding:'utf8',timeout:18000,maxBuffer:2*1024*1024,
-  env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_SCROLL_LINES:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
+  env:{...process.env,TERM:'xterm-256color',BAHULAM_HOME:temp,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_SCROLL_LINES:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
  });
  assert.equal(result.status,0,`${result.stdout}\n${result.stderr}`);
  console.log('PASS: inline fills 120x40, 150x56, 60x20 and 100x36; header scrolls away, composer stays at bottom, history and draft survive.');

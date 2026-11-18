@@ -1,5 +1,6 @@
 pub mod browser_links;
 pub mod capabilities;
+pub mod capability_probe;
 pub mod clipboard;
 pub mod composer;
 pub mod copy_menu;

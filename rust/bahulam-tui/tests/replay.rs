@@ -542,8 +542,8 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
             // Sub-agent internals stay out of the main conversation; the
             // reviewer's own transcript is where its tool card appears.
             assert!(
-                !text.contains("read_file"),
-                "sub-agent tool leaked into the main view at {width}x{height}"
+                !text.contains("Read app.js"),
+                "sub-agent tool result leaked into the main view at {width}x{height}"
             );
             let mut filtered = Terminal::new(TestBackend::new(width, height)).unwrap();
             filtered
@@ -1059,6 +1059,110 @@ fn historical_controls_cannot_activate_or_resolve_live_approval() {
 }
 
 #[test]
+fn thinking_phases_follow_tools_and_replace_iteration_status_without_losing_reasoning() {
+    let mut model = Model::default();
+    let steps = [
+        (
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Processing (iteration 1)..."}),
+        ),
+        (
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Processing (iteration 2)..."}),
+        ),
+        (
+            "tool_requested",
+            "main",
+            json!({"tool_id":"read", "name":"read_file"}),
+        ),
+        (
+            "tool_finished",
+            "main",
+            json!({"tool_id":"read", "ok":true}),
+        ),
+        (
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Processing (iteration 3)..."}),
+        ),
+        (
+            "tool_finished",
+            "worker",
+            json!({"tool_id":"other", "name":"shell", "ok":true}),
+        ),
+        (
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Processing (iteration 4)..."}),
+        ),
+        (
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Actual reasoning "}),
+        ),
+        ("thinking_delta", "main", json!({"chunk":"continues."})),
+        ("message_end", "main", json!({"text":"Final answer"})),
+    ];
+    for (index, (kind, agent, data)) in steps.into_iter().enumerate() {
+        model
+            .apply(&event(index as i64 + 1, kind, agent, data))
+            .unwrap();
+    }
+    let main: Vec<_> = model
+        .cards
+        .iter()
+        .filter(|card| card.agent == "main")
+        .collect();
+    assert_eq!(
+        main.iter()
+            .map(|card| card.title.as_str())
+            .collect::<Vec<_>>(),
+        ["Thinking", "read_file", "Thinking", "Thinking", "Assistant"]
+    );
+    assert_eq!(main[0].body, "Processing (iteration 2)...");
+    assert_eq!(main[2].body, "Processing (iteration 4)...");
+    assert_eq!(main[3].body, "Actual reasoning continues.");
+    assert!(main.iter().all(|card| card.status == "done"));
+    for inline in [true, false] {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                bahulam_tui::render::draw_with_view(
+                    frame,
+                    &model,
+                    0,
+                    true,
+                    "dark",
+                    "",
+                    0,
+                    &HashSet::new(),
+                    None,
+                    true,
+                    None,
+                    None,
+                    0,
+                    None,
+                    0,
+                    inline,
+                )
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.find("iteration 2").unwrap() < text.find("read_file").unwrap());
+        assert!(text.find("read_file").unwrap() < text.find("iteration 4").unwrap());
+        assert!(text.find("iteration 4").unwrap() < text.find("Final answer").unwrap());
+    }
+}
+
+#[test]
 fn progress_thinking_checks_and_cancelled_tools_keep_full_details() {
     let mut model = Model::default();
     for seq in 1..=100 {
@@ -1105,6 +1209,14 @@ fn progress_thinking_checks_and_cancelled_tools_keep_full_details() {
     model
         .apply(&event(
             114,
+            "thinking_delta",
+            "main",
+            json!({"chunk":"Processing (iteration 9)..."}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            115,
             "turn_ended",
             "main",
             json!({"ok":false, "outcome":"cancelled"}),
@@ -1112,7 +1224,8 @@ fn progress_thinking_checks_and_cancelled_tools_keep_full_details() {
         .unwrap();
     assert_eq!(model.status, "cancelled");
     assert_eq!(model.cards[3].status, "cancelled");
-    assert_eq!(model.cards[1].status, "cancelled");
+    assert_eq!(model.cards[1].status, "done"); // earlier phase finished before the check
+    assert_eq!(model.cards[4].status, "cancelled"); // only the active phase is cancelled
     assert!(model.agents[0].current_tool.is_empty());
 }
 
@@ -2268,4 +2381,344 @@ fn resumed_legacy_results_keep_previews_details_and_success_checkmark() {
             }
         }
     }
+}
+
+#[test]
+fn five_workers_preserve_identity_usage_reports_and_replay_isolation() {
+    let mut model = Model::default();
+    let mut events = Vec::new();
+    let mut push = |kind: &str, agent: &str, data: serde_json::Value| {
+        let mut e = event(events.len() as i64 + 1, kind, agent, data);
+        if agent != "main" {
+            e.parent_agent_id = Some(
+                if agent == "worker5" {
+                    "worker2"
+                } else {
+                    "main"
+                }
+                .into(),
+            );
+        }
+        model.apply(&e).unwrap();
+        events.push(e);
+    };
+    push(
+        "turn_started",
+        "main",
+        json!({"text":"Coordinate five workers"}),
+    );
+    for n in 1..=5 {
+        let id = format!("worker{n}");
+        push(
+            "agent_spawned",
+            &id,
+            json!({"type":id,"task":format!("Task {n}")}),
+        );
+        push(
+            "tool_requested",
+            &id,
+            json!({"tool_id":"shared","name":"read_file","args":{"path":"app.rs"}}),
+        );
+        push("tool_started", &id, json!({"tool_id":"shared"}));
+        push(
+            "agent_status",
+            &id,
+            json!({"status":"working","tokens":{"total":n*1200},"cost_usd":0.01,"elapsed_ms":2000}),
+        );
+        push("agent_status", &id, json!({"status":"working"}));
+    }
+    push(
+        "tool_requested",
+        "worker1",
+        json!({"tool_id":"second","name":"grep"}),
+    );
+    push(
+        "tool_finished",
+        "worker1",
+        json!({"tool_id":"shared","ok":true,"output":"first result"}),
+    );
+    push(
+        "approval_required",
+        "worker3",
+        json!({"apr_id":"apr-worker3","name":"shell","command":"npm test","scopes":["once","deny"]}),
+    );
+    assert_eq!(
+        model.agents[1].current_tool, "grep",
+        "older result must not clear the newer call"
+    );
+    assert_eq!(model.agents[2].current_tool, "read_file");
+    assert_eq!(model.agents[2].tokens, Some(2400));
+    assert_eq!(model.agents[2].cost, Some(0.01));
+    assert_eq!(model.agents[2].task, "Task 2");
+    assert!(model.agents[2].elapsed().unwrap() >= 2000.0);
+    assert_eq!(model.approval.as_ref().unwrap().agent, "worker3");
+    assert_eq!(model.approval.as_ref().unwrap().id, "apr-worker3");
+    let ids: Vec<_> = model.agents.iter().map(|a| a.id.clone()).collect();
+    for n in [4, 2, 5, 1, 3] {
+        let id = format!("worker{n}");
+        let e = event(
+            events.len() as i64 + 1,
+            "agent_finished",
+            &id,
+            json!({"ok":n!=4,"report":format!("Full report {n}\n{}END-{n}", "Report line\n".repeat(30)),
+                "error":if n==4 {"permission denied"} else {""},"tokens":{"total":n*2000},"elapsed_ms":4500}),
+        );
+        model.apply(&e).unwrap();
+        events.push(e);
+    }
+    assert_eq!(
+        ids,
+        model
+            .agents
+            .iter()
+            .map(|a| a.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(model.agents[4].status, "failed");
+    assert!(model
+        .cards
+        .iter()
+        .filter(|c| c.agent != "main")
+        .all(|c| c.started_at.is_none()));
+    assert!(model
+        .cards
+        .iter()
+        .filter(|c| !c.tool_name.is_empty())
+        .all(|c| c.status != "running" && c.status != "requested"));
+    let report = model
+        .cards
+        .iter()
+        .find(|c| c.title == "Agent report" && c.primary == "worker4")
+        .unwrap();
+    assert!(
+        report.body.contains("permission denied") && report.body.contains("Last tool: read_file")
+    );
+    assert!(report.body.contains("END-4"));
+    assert!(
+        report.belongs_to("main") && report.belongs_to("worker4") && !report.belongs_to("worker3")
+    );
+    assert!(!report.is_foldable());
+    assert!(model
+        .agents
+        .iter()
+        .skip(1)
+        .all(|a| !a.active() && a.started_at.is_none()));
+    // The same historical pending approval is informational only, and clocks stay frozen.
+    let mut resumed = Model::default();
+    resumed
+        .apply(&event(
+            1,
+            "transcript_snapshot",
+            "main",
+            json!({"replace":true,"mode":"full",
+        "items":events.iter().map(|e| json!({"kind":"event","event":e})).collect::<Vec<_>>() }),
+        ))
+        .unwrap();
+    assert!(resumed.approval.is_none());
+    assert_eq!(
+        resumed
+            .agents
+            .iter()
+            .map(|a| a.id.clone())
+            .collect::<Vec<_>>(),
+        ids
+    );
+    assert!(resumed
+        .agents
+        .iter()
+        .all(|a| a.historical && a.started_at.is_none() && !a.active()));
+    assert_eq!(resumed.agents[2].tokens, Some(4000));
+    assert_eq!(resumed.agents[5].parent.as_deref(), Some("worker2"));
+    assert_eq!(
+        resumed
+            .cards
+            .iter()
+            .filter(|c| c.title == "Agent report")
+            .count(),
+        5
+    );
+    assert_eq!(
+        resumed
+            .cards
+            .iter()
+            .filter(|c| c.title == "Agent report")
+            .map(|c| &c.body)
+            .collect::<Vec<_>>(),
+        model
+            .cards
+            .iter()
+            .filter(|c| c.title == "Agent report")
+            .map(|c| &c.body)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn agent_report_preview_hydrates_and_duplicate_completion_updates_one_card() {
+    let mut model = Model::default();
+    let mut e = event(
+        1,
+        "agent_finished",
+        "worker",
+        json!({"ok":true,"report":"preview"}),
+    );
+    e.payload_ref = Some("reports/full.json".into());
+    model.apply(&e).unwrap();
+    assert_eq!(
+        model.request_details(0).as_deref(),
+        Some("reports/full.json")
+    );
+    model
+        .apply(&event(
+            2,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"reports/full.json","detail":"Full report\nFinal line"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].body, "Full report\nFinal line");
+    model
+        .apply(&event(
+            3,
+            "agent_finished",
+            "worker",
+            json!({"ok":true,"report":"Full report\nFinal line"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards.len(), 1);
+}
+
+#[test]
+fn worker_rows_are_clickable_in_both_views_and_resize_without_misattribution() {
+    use bahulam_tui::render::{agent_at, draw_with_view, mouse_panel_at_view};
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "turn_started",
+            "main",
+            json!({"text":"Main question"}),
+        ))
+        .unwrap();
+    for n in 1..=5 {
+        model
+            .apply(&event(
+                n + 1,
+                "agent_spawned",
+                &format!("worker{n}"),
+                json!({"type":format!("worker{n}"),"task":format!("Task {n}")}),
+            ))
+            .unwrap();
+    }
+    for inline in [true, false] {
+        for (width, height) in [(120, 40), (60, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_with_view(
+                        frame,
+                        &model,
+                        0,
+                        true,
+                        "dark",
+                        "draft",
+                        5,
+                        &HashSet::new(),
+                        Some(0),
+                        true,
+                        None,
+                        Some(5),
+                        2,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let mut ids = HashSet::new();
+            for y in 0..height {
+                for x in 0..width {
+                    let position = Position::new(x, y);
+                    if let Some(hit) = agent_at(position) {
+                        assert_eq!(model.agents[hit.index].id, hit.id);
+                        assert_eq!(
+                            mouse_panel_at_view(
+                                Rect::new(0, 0, width, height),
+                                &model,
+                                "draft",
+                                position,
+                                inline
+                            ),
+                            Some(MousePanel::Agents)
+                        );
+                        ids.insert(hit.id);
+                    }
+                }
+            }
+            assert!(ids.contains("worker5"));
+            if width == 120 {
+                assert_eq!(ids.len(), 6);
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_usage_from_bounded_metadata_and_per_agent_totals_survives_status_only_updates() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "agent_spawned",
+            "worker",
+            json!({"type":"review","task":"Review"}),
+        ))
+        .unwrap();
+    model.apply(&event(2,"usage_update","main",json!({"input_tokens":100,"output_tokens":20,"per_agent":{"worker":{"input_tokens":2000,"output_tokens":500,"cost_usd":0.02}}}))).unwrap();
+    let worker = model.agents.iter().find(|a| a.id == "worker").unwrap();
+    assert_eq!(worker.tokens, Some(2500));
+    assert_eq!(worker.cost, Some(0.02));
+    assert_eq!(model.input_tokens, 100);
+    model
+        .apply(&event(
+            3,
+            "agent_status",
+            "worker",
+            json!({"status":"working"}),
+        ))
+        .unwrap();
+    assert_eq!(model.agents[0].tokens, Some(2500));
+    model
+        .apply(&event(
+            4,
+            "agent_finished",
+            "worker",
+            json!({"ok":true,"total_tokens":16000,"cost_usd":0.15,"elapsed_ms":4200}),
+        ))
+        .unwrap();
+    assert_eq!(model.agents[0].tokens, Some(16000));
+    assert_eq!(model.agents[0].elapsed(), Some(4200.0));
+    assert_eq!(
+        model.input_tokens, 100,
+        "worker totals must not replace session accounting"
+    );
+}
+
+#[test]
+fn metadata_only_worker_tool_progress_updates_the_row_without_control_handles() {
+    let mut model = Model::default();
+    model
+        .apply(&event(
+            1,
+            "agent_spawned",
+            "worker",
+            json!({"type":"review","task":"Check code"}),
+        ))
+        .unwrap();
+    model.apply(&event(2,"notice","worker",json!({"current_tool":"grep","tool_active":true,"progress_key":"agent-tool","cause":"grep"}))).unwrap();
+    assert_eq!(model.agents[0].current_tool, "grep");
+    assert!(model.cards.iter().all(|c| c.tool_id.is_empty()));
+    model.apply(&event(3,"notice","worker",json!({"current_tool":"grep","tool_active":false,"progress_key":"agent-tool","cause":"Found results"}))).unwrap();
+    assert!(model.agents[0].current_tool.is_empty());
+    assert_eq!(model.agents[0].last_tool, "grep");
 }

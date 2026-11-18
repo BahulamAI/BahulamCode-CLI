@@ -405,7 +405,7 @@ export class ApprovalManager {
             (option.value !== 'allow-session' || this.policy.hitl?.allowSessionTrust) &&
             (option.value !== 'allow-project' || this.policy.hitl?.allowProjectTrust));
         const answer = promptHandler ? await promptHandler({ tool: toolName, args, tier, why,
-            cwd: context.cwd || this.cwd, options: offered }) : await choose();
+            cwd: context.cwd || this.cwd, options: offered, agentContext: context.agentContext }) : await choose();
         // Renderer responses cannot invent broader policy choices.
         const value = promptHandler && !offered.some(option => option.value === answer) ? 'reject' : answer;
         promptClosed = true;

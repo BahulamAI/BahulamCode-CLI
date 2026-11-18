@@ -148,6 +148,10 @@ pub struct AgentStatusData {
     pub tokens: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentFinishedData {
@@ -161,6 +165,10 @@ pub struct AgentFinishedData {
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlanUpdatedData {

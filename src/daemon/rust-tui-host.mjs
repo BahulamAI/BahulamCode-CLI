@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { registerBroadcaster } from './event-tap.mjs';
 import { TOKENS, LIGHT_TOKENS } from '../ui/palette.mjs';
 import { term } from '../ui/term.mjs';
+import { terminalIdentity, cachedCapabilities, rememberCapabilities } from './rust-tui-capability-cache.mjs';
 
 import { stripTerminalControls } from '../core/display-sanitize.mjs';
 
@@ -68,9 +69,12 @@ export function startRustTuiHost({
   if (!fs.existsSync(binary)) throw new Error(`Rust terminal client is not built: ${binary}. Run npm run tui:build.`);
   const savedTerminalMode = captureTerminalMode();
   const requestedTheme = (env.BAHULAM_THEME || '').toLowerCase();
+  const capabilityIdentity = terminalIdentity(env);
   const child = spawn(binary, ['--stdio'], { stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'], env: { ...env,
     BAHULAM_TUI_MODE: mode || env.BAHULAM_TUI_MODE || 'inline',
+    BAHULAM_TUI_PROBE_CACHE: cachedCapabilities(capabilityIdentity),
     BAHULAM_THEME: ['dark','light','high-contrast','ansi'].includes(requestedTheme) ? requestedTheme : term().appearance,
+    BAHULAM_TUI_THEME_SOURCE: ['dark','light','high-contrast','ansi'].includes(requestedTheme) ? 'explicit' : 'inferred',
     BAHULAM_TUI_COLOR_LEVEL: term().colorLevel,
     BAHULAM_TUI_PALETTE: JSON.stringify({ dark: TOKENS, light: LIGHT_TOKENS }),
   } });
@@ -80,6 +84,7 @@ export function startRustTuiHost({
   let closed = false;
   let eventPipeFailed = false;
   let terminalState = { active: false, alternate_screen: false, keyboard_enhancement: false, shell_command_marked: false, shell_prompt_marked: false };
+  let capabilitiesRecorded = false;
   const recentEvents = [];
   let failure = null;
   let killTimer;
@@ -144,6 +149,12 @@ export function startRustTuiHost({
       if (!line.trim()) continue;
       try {
         const command = JSON.parse(line);
+        if (!capabilitiesRecorded && command?.type === 'hello' && command.data?.client === 'bahulam-tui') {
+          rememberCapabilities(capabilityIdentity, command.data.capabilities?.probe);
+          // Resize/view/theme reports reuse the same measurements; do not renew
+          // the cache's age without a new startup probe.
+          capabilitiesRecorded = true;
+        }
         if (command?.type === 'terminal_state') {
           terminalState = {
             active: command.data?.active === true,

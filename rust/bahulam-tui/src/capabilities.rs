@@ -11,6 +11,13 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct TerminalCapabilities {
     pub interactive: bool,
+    pub probe: crate::capability_probe::Probe,
+    pub overrides: Value,
+    pub query_safe: bool,
+    pub dumb: bool,
+    pub theme: String,
+    pub theme_source: String,
+    explicit_theme: bool,
     pub terminal: String,
     pub version: String,
     pub color_depth: String,
@@ -30,6 +37,9 @@ impl TerminalCapabilities {
     pub fn detect() -> Self {
         // Do not capture or report the environment wholesale (it includes secrets).
         let values = [
+            "BAHULAM_TUI_CAPABILITIES",
+            "BAHULAM_THEME",
+            "BAHULAM_TUI_THEME_SOURCE",
             "TERM",
             "TERM_PROGRAM",
             "TERM_PROGRAM_VERSION",
@@ -130,8 +140,30 @@ impl TerminalCapabilities {
                 _ => "unknown",
             }
         };
+        let configured_theme = get("BAHULAM_THEME").to_lowercase();
+        let valid_theme =
+            ["dark", "light", "high-contrast", "ansi"].contains(&configured_theme.as_str());
+        let explicit_theme = valid_theme && get("BAHULAM_TUI_THEME_SOURCE") != "inferred";
         Self {
             interactive,
+            theme: if valid_theme {
+                configured_theme
+            } else {
+                "dark".into()
+            },
+            theme_source: if explicit_theme {
+                "explicit configuration"
+            } else if valid_theme {
+                "host appearance hint"
+            } else {
+                "default dark"
+            }
+            .into(),
+            explicit_theme,
+            probe: crate::capability_probe::Probe::skipped("not run (diagnostic only)"),
+            overrides: serde_json::from_str(get("BAHULAM_TUI_CAPABILITIES")).unwrap_or_default(),
+            dumb: term == "dumb",
+            query_safe: interactive && !matches!(term.as_str(), "" | "dumb" | "unknown"),
             terminal: safe_text(if program.is_empty() {
                 get("TERM")
             } else {
@@ -142,6 +174,7 @@ impl TerminalCapabilities {
             color_source: color_source.into(),
             unicode_locale: locale.contains("utf-8") || locale.contains("utf8"),
             mouse_capture: interactive
+                && term != "dumb"
                 && !matches!(get("BAHULAM_TUI_MOUSE"), "0" | "false" | "off"),
             scroll_lines: get("BAHULAM_TUI_SCROLL_LINES")
                 .trim()
@@ -165,15 +198,126 @@ impl TerminalCapabilities {
         }
     }
 
+    pub fn override_value(&self, key: &str) -> Option<bool> {
+        match self.overrides.get(key) {
+            Some(Value::Bool(value)) => Some(*value),
+            Some(Value::String(value)) => match value.as_str() {
+                "on" | "true" | "enabled" => Some(true),
+                "off" | "false" | "disabled" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn detected(&self, key: &str) -> Option<bool> {
+        match key {
+            "synchronized_output" => self.probe.synchronized_output,
+            "focus_reporting" => self.probe.focus_reporting,
+            "keyboard_protocol" => self.probe.keyboard_protocol,
+            "mouse_sgr" => self.probe.mouse_sgr,
+            "bracketed_paste" => self.probe.bracketed_paste,
+            "sixel" => self.probe.sixel,
+            "background_color" => self.probe.background_rgb.map(|_| true),
+            _ => None,
+        }
+    }
+
+    pub fn resolve(&self, key: &str, inferred: bool) -> bool {
+        self.interactive
+            && self
+                .override_value(key)
+                .or(self.detected(key))
+                .unwrap_or(inferred)
+    }
+
+    pub fn probe(
+        &mut self,
+    ) -> std::io::Result<std::collections::VecDeque<crossterm::event::Event>> {
+        let mut pending = std::collections::VecDeque::new();
+        let background = self.override_value("background_color") != Some(false);
+        if !self.query_safe
+            || self.tmux
+            || self.screen
+            || !cfg!(unix)
+            || self.override_value("active_probes") == Some(false)
+        {
+            self.probe = crate::capability_probe::Probe::skipped(
+                "skipped (noninteractive, transport, platform or override)",
+            );
+        } else if let Some(cached) = std::env::var("BAHULAM_TUI_PROBE_CACHE")
+            .ok()
+            .and_then(|value| crate::capability_probe::Probe::cached(&value))
+        {
+            self.probe = cached;
+            if background {
+                self.probe.run(&mut pending, true, true)?;
+            }
+        } else {
+            self.probe.run(&mut pending, background, false)?;
+        }
+        self.apply_background();
+        // The legacy BAHULAM_TUI_MOUSE switch remains an explicit opt-out.
+        self.mouse_capture = self.mouse_capture && self.resolve("mouse_sgr", true);
+        Ok(pending)
+    }
+
+    fn apply_background(&mut self) {
+        if !self.explicit_theme && self.override_value("background_color") != Some(false) {
+            if let Some(rgb) = self.probe.background_rgb {
+                self.theme = crate::capability_probe::background_theme(rgb).into();
+                self.theme_source = "OSC11 background reply".into();
+            }
+        }
+    }
+
+    pub fn select_theme(&mut self, theme: &str) {
+        self.theme = theme.into();
+        self.theme_source = "explicit /theme command".into();
+        self.explicit_theme = true;
+    }
+
+    fn feature_table(&self, attached: bool) -> Value {
+        let config = crate::integrations::Config::from_caps(self);
+        [
+            ("synchronized_output", config.sync),
+            ("focus_reporting", config.focus),
+            ("keyboard_protocol", config.keyboard),
+            ("osc8_links", config.links),
+            ("mouse_sgr", self.mouse_capture),
+            ("bracketed_paste", config.paste),
+        ]
+        .into_iter()
+        .map(|(name, requested)| {
+            let source = if self.override_value(name).is_some() {
+                "override"
+            } else if self.detected(name).is_some() {
+                "query reply"
+            } else {
+                "profile/fallback (not queried or no reply)"
+            };
+            (
+                name.to_owned(),
+                json!({"detected":self.detected(name), "override":self.override_value(name),
+                "source":source, "requested":requested, "enabled":attached && requested}),
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+    }
+
     pub fn as_json(&self, view: Option<&str>, size: Option<(u16, u16)>) -> Value {
         json!({
-            "detection": "environment/profile hints; active queries not implemented",
+            "detection": self.probe.status, "probe": self.probe, "features": self.feature_table(view.is_some()),
+            "theme": self.theme, "theme_source": self.theme_source,
+            "background": {"rgb":self.probe.background_rgb, "queried":self.probe.background_requested,
+                "override":self.override_value("background_color"), "source":if self.probe.background_rgb.is_some() { "OSC11 reply" } else { "unknown" }},
             "interactive": self.interactive, "terminal": self.terminal, "terminal_version": self.version,
             "profile": self.profile, "color_depth": self.color_depth, "color_source": self.color_source,
             "unicode_locale": self.unicode_locale, "tmux": self.tmux, "screen": self.screen,
             "ssh": self.ssh, "wsl": self.wsl, "view": view, "size": size.map(|(columns, rows)| json!({"columns":columns,"rows":rows})),
             "mouse_capture": view.is_some() && self.mouse_capture,
-            "mouse_requested": self.mouse_capture, "bracketed_paste": view.is_some(),
+            "mouse_requested": self.mouse_capture, "bracketed_paste": view.is_some() && crate::integrations::Config::from_caps(self).paste,
             "scroll_lines": self.scroll_lines,
             "integrations": crate::integrations::Config::from_caps(self).report(),
             "synchronized_output": crate::integrations::Config::from_caps(self).sync, "focus_reporting": crate::integrations::Config::from_caps(self).focus,
@@ -186,8 +330,28 @@ impl TerminalCapabilities {
         let yes_no = |value| if value { "yes" } else { "no" };
         [
             "Bahulam terminal capabilities".to_owned(),
-            "Detection            environment/profile hints; active queries not implemented"
-                .to_owned(),
+            format!(
+                "Detection            {} · {} ms / 200 ms budget",
+                self.probe.status, self.probe.elapsed_ms
+            ),
+            self.feature_table(view.is_some())
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(name, feature)| {
+                    format!(
+                        "  {name:<20} detected={} requested={} enabled={} ({})",
+                        feature["detected"]
+                            .as_bool()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "unknown".into()),
+                        feature["requested"],
+                        feature["enabled"],
+                        feature["source"].as_str().unwrap_or("unknown")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
             format!(
                 "Rust view            {}",
                 view.unwrap_or("not attached (diagnostic only)")
@@ -199,6 +363,21 @@ impl TerminalCapabilities {
             ),
             format!("Terminal             {} {}", self.terminal, self.version),
             format!("Profile hint         {}", self.profile),
+            format!(
+                "Theme                {} ({})",
+                self.theme, self.theme_source
+            ),
+            format!(
+                "Terminal background  {} · queried={} · override={}",
+                self.probe
+                    .background_rgb
+                    .map(|[r, g, b]| format!("#{r:02X}{g:02X}{b:02X}"))
+                    .unwrap_or_else(|| "unknown".into()),
+                self.probe.background_requested,
+                self.override_value("background_color")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "auto".into())
+            ),
             format!("Interactive          {}", yes_no(self.interactive)),
             format!(
                 "Color depth          {} ({})",
@@ -206,7 +385,7 @@ impl TerminalCapabilities {
             ),
             format!("UTF-8 locale hint    {}", yes_no(self.unicode_locale)),
             format!(
-                "Mouse capture        {} (support not queried)",
+                "Mouse capture        {}",
                 if view.is_some() && self.mouse_capture {
                     "enabled"
                 } else {
@@ -215,7 +394,7 @@ impl TerminalCapabilities {
             ),
             format!(
                 "Bracketed paste      {}",
-                if view.is_some() {
+                if view.is_some() && crate::integrations::Config::from_caps(self).paste {
                     "enabled"
                 } else {
                     "inactive"
@@ -244,7 +423,15 @@ impl TerminalCapabilities {
             ),
             "Prompt editor        Ctrl+G · VISUAL/EDITOR".to_owned(),
             "Prompt history       ↑↓ recall · Ctrl+R search".to_owned(),
-            "Image rendering      not restored".to_owned(),
+            format!(
+                "Sixel advertised     {:?} (rendering not implemented)",
+                self.probe.sixel
+            ),
+            format!(
+                "Pixel geometry       cell {:?} · window {:?} (at probe time)",
+                self.probe.cell_pixels, self.probe.window_pixels
+            ),
+            "Graphics queries     pending; images not rendered".to_owned(),
         ]
         .join("\n")
     }
@@ -318,7 +505,7 @@ mod tests {
         assert_eq!(caps.as_json(None, None)["mouse_capture"], false);
         assert!(caps
             .report(None, None)
-            .contains("active queries not implemented"));
+            .contains("not run (diagnostic only)"));
     }
     #[test]
     fn mouse_scroll_is_gentle_by_default_and_configurable() {
@@ -356,5 +543,69 @@ mod tests {
         );
         assert!(!caps.mouse_capture);
         assert!(!caps.report(Some("inline"), None).contains('\x1b'));
+    }
+
+    #[test]
+    fn mode_overrides_take_precedence_without_claiming_detection() {
+        let mut caps = TerminalCapabilities::from_values(
+            &values(&[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "ghostty"),
+                (
+                    "BAHULAM_TUI_CAPABILITIES",
+                    r#"{"keyboard_protocol":true,"synchronized_output":"auto"}"#,
+                ),
+            ]),
+            true,
+            true,
+        );
+        caps.probe.status = "active (DA1 received)".into();
+        caps.probe.complete = true;
+        caps.probe.keyboard_protocol = Some(false);
+        caps.probe.synchronized_output = Some(false);
+        let config = crate::integrations::Config::from_caps(&caps);
+        assert!(config.keyboard);
+        assert!(!config.sync);
+        let table = caps.feature_table(true);
+        assert_eq!(table["keyboard_protocol"]["source"], "override");
+        assert_eq!(table["keyboard_protocol"]["detected"], false);
+        assert_eq!(table["synchronized_output"]["source"], "query reply");
+        // Explicit opt-in still cannot emit mode sequences into a pipe.
+        caps.interactive = false;
+        assert!(!crate::integrations::Config::from_caps(&caps).keyboard);
+    }
+
+    #[test]
+    fn automatic_background_preserves_explicit_themes_and_capability_opt_out() {
+        for (theme, source, override_json, expected) in [
+            ("dark", "inferred", "{}", "light"),
+            ("dark", "explicit", "{}", "dark"),
+            ("ansi", "", "{}", "ansi"),
+            ("high-contrast", "explicit", "{}", "high-contrast"),
+            ("dark", "inferred", r#"{"background_color":false}"#, "dark"),
+        ] {
+            let mut caps = TerminalCapabilities::from_values(
+                &values(&[
+                    ("TERM", "xterm-256color"),
+                    ("BAHULAM_THEME", theme),
+                    ("BAHULAM_TUI_THEME_SOURCE", source),
+                    ("BAHULAM_TUI_CAPABILITIES", override_json),
+                    ("NO_COLOR", "1"),
+                ]),
+                true,
+                true,
+            );
+            caps.probe.background_rgb = Some([255, 255, 255]);
+            caps.apply_background();
+            assert_eq!(caps.theme, expected);
+            assert_eq!(caps.color_depth, "none");
+            caps.select_theme("dark");
+            caps.apply_background();
+            assert_eq!(caps.theme, "dark");
+            assert_eq!(
+                caps.as_json(Some("inline"), None)["theme_source"],
+                "explicit /theme command"
+            );
+        }
     }
 }

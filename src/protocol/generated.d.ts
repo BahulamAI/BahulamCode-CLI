@@ -93,6 +93,8 @@ export interface AgentStatusData {
   current_tool_id?: string;
   tokens?: Record<string, unknown>;
   elapsed_ms?: number;
+  total_tokens?: number;
+  cost_usd?: number;
 }
 export interface AgentFinishedData {
   agent_id: string;
@@ -101,6 +103,8 @@ export interface AgentFinishedData {
   tokens?: Record<string, unknown>;
   cost_usd?: number;
   error?: string;
+  total_tokens?: number;
+  elapsed_ms?: number;
 }
 export interface PlanUpdatedData {
   items: unknown[];

@@ -70,7 +70,7 @@ try {
   const resultFile=path.join(temp,mode);
   const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),resultFile,process.execPath,driver,resultFile],{
    encoding:'utf8',timeout:20000,maxBuffer:2*1024*1024,
-   env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
+   env:{...process.env,TERM:'xterm-256color',BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
   });
   assert.equal(result.status,0,`${mode}: ${result.stdout}\n${result.stderr}`);
  }

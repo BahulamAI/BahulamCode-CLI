@@ -50,7 +50,10 @@ fn restore() {
     }
 }
 
-fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+fn open_terminal(
+    inline: bool,
+    config: &integrations::Config,
+) -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     if inline {
         // Reserve the normal screen by scrolling startup output into scrollback.
         // Ratatui's Fullscreen viewport describes geometry, not alternate-screen
@@ -62,10 +65,12 @@ fn open_terminal(inline: bool) -> io::Result<Terminal<CrosstermBackend<io::Stdou
         execute!(io::stdout(), EnterAlternateScreen)?;
         ALT_SCREEN_ACTIVE.store(true, Ordering::Release);
     }
-    execute!(io::stdout(), EnableBracketedPaste)?;
-    integrations::enter(&integrations::Config::from_caps(
-        &TerminalCapabilities::detect(),
-    ))?;
+    if config.paste {
+        execute!(io::stdout(), EnableBracketedPaste)?;
+    } else {
+        execute!(io::stdout(), DisableBracketedPaste)?;
+    }
+    integrations::enter(config)?;
     Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
@@ -89,7 +94,10 @@ fn browser_open_job(uri: String) -> std::sync::mpsc::Receiver<ClipboardReply> {
     rx
 }
 
-fn paint_browser_hyperlinks() -> io::Result<()> {
+fn paint_browser_hyperlinks(
+    osc8: bool,
+    hovered: Option<ratatui::layout::Position>,
+) -> io::Result<()> {
     use ratatui::backend::IntoCrossterm;
     let hits = bahulam_tui::render::painted_browser_links();
     if hits.is_empty() {
@@ -101,17 +109,41 @@ fn paint_browser_hyperlinks() -> io::Result<()> {
         if !browser_links::valid_url(&hit.target.uri) {
             continue;
         }
-        let style: crossterm::style::ContentStyle = hit.style.into_crossterm();
+        let mut style: crossterm::style::ContentStyle = hit.style.into_crossterm();
+        style
+            .attributes
+            .unset(crossterm::style::Attribute::Underlined);
+        if hovered.is_some_and(|position| hit.area.contains(position)) {
+            style.attributes.set(crossterm::style::Attribute::Bold);
+        }
         crossterm::queue!(
             stdout,
+            crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
             crossterm::cursor::MoveTo(hit.area.x, hit.area.y),
             crossterm::style::SetStyle(style)
         )?;
-        write!(
+        if osc8 {
+            write!(stdout, "\x1b]8;;{}\x1b\\", hit.target.uri)?;
+        }
+        // Prefixes/spacing are clickable but need no decorative rule underneath.
+        let start = if hit.text.starts_with("↗ Open ") {
+            hit.text.find("http").unwrap_or(0)
+        } else {
+            0
+        };
+        write!(stdout, "{}", &hit.text[..start])?;
+        crossterm::queue!(
             stdout,
-            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
-            hit.target.uri, hit.text
+            crossterm::style::SetAttribute(crossterm::style::Attribute::Underdotted)
         )?;
+        write!(stdout, "{}", &hit.text[start..])?;
+        crossterm::queue!(
+            stdout,
+            crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline)
+        )?;
+        if osc8 {
+            write!(stdout, "\x1b]8;;\x1b\\")?;
+        }
     }
     crossterm::queue!(
         stdout,
@@ -186,11 +218,7 @@ fn scoped_card_indices(
         .cards
         .iter()
         .enumerate()
-        .filter(|(_, card)| {
-            agent_filter
-                .map(|agent| card.agent == agent)
-                .unwrap_or(card.agent == "main")
-        })
+        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")))
         .map(|(index, _)| index)
         .collect()
 }
@@ -348,8 +376,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    let capabilities = TerminalCapabilities::detect();
-    let integration_config = integrations::Config::from_caps(&capabilities);
+    let mut capabilities = TerminalCapabilities::detect();
     let mut integration_state = integrations::SessionState::default();
     let mut terminal_focused = true;
     let mut reported_integration_state = (false, false);
@@ -366,6 +393,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let termination_requested = install_termination_handler()?;
     enable_raw_mode()?;
     let _guard = TerminalGuard;
+    // Protect text pasted during probing; unsupported terminals ignore this mode.
+    if capabilities.resolve("bracketed_paste", !capabilities.dumb) {
+        execute!(io::stdout(), EnableBracketedPaste)?;
+    }
+    let mut pending_input = capabilities.probe()?;
+    let integration_config = integrations::Config::from_caps(&capabilities);
     let mut inline_mode =
         stdio && std::env::var("BAHULAM_TUI_MODE").map_or(true, |mode| mode == "inline");
     // Wheel navigation belongs to the Rust conversation in both views.
@@ -375,7 +408,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut selection_frame_pending = false;
     let mut drag_selection: Option<bahulam_tui::text_selection::TextSelection> = None;
     let mut painted_buffer: Option<ratatui::buffer::Buffer> = None;
-    let mut terminal = open_terminal(inline_mode)?;
+    let mut mouse_position: Option<ratatui::layout::Position> = None;
+    let mut hovered_browser_link = None;
+    let mut terminal = open_terminal(inline_mode, &integration_config)?;
     if mouse_enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
@@ -406,12 +441,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut history_search: Option<composer::Search> = None;
     let mut clipboard_job: Option<std::sync::mpsc::Receiver<ClipboardReply>> = None;
     let mut paste_origin: Option<(String, usize, u64)> = None;
-    let mut theme = std::env::var("BAHULAM_THEME").unwrap_or_else(|_| "dark".into());
+    let mut theme = capabilities.theme.clone();
     let mut expanded = HashSet::new();
     let mut focused_card = 0usize;
     let mut focused_agent = 0usize;
     let mut focus_panel = 0u8; // prompt, transcript, agents
     let mut agent_filter: Option<String> = None;
+    let mut agent_return: Option<(u16, bool, usize, Option<bahulam_tui::render::HistoryAnchor>)> =
+        None;
+    let mut pressed_agent = None;
     let mut detail_card: Option<usize> = None;
     let mut detail_scroll = 0u16;
     // Live mode: one Ctrl+C interrupts the agent, a second within two
@@ -449,6 +487,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     (input, cursor) = search.draft;
                 }
             }
+            if state.approval.is_some() && detail_card.is_none() {
+                focus_panel = 0;
+            }
             if state.transcript_revision != seen_transcript_revision {
                 dirty = true;
                 seen_transcript_revision = state.transcript_revision;
@@ -459,6 +500,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 follow = true;
                 focused_card = state.cards.len().saturating_sub(1);
                 agent_filter = None;
+                agent_return = None;
                 detail_card = None;
                 detail_scroll = 0;
                 focus_panel = 0;
@@ -659,7 +701,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|m| {
                     m.cards
                         .iter()
-                        .rposition(|card| card.agent == agent_filter.as_deref().unwrap_or("main"))
+                        .rposition(|card| {
+                            card.belongs_to(agent_filter.as_deref().unwrap_or("main"))
+                        })
                         .unwrap_or(0)
                 })
                 .unwrap_or(0);
@@ -748,8 +792,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !drag_selection.as_ref().is_some_and(|s| s.dragging) {
                 painted_buffer = Some(completed.buffer.clone());
             }
-            if integration_config.links && !drag_selection.as_ref().is_some_and(|s| s.dragging) {
-                paint_browser_hyperlinks()?;
+            let show_links =
+                !selecting_text && !drag_selection.as_ref().is_some_and(|s| s.dragging);
+            hovered_browser_link = mouse_position
+                .filter(|_| show_links && mouse_enabled)
+                .and_then(bahulam_tui::render::browser_link_at);
+            integrations::link_pointer(&capabilities.profile, hovered_browser_link.is_some())?;
+            if show_links {
+                paint_browser_hyperlinks(
+                    integration_config.links,
+                    mouse_position.filter(|_| mouse_enabled),
+                )?;
             }
             if let Some(target) = visible_link.as_ref().filter(|_| {
                 integration_config.links && !drag_selection.as_ref().is_some_and(|s| s.dragging)
@@ -784,8 +837,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             drawn_revision = frame_revision;
             dirty = false;
         }
-        if event::poll(Duration::from_millis(50))? {
-            let event = event::read()?;
+        if !pending_input.is_empty() || event::poll(Duration::from_millis(50))? {
+            let event = if let Some(input) = pending_input.pop_front() {
+                input
+            } else {
+                event::read()?
+            };
+            // A response arriving after the probe deadline is never composer input.
+            if matches!(event, Event::TerminalResponse(_)) {
+                continue;
+            }
             dirty |= match &event {
                 Event::Key(key) => key.kind == KeyEventKind::Press,
                 Event::Mouse(mouse) => matches!(
@@ -800,6 +861,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => false,
             };
             if matches!(&event, Event::Key(_) | Event::Resize(..) | Event::Paste(_)) {
+                mouse_position = None;
                 let had_selection = drag_selection.take().is_some_and(|s| s.dragging);
                 if had_selection && matches!(&event, Event::Key(key) if key.code == KeyCode::Esc) {
                     input_hint(&model, "");
@@ -1068,7 +1130,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     paste::materialize(&mut input, &mut cursor, &mut paste_chips);
                     let edited = composer::edit_in_editor(&input);
                     enable_raw_mode()?;
-                    terminal = open_terminal(inline_mode)?;
+                    terminal = open_terminal(inline_mode, &integration_config)?;
                     if mouse_enabled {
                         execute!(io::stdout(), EnableMouseCapture)?;
                     }
@@ -1317,10 +1379,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Esc if agent_filter.is_some() => {
                         agent_filter = None;
-                        focus_panel = 1;
-                        follow = true;
+                        focus_panel = 0;
+                        if let Some((saved_scroll, saved_follow, saved_card, anchor)) =
+                            agent_return.take()
+                        {
+                            scroll = saved_scroll;
+                            follow = saved_follow;
+                            focused_card = saved_card;
+                            expansion_anchor = if saved_follow { None } else { anchor };
+                        }
+                        if let Ok(mut state) = model.lock() {
+                            state.agents_open = false;
+                        }
                     }
-                    KeyCode::Esc if focus_panel != 0 => focus_panel = 0,
+                    KeyCode::Esc if focus_panel != 0 => {
+                        focus_panel = 0;
+                        if let Ok(mut state) = model.lock() {
+                            state.agents_open = false;
+                        }
+                    }
+                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        if let Ok(mut state) = model.lock() {
+                            if bahulam_tui::render::has_subagents(&state) {
+                                state.agents_open = true;
+                                focus_panel = 2;
+                            }
+                        }
+                    }
                     // Live mode: Esc interrupts the running turn; it never
                     // tears down the screen. Ctrl+C twice exits the CLI.
                     KeyCode::Esc if stdio => {
@@ -1340,7 +1425,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Tab => {
-                        focus_panel = (focus_panel + 1) % if inline_mode { 2 } else { 3 }
+                        let has_agents = model
+                            .lock()
+                            .is_ok_and(|m| bahulam_tui::render::has_subagents(&m));
+                        focus_panel =
+                            (focus_panel + 1) % if inline_mode && !has_agents { 2 } else { 3 };
+                        if focus_panel == 2 {
+                            if let Ok(mut state) = model.lock() {
+                                state.agents_open = true;
+                            }
+                        }
                     }
                     KeyCode::Char('o')
                         if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1575,6 +1669,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             })
                         });
                         if let Some((agent, last_card)) = selected_agent {
+                            if agent_filter.is_none() {
+                                agent_return = Some((
+                                    scroll,
+                                    follow,
+                                    focused_card,
+                                    geometry().and_then(|g| g.anchor(scroll, follow)),
+                                ));
+                            }
+                            expansion_anchor = None;
                             agent_filter = Some(agent);
                             focused_card = last_card;
                             scroll = u16::MAX;
@@ -1629,7 +1732,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 restore();
                                 enable_raw_mode()?;
                                 inline_mode = requested_inline;
-                                terminal = open_terminal(inline_mode)?;
+                                terminal = open_terminal(inline_mode, &integration_config)?;
                                 report_capabilities(
                                     &command_writer,
                                     &capabilities,
@@ -1641,6 +1744,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     execute!(io::stdout(), EnableMouseCapture)?;
                                 }
                                 agent_filter = None;
+                                agent_return = None;
                                 detail_card = None;
                                 focus_panel = 0;
                                 follow = true;
@@ -1656,6 +1760,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         } else if let Some(next_theme) = prompt.trim().strip_prefix("/theme ") {
                             if ["dark", "light", "high-contrast", "ansi"].contains(&next_theme) {
                                 theme = next_theme.to_owned();
+                                capabilities.select_theme(next_theme);
+                                report_capabilities(
+                                    &command_writer,
+                                    &capabilities,
+                                    inline_mode,
+                                    terminal.get_frame().area(),
+                                    &model,
+                                )?;
                             }
                         } else if stdio {
                             // Record before sending so a fast turn_started cannot outrun its acknowledgement.
@@ -1839,11 +1951,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::Mouse(mouse) if mouse_enabled => {
                     let position = ratatui::layout::Position::new(mouse.column, mouse.row);
+                    mouse_position = Some(position);
+                    if mouse.kind == MouseEventKind::Moved {
+                        let next = if drag_selection.as_ref().is_some_and(|s| s.dragging) {
+                            None
+                        } else {
+                            bahulam_tui::render::browser_link_at(position)
+                        };
+                        dirty |= next != hovered_browser_link;
+                        continue;
+                    }
                     if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
+                        let mut moved = true;
                         if let Some(selection) = drag_selection.as_mut().filter(|s| !s.released) {
                             selection.update(position);
+                            moved = selection.dragging;
                         }
-                        pressed_browser_link = None;
+                        if moved {
+                            pressed_browser_link = None;
+                        }
                         continue;
                     }
                     if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
@@ -1884,6 +2010,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let view_accepts_mouse = model.lock().ok().is_some_and(|state| {
                         state.interaction.is_none() && state.approval.is_none()
                     });
+                    let agent_hit = if view_accepts_mouse
+                        && detail_card.is_none()
+                        && history_search.is_none()
+                        && mouse.modifiers.is_empty()
+                    {
+                        bahulam_tui::render::agent_at(position)
+                    } else {
+                        None
+                    };
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        pressed_agent = agent_hit.clone();
+                        if pressed_agent.is_some() {
+                            drag_selection = None;
+                            pressed_browser_link = None;
+                            continue;
+                        }
+                    } else if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                        if let Some(hit) = pressed_agent.take() {
+                            if agent_hit.as_ref() == Some(&hit) {
+                                let valid = model.lock().is_ok_and(|m| {
+                                    m.agents.get(hit.index).is_some_and(|a| a.id == hit.id)
+                                });
+                                if valid {
+                                    if agent_filter.is_none() {
+                                        agent_return = Some((
+                                            scroll,
+                                            follow,
+                                            focused_card,
+                                            geometry().and_then(|g| g.anchor(scroll, follow)),
+                                        ));
+                                    }
+                                    expansion_anchor = None;
+                                    focused_agent = hit.index;
+                                    focused_card = model
+                                        .lock()
+                                        .map(|m| {
+                                            scoped_card_indices(&m, Some(&hit.id))
+                                                .last()
+                                                .copied()
+                                                .unwrap_or(0)
+                                        })
+                                        .unwrap_or(0);
+                                    agent_filter = Some(hit.id);
+                                    scroll = u16::MAX;
+                                    follow = true;
+                                    focus_panel = 1;
+                                    if let Ok(mut state) = model.lock() {
+                                        state.agents_open = true;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    } else if !matches!(mouse.kind, MouseEventKind::Moved) {
+                        pressed_agent = None;
+                    }
                     let browser_hit = if view_accepts_mouse
                         && detail_card.is_none()
                         && mouse.modifiers.is_empty()

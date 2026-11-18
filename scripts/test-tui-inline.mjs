@@ -111,7 +111,7 @@ finally:
 try {
   const result = spawnSync('python3', ['-c', python, resultFile, process.execPath, driver], {
     encoding: 'utf8', timeout: 18000, maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, BAHULAM_HOME: temp, BAHULAM_TUI_MODE: '', BAHULAM_TUI_MOUSE: '1', BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
+    env: { ...process.env, TERM: 'xterm-256color', BAHULAM_HOME: temp, BAHULAM_TUI_MODE: '', BAHULAM_TUI_MOUSE: '1', BAHULAM_TUI_BINARY: path.join(root, 'rust/target/debug/bahulam-tui') },
   });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
@@ -121,6 +121,6 @@ try {
   assert.ok(capabilities.some(caps => caps.view === 'inline' && caps.size.rows === 32 && caps.size.columns === 110));
   assert.ok(capabilities.some(caps => caps.view === 'fullscreen' && caps.size.rows === 24 && caps.size.columns === 80));
   assert.equal(capabilities.at(-1).view, 'inline');
-  assert.match(capabilities.at(-1).detection, /active queries not implemented/);
+  assert.match(capabilities.at(-1).detection, /active \(|cached \(|skipped \(/);
   console.log('PASS: in-conversation expansion in both views, complete result, Show less click and Esc collapse, draft restoration, fullscreen round trip, shared prompt handoff and clean exit.');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

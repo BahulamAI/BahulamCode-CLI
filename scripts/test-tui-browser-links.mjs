@@ -17,17 +17,21 @@ os.replace(target+'.tmp',target)
 `,{mode:0o700});
 for(const name of ['open','xdg-open']) fs.writeFileSync(path.join(temp,name),`#!/usr/bin/env python3
 import os,sys,json
+if 'https://fail.test/' in sys.argv:sys.exit(7)
 target=os.path.join(os.environ['BAHULAM_HOME'],'opened')
 with open(target+'.tmp','w') as f:json.dump(sys.argv[1:],f)
 os.replace(target+'.tmp',target)
 `,{mode:0o700});
+const linkMessage = ['Browser fixture', '[Docs](https://example.test/wiki_(page))',
+  'https://other.test/a?x=1&y=2', '`https://code.test/`',
+  '**[Emphasized](https://bold.test/)**', 'https://fail.test/'].join('\n');
 fs.writeFileSync(driver,`
 import fs from 'node:fs';
 import {startRustTuiHost} from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs',import.meta.url).href)};
 const host=startRustTuiHost({onCommand:c=>{if(c.type==='prompt') {
  fs.writeFileSync(process.argv[2]+'.tmp',c.data.text);fs.renameSync(process.argv[2]+'.tmp',process.argv[2]);
 }}});
-host.send({v:2,seq:1,ts:'',type:'message_end',session_id:'links',agent_id:'main',data:{text:'Browser fixture\\n[Docs](https://example.test/wiki_(page))\\nhttps://other.test/a?x=1&y=2'}});
+host.send({v:2,seq:1,ts:'',type:'message_end',session_id:'links',agent_id:'main',data:{text:${JSON.stringify(linkMessage)}}});
 setTimeout(()=>host.close(),20000).unref();
 `);
 const python=String.raw`
@@ -65,9 +69,26 @@ try:
  enabled=json.loads(os.environ['BAHULAM_TUI_CAPABILITIES'])['osc8_links']
  assert (b'\x1b]8;;https://' in output)==enabled
  assert '[Docs](' not in screen.text(),screen.text()
+ assert b'\x1b[4:4m' in output,'Dotted link decoration missing'
  # The formatted inline label opens directly, including with OSC8 disabled.
  x,y=coords('Docs')
+ before=len(output);mouse(35,x,y)
+ assert (b'\x1b]22;pointer' in output[before:])==enabled,'Pointer shape profile mismatch'
+ assert not os.path.exists(opened),'Hover must not open a browser'
+ before=len(output);mouse(35,x,y)
+ assert len(output)==before,'Unchanged hover must not repaint'
+ before=len(output);mouse(35,1,1)
+ assert (b'\x1b]22;default' in output[before:])==enabled,'Pointer shape not restored'
  mouse(0,x,y);mouse(0,x,y,'m');check_open('https://example.test/wiki_(page)')
+ # Some terminals report held-button motion without crossing a cell boundary.
+ mouse(0,x,y);mouse(32,x,y);mouse(0,x,y,'m');check_open('https://example.test/wiki_(page)')
+ x,y=coords('https://code.test/')
+ mouse(0,x,y);mouse(0,x,y,'m');check_open('https://code.test/')
+ x,y=coords('Emphasized')
+ mouse(0,x,y);mouse(0,x,y,'m');check_open('https://bold.test/')
+ x,y=coords('https://fail.test/')
+ mouse(0,x,y);mouse(0,x,y,'m')
+ wait(lambda:'Browser opener failed' in screen.text());assert not os.path.exists(opened)
  # A normal drag copies the painted text, without a terminal-specific modifier.
  x,y=coords('Browser fixture');x-=2
  mouse(0,x,y);mouse(32,x+6,y);mouse(0,x+6,y,'m')
@@ -108,7 +129,7 @@ try {
   const resultFile=path.join(temp,mode+osc8);
   const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),resultFile,process.execPath,driver,resultFile],{
    encoding:'utf8',timeout:25000,maxBuffer:2*1024*1024,
-   env:{...process.env,PATH:temp+path.delimiter+process.env.PATH,BAHULAM_CLIPBOARD:'native',BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui'),BAHULAM_TUI_CAPABILITIES:JSON.stringify({osc8_links:osc8,keyboard_protocol:false})},
+   env:{...process.env,TERM:'xterm-256color',TERM_PROGRAM:osc8?'ghostty':'Apple_Terminal',PATH:temp+path.delimiter+process.env.PATH,BAHULAM_CLIPBOARD:'native',BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui'),BAHULAM_TUI_CAPABILITIES:JSON.stringify({osc8_links:osc8,keyboard_protocol:false})},
   });
   assert.equal(result.status,0,`${mode}, OSC8 ${osc8}: ${result.stdout}\n${result.stderr}`);
  }

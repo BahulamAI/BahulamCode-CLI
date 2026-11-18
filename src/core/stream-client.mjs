@@ -1030,7 +1030,7 @@ export class BahulamStreamClient {
             tool,
             args || {},
             true,
-            { risk, reason, tool_id, call_id: tool_id, request_id: tool_id },
+            { risk, reason, tool_id, call_id: tool_id, request_id: tool_id, agentContext: data },
         );
 
         // Map ApprovalManager decision to framework scope

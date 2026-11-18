@@ -237,6 +237,16 @@ function compactToolPrimary(args = {}) {
   return '';
 }
 
+function agentTokenTotal(tokens) {
+  if (typeof tokens === 'number') return tokens;
+  if (!tokens || typeof tokens !== 'object') return undefined;
+  if (typeof tokens.total === 'number') return tokens.total;
+  if (typeof tokens.total_tokens === 'number') return tokens.total_tokens;
+  const input = tokens.input_tokens ?? tokens.input;
+  const output = tokens.output_tokens ?? tokens.output;
+  return typeof input === 'number' || typeof output === 'number' ? (typeof input === 'number' ? input : 0) + (typeof output === 'number' ? output : 0) : undefined;
+}
+
 function project(type, src, identity) {
   const toolId = src.call_id || src._callId || src.tool_call_id || src.tool_id || src.request_id || src.id || `unattributed:${identity.nextSeq}`;
   switch (type) {
@@ -286,12 +296,12 @@ function project(type, src, identity) {
       const error = asText(src.error);
       return { agent_id: identity.agentId, ok,
         report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
-        tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens,
-        cost_usd: src.cost_usd, error };
+        tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens, total_tokens: agentTokenTotal(src.tokens),
+        cost_usd: src.cost_usd, elapsed_ms: src.elapsed_ms ?? src.duration_ms, error };
     }
     case 'agent_status':
       return { agent_id: identity.agentId, status: src.status || src.message || (identity.sourceType === 'complete' ? 'done' : identity.sourceType === 'cancelled' ? 'cancelled' : 'working'),
-        current_tool_id: src.current_tool_id, tokens: src.tokens, elapsed_ms: src.elapsed_ms };
+        current_tool_id: src.current_tool_id, tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens, total_tokens: agentTokenTotal(src.tokens), cost_usd: src.cost_usd, elapsed_ms: src.elapsed_ms };
     case 'plan_updated':
       return { items: src.items || src.steps || src.plan?.items || [] };
     case 'usage_update': {
@@ -325,7 +335,9 @@ function project(type, src, identity) {
           ? 'Use /resume to continue or inspect the session log.' : undefined),
         retry: src.retry, source,
         progress_key: progress.includes(source) && src.success !== false && !src.error ? (source.startsWith('phase_') ? 'phase' : source.startsWith('sub_agent_tool') ? 'agent-tool' : source) : undefined,
-        activity: source === 'paused' ? 'paused' : source === 'resumed' ? 'working' : undefined };
+        activity: source === 'paused' ? 'paused' : source === 'resumed' ? 'working' : undefined,
+        current_tool: source.startsWith('sub_agent_tool') ? asText(src.tool || src.name) : undefined,
+        tool_active: source.startsWith('sub_agent_tool') ? source === 'sub_agent_tool' : undefined };
     }
     case 'command_result':
       return { name: asText(src.name) || 'command', added_to_context: false,

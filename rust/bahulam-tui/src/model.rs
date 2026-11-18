@@ -23,6 +23,10 @@ impl Card {
         !self.tool_name.is_empty() || self.title.starts_with("Tool ") || self.title == "Diff"
     }
 
+    pub fn belongs_to(&self, agent: &str) -> bool {
+        self.agent == agent || (self.title == "Agent report" && self.primary == agent)
+    }
+
     pub fn is_message(&self) -> bool {
         self.title == "Assistant"
             || self.title == "Prompt"
@@ -30,19 +34,76 @@ impl Card {
             || self.title.starts_with("Agent: ")
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Agent {
     pub id: String,
     pub parent: Option<String>,
     pub label: String,
+    pub task: String,
+    pub historical: bool,
     pub status: String,
     pub current_tool: String,
     pub elapsed_ms: Option<f64>,
-    pub tokens: String,
+    pub tokens: Option<u64>,
+    pub cost: Option<f64>,
+    pub last_tool: String,
+    pub current_tool_id: String,
     pub started_at: Option<Instant>,
+}
+impl Agent {
+    pub fn active(&self) -> bool {
+        !self.historical
+            && !matches!(
+                self.status.as_str(),
+                "idle" | "done" | "complete" | "failed" | "cancelled" | "historical"
+            )
+    }
+    pub fn elapsed(&self) -> Option<f64> {
+        self.started_at
+            .map(|at| self.elapsed_ms.unwrap_or(0.0) + at.elapsed().as_secs_f64() * 1000.0)
+            .or(self.elapsed_ms)
+    }
+    fn stop_clock(&mut self) {
+        self.elapsed_ms = self.elapsed();
+        self.started_at = None;
+    }
+    fn update_usage(&mut self, data: &Value) {
+        let usage = data
+            .get("tokens")
+            .or_else(|| data.get("usage"))
+            .unwrap_or(data);
+        let count = usage
+            .as_u64()
+            .or_else(|| usage.get("total").and_then(Value::as_u64))
+            .or_else(|| usage.get("total_tokens").and_then(Value::as_u64))
+            .or_else(|| {
+                let input = usage
+                    .get("input_tokens")
+                    .or_else(|| usage.get("input"))
+                    .and_then(Value::as_u64);
+                let output = usage
+                    .get("output_tokens")
+                    .or_else(|| usage.get("output"))
+                    .and_then(Value::as_u64);
+                (input.is_some() || output.is_some())
+                    .then(|| input.unwrap_or(0).saturating_add(output.unwrap_or(0)))
+            });
+        if let Some(count) = count {
+            self.tokens = Some(count);
+        }
+        if let Some(cost) = data
+            .get("cost_usd")
+            .or_else(|| data.get("cost"))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0)
+        {
+            self.cost = Some(cost);
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub struct Approval {
+    pub agent: String,
     pub scopes: Vec<String>,
     pub risk: String,
     pub id: String,
@@ -66,6 +127,7 @@ pub struct Model {
     pub last_seq: i64,
     pub cards: Vec<Card>,
     pub agents: Vec<Agent>,
+    pub agents_open: bool,
     pub plan: Vec<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -92,6 +154,7 @@ pub struct Model {
     message_segments: HashMap<String, Vec<usize>>,
     progress: HashMap<String, usize>,
     approvals: HashMap<String, usize>,
+    agent_reports: HashMap<String, usize>,
     replaying_history: bool,
 }
 #[derive(Debug, Clone)]
@@ -367,6 +430,12 @@ impl Model {
         }
     }
 
+    fn finish_thinking_segment(&mut self, key: &str) {
+        if let Some(index) = self.progress.remove(&format!("{key}/thinking")) {
+            self.cards[index].status = "done".into();
+        }
+    }
+
     // Some hosts send a turn-wide aggregate in content/message_end after
     // streaming commentary and tool calls. Only its unseen suffix belongs at
     // the new position; never overwrite the earlier commentary with the final.
@@ -415,6 +484,8 @@ impl Model {
                 self.context_known = false;
                 self.cards.clear();
                 self.agents.clear();
+                self.agents_open = false;
+                self.agent_reports.clear();
                 self.plan.clear();
                 self.tools.clear();
                 self.messages.clear();
@@ -527,7 +598,12 @@ impl Model {
                                 session_id: event.session_id.clone(),
                                 turn_id: Some(turn),
                                 agent_id: Some(agent),
-                                parent_agent_id: None,
+                                parent_agent_id: historical
+                                    .get("parent_agent_id")
+                                    .or_else(|| data.get("parent_agent_id"))
+                                    .or_else(|| data.get("parent_run_id"))
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
                                 id: Some(format!("{}:resume:{seq}", event.session_id)),
                                 data,
                                 payload_ref: historical
@@ -674,7 +750,7 @@ impl Model {
                 } else {
                     command_output(&card.title, &detail)
                 };
-                let body = if card.is_message() && event.data.get("error").is_none() {
+                let mut body = if card.is_message() && event.data.get("error").is_none() {
                     self.message_segments
                         .values()
                         .find(|indices| indices.contains(&index))
@@ -684,6 +760,13 @@ impl Model {
                 } else {
                     detail.clone()
                 };
+                if card.title == "Agent report" && card.status == "failed" {
+                    if let Some(agent) = self.agents.iter().find(|a| a.id == card.primary) {
+                        if !agent.last_tool.is_empty() && !body.contains("Last tool:") {
+                            body.push_str(&format!("\nLast tool: {}", agent.last_tool));
+                        }
+                    }
+                }
                 let card = &mut self.cards[index];
                 if card.is_message() {
                     card.body = body;
@@ -731,9 +814,15 @@ impl Model {
                 status: "idle".into(),
                 current_tool: String::new(),
                 elapsed_ms: None,
-                tokens: String::new(),
-                started_at: None,
+                historical: self.replaying_history,
+                ..Agent::default()
             });
+        }
+        if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+            row.historical = self.replaying_history;
+            if event.parent_agent_id.is_some() {
+                row.parent.clone_from(&event.parent_agent_id);
+            }
         }
         let tool_id = text(data, "tool_id");
         let origin = if self.replaying_history {
@@ -743,6 +832,24 @@ impl Model {
         };
         let key = format!("{origin}/{turn}/{agent}/{tool_id}");
         let message_key = format!("{origin}/{turn}/{agent}");
+        // Thinking belongs to a chronological phase, not a single card pinned
+        // to the start of the turn. Other agents must not end this agent's phase.
+        if matches!(
+            kind,
+            "text_delta"
+                | "message_end"
+                | "tool_requested"
+                | "tool_call"
+                | "tool_started"
+                | "tool_finished"
+                | "tool_result"
+                | "tool_output_delta"
+                | "test_result"
+                | "diff"
+                | "artifact_created"
+        ) {
+            self.finish_thinking_segment(&message_key);
+        }
         match kind {
             "session_started" => {
                 self.cwd = text(data, "cwd");
@@ -766,9 +873,19 @@ impl Model {
             }
             "thinking_delta" => {
                 let progress_key = format!("{message_key}/thinking");
+                let chunk = text(data, "chunk");
+                let is_status = is_iteration_status(&chunk);
+                if self.progress.get(&progress_key).is_some_and(|index| {
+                    !self.cards[*index].body.is_empty()
+                        && is_iteration_status(&self.cards[*index].body) != is_status
+                }) {
+                    // Keep actual reasoning separate from replaceable status text.
+                    self.finish_thinking_segment(&message_key);
+                }
                 let index = if let Some(index) = self.progress.get(&progress_key) {
                     *index
                 } else {
+                    self.finish_message_segment(&message_key);
                     let index = self.card(
                         agent,
                         "Thinking",
@@ -782,7 +899,11 @@ impl Model {
                     self.progress.insert(progress_key, index);
                     index
                 };
-                self.cards[index].body.push_str(&text(data, "chunk"));
+                if is_status {
+                    self.cards[index].body = chunk;
+                } else {
+                    self.cards[index].body.push_str(&chunk);
+                }
                 self.cards[index].payload_ref = event.payload_ref.clone();
             }
             "test_result" => {
@@ -924,6 +1045,15 @@ impl Model {
                     }
                 }
                 self.tools.insert(key, index);
+                if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                    row.current_tool = name.clone();
+                    row.last_tool = name;
+                    row.current_tool_id = tool_id.clone();
+                    if row.status == "idle" && !self.replaying_history {
+                        row.status = "working".into();
+                        row.started_at = Some(Instant::now());
+                    }
+                }
             }
             "tool_started" | "tool_finished" | "tool_result" | "tool_output_delta" => {
                 let index = if let Some(index) = self.tools.get(&key) {
@@ -940,6 +1070,8 @@ impl Model {
                     self.cards[index].started_at = (!self.replaying_history).then(Instant::now);
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
                         row.current_tool = self.cards[index].title.clone();
+                        row.current_tool_id = tool_id.clone();
+                        row.last_tool = row.current_tool.clone();
                     }
                 } else if kind == "tool_output_delta" {
                     append_running_tool_output(&mut self.cards[index].body, &text(data, "chunk"));
@@ -996,60 +1128,128 @@ impl Model {
                     }
                     self.cards[index].metadata = metadata.join(" · ");
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
-                        row.current_tool.clear();
+                        if row.current_tool_id == tool_id {
+                            let next = self.cards.iter().rev().find(|card| {
+                                card.agent == agent
+                                    && !card.tool_name.is_empty()
+                                    && matches!(card.status.as_str(), "requested" | "running")
+                            });
+                            row.current_tool = next.map(|c| c.title.clone()).unwrap_or_default();
+                            row.current_tool_id =
+                                next.map(|c| c.tool_id.clone()).unwrap_or_default();
+                        }
                     }
                 }
             }
             "agent_spawned" | "sub_agent_start" | "agent_status" | "agent_finished"
             | "sub_agent_complete" => {
-                let mut final_report = None;
                 let row = self.agents.iter_mut().find(|a| a.id == agent).unwrap();
+                if let Some(parent) = &event.parent_agent_id {
+                    row.parent = Some(parent.clone());
+                }
+                row.update_usage(data);
                 if kind == "agent_spawned" || kind == "sub_agent_start" {
-                    row.label = format!("{}: {}", text(data, "type"), text(data, "task"));
+                    let label = text(data, "type");
+                    if !label.is_empty() {
+                        row.label = label;
+                    }
+                    row.task = text(data, "task");
                     row.status = "working".into();
-                    row.started_at = (!self.replaying_history).then(Instant::now);
+                    if !self.replaying_history && row.started_at.is_none() {
+                        row.started_at = Some(Instant::now());
+                    }
                 } else if kind == "agent_status" {
-                    row.status = text(data, "status");
-                    if !matches!(row.status.as_str(), "working" | "running") {
-                        row.started_at = None;
+                    let status = text(data, "status");
+                    if !status.is_empty() {
+                        row.status = status;
                     }
-                    let current_tool_id = text(data, "current_tool_id");
-                    if !current_tool_id.is_empty() {
-                        row.current_tool = self
-                            .tools
-                            .get(&format!("{origin}/{turn}/{agent}/{current_tool_id}"))
-                            .map(|index| self.cards[*index].title.clone())
-                            .unwrap_or_else(|| "tool running".into());
+                    if let Some(elapsed) = data
+                        .get("elapsed_ms")
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                    {
+                        row.elapsed_ms = Some(elapsed);
+                        row.started_at =
+                            (row.active() && !self.replaying_history).then(Instant::now);
+                    } else if !row.active() {
+                        row.stop_clock();
                     }
-                    row.elapsed_ms = data.get("elapsed_ms").and_then(Value::as_f64);
-                    row.tokens = data.get("tokens").map(safe_text_json).unwrap_or_default();
+                    if !row.active() {
+                        row.current_tool.clear();
+                        row.current_tool_id.clear();
+                    }
+                    if let Some(id) = data.get("current_tool_id").and_then(Value::as_str) {
+                        row.current_tool_id = id.into();
+                        row.current_tool = if id.is_empty() {
+                            String::new()
+                        } else {
+                            self.tools
+                                .get(&format!("{origin}/{turn}/{agent}/{id}"))
+                                .map(|index| self.cards[*index].title.clone())
+                                .unwrap_or_else(|| "tool running".into())
+                        };
+                    }
                 } else {
+                    row.stop_clock();
+                    if let Some(elapsed) = data
+                        .get("elapsed_ms")
+                        .or_else(|| data.get("duration_ms"))
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                    {
+                        row.elapsed_ms = Some(elapsed);
+                    }
                     row.current_tool.clear();
-                    if let Some(started) = row.started_at.take() {
-                        row.elapsed_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                    row.current_tool_id.clear();
+                    let failed = data.get("ok").and_then(Value::as_bool) == Some(false)
+                        || !text(data, "error").is_empty();
+                    row.status = if failed { "failed" } else { "done" }.into();
+                    let mut report = text(data, "report");
+                    let error = text(data, "error");
+                    if failed && !error.is_empty() && !report.contains(&error) {
+                        report.push_str(&format!("\nError: {error}"));
                     }
-                    row.status = if data.get("ok").and_then(Value::as_bool) == Some(false) {
-                        "failed"
-                    } else {
-                        "done"
+                    if failed && !row.last_tool.is_empty() {
+                        report.push_str(&format!("\nLast tool: {}", row.last_tool));
                     }
-                    .into();
-                    if kind == "agent_finished" || kind == "sub_agent_complete" {
-                        let report = text(data, "report");
-                        if !report.is_empty() || event.payload_ref.is_some() {
-                            final_report =
-                                Some((report, row.status.clone(), event.payload_ref.clone()));
+                    if report.trim().is_empty() && event.payload_ref.is_none() {
+                        report = if failed {
+                            "Agent failed; no error details were supplied."
+                        } else {
+                            "Completed."
+                        }
+                        .into();
+                    }
+                    let status = row.status.clone();
+                    let label = row.label.clone();
+                    // A finished worker cannot keep its old tools or thinking spinning.
+                    // Missing tool results are incomplete, never fabricated successes/failures.
+                    for card in self.cards.iter_mut().filter(|card| card.agent == agent) {
+                        card.started_at = None;
+                        if !card.tool_name.is_empty()
+                            && matches!(card.status.as_str(), "requested" | "running")
+                        {
+                            card.status = "incomplete".into();
+                            card.metadata = "worker ended before a tool result arrived".into();
+                        } else if card.status == "streaming" {
+                            card.status = if failed { "failed" } else { "complete" }.into();
                         }
                     }
-                }
-                if let Some((report, status, reference)) = final_report {
-                    let index = self.card("main", "Agent report", report, &status);
-                    self.cards[index].primary = agent.into();
-                    if !self.cards[index].body.is_empty() {
-                        self.cards[index].detail = Some(self.cards[index].body.clone());
+                    let key = format!("{origin}/{turn}/{agent}");
+                    let index = if let Some(index) = self.agent_reports.get(&key) {
+                        *index
                     } else {
-                        self.cards[index].payload_ref = reference;
-                    }
+                        let index = self.card("main", "Agent report", String::new(), &status);
+                        self.agent_reports.insert(key, index);
+                        index
+                    };
+                    let card = &mut self.cards[index];
+                    card.primary = agent.into();
+                    card.metadata = label;
+                    card.status = status;
+                    card.body = report;
+                    card.payload_ref = event.payload_ref.clone();
+                    card.detail = card.payload_ref.is_none().then(|| card.body.clone());
                 }
             }
             "plan_updated" => {
@@ -1091,10 +1291,39 @@ impl Model {
                     self.cards[index].payload_ref = Some(reference.clone());
                 }
             }
-            "usage_update" | "tokens_used" if !self.replaying_history && agent == "main" => {
-                self.apply_usage(data);
+            "usage_update" | "tokens_used" => {
+                if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                    row.update_usage(data);
+                }
+                if let Some(per_agent) = data.get("per_agent").and_then(Value::as_object) {
+                    for row in &mut self.agents {
+                        if let Some(usage) = per_agent.get(&row.id) {
+                            row.update_usage(usage);
+                        }
+                    }
+                }
+                if !self.replaying_history && agent == "main" {
+                    self.apply_usage(data);
+                }
             }
             "notice" => {
+                // Some producers expose worker tool progress without full tool-call events.
+                if let Some(active) = data.get("tool_active").and_then(Value::as_bool) {
+                    let name = text(data, "current_tool");
+                    if !name.is_empty() {
+                        if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                            let id = format!("progress:{name}");
+                            if active {
+                                row.current_tool = name.clone();
+                                row.last_tool = name;
+                                row.current_tool_id = id;
+                            } else if row.current_tool_id == id {
+                                row.current_tool.clear();
+                                row.current_tool_id.clear();
+                            }
+                        }
+                    }
+                }
                 let activity = text(data, "activity");
                 if !activity.is_empty() {
                     if agent == "main" {
@@ -1192,6 +1421,7 @@ impl Model {
                     .unwrap_or_else(|| "tool".into());
                 if !self.replaying_history {
                     self.approval = Some(Approval {
+                        agent: agent.into(),
                         id: text(data, "apr_id"),
                         tool: name.clone(),
                         scopes: data
@@ -1399,6 +1629,17 @@ impl Model {
             })
             .collect()
     }
+}
+
+fn is_iteration_status(value: &str) -> bool {
+    value
+        .trim()
+        .strip_prefix("Processing (iteration ")
+        .and_then(|tail| {
+            tail.strip_suffix(")...")
+                .or_else(|| tail.strip_suffix(")…"))
+        })
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|ch| ch.is_ascii_digit()))
 }
 
 // Saved resume progress is transient UI, never part of the recovered conversation.

@@ -448,6 +448,239 @@ struct ViewLayout {
     compact: bool,
 }
 
+pub fn has_subagents(model: &Model) -> bool {
+    model.agents.iter().any(|agent| agent.id != "main")
+}
+
+fn show_agent_strip(model: &Model) -> bool {
+    has_subagents(model)
+        && (model.agents_open
+            || model
+                .agents
+                .iter()
+                .any(|agent| agent.id != "main" && agent.active()))
+}
+
+fn agent_strip_height(area: Rect, model: &Model) -> u16 {
+    if !show_agent_strip(model) {
+        return 0;
+    }
+    (model.agents.len().min(8) as u16 + 2 + u16::from(model.agents.len() > 8))
+        .min((area.height / 3).max(3))
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct AgentHit {
+    pub area: Rect,
+    pub index: usize,
+    pub id: String,
+}
+thread_local! {
+    static AGENT_HITS: RefCell<Vec<AgentHit>> = const { RefCell::new(Vec::new()) };
+}
+pub fn agent_at(position: Position) -> Option<AgentHit> {
+    AGENT_HITS.with(|hits| {
+        hits.borrow()
+            .iter()
+            .find(|hit| hit.area.contains(position))
+            .cloned()
+    })
+}
+
+fn agent_display_name(agent: &crate::model::Agent) -> &str {
+    if agent.id == "main" {
+        "main"
+    } else if agent.label.is_empty() || agent.label == agent.id {
+        "Sub-agent"
+    } else {
+        &agent.label
+    }
+}
+
+fn agent_activity(agent: &crate::model::Agent) -> String {
+    if !agent.current_tool.is_empty() {
+        format!("Running {}", agent.current_tool)
+    } else if !agent.last_tool.is_empty() {
+        format!("Last: {}", agent.last_tool)
+    } else {
+        agent.task.clone()
+    }
+}
+
+fn agent_elapsed(agent: &crate::model::Agent) -> Option<String> {
+    agent.elapsed().map(|ms| {
+        let seconds = (ms / 1000.0) as u64;
+        if seconds < 60 {
+            format!("{seconds}s")
+        } else {
+            format!("{}m{:02}s", seconds / 60, seconds % 60)
+        }
+    })
+}
+
+fn agent_depth(model: &Model, id: &str) -> usize {
+    let mut seen = HashSet::new();
+    let mut current = id;
+    let mut depth = 0;
+    while current != "main" && seen.insert(current) && depth < 4 {
+        depth += 1;
+        let Some(parent) = model
+            .agents
+            .iter()
+            .find(|a| a.id == current)
+            .and_then(|a| a.parent.as_deref())
+        else {
+            break;
+        };
+        current = parent;
+    }
+    depth
+}
+
+fn draw_agents(
+    frame: &mut Frame,
+    area: Rect,
+    model: &Model,
+    focused: usize,
+    active: bool,
+    compact: bool,
+    p: Palette,
+) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let per_agent = if compact { 1 } else { 3 };
+    let available = (inner.height as usize / per_agent).clamp(1, 8);
+    let capacity = if model.agents.len() > available {
+        ((inner.height as usize).saturating_sub(1) / per_agent).clamp(1, 8)
+    } else {
+        available
+    };
+    let focused = focused.min(model.agents.len().saturating_sub(1));
+    let start = focused.saturating_sub(capacity - 1);
+    let end = (start + capacity).min(model.agents.len());
+    let mut lines = Vec::new();
+    for (index, agent) in model.agents.iter().enumerate().take(end).skip(start) {
+        let depth = agent_depth(model, &agent.id);
+        let tree = if depth == 0 {
+            String::new()
+        } else {
+            format!("{}├ ", " ".repeat(depth.saturating_sub(1) * 2))
+        };
+        let (glyph, color) = agent_state(&agent.status, p);
+        let stats = [
+            Some(
+                agent
+                    .tokens
+                    .map(|tokens| format!("{} tok", format_token_count(tokens)))
+                    .unwrap_or_else(|| "tokens pending".into()),
+            ),
+            agent_elapsed(agent),
+            agent.cost.map(|cost| format!("${cost:.4}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let status = if agent.historical {
+            format!("saved {}", agent.status)
+        } else {
+            agent.status.clone()
+        };
+        let identity = format!(
+            "{tree}{} {}",
+            status_glyph(glyph),
+            middle_ellipsis(agent_display_name(agent), if compact { 16 } else { 10 })
+        );
+        let activity = agent_activity(agent);
+        let suffix = format!(
+            "  {status}{}{}",
+            if stats.is_empty() { "" } else { " · " },
+            stats
+        );
+        let style = Style::default().fg(agent_identity_color(&agent.id, p)).bg(
+            if active && focused == index {
+                p.selection
+            } else {
+                Color::Reset
+            },
+        );
+        let row = inner.y + lines.len() as u16;
+        let mut spans = vec![
+            Span::styled(identity.clone(), style),
+            Span::styled(
+                if compact {
+                    suffix.clone()
+                } else {
+                    format!("  {status}")
+                },
+                Style::default()
+                    .fg(color)
+                    .bg(style.bg.unwrap_or(Color::Reset)),
+            ),
+        ];
+        if compact {
+            let room = (inner.width as usize).saturating_sub(
+                UnicodeWidthStr::width(identity.as_str())
+                    + UnicodeWidthStr::width(suffix.as_str())
+                    + 3,
+            );
+            spans.push(Span::styled(
+                format!(" · {}", middle_ellipsis(&activity, room)),
+                Style::default().fg(p.muted),
+            ));
+        }
+        lines.push(Line::from(spans));
+        if !compact {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    middle_ellipsis(&activity, inner.width.saturating_sub(2) as usize)
+                ),
+                Style::default().fg(if agent.status == "failed" {
+                    color
+                } else {
+                    p.muted
+                }),
+            )));
+        }
+        if !compact {
+            lines.push(Line::from(Span::styled(
+                format!("  {stats}"),
+                Style::default().fg(p.muted),
+            )));
+        }
+        if model.interaction.is_none() && model.approval.is_none() {
+            AGENT_HITS.with(|hits| {
+                hits.borrow_mut().push(AgentHit {
+                    area: Rect::new(inner.x, row, inner.width, per_agent as u16),
+                    index,
+                    id: agent.id.clone(),
+                })
+            });
+        }
+    }
+    if start > 0 || end < model.agents.len() {
+        lines.push(Line::from(Span::styled(
+            format!("↑ {start} earlier · +{} more", model.agents.len() - end),
+            Style::default().fg(p.muted),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if active { p.accent } else { p.border }))
+                .title(" Agents · Alt+A "),
+        ),
+        area,
+    );
+}
+
 fn composer_height(area: Rect, input: &str, inline: bool) -> u16 {
     let width = area.width.saturating_sub(if inline { 2 } else { 4 });
     // Two editable rows at rest, up to six before scrolling inside the field.
@@ -463,9 +696,9 @@ fn composer_height(area: Rect, input: &str, inline: bool) -> u16 {
     )
 }
 
-fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
+fn view_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
     let compact = area.width < 72 || area.height < 16;
-    let prompt_height = if approval {
+    let prompt_height = if model.approval.is_some() {
         7.min(area.height.saturating_sub(12).max(4))
     } else {
         composer_height(area, input, false)
@@ -475,7 +708,11 @@ fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(6),
+            Constraint::Length(if compact && show_agent_strip(model) {
+                agent_strip_height(area, model)
+            } else {
+                6
+            }),
             Constraint::Length(prompt_height),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -486,7 +723,10 @@ fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(74), Constraint::Percentage(26)])
+            .constraints([
+                Constraint::Min(30),
+                Constraint::Length((area.width / 3).min(46)),
+            ])
             .areas(rows[1])
     };
     ViewLayout {
@@ -496,8 +736,8 @@ fn view_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     }
 }
 
-fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
-    let prompt_height = if approval {
+fn inline_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
+    let prompt_height = if model.approval.is_some() {
         7
     } else {
         composer_height(area, input, true)
@@ -505,7 +745,7 @@ fn inline_layout(area: Rect, input: &str, approval: bool) -> ViewLayout {
     let rows = Layout::vertical([
         Constraint::Length(0),
         Constraint::Min(3),
-        Constraint::Length(0),
+        Constraint::Length(agent_strip_height(area, model)),
         Constraint::Length(prompt_height),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -527,9 +767,9 @@ fn transcript_rect(area: Rect, inline: bool) -> Rect {
 
 pub fn conversation_area(area: Rect, model: &Model, input: &str, inline: bool) -> Rect {
     let layout = if inline {
-        inline_layout(area, input, model.approval.is_some())
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, model.approval.is_some())
+        view_layout(area, input, model)
     };
     transcript_rect(layout.columns[0], inline)
 }
@@ -606,9 +846,9 @@ pub fn details_at(
         return None;
     }
     let layout = if inline {
-        inline_layout(area, input, model.approval.is_some())
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, model.approval.is_some())
+        view_layout(area, input, model)
     };
     let inner = transcript_rect(layout.columns[0], inline);
     if !inner.contains(position) {
@@ -691,9 +931,9 @@ pub fn prompt_cursor_at(
         return None;
     }
     let layout = if inline {
-        inline_layout(area, input, false)
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, false)
+        view_layout(area, input, model)
     };
     let bounds = layout.rows[3];
     if !bounds.contains(position) {
@@ -731,12 +971,15 @@ pub fn mouse_panel_at_view(
         return None;
     }
     let layout = if inline {
-        inline_layout(area, input, false)
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, false)
+        view_layout(area, input, model)
     };
     if layout.rows[3].contains(position) {
         return Some(MousePanel::Composer);
+    }
+    if layout.compact && show_agent_strip(model) && layout.rows[2].contains(position) {
+        return Some(MousePanel::Agents);
     }
     if inline && position.y < layout.rows[3].y {
         return Some(MousePanel::Transcript);
@@ -832,6 +1075,7 @@ pub fn draw_with_view(
     inline: bool,
 ) {
     BROWSER_LINK_HITS.with(|hits| hits.borrow_mut().clear());
+    AGENT_HITS.with(|hits| hits.borrow_mut().clear());
     let p = palette(theme);
     let area = frame.area();
     let ViewLayout {
@@ -839,9 +1083,9 @@ pub fn draw_with_view(
         columns,
         compact,
     } = if inline {
-        inline_layout(area, input, model.approval.is_some())
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, model.approval.is_some())
+        view_layout(area, input, model)
     };
     let header = Line::from(vec![
         Span::styled(
@@ -925,9 +1169,18 @@ pub fn draw_with_view(
             .agents
             .iter()
             .find(|row| row.id == agent)
-            .map(|row| row.label.as_str())
-            .unwrap_or(agent);
-        format!(" Agent detail  ·  {} ", safe_text(label))
+            .map(|row| {
+                format!(
+                    "{} · {} · {}",
+                    agent_display_name(row),
+                    row.tokens
+                        .map(|tokens| format!("{} tok", format_token_count(tokens)))
+                        .unwrap_or_else(|| "tokens pending".into()),
+                    agent_activity(row)
+                )
+            })
+            .unwrap_or_else(|| "Sub-agent".into());
+        format!(" Agent detail  ·  {} ", safe_text(&label))
     } else if live {
         format!(" Conversation  ·  seq {} ", model.last_seq)
     } else {
@@ -964,125 +1217,44 @@ pub fn draw_with_view(
         columns[0],
     );
 
-    let mut plan_and_agents = Vec::new();
-    if compact {
-        plan_and_agents.push(Line::from(Span::styled(
-            "PLAN",
-            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
-        )));
-        plan_and_agents.extend(model.plan.iter().take(2).map(|item| plan_line(item, p)));
-        if let Some(agent) = model
-            .agents
-            .iter()
-            .find(|a| a.status == "working" || a.status == "running")
-        {
-            plan_and_agents.push(Line::from(Span::styled(
-                format!("  ◐ {}", safe_text(&agent.label)),
-                Style::default().fg(p.warning),
-            )));
-        }
-    } else {
-        let agent_start = if model.agents.len() > 8 {
-            focused_agent
-                .unwrap_or(0)
-                .min(model.agents.len().saturating_sub(1))
-                .saturating_sub(7)
-        } else {
-            0
-        };
-        let agent_end = (agent_start + 8).min(model.agents.len());
-        let mut agents = Vec::new();
-        if agent_start > 0 {
-            agents.push(Line::from(Span::styled(
-                format!("  ↑ {} earlier", agent_start),
-                Style::default().fg(p.muted),
-            )));
-        }
-        agents.extend(
-            model
-                .agents
-                .iter()
-                .enumerate()
-                .skip(agent_start)
-                .take(8)
-                .map(|(index, agent)| {
-                    let (glyph, color) = agent_state(&agent.status, p);
-                    let glyph = status_glyph(glyph);
-                    let elapsed = agent
-                        .started_at
-                        .map(|at| format!("{}s", at.elapsed().as_secs()))
-                        .or_else(|| agent.elapsed_ms.map(|ms| format!("{:.0}s", ms / 1000.0)));
-                    let detail = [
-                        (!agent.current_tool.is_empty()).then(|| safe_text(&agent.current_tool)),
-                        elapsed,
-                        (!agent.tokens.is_empty())
-                            .then(|| format!("{} tok", safe_text(&agent.tokens))),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                    let tree = if agent.id == "main" {
-                        ""
-                    } else if agent.parent.as_deref() == Some("main") {
-                        "├ "
-                    } else {
-                        "└ "
-                    };
-                    Line::from(vec![
-                        Span::styled(format!("{tree}{glyph} "), Style::default().fg(color)),
-                        Span::styled(
-                            middle_ellipsis(&safe_text(&agent.label), 24),
-                            Style::default().fg(agent_identity_color(&agent.id, p)),
-                        ),
-                        Span::styled(
-                            format!("  {}{}", safe_text(&agent.status), detail),
-                            Style::default().fg(p.muted),
-                        ),
-                    ])
-                    .style(if focused_agent == Some(index) {
-                        Style::default().bg(p.selection)
-                    } else {
-                        Style::default()
-                    })
-                }),
-        );
-        if agent_end < model.agents.len() {
-            agents.push(Line::from(Span::styled(
-                format!("  +{} more", model.agents.len() - agent_end),
-                Style::default().fg(p.muted),
-            )));
-        }
-        frame.render_widget(
-            Paragraph::new(agents).wrap(Wrap { trim: true }).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if interactive && focus_panel == 2 {
-                        p.accent
-                    } else {
-                        p.border
-                    }))
-                    .title(" Agents "),
-            ),
+    if !compact {
+        draw_agents(
+            frame,
             columns[1],
+            model,
+            focused_agent.unwrap_or(0),
+            focus_panel == 2,
+            false,
+            p,
         );
     }
-    let plan: Vec<Line> = model
-        .plan
-        .iter()
-        .take(5)
-        .map(|item| plan_line(item, p))
-        .collect();
-    let plan_lines = if compact { plan_and_agents } else { plan };
-    frame.render_widget(
-        Paragraph::new(plan_lines).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(p.border))
-                .title(" Plan · pinned "),
-        ),
-        rows[2],
-    );
+    if compact && show_agent_strip(model) {
+        draw_agents(
+            frame,
+            rows[2],
+            model,
+            focused_agent.unwrap_or(0),
+            focus_panel == 2,
+            true,
+            p,
+        );
+    } else {
+        let plan: Vec<Line> = model
+            .plan
+            .iter()
+            .take(5)
+            .map(|item| plan_line(item, p))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(plan).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(p.border))
+                    .title(" Plan · pinned "),
+            ),
+            rows[2],
+        );
+    }
 
     let input_width = rows[3]
         .width
@@ -1098,12 +1270,17 @@ pub fn draw_with_view(
                 ),
                 Span::styled(
                     middle_ellipsis(
-                        &[&approval.tool, &approval.risk, &approval.cwd]
-                            .into_iter()
-                            .filter(|value| !value.is_empty())
-                            .map(|value| safe_text(value))
-                            .collect::<Vec<_>>()
-                            .join(" · "),
+                        &[
+                            &approval.agent,
+                            &approval.tool,
+                            &approval.risk,
+                            &approval.cwd,
+                        ]
+                        .into_iter()
+                        .filter(|value| !value.is_empty())
+                        .map(|value| safe_text(value))
+                        .collect::<Vec<_>>()
+                        .join(" · "),
                         rows[3].width.saturating_sub(6) as usize,
                     ),
                     Style::default().fg(p.text),
@@ -1251,6 +1428,18 @@ pub fn draw_with_view(
         )
     } else if !model.composer_hint.is_empty() {
         model.composer_hint.clone()
+    } else if interactive && agent_filter.is_some() {
+        format!(
+            "Agent {} · Esc main · Alt+A agents · type to write",
+            model
+                .agents
+                .iter()
+                .find(|row| Some(row.id.as_str()) == agent_filter)
+                .map(agent_display_name)
+                .unwrap_or("Sub-agent")
+        )
+    } else if interactive && focus_panel == 2 {
+        "↑↓ select agent · Enter transcript · Esc input · Tab input".to_owned()
     } else if inline && area.width < 32 {
         "Ctrl+C twice quit".to_owned()
     } else if inline && area.width < 52 {
@@ -1258,11 +1447,7 @@ pub fn draw_with_view(
     } else if inline && area.width < 78 {
         "Tab history/input · Enter send · Ctrl+C twice quit".to_owned()
     } else if inline {
-        "Tab history · Drag to copy · Alt+M native selection · Ctrl+C twice quit".to_owned()
-    } else if interactive && agent_filter.is_some() {
-        "Ctrl+N/P card · Enter details · Esc main · Ctrl+O expand all".to_owned()
-    } else if interactive && focus_panel == 2 {
-        "↑↓ select agent · Enter transcript · Tab input · Ctrl+C twice quit".to_owned()
+        "Tab history · Alt+A agents · Drag to copy · Ctrl+C twice quit".to_owned()
     } else if interactive && focus_panel == 1 {
         "↑↓/PgUp history · Enter details · Ctrl+O expand · Tab agents".to_owned()
     } else if interactive {
@@ -1775,9 +1960,9 @@ pub fn history_geometry(
     agent_filter: Option<&str>,
 ) -> HistoryGeometry {
     let layout = if inline {
-        inline_layout(area, input, model.approval.is_some())
+        inline_layout(area, input, model)
     } else {
-        view_layout(area, input, model.approval.is_some())
+        view_layout(area, input, model)
     };
     let inner = transcript_rect(layout.columns[0], inline);
     let width = inner.width as usize;
@@ -1789,7 +1974,7 @@ pub fn history_geometry(
         .cards
         .iter()
         .enumerate()
-        .filter(|(_, card)| card.agent == agent_filter.unwrap_or("main"))
+        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")))
     {
         cards.push((index, total.min((u16::MAX - 1) as usize) as u16));
         total += card_row_count(card, index, expanded, p, width);
@@ -1844,7 +2029,7 @@ fn browser_card_rows(
                 Some((span.content.to_string(), target.clone()))
             })
             .collect();
-        for row in wrap_rows(vec![line], width) {
+        for mut row in wrap_rows(vec![line], width) {
             let mut column = 0;
             let mut links = Vec::new();
             for span in &row.spans {
@@ -1872,6 +2057,12 @@ fn browser_card_rows(
                 }
                 column += span.width();
             }
+            // Dotted link decorations are painted only on target cells after
+            // the frame. Keeping SGR underline out of the base buffer prevents
+            // indentation and cleared trailing cells from becoming long rules.
+            for span in &mut row.spans {
+                span.style.add_modifier.remove(Modifier::UNDERLINED);
+            }
             output.push((row, links));
         }
     }
@@ -1895,7 +2086,7 @@ fn transcript_lines(
         .cards
         .iter()
         .enumerate()
-        .filter(|(_, card)| card.agent == agent_filter.unwrap_or("main"));
+        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")));
     if scroll == u16::MAX {
         // Only render enough cards to fill the tail, even in very long sessions.
         for (index, card) in cards.rev() {
@@ -2773,10 +2964,26 @@ fn inline_markdown(input: &str, p: Palette) -> Vec<Span<'static>> {
         let content_start = index + marker.len();
         if let Some(close) = rest[content_start..].find(marker) {
             let content = &rest[content_start..content_start + close];
-            out.push(Span::styled(
-                content.to_owned(),
-                Style::default().fg(color).add_modifier(modifier),
-            ));
+            if marker != "`" && content.contains("http") {
+                out.extend(
+                    inline_markdown(content, Palette { text: color, ..p })
+                        .into_iter()
+                        .map(|mut span| {
+                            span.style = span.style.add_modifier(modifier);
+                            span
+                        }),
+                );
+            } else {
+                let style = Style::default().fg(color).add_modifier(modifier);
+                out.push(Span::styled(
+                    content.to_owned(),
+                    if crate::browser_links::valid_url(content) {
+                        style.add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        style
+                    },
+                ));
+            }
             rest = &rest[content_start + close + marker.len()..];
         } else {
             out.push(Span::raw(marker.to_owned()));

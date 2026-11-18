@@ -51,6 +51,8 @@ def wait(text):
  assert text in screen.text(),'Missing '+text+'\n'+screen.text()
 def send(keys):os.write(master,keys);pump()
 def composer_rows():
+ # PTY writes may split the first frame between transcript and composer.
+ wait('Message');wait('usage —')
  lines=screen.text().splitlines()
  start=next(i for i,line in enumerate(lines) if 'Message' in line)
  end=next(i for i,line in enumerate(lines) if 'usage —' in line)
@@ -121,7 +123,7 @@ try {
   const resultFile=path.join(temp,mode+'.json');
   const result=spawnSync('python3',['-c',python,path.join(root,'scripts'),resultFile,process.execPath,driver,resultFile],{
    encoding:'utf8',timeout:25000,maxBuffer:2*1024*1024,
-   env:{...process.env,BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
+   env:{...process.env,TERM:'xterm-256color',BAHULAM_HOME:temp,BAHULAM_TUI_MODE:mode,BAHULAM_TUI_MOUSE:'1',BAHULAM_TUI_BINARY:path.join(root,'rust/target/debug/bahulam-tui')},
   });
   assert.equal(result.status,0,`${mode}: ${result.stdout}\n${result.stderr}`);
  }

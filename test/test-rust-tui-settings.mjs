@@ -4,6 +4,13 @@ import {rustTuiEnvironment} from '../src/daemon/rust-tui-settings.mjs';
 import {mergeBahulamShiftEnterKeybinding} from '../src/terminal/vscode-keybindings.mjs';
 import {completeCliWords,generateShellCompletion} from '../src/terminal/shell-completions.mjs';
 
+test('Rust theme settings preserve explicit environment priority and auto selection', () => {
+ const layers=[{name:'project',data:{tui:{theme:'light'}}}];
+ assert.equal(rustTuiEnvironment({env:{},layers}).BAHULAM_THEME,'light');
+ assert.equal(rustTuiEnvironment({env:{BAHULAM_THEME:'dark'},layers}).BAHULAM_THEME,'dark');
+ assert.equal(rustTuiEnvironment({env:{BAHULAM_THEME:'auto'},layers}).BAHULAM_THEME,'auto');
+});
+
 test('Rust settings preserve environment priority and do not mutate Node settings', () => {
  const env={BAHULAM_TUI_MODE:'fullscreen',BAHULAM_TUI_CAPABILITIES:'{"notifications":"off"}'};
  const before=structuredClone(env);

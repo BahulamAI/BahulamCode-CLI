@@ -10,7 +10,7 @@ export function rustTuiEnvironment({ cwd, userTui = {}, env = process.env, layer
     Object.assign(settings, {...layer, capabilities:{...settings.capabilities, ...layer.capabilities}});
   }
   const result = {...env};
-  for (const [name, key] of Object.entries({BAHULAM_TUI_MODE:'mode', BAHULAM_TUI_MOUSE:'mouse', BAHULAM_CLIPBOARD:'clipboard', BAHULAM_TUI_FILE_OPENER:'file_opener', BAHULAM_TUI_SCROLL_LINES:'scroll_lines', BAHULAM_TUI_STATUS_COMMAND:'status_command'})) {
+  for (const [name, key] of Object.entries({BAHULAM_THEME:'theme', BAHULAM_TUI_MODE:'mode', BAHULAM_TUI_MOUSE:'mouse', BAHULAM_CLIPBOARD:'clipboard', BAHULAM_TUI_FILE_OPENER:'file_opener', BAHULAM_TUI_SCROLL_LINES:'scroll_lines', BAHULAM_TUI_STATUS_COMMAND:'status_command'})) {
     if (!result[name] && typeof settings[key] === 'string') result[name] = settings[key];
     if (!result[name] && Number.isFinite(settings[key])) result[name] = String(settings[key]);
   }

@@ -121,3 +121,45 @@ test('existing socket/mobile registry can answer a Rust prompt and cancellation 
   assert.equal((await next).approved, false);
   assert.equal(listPending().length, 0);
 });
+
+test('queued worker approvals retain originating identity through the real policy bridge', async t => {
+  const { manager, bridge, events } = fixture(t);
+  const { tapSseEvent, registerBroadcaster } = await import('../src/daemon/event-tap.mjs');
+  const frames = [];
+  const unsubscribe = registerBroadcaster(event => frames.push(event), {schemaVersion:2,live:true});
+  try {
+    const context = Object.freeze({ sub_agent_run_id:'worker-first', parent_agent_id:'coordinator', args:{secret:'not copied'}, status:'not copied' });
+    const first = manager.check('unknown_worker_tool', {}, true, {agentContext:context});
+    const second = manager.check('unknown_worker_tool', {}, true, {agentContext:{graph_run_id:'g2',node_id:'review'}});
+    await tick();
+    assert.equal(events[0].data.sub_agent_run_id,'worker-first');
+    assert.equal(events[0].data.status,undefined);
+    assert.deepEqual(events[0].data.args,{});
+    bridge.answer('approve',{apr_id:events[0].data.apr_id,scope:'once'});
+    assert.equal((await first).approved,true);
+    await tick();
+    const next = events.find(e=>e.type==='approval_required' && e.data.node_id==='review');
+    assert.ok(next);
+    assert.equal(bridge.answer('approve',{apr_id:events[0].data.apr_id,scope:'once'}),false);
+    bridge.answer('deny',{apr_id:next.data.apr_id});
+    assert.equal((await second).approved,false);
+    for(const e of events)tapSseEvent(e,{sessionId:'worker-approval-identity'});
+    assert.deepEqual(frames.map(e=>e.agent_id),['worker-first','worker-first','graph:g2/node:review','graph:g2/node:review']);
+    assert.equal(frames[0].parent_agent_id,'coordinator');
+    assert.equal(frames[1].parent_agent_id,'coordinator');
+  } finally {bridge.close();unsubscribe();}
+});
+
+
+test('stream approval forwards worker identity without mutating the received event', async () => {
+  const { BahulamStreamClient } = await import('../src/core/stream-client.mjs');
+  const sentinel = new Error('stop before callback');
+  const data = Object.freeze({tool_id:'tool1',tool:'shell',args:Object.freeze({command:'fixture'}),sub_agent_run_id:'worker-remote',parent_agent_id:'main'});
+  let captured;
+  const client = new BahulamStreamClient({mode:'remote',approvalManager:{check:async (...args)=>{captured=args;throw sentinel;}}});
+  await assert.rejects(client._handleApprovalRequired(data), error=>error===sentinel);
+  assert.equal(captured[0],'shell');
+  assert.equal(captured[3].agentContext.sub_agent_run_id,'worker-remote');
+  assert.equal(captured[3].agentContext.parent_agent_id,'main');
+  assert.equal(data.agentContext,undefined);
+});

@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 ratatui = "0.30.2"
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["terminal-queries"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify-rust = "4.19.0"

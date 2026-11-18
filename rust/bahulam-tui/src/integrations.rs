@@ -14,7 +14,7 @@ use crossterm::{
 use std::{
     io::{self, Read, Write},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     thread,
     time::Duration,
 };
@@ -22,9 +22,36 @@ use std::{
 static KEYBOARD: AtomicBool = AtomicBool::new(false);
 static MARKED: AtomicBool = AtomicBool::new(false);
 static PROGRESS: AtomicBool = AtomicBool::new(false);
+static POINTER: AtomicU8 = AtomicU8::new(0);
+
+pub fn link_pointer(profile: &str, hovered: bool) -> io::Result<()> {
+    // OSC22 names differ: CSS for Kitty/Ghostty, X11 names for iTerm2.
+    // Other terminals retain their own pointer; link emphasis is the fallback.
+    let requested = if !hovered {
+        0
+    } else {
+        match profile {
+            "Kitty" | "Ghostty" => 1,
+            "iTerm2" => 2,
+            _ => 0,
+        }
+    };
+    let previous = POINTER.swap(requested, Ordering::AcqRel);
+    if requested == previous {
+        return Ok(());
+    }
+    let shape = match requested {
+        1 => "pointer",
+        2 => "hand2",
+        _ if previous == 2 => "xterm",
+        _ => "default",
+    };
+    osc("22", shape)
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub paste: bool,
     pub focus: bool,
     pub sync: bool,
     pub links: bool,
@@ -36,29 +63,15 @@ pub struct Config {
 }
 impl Config {
     pub fn from_caps(caps: &TerminalCapabilities) -> Self {
-        let overrides: serde_json::Value = std::env::var("BAHULAM_TUI_CAPABILITIES")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let overrides = &caps.overrides;
         let known = matches!(
             caps.profile.as_str(),
             "Kitty" | "Ghostty" | "WezTerm" | "iTerm2" | "VS Code" | "Windows Terminal"
         );
         let direct = caps.interactive && !caps.tmux && !caps.screen;
-        let enabled = |key: &str, default: bool| match overrides.get(key) {
-            Some(serde_json::Value::Bool(value)) => caps.interactive && *value,
-            Some(serde_json::Value::String(value))
-                if matches!(value.as_str(), "off" | "false" | "disabled") =>
-            {
-                false
-            }
-            Some(serde_json::Value::String(value))
-                if matches!(value.as_str(), "on" | "true" | "enabled") =>
-            {
-                caps.interactive
-            }
-            _ => default,
-        };
+        // Silence after an active query is not evidence for enabling these modes.
+        let queried = caps.probe.status.starts_with("active") || caps.probe.complete;
+        let enabled = |key: &str, default: bool| caps.resolve(key, default);
         let native = direct
             && !caps.ssh
             && (cfg!(any(target_os = "macos", target_os = "windows"))
@@ -78,10 +91,12 @@ impl Config {
         }
         .to_owned();
         Self {
+            paste: enabled("bracketed_paste", !caps.dumb),
             focus: enabled("focus_reporting", direct && known),
             sync: enabled(
                 "synchronized_output",
-                direct
+                !queried
+                    && direct
                     && matches!(
                         caps.profile.as_str(),
                         "Kitty" | "Ghostty" | "WezTerm" | "iTerm2" | "Windows Terminal"
@@ -90,7 +105,9 @@ impl Config {
             links: enabled("osc8_links", caps.interactive && known),
             keyboard: enabled(
                 "keyboard_protocol",
-                direct && matches!(caps.profile.as_str(), "Kitty" | "Ghostty" | "WezTerm"),
+                !queried
+                    && direct
+                    && matches!(caps.profile.as_str(), "Kitty" | "Ghostty" | "WezTerm"),
             ),
             cwd: enabled("osc7_cwd", direct && known),
             shell_marks: enabled("osc133_shell_marks", direct && known),
@@ -102,7 +119,7 @@ impl Config {
         }
     }
     pub fn report(&self) -> String {
-        format!("Profile/config integrations: focus={} sync={} links={} keyboard={} cwd={} shell-marks={} notifications={}", self.focus, self.sync, self.links, self.keyboard, self.cwd, self.shell_marks, self.notifications)
+        format!("Resolved integrations: focus={} sync={} links={} keyboard={} cwd={} shell-marks={} notifications={}", self.focus, self.sync, self.links, self.keyboard, self.cwd, self.shell_marks, self.notifications)
     }
 }
 fn osc(code: &str, value: &str) -> io::Result<()> {
@@ -138,6 +155,7 @@ pub fn enter(config: &Config) -> io::Result<()> {
     Ok(())
 }
 pub fn restore() {
+    let _ = link_pointer("", false);
     let _ = write!(io::stdout(), "\x1b[?2026l");
     if KEYBOARD.swap(false, Ordering::AcqRel) {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);

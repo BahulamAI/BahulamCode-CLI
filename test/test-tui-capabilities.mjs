@@ -19,7 +19,7 @@ test('standalone doctor is plain, reports hints honestly and never dumps unrelat
   assert.equal(caps.bracketed_paste,false);
   assert.equal(caps.ssh,true);
   assert.equal(caps.tmux,true);
-  assert.match(caps.detection,/active queries not implemented/);
+  assert.match(caps.detection,/not run \(diagnostic only\)/);
   assert.doesNotMatch(result.stdout,/SECRET|\x1b/);
 });
 

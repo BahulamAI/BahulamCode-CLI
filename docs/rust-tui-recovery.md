@@ -155,6 +155,24 @@ Markdown browser links render as an underlined label and destination, without
 raw Markdown punctuation. Both this text and bare URLs are click targets; wrapped
 pieces retain the correct destination, including repeated labels. These clicks
 do not require OSC8 support, so the same route works in macOS Terminal and VS Code.
+Same-cell held-button motion remains a click; crossing a character cell starts
+selection and cancels link activation. URLs in inline code and emphasized text
+also retain their click targets. Immediate browser-opener failures are reported
+in the footer rather than silently treated as successful launches.
+
+Browser decoration now uses SGR 4:4 dotted underlines on target text only, with
+no underline on action prefixes or trailing cells. Terminals control how unsupported
+underline styles fall back. Hover emphasizes the target without opening it;
+OSC22 hand pointers are enabled for Kitty/Ghostty (CSS names) and iTerm2 (X11
+names), with resets on leave/handoff/exit. Other profiles, including macOS Terminal
+and VS Code, retain their native mouse shape and use the visual hover cue.
+Repeated motion over the same target does not request another redraw.
+
+Thinking cards now represent chronological phases per agent and turn. Tool or
+assistant activity ends the current phase; subsequent thinking starts after it.
+Iteration-only processing notices replace the previous iteration in that phase;
+actual reasoning chunks remain intact and separate. Completing or cancelling a
+turn closes the active indicator without rewriting earlier completed phases.
 
 Alt+M enters native text-selection mode: release mouse capture, show the mode
 hint, and pause screen repainting while incoming events continue updating the
@@ -176,10 +194,90 @@ Validation includes Rust replay/cell-buffer checks for clipped/wrapped targets,
 resizes, transcript replacement and modal isolation; both-view PTYs cover pinned
 expansion/collapse, draft handoff, browser clicks, selection drags and Alt+L with
 OSC8 enabled/disabled. Browser tests use fake OS helpers. Actual desktop browser
-delivery and emulator acceptance remain live checks. Active capability probes
-are a separate next batch: existing profile/override support is not probing, and
-the dependency's two-second keyboard query does not satisfy the PRD's bounded
-startup budget.
+delivery and emulator acceptance remain live checks. The first active capability
+batch is implemented below; profile hints are still distinguished from measured
+replies. Graphics and Windows-native query handling remain separate work.
+
+### Active capability batch: terminal modes and diagnostics
+
+Rust now sends one CSI/OSC query batch on direct Unix terminals, ending with DA1,
+with a shared 200 ms deadline. It queries synchronized output (2026), focus (1004),
+SGR mouse (1006), bracketed paste (2004), Kitty keyboard support, cell/window pixel
+geometry, OSC11 background color, and DA1's advertised Sixel flag. This detects support; it does not add
+image rendering. No clipboard contents are queried.
+
+The existing input reader owns replies and keyboard events. Startup keys, Unicode,
+arrow edits and bracketed pastes are queued for the composer; late replies cannot
+become draft text. Query packets are bounded separately from pasted content.
+Explicit negative mode replies beat profile hints. A silent terminal leaves the
+unanswered capabilities unknown and keeps sync/extended keyboard disabled.
+Config overrides still take precedence. Resolved modes are reused across both
+Rust views and editor handoff, instead of being inferred again on each entry.
+
+The Node Rust-host adapter caches completed probe results in memory for five
+minutes, keyed by terminal identity/version and transport. The cache holds at
+most eight entries, never stores terminal addresses in reports or session JSONL,
+does not cache timeouts, and drops pixel geometry on reattachment. OSC11 background
+color is refreshed on reattachment, in a background-only batch ending with DA1;
+stable mode queries reuse the cache. Theme/view/resize reports do not renew the
+cache lifetime. The original
+Node CLI renderer and command implementations are unchanged.
+
+`/tui doctor` reports measured support, overrides, requested/enabled modes,
+fallback sources, completion and elapsed query time. Standalone `--doctor [--json]`
+remains read-only/passive and identifies that probing has not run. Non-TTY/plain
+output does not query; `TERM=dumb`, tmux/screen and the Windows console backend
+skip this active batch. Existing explicit/profile fallbacks remain available.
+Set `tui.capabilities.active_probes=false` (or the equivalent
+`BAHULAM_TUI_CAPABILITIES` JSON property) to opt out of the startup batch.
+
+Crossterm 0.29.0 needs a small opt-in input-reader extension because its public API
+hides these replies and its built-in keyboard helper waits up to two seconds.
+The source, MIT license, upstream archive checksum and exact patch rationale are
+preserved in `rust/vendor/crossterm/BAHULAM-PATCH.md`. The Windows reader is unchanged.
+
+Validation: Rust tests and Clippy; `npm run test:tui:capabilities` exercises both
+Rust views with simulated positive/negative, fragmented, late and oversized
+replies, silence/deadline, input preservation, overrides, disabled/dumb/transport
+fallbacks, cached reattachment and raw-mode cleanup. Existing inline, presentation,
+browser, Node-host and protocol regression checks remain required. These PTYs are
+not native emulator acceptance evidence.
+
+### Background detection and explicit theme choices
+
+OSC11 shares the original 200 ms total startup budget. Its bounded decoder uses
+the same input reader as CSI replies and supports BEL/ST terminators and replies
+split across reads. It preserves ordinary Escape/Alt+] input with a 25 ms prefix
+timeout; oversized packets are discarded and torn packets cannot hold the reader
+indefinitely. Existing key/mouse sequences and bracketed paste bypass OSC framing
+once their packet has begun. No terminal colors are changed by the query.
+Readiness is checked before every additional tty read: an incomplete reply must
+not turn the inherited blocking stdin into an unbounded wait. Partial CSI replies
+also expire and yield to control keys. PTYs cover incomplete OSC/CSI packets
+without a sentinel, standalone Esc selection/detail controls, and OSC-looking
+text inside a paste (the existing composer control-byte stripping still applies).
+
+Automatic themes use the reported RGB background to choose dark or light text
+for contrast. `BAHULAM_THEME` or `tui.theme` choices of `dark`, `light`,
+`high-contrast` or `ansi` remain authoritative; `auto` selects detection. The host
+marks its inferred appearance separately from explicit configuration. `/theme`
+changes the current Rust view immediately and remains authoritative when switching
+views; `/tui doctor` reports the current theme, source and observed background.
+Missing/invalid responses preserve the host's appearance hint or the dark default.
+`tui.capabilities.background_color=false` disables this query; `NO_COLOR` still
+disables styling regardless of the selected theme.
+
+Validation adds both-view white/dark detection, explicit-theme precedence,
+background opt-out, fragmented prefixes and terminators, invalid/oversized/torn
+replies, late replies, theme/view switching and changed background on reattachment.
+The query format follows the [OSC11 dynamic-color protocol](https://ghostty.org/docs/vt/osc/1x).
+Real emulator acceptance remains required.
+
+Still pending: Kitty/iTerm image negotiation,
+Windows-native and multiplexer probing, and real Mac Terminal/VS Code/Ghostty/
+iTerm2/Windows Terminal acceptance. OSC8/OSC52 remain explicit/profile decisions
+where reliable support queries are unavailable. Rich output and long-session
+performance are the following workstreams; no release is claimed by this batch.
 
 ### Browser link authoring and presentation
 
@@ -198,6 +296,40 @@ expose link actions when fully visible or expanded. Rendering a link never opens
 automatically or verifies that its server is running. Agent/model instructions,
 commands and canonical JSONL messages stay unchanged.
 
+## Sub-agent presentation and navigation batch
+
+Both Rust views now show a stable agent list with parent depth, task, status,
+current tool, elapsed time and reported token/cost values. Inline automatically
+shows active workers; Alt+A opens the list after completion or resume. Up/Down
+and Enter, or a normal row click, open the worker transcript. Esc returns to the
+main conversation's saved scroll anchor and draft. Rows retain start order;
+overflow uses a bounded window with earlier/more counts. Resize recalculates
+row hit targets from the painted frame.
+
+Worker internals stay in their own transcript. Final reports remain full messages
+in the main conversation and are also available inside that worker's transcript.
+Large reports automatically hydrate their complete payload. Failed reports retain
+the reported error and last tool; missing tool results become incomplete rather
+than fabricated failures or successes. Historical approvals remain informational,
+and resumed worker clocks do not start running again.
+
+The shared event projection now preserves available duration and scalar token
+counts even when a large report uses a payload reference. Status-only updates no
+longer erase previous usage. Worker usage does not overwrite session totals.
+The approval adapter forwards supplied worker/parent identity through its existing
+queue and decision registry. Stream-client and ApprovalManager changes only carry
+that identity to the Rust prompt adapter; Node rendering, policy and execution
+remain unchanged. An approval arriving during worker inspection takes input focus.
+
+Validation: Rust model/render tests cover interleaved workers, reused tool IDs,
+concurrent calls within one worker, complete reports, usage updates, nested replay
+identity and historical approval isolation. `npm run test:tui:agents` exercises five
+workers in real Unix PTYs in both views, including row click, keyboard navigation,
+resize, saved main anchor/draft, worker approval IDs, success/failure reports and
+resume. Protocol/cache-invariance and real approval-policy tests cover the shared
+bridge changes. Native terminal acceptance still needs the user's live run;
+producer coverage and agent-summary UX remain release work.
+
 ## PRD work after backports
 
 This table supersedes older pending tables below. The historical batch sections
@@ -205,7 +337,7 @@ record intermediate states; they are not the current pending-commit list.
 
 | Workstream | Remaining acceptance/work |
 | --- | --- |
-| Capability detection | Bounded active query/reply probes, fallbacks and actual per-terminal validation. |
+| Capability detection | CSI mode/keyboard/geometry/DA1 and OSC11 background probing implemented. Graphics, Windows/multiplexer handling and actual per-terminal validation remain. |
 | Rich output | Image/diagram/document presentation with protocol choice, resource limits and readable fallback. Artifact metadata/opening and image attachments are already separate supported paths. |
 | Long sessions | Payload retention across detach/reopen, bounded transcript memory, incremental viewport measurement, scrolling beyond the current u16 row limit and sustained workload benchmarks. Bounded row caching/tool tails alone do not close this. |
 | Runtime parity | End-to-end producer/route coverage, including background promotion outside the stream-client route; lifecycle, question routing and support/agent-summary UX acceptance against the PRD. |
