@@ -13,11 +13,14 @@
 
 // name -> one-line description (bare string).
 export const COMMANDS = {
+  '/terminal-setup': 'Inspect terminal setup or install VS Code keybindings',
+  '/tui':         'Switch terminal view: inline, fullscreen or default',
   '/help':        'Show commands',
   '/login':       'Sign in via browser',
   '/whoami':      'Show logged-in user',
   '/status':      'Session status & system info',
   '/plan':        'Show plan/tasks',
+  '/jobs':        'List background jobs; show output or stop a job',
   '/tasks':       'Show or update project tasks',
   '/stats':       'Progress bars & metrics',
   '/new':         'Start a new session',
@@ -26,6 +29,7 @@ export const COMMANDS = {
   '/diff':        'Git diff',
   '/cost':        'Show session cost',
   '/model':       'Show or set session model overrides',
+  '/models':      'Alias of /model list',
   '/attach':      'Attach image path or clipboard image to next prompt',
   '/attachments': 'List or clear pending image attachments',
   '/history':     'Show conversation',
@@ -75,6 +79,9 @@ export const HELP_GROUPS = [
       ['/plan status', 'Plan owner and task files'],
       ['/plan edit', 'Show editable task/plan paths'],
       ['/tasks', 'List project tasks'],
+      ['/jobs', 'List background jobs'],
+      ['/jobs show <id>', 'Show captured job output'],
+      ['/jobs kill <id>', 'Stop a background job'],
       ['/tasks add <text>', 'Add backlog task'],
       ['/tasks active|blocked|done <text>', 'Append to a task list'],
     ],
@@ -84,6 +91,10 @@ export const HELP_GROUPS = [
     title: 'Status',
     summary: 'session, usage, budget',
     commands: [
+      ['/tui fullscreen', 'Open the Rust full-screen view'],
+      ['/tui doctor', 'Inspect Rust terminal settings and capability detection status'],
+      ['/tui inline', 'Open the Rust inline view'],
+      ['/tui default', 'Return from Rust to the Node default view'],
       ['/status', 'Session snapshot'],
       ['/status context', 'Loaded .bahulam context'],
       ['/status metrics', 'Progress bars and runtime metrics'],
@@ -274,6 +285,7 @@ export function normalizeCommandInput(input) {
   const parts = String(input || '').trim().split(/\s+/).filter(Boolean);
   const rawCmd = (parts[0] || '').toLowerCase();
   const restParts = parts.slice(1);
+  if (rawCmd === '/models') return { cmd: '/model', rest: `list ${restParts.join(' ')}`.trim(), rawCmd, aliasTarget: '/model list' };
   const sub = (restParts[0] || '').toLowerCase();
   const namespaced = NAMESPACED_COMMANDS[rawCmd]?.[sub];
   if (namespaced) {

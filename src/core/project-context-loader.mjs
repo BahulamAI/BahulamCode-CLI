@@ -11,6 +11,7 @@ function sha(content) {
 function readFile(filePath, label, maxChars = 12000) {
   try {
     if (!fs.existsSync(filePath)) return null;
+    if (label === 'AGENTS.md' && !fs.lstatSync(filePath).isFile()) return null;
     const content = fs.readFileSync(filePath, 'utf-8');
     return {
       label,
@@ -68,6 +69,14 @@ function scanSkills(dir, scope) {
 export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}) {
   const bahulamDir = projectConfigDir(cwd);
   const files = [];
+  const global = readFile(path.join(bahulamHome(), 'AGENTS.md'), 'AGENTS.md');
+  if (global) files.push({ ...global, source: 'global' });
+  const ancestors = [];
+  for (let dir = path.resolve(cwd); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+    const file = readFile(path.join(dir, 'AGENTS.md'), 'AGENTS.md');
+    if (file && file.path !== global?.path) ancestors.push({ ...file, source: dir });
+  }
+  files.push(...ancestors.reverse());
   for (const file of loadBahulamMemory({ cwd })) {
     const label = file.path.endsWith(path.join('.bahulam', 'BAHULAM.md'))
       ? 'BAHULAM.md'
@@ -121,7 +130,7 @@ export function loadProjectContext({ cwd = process.cwd(), previous = null } = {}
   };
 }
 
-export function contextToPromptBlock(context) {
+export function contextToPromptBlock(context, instructions = directoryInstructions(context?.files)) {
   const parts = [];
   if (context?.root) {
     parts.push([
@@ -131,9 +140,20 @@ export function contextToPromptBlock(context) {
       'When the task state changes materially, update the appropriate task markdown file before the turn finishes.',
     ].join('\n'));
   }
-  for (const file of context?.files || []) {
-    if (!file.content || file.label === 'config.json') continue;
+  const files = context?.files || [];
+  parts.push(instructions);
+  for (const file of files) {
+    if (!file.content || ['config.json', 'AGENTS.md', 'BAHULAM.md'].includes(file.label)) continue;
     parts.push(`--- ${file.label} (${file.hash}) ---\n${file.content}`);
   }
-  return parts.join('\n\n');
+  return parts.filter(Boolean).join('\n\n');
+}
+
+export function directoryInstructions(files = []) {
+  const rules = files.filter(file => file.content && ['AGENTS.md', 'BAHULAM.md'].includes(file.label));
+  if (!rules.length) return '';
+  return [
+    'Apply global and directory instructions within their scope. The closest AGENTS.md governs files in its subtree. Before working in a nested directory, check it for additional AGENTS.md instructions.',
+    ...rules.map(file => `--- ${file.path} (${file.source}) ---\n${file.content}`),
+  ].join('\n\n');
 }

@@ -124,6 +124,26 @@ try {
 assert.equal(history.length, 100);
 assert.ok(output.includes('message_99') && !output.includes('message_90'));
 assert.match(output, /6 of 100/);
+
+output = '';
+const durableEventsRendered = [];
+try {
+  process.stderr.write = chunk => { output += String(chunk); return true; };
+  renderResumePreview({
+    history: [
+      { role: 'user', content: 'original prompt', order: 1, timestamp: '2026-11-14T12:00:00Z' },
+      { role: 'assistant', content: 'assistant response', order: 2, timestamp: '2026-11-14T12:00:01Z' },
+      { role: 'tool', content: 'tool output', order: 3, timestamp: '2026-11-14T12:00:02Z' },
+    ],
+    historyMode: 'full',
+    replayEvents: [{ source: 'durable', timestamp: '2026-11-14T12:00:03Z', event: { type: 'turn_started', data: {} } }],
+  }, { renderEvent: event => durableEventsRendered.push(event.type) });
+} finally { process.stderr.write = stderr; }
+assert.match(output, /original prompt/);
+assert.match(output, /assistant response/);
+assert.match(output, /tool output/);
+assert.deepEqual(durableEventsRendered, ['turn_started']);
+
 for (const tool of ['edit_file', 'shell']) {
   const head = strip(formatCardHead(tool, { command: 'npm test', file_path: 'example.js' }, { indent: subAgentIndent() }));
   assert.equal(head.match(/^ */)[0].length, 2, 'all live tool headers share a baseline');
@@ -144,7 +164,7 @@ fs.writeFileSync(transcript, records.map(record => JSON.stringify(record)).join(
 const started = performance.now();
 const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), '--resume', 'startup-fixture'], {
   cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
-  env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
+  env: { ...process.env, HOME: fixture, USERPROFILE: fixture, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
     BAHULAM_SKIP_AUTO_REGISTER: 'false', BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
 });
 const startupOutput = (child.stdout || '') + (child.stderr || '');
@@ -164,7 +184,7 @@ console.log('End-to-end offline resume: ' + Math.round(performance.now() - start
 for (const args of [[], ['--resume', 'missing-fixture']]) {
   const fresh = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), ...args], {
     cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
+    env: { ...process.env, HOME: fixture, USERPROFILE: fixture, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
       BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
   });
   const output = (fresh.stdout || '') + (fresh.stderr || '');

@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { readEvents, readLatestSnapshot } from '../core/event-log.mjs';
+import { toLegacyEvent } from '../protocol/compat.mjs';
 import { daemonSocketPath, daemonSocketsDir } from '../core/paths.mjs';
 import {
   onAttachJoined, onAttachLeft, takeInputLock, releaseInputLock, isHolder,
@@ -298,7 +299,10 @@ function _createAttachedClient(sock, sessionId, onCommand) {
     if (batch.length > 0) {
       _send({ seq: 0, ts: new Date().toISOString(), type: 'replay_batch_start',
               session_id: sessionId, v: 1, data: { from_seq: firstSeq, to_seq: lastSeqSeen } });
-      for (const evt of batch) _send(evt);
+      for (const evt of batch) {
+        const legacy = toLegacyEvent(evt);
+        if (legacy) _send(legacy);
+      }
       _send({ seq: 0, ts: new Date().toISOString(), type: 'replay_batch_end',
               session_id: sessionId, v: 1, data: { from_seq: firstSeq, to_seq: lastSeqSeen } });
     }

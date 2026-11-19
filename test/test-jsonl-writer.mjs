@@ -8,6 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-jsonl-writer-'));
+process.env.BAHULAM_HOME = path.join(tempRoot, 'home');
 
 const { JsonlWriter } = await import('../src/core/jsonl-writer.mjs');
 
@@ -28,6 +29,24 @@ function test(name, fn) {
 }
 
 console.log('\n\x1b[1mtest-jsonl-writer.mjs\x1b[0m\n');
+
+await test('ensureSessionId returns a stable ID for fresh and resumed session envelopes', async () => {
+  const cwd = path.join(tempRoot, 'identity-project');
+  fs.mkdirSync(cwd);
+  const writer = new JsonlWriter(cwd, 'test');
+  try {
+    const id = writer.ensureSessionId();
+    assert.strictEqual(typeof id, 'string');
+    assert.ok(id.length > 0);
+    assert.strictEqual(id, writer.sessionId);
+    assert.strictEqual(writer.ensureSessionId(), id);
+    assert.strictEqual(JSON.parse(JSON.stringify({ session_id: id })).session_id, id);
+    writer.setSessionId('resumed-session');
+    assert.strictEqual(writer.ensureSessionId(), 'resumed-session');
+  } finally {
+    await writer.close();
+  }
+});
 
 await test('flushAssistantTurn tolerates undefined tool output', async () => {
   const cwd = path.join(tempRoot, 'project');

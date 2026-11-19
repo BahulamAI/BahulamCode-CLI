@@ -1,6 +1,7 @@
-import { sgr, glyph, sectionHeading } from './chrome.mjs';
+import { sgr, glyph, sectionHeading, recordNote } from './chrome.mjs';
 import { transcriptBoundary, transcriptHeader, transcriptLine } from './transcript-block.mjs';
 import { renderCommandHead, renderCommandResult, toolSource } from './command-card.mjs';
+import { summarizeResult } from './tool-card.mjs';
 import { renderFileDiffs } from './diff.mjs';
 /**
  * Formatter — Clean terminal output for Bahulam events.
@@ -203,15 +204,20 @@ export class EventFormatter {
         const label = toolDisplayLabel(tool);
         const summary = toolDisplaySummary(tool, args);
         if (tool === 'shell') {
-            process.stderr.write(renderCommandHead(args, { source: toolSource(data) }) + '\n');
+            // Shell keeps its card (multi-line scripts, cwd, redirects) but the
+            // head now uses the shared record grammar instead of "Command · shell".
+            process.stderr.write(renderCommandHead(args, { source: toolSource(data), marker: `${this._spinner()} [${this.toolCount}] ` }) + '\n');
             this.toolCalls.push({ name: tool, callId, args, startTime: Date.now() });
             this._lastBlock = 'tool';
             return;
         }
-        const detail = summary ? `${sgr.muted}${summary}${sgr.reset}` : '';
-        process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${sgr.bold}${label}${sgr.reset}${detail ? `  ${detail}` : ''}\n`);
+        // One marker for every call. Previously only non-shell calls carried a
+        // spinner and "[n]", so shell and non-shell lines looked like different
+        // kinds of record.
+        const detail = summary ? ` ${sgr.reset}${sgr.muted}${summary}${sgr.reset}` : '';
+        process.stderr.write(`  ${this._spinner()} [${this.toolCount}] ${sgr.bold}${label}${sgr.reset}${detail}\n`);
 
-        this.toolCalls.push({ name: tool, callId, startTime: Date.now() });
+        this.toolCalls.push({ name: tool, callId, args, startTime: Date.now() });
         this._lastBlock = 'tool';
     }
 
@@ -227,39 +233,26 @@ export class EventFormatter {
         }
         if (result?.file_diff || result?.file_diffs) process.stderr.write(renderFileDiffs(result) + '\n');
 
-        if (this.verbose) {
-            const dur = durationMs ? ` (${durationMs}ms)` : '';
-            process.stderr.write(`  ${success ? sgr.success : sgr.danger}${success ? glyph('✓', '+') : glyph('✗', 'x')}${sgr.reset} ${tool} ${success ? 'done' : 'failed'}${dur}\n`);
+        // Every call gets exactly one outcome line, in the same gutter as every
+        // other record. Previously a successful read_file printed nothing at all
+        // and validation/edit results were each spelled differently.
+        const summary = summarizeResult(tool, result, data?.args || {});
+        let text = summary.text || (success ? 'done' : 'failed');
+        let tone = success ? summary.tone : 'danger';
+        if (!success && !summary.text) text = 'failed';
+        // Trim the trailing-duration noise: instant tools read as "0ms".
+        if (Number.isFinite(durationMs) && durationMs >= 200) {
+            text += glyph(' · ', ' / ') + (durationMs < 1000 ? Math.round(durationMs) + 'ms' : (durationMs / 1000).toFixed(1) + 's');
         }
+        if (summary.tone === 'dim' || !summary.text) tone = success ? 'muted' : 'danger';
+        process.stderr.write(recordNote(text, { tone, indent: '  ' }) + '\n');
 
         // Show file modifications as green checkmarks
         if (success && (tool === 'write_file' || tool === 'edit_file' || tool === 'write_project')) {
             const path = data?.result?.file_path || data?.args?.file_path || '';
             if (path) {
                 const action = tool === 'edit_file' ? 'Modified' : tool === 'write_project' ? 'Created' : 'Written';
-                process.stderr.write(`  ${sgr.success}✓ ${action} ${path}${sgr.reset}\n`);
                 this.changes.push({ path, action });
-            }
-        }
-
-        // Show validation results
-        if (tool === 'validate_build' || tool === 'lint_check' || tool === 'validate_file') {
-            if (success) {
-                const label = tool === 'validate_build' ? 'Build passed' :
-                              tool === 'lint_check' ? 'Lint check passed' :
-                              'File validated';
-                process.stderr.write(`  ${sgr.success}✓ ${label}${sgr.reset}\n`);
-            } else {
-                const msg = data?.result?.error || data?.result?.stderr || 'Failed';
-                process.stderr.write(`  ${sgr.danger}✗ ${tool.replace('_', ' ')} failed: ${msg.slice(0, 100)}${sgr.reset}\n`);
-            }
-        }
-
-        // Show shell command results (if verbose or if failed)
-        if (tool === 'shell' && !success) {
-            const stderr = data?.result?.stderr || '';
-            if (stderr) {
-                process.stderr.write(`  ${sgr.danger}✗ Command failed: ${stderr.slice(0, 100)}${sgr.reset}\n`);
             }
         }
     }
@@ -356,8 +349,8 @@ export class EventFormatter {
         // Summary line
         const parts = [];
         if (duration) parts.push(duration);
-        if (tools > 0) parts.push(`${tools} tool calls`);
-        if (changeCount > 0) parts.push(`${changeCount} changes`);
+        if (tools > 0) parts.push(`${tools} tool call${tools === 1 ? '' : 's'}`);
+        if (changeCount > 0) parts.push(`${changeCount} change${changeCount === 1 ? '' : 's'}`);
 
         const success = data?.success !== false;
         const marker = success ? sgr.success + glyph('✓', '+') : sgr.danger + glyph('✗', 'x');

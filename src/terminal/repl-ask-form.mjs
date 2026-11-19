@@ -25,7 +25,13 @@ const OTHER_SENTINEL = '__other__';
  * @returns {Promise<{answer: string, source: 'option'|'free_text'}|null>}
  *          null = user declined (Esc) — the agent should proceed on its own
  */
-export async function askUserForm({ rl, question, options, context }) {
+export async function askUserForm({ rl, question, options, context, choose }) {
+  if (typeof choose === 'function') {
+    const values = (options || []).map(value => String(value || '').trim()).filter(Boolean);
+    const answer = await choose(question || 'Agent question',
+      values.map(value => ({ label: value, value })), context || '', { allowFreeText: true });
+    return answer == null ? null : { answer, source: values.includes(answer) ? 'option' : 'free_text' };
+  }
   if (!process.stdin.isTTY) return null;
   if (rl) rl.pause();
 

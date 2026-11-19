@@ -80,12 +80,14 @@ export class SkillInstaller {
     constructor({ cwd = process.cwd(), homeDir = os.homedir() } = {}) {
         this.cwd = path.resolve(cwd);
         this.homeDir = homeDir;
+        this.bahulamDir = homeDir === os.homedir() && process.env.BAHULAM_HOME
+            ? process.env.BAHULAM_HOME : path.join(homeDir, '.bahulam');
     }
 
     paths(scope = 'global') {
         const base = scope === 'project'
             ? path.join(this.cwd, '.bahulam')
-            : path.join(this.homeDir, '.bahulam');
+            : this.bahulamDir;
         return {
             skillsDir: path.join(base, 'skills'),
             lockFile: path.join(base, 'skills.lock.json'),

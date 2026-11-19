@@ -9,14 +9,42 @@
  *   Direct API call, no backend. Only when user explicitly opts in.
  */
 
+// Task-shape heuristics. Kept because classifyTask() is a public surface even
+// though the remote-first router no longer consults it; deleting the patterns
+// without deleting the function turned the export into a runtime ReferenceError
+// that no syntax check could catch.
+const SIMPLE_PATTERNS = [
+    /\b(explain|describe|read|show|list|what is|how does|tell me|summarize)\b/i,
+];
+const COMPLEX_PATTERNS = [
+    /\b(add|create|implement|build|design|architect|migrate|refactor)\b/i,
+    /\b(authentication|system|framework|platform|infrastructure|database)\b/i,
+];
+
 let _probeCache = { available: null, timestamp: 0 };
 const PROBE_CACHE_TTL = 60_000; // 60s
 
 export async function selectMode(instruction, options, config) {
-    // Explicit --local flag: user wants local LLM
+    // Explicit flags always win: the user asked for this route by name.
     if (options.local) return 'local';
+    if (options.remote) return 'remote';
 
-    // Everything else goes to the backend
+    // An explicitly configured mode is a user decision. Ignoring it was the
+    // bug: this function takes `config` and silently discarded it, so a user
+    // who set mode=local still got the backend. Remote-first is the *default*,
+    // not an override of explicit config.
+    const configured = config?.mode;
+    if (configured === 'local') return 'local';
+    if (configured === 'remote') return 'remote';
+
+    // 'auto': follow the backend, but degrade to local when it is unreachable
+    // rather than stranding the user on a route that cannot answer.
+    if (configured === 'auto') {
+        const available = await probeBackend(config?.backendUrl);
+        return available ? 'remote' : 'local';
+    }
+
+    // Remote-first default for everything else.
     return 'remote';
 }
 

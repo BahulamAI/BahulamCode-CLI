@@ -1,0 +1,6 @@
+[workspace]
+members = ["bahulam-tui"]
+resolver = "2"
+
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }

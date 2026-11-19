@@ -15,6 +15,7 @@
  * - Safety guardrails on all tool execution
  */
 
+import { availableUpdate, promptUpdate } from './cli-update.mjs';
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -24,16 +25,24 @@ import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
-import { LocalAgent } from '../core/local-agent.mjs';
+import { LocalAgent, toOpenAIMessage } from '../core/local-agent.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
-import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
+import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { backgroundTasks } from '../core/background-tasks.mjs';
+import { stripTerminalControls } from '../core/display-sanitize.mjs';
+import { installBahulamShiftEnterKeybinding, terminalSetupSnippet, vscodeKeybindingsPath } from './vscode-keybindings.mjs';
+import { rustTuiEnvironment } from '../daemon/rust-tui-settings.mjs';
+import { rustTuiAvailable, startRustTuiHost } from '../daemon/rust-tui-host.mjs';
+import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage, rustAttachmentArtifacts } from '../daemon/rust-tui-snapshot.mjs';
+import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
 import { createToolExecutor } from '../core/tool-executor.mjs';
+import { isSensitiveConfigPath } from '../core/safety.mjs';
 // PRD-091 Phase 3 preview: opt-in gateway loop path. Set
 // BAHULAM_USE_GATEWAY_LOOP=1 to route the REPL's turn through
 // /v1/agent/turn instead of the local bundled runtime. Falls back to
@@ -43,6 +52,7 @@ import { buildWorkScope, promptProjectRoots } from '../core/work-scope.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { HookRunner } from '../config/hook-runner.mjs';
 import { readShippedCatalog } from '../config/model-catalog.mjs';
+import { createRustInteractions } from '../daemon/rust-interactions.mjs';
 import { askUserForm } from './repl-ask-form.mjs';
 import { runPreflight } from '../onboarding/preflight.mjs';
 import { createSessionAuthSync, refreshStartupChecks } from './startup.mjs';
@@ -83,6 +93,7 @@ import {
   MODEL_CATEGORY_ORDER,
   formatCategoryBadge,
   formatCategoryHeading,
+  isImageGenerationModel,
   modelCategory,
   modelDisplayCategory,
   modelMatchesCatalogFilter,
@@ -162,7 +173,6 @@ import {
   formatRelativeTime,
   formatSessionCost,
   historyRoleLabel,
-  mergeResumeReplayItems,
   messageCountLabel,
   normalizeResumableSession,
   oneLineInstruction,
@@ -210,7 +220,7 @@ import {
   clearCards,
 } from '../ui/tool-card.mjs';
 import { detailFor } from '../ui/tool-details.mjs';
-import { paint } from '../ui/palette.mjs';
+import { paint, width as visibleWidth } from '../ui/palette.mjs';
 import {
   renderSubAgentOpen,
   renderSubAgentClose,
@@ -702,6 +712,31 @@ const MODEL_FORM_ROLES = ['reasoning', 'fast', 'explore', 'plan'];
 const MODEL_MEDIA_FORM_ROLES = ['image_analysis', 'image_generation'];
 
 async function openModelForm(ctx) {
+  if (_rustTuiActive) {
+    const catalog = await fetchModelCatalog(ctx) || [];
+    const roles = [...MODEL_FORM_ROLES, ...MODEL_MEDIA_FORM_ROLES];
+    const role = await rustTuiChoose('Choose model role', roles.map(key => ({
+      value: key, label: `${MODEL_ROLE_LABELS[key] || key}${session.modelOverrides?.[key] ? ` · ${session.modelOverrides[key]}` : ''}`,
+    })), 'Select a role to update its session override.');
+    if (!role) return;
+    let available = catalog.filter(row => row?.id && (['image_analysis', 'image_generation'].includes(role)
+      ? modelCategory(row) === 'image' || modelCategory(row) === 'multimodal'
+      : ['text', 'chat', 'multimodal'].includes(modelCategory(row))));
+    if (role === 'image_generation') available = available.filter(row => isImageGenerationModel(row));
+    else if (role === 'image_analysis') available = available.filter(row => !isImageGenerationModel(row));
+    const currentOverride = session.modelOverrides?.[role];
+    const options = [
+      { value: '__default__', label: 'Backend default' },
+      ...available.map(row => ({ value: row.id, label: `${row.id}${row.provider ? ` · ${row.provider}` : ''}` })),
+      ...(currentOverride && !available.some(row => row.id === currentOverride)
+        ? [{ value: currentOverride, label: `${currentOverride} · current custom override` }]
+        : []),
+    ];
+    const selected = await rustTuiChoose(`Choose ${MODEL_ROLE_LABELS[role] || role} model`, options, 'The selection applies to this session.');
+    if (!selected) return;
+    await handleModelCommand(selected === '__default__' ? `clear ${role}` : `${role} ${selected}`, ctx);
+    return;
+  }
   const limits = session.modelLimits || {};
   const subAgentModels = session.subAgentModels || {};
   const planningModel = subAgentModels.plan || limits.planning?.model || limits.orchestrator?.model;
@@ -914,6 +949,7 @@ function handleAttachCommand(rest = '', ctx) {
     try {
       const filePath = writeClipboardImageToTemp();
       pending.push(filePath);
+      ctx.rustAttachmentPreview?.(filePath);
       process.stderr.write(`  ${c.green('✓')} ${c.dim('attached clipboard image for next prompt:')} ${c.brand(path.basename(filePath))}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message || String(err))}\n`);
@@ -922,6 +958,7 @@ function handleAttachCommand(rest = '', ctx) {
   }
   const resolved = resolveAttachmentPath(value, safeCwd());
   pending.push(resolved);
+  ctx.rustAttachmentPreview?.(resolved);
   process.stderr.write(`  ${c.green('✓')} ${c.dim('attached for next prompt:')} ${c.brand(path.basename(resolved))}\n`);
 }
 
@@ -938,6 +975,13 @@ function handleAttachmentsCommand(rest = '', ctx) {
 async function confirmVisionUpload(ctx, attachments, { skip = false } = {}) {
   if (skip || process.env.BAHULAM_VISION_CONFIRM === '0' || process.env.BAHULAM_VISION_CONFIRM === 'false') {
     return true;
+  }
+  if (_rustTuiActive) {
+    const choice = await rustTuiChoose('Confirm image upload', [
+      { value: 'yes', label: 'Upload image for vision analysis' },
+      { value: 'no', label: 'Cancel upload' },
+    ], attachments.map(item => item.name).join(', '));
+    return choice === 'yes';
   }
   if (!ctx?._rl || !process.stdin.isTTY) return false;
   const names = attachments.map(a => a.name).join(', ');
@@ -1172,6 +1216,14 @@ async function handleSkillsCommand(rest = '', ctx) {
       process.stderr.write(`  ${c.dim('Install one:')} ${c.brand('/skills install https://github.com/<user>/<repo>')}\n`);
       return;
     }
+    if (_rustTuiActive) {
+      const selected = await rustTuiChoose('Installed skills', [
+        ...skills.map(skill => ({ value: skill.name, label: `${skill.name} · ${skill.description || skill.source || 'installed'}` })),
+        { value: 'close', label: 'Close' },
+      ], 'Choose a skill to inspect.');
+      if (!selected || selected === 'close') return;
+      return handleSkillsCommand(`view ${selected}`, ctx);
+    }
     const rl = ctx?.rl || null;
     const choice = await openSkillsPicker({ rl, skills });
     if (!choice) {
@@ -1315,6 +1367,8 @@ const MODEL_COMMAND_COMPLETIONS = [
 function slashCompletionDescription(command) {
   const modelHint = MODEL_COMMAND_COMPLETIONS.find(item => item.command === command);
   if (modelHint) return modelHint.description;
+  const helpHint = HELP_GROUPS.flatMap(group => group.commands).find(([name]) => name === command);
+  if (helpHint) return helpHint[1];
   return COMMANDS[command] || (command === '/quit' ? 'Exit CLI' : '');
 }
 
@@ -1372,32 +1426,22 @@ function printBanner(auth) {
 /** Non-blocking check of npm registry for a newer bahulam version. */
 async function _checkForUpgradeAndAnnounce() {
   if (process.env.BAHULAM_SKIP_UPGRADE_CHECK === 'true') return;
-  const currentPkg = __require('../../package.json');
-  const pkgName = currentPkg.name || 'bahulam';
-  const current = currentPkg.version;
-  const url = `https://registry.npmjs.org/${encodeURIComponent(pkgName)}/latest`;
-  let latest;
-  try {
-    // Node 18+ has global fetch. 3-second timeout keeps banner snappy.
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) return;
-    const body = await res.json();
-    latest = String(body?.version || '');
-  } catch { return; }
-  if (!latest || latest === current) return;
-  // Semver-aware "newer than current" — split and compare number tuples.
-  // Anything unparseable is treated as newer (rare pre-release names) to
-  // err on the side of nudging the user.
-  const asTuple = v => String(v).split('.').map(x => parseInt(x, 10));
-  const [a, b, c1] = asTuple(latest);
-  const [x, y, z] = asTuple(current);
-  const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
-  if (!newer) return;
-  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(`${pkgName}@${latest}`))} ${c.dim(`(installed ${current})`)}\n`);
-  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
+  const pkg = __require('../../package.json');
+  const host = _rustTuiHost;
+  const version = await availableUpdate(pkg);
+  if (!version || _rustTuiHost !== host) return;
+  if (host && _rustTuiActive) {
+    await promptUpdate({ pkg, version,
+      choose: (...args) => _rustTuiHost === host ? rustTuiChoose(...args) : null,
+      notify: (title, cause) => _rustTuiHost === host && host.send({
+        v: 2, seq: 1, ts: new Date().toISOString(), type: 'notice',
+        session_id: session.id || _rustTuiEnsureSessionId?.(), agent_id: 'main', data: { level: 'info', title, cause },
+      }),
+    });
+    return;
+  }
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(pkg.name + '@' + version))} ${c.dim('(installed ' + pkg.version + ')')}\n`);
+  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkg.name + '@' + version)}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -2071,6 +2115,99 @@ function flushFoldedSubAgentTools(key = null) {
   flushOneFoldedSubAgentTools(fold);
 }
 
+// Set while the REPL is active so local socket/remote terminal clients can
+// submit prompts through the same serial queue as readline.
+let _submitExternalPrompt = null;
+let _rustTuiActive = false;
+let _rustTuiHost = null;
+let _rustApprovalBridge = null;
+let _rustTuiOutputCapture = null;
+let _rustTuiEnsureSessionId = null;
+let _rustTuiInteractions = null;
+
+function rustTuiChoose(title, options, message = '', preferences = {}) {
+  return _rustTuiInteractions?.choose(title, options, message, preferences) ?? Promise.resolve(null);
+}
+
+let rustSnapshotGeneration = 0;
+async function sendRustTranscriptSnapshot(mode = 'current') {
+  if (!_rustTuiActive || !_rustTuiHost) return;
+  const sessionId = session.id || _rustTuiEnsureSessionId?.();
+  if (!sessionId) return;
+  if (!session.id) session.id = sessionId;
+  const modeLabel = mode === 'current' ? mode : resumeModeLabel(mode);
+  const host = _rustTuiHost;
+  const generation = ++rustSnapshotGeneration;
+  const items = rustTranscriptItems(session);
+  const { displayPayloadStore } = await import('../daemon/display-payload-store.mjs');
+  const displayStore = displayPayloadStore();
+  const displayIndex = process.env.BAHULAM_TUI_RETAIN_DETAILS === '0' ? new Set() : await displayStore.indexForSession(sessionId);
+  for (let offset = 0; offset < Math.max(1, items.length); offset += 32) {
+    const restored = await Promise.all(items.slice(offset, offset + 32).map(async item => {
+      if (item.kind !== 'event' || !item.event || item.event.payload_ref) return item;
+      const reference = await displayStore.referenceForEvent(item.event, sessionId, displayIndex);
+      return reference ? {...item,event:{...item.event,payload_ref:reference,data:{...item.event.data,cached_full_payload:true}}} : item;
+    }));
+    if (!_rustTuiActive || _rustTuiHost !== host || session.id !== sessionId || generation !== rustSnapshotGeneration) return;
+    await _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'transcript_snapshot', session_id: sessionId,
+      agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: offset === 0, items: restored } });
+  }
+  sendRustSessionState();
+}
+
+function formatRustFallbackTranscript(events = []) {
+  const clean = value => stripTerminalControls(String(value || ''))
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+  const lines = [];
+  const block = (label, value, color = c.gray, maxLines = 3) => {
+    const content = clean(value);
+    if (!content) return;
+    const rows = content.split('\n').slice(0, maxLines);
+    lines.push(`  ${color(label)}`);
+    for (const row of rows) lines.push(`    ${c.dim(row.slice(0, 240))}`);
+    if (content.split('\n').length > maxLines || content.length > maxLines * 240) {
+      lines.push(`    ${c.dim('… more available with /resume')}`);
+    }
+  };
+  for (const event of events.slice(-40)) {
+    const data = event?.data || {};
+    switch (event?.type) {
+      case 'turn_started': block('You ›', data.text, c.brand, 2); break;
+      case 'message_end': block(event.agent_id === 'main' ? 'Bahulam ›' : `${event.agent_id || 'Agent'} ›`, data.text, c.white, 4); break;
+      case 'tool_requested': block(`Tool · ${clean(data.name) || 'command'}`, [data.primary, data.preview].filter(Boolean).join('\n'), c.cyan, 3); break;
+      case 'tool_finished': block(data.ok === false ? 'Tool result · failed' : 'Tool result', data.preview || data.summary, data.ok === false ? c.red : c.gray, 3); break;
+      case 'agent_spawned': block(`Subagent · ${clean(data.type) || 'agent'}`, data.task, c.magenta || c.brand, 2); break;
+      case 'agent_finished': block(data.ok === false ? 'Subagent · failed' : 'Subagent · complete', data.report, data.ok === false ? c.red : c.gray, 2); break;
+      case 'turn_ended': block(data.ok === false ? 'Turn · failed' : 'Turn · complete', data.summary, data.ok === false ? c.red : c.gray, 2); break;
+      case 'notice': block(data.title || 'Notice', [data.cause, data.next_step].filter(Boolean).join('\n'), data.level === 'error' ? c.red : c.yellow, 2); break;
+      case 'command_result': block(`Command · ${clean(data.name) || 'result'}`, data.result, data.ok === false ? c.red : c.gray, 3); break;
+      default: break;
+    }
+  }
+  return lines.slice(-100);
+}
+
+let _rustApprovalPolicyState = null;
+function ctxRustPermissionMode() {
+  const manager = _rustApprovalPolicyState?.();
+  if (!manager) return 'ask';
+  if (manager.planMode) return 'plan';
+  if (manager.autoApprove && manager.approveAll) return 'full';
+  if (manager.autoApprove) return 'unattended';
+  if (manager.approveAll) return 'auto';
+  return 'ask';
+}
+function sendRustSessionState() {
+  if (!_rustTuiActive || !_rustTuiHost) return;
+  const sessionId = session.id || _rustTuiEnsureSessionId?.();
+  if (!sessionId) return;
+  if (!session.id) session.id = sessionId;
+  _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', model_mode: session.modelMode || '', model_route: session.routePreference || (session.isByok ? 'byok' : 'platform'), git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
+}
+
 function renderEvent(event) {
   const { type, data } = event;
 
@@ -2655,9 +2792,10 @@ function renderEvent(event) {
 
     case 'session_info': {
       if (data?.session_id) {
-        session.id = data.session_id;
+        session.backendSessionId = data.session_id;
+        session.id ||= data.session_id;
         // Track in session manager so conversations save to the right file
-        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: data.session_id });
+        if (sessionMgrRef.current) sessionMgrRef.current.setSessionInfo({ session_id: session.id });
         // Wire socket server for attach clients.
         // renderEvent() is NOT async, so we can't `await startSocketServer(...)`
         // directly (that fails at import time — "Unexpected reserved word").
@@ -2693,8 +2831,10 @@ function renderEvent(event) {
                     try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {}
                   },
                   send_message: async (_payload, _attachId) => {
-                    // Slice C follow-up. Requires plumbing into the turn
-                    // handler; enqueued as a TODO for the daemon slice.
+                    const instruction = String(_payload?.text ?? _payload?.instruction ?? '').trim();
+                    if (!instruction) throw new Error('send_message requires non-empty text');
+                    if (!_submitExternalPrompt) throw new Error('terminal input is not ready');
+                    _submitExternalPrompt(instruction);
                   },
                 }
               });
@@ -2728,9 +2868,12 @@ function renderEvent(event) {
               try {
                 if (approval && !approval._prd092Intercepted) {
                   const orig = approval.check.bind(approval);
-                  approval.check = (tool, args, req, ctx) => interceptApproval(orig, {
+                  approval.check = (tool, args, req, ctx) => _rustTuiActive
+                    ? orig(tool, args, req, ctx)
+                    : interceptApproval(orig, {
                     tool, args, req, ctx,
                     sessionId: _sid,
+                    remoteOnly: _rustTuiActive,
                     emit: (type, data) => {
                       try { tapSseEvent({ type, data }, { sessionId: _sid }); }
                       catch { /* never blocks approval */ }
@@ -2757,7 +2900,12 @@ function renderEvent(event) {
                       approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
                       deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
                       interrupt: async () => { try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {} },
-                      send_message: async (_p, _a) => { /* Slice C follow-up */ },
+                      send_message: async (payload, _attachId) => {
+                        const instruction = String(payload?.text ?? payload?.instruction ?? '').trim();
+                        if (!instruction) throw new Error('send_message requires non-empty text');
+                        if (!_submitExternalPrompt) throw new Error('terminal input is not ready');
+                        _submitExternalPrompt(instruction);
+                      },
                     },
                   });
                   session._prd092RelayBridge = bridge;
@@ -3507,6 +3655,14 @@ async function handleCommand(input, ctx) {
   }
 
   switch (cmd) {
+    case '/tui': {
+      const view = rest.trim().toLowerCase().replace(/\s+/g, '');
+      if (view === 'doctor') {
+        process.stderr.write(`${ctx.rustTuiCapabilities?.report || 'Open /tui inline or /tui fullscreen to inspect the active Rust renderer.'}\n`);
+      } else if (['fullscreen', 'full', 'inline'].includes(view)) await ctx.openRustView?.(view === 'inline' ? 'inline' : 'fullscreen');
+      else process.stderr.write('  /tui inline or /tui fullscreen opens Rust · /tui default returns to Node\n');
+      return;
+    }
     case '/help': {
       renderHelp(rest);
       return;
@@ -3536,6 +3692,45 @@ async function handleCommand(input, ctx) {
     case '/tasks':
       handleTasksCommand(rest, ctx);
       return;
+
+    case '/jobs': {
+      const [action, id] = rest.trim().split(/\s+/, 2);
+      const oneLine = value => stripAnsi(String(value || '')).replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+      if (action === 'show' && id) {
+        const job = backgroundTasks.describe(id);
+        if (!job) process.stderr.write(`  ${c.gray(`No background job found: ${id}`)}\n`);
+        else {
+          process.stderr.write(`\n  ${c.bold(oneLine(job.id))} · ${oneLine(job.status)} · ${job.duration_s}s · ${oneLine(job.name)}\n`);
+          process.stderr.write(`  ${c.dim(oneLine(job.command))}\n\n`);
+          const output = stripAnsi(job.tail || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+          process.stderr.write(`${output || '(no captured output)'}\n`);
+        }
+        return;
+      }
+      if (action === 'kill' && id) {
+        const job = backgroundTasks.kill(id);
+        process.stderr.write(job
+          ? `  ${c.yellow('⊘')} ${c.dim(`${job.id} · ${job.status}`)}\n`
+          : `  ${c.gray(`No background job found: ${id}`)}\n`);
+        return;
+      }
+      const jobs = backgroundTasks.list();
+      if (!jobs.length) {
+        process.stderr.write(`  ${c.gray('No background jobs.')}\n`);
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Background jobs')}\n`);
+      process.stderr.write(`  ${c.gray('─'.repeat(56))}\n`);
+      for (const job of jobs) {
+        const glyph = job.status === 'running' ? c.yellow('◐')
+          : job.status === 'completed' ? c.green('✓')
+          : c.red('✗');
+        process.stderr.write(`  ${glyph} ${c.bold(oneLine(job.id))} · ${oneLine(job.status)} · ${job.duration_s}s · ${oneLine(job.name)}\n`);
+        process.stderr.write(`      ${c.dim(oneLine(job.command))}\n`);
+      }
+      process.stderr.write(`\n  ${c.dim('/jobs show <id> for output · /jobs kill <id> to stop.')}\n`);
+      return;
+    }
 
     case '/run':
       await handleRunCommand(rest, ctx);
@@ -3593,6 +3788,13 @@ async function handleCommand(input, ctx) {
       return;
     }
     case '/login':
+      if (_rustTuiActive) {
+        const proceed = await rustTuiChoose('Sign in to Bahulam', [
+          { value: 'continue', label: 'Continue with browser sign-in' },
+          { value: 'cancel', label: 'Cancel' },
+        ], 'The existing TypeScript auth flow will open the browser and save credentials.');
+        if (proceed !== 'continue') return;
+      }
       process.stderr.write(`${c.brand('Starting login flow...')}\n`);
       telemetry.track('login_shown', { method: 'repl_command' });
       try {
@@ -3616,6 +3818,43 @@ async function handleCommand(input, ctx) {
         const saved = ctx.auth.loadCredentials().token;
         process.stderr.write(`  ${saved ? c.yellow('Credentials saved; could not verify your account. Run /preflight for details.') : c.red('Not logged in. Run /login.')}\n`);
       }
+      return;
+    }
+
+    case '/terminal-setup': {
+      const action = rest.trim().toLowerCase();
+      if (action && !['install', 'write', 'show'].includes(action)) {
+        process.stderr.write(`  ${c.yellow('Usage:')} /terminal-setup ${c.dim('[install|show]')}\n`);
+        return;
+      }
+      if (action === 'install' || action === 'write') {
+        try {
+          const result = installBahulamShiftEnterKeybinding();
+          if (result.reason === 'added') {
+            process.stderr.write(`  ${c.green('✓')} Shift+Enter and safe terminal Ctrl+Q bindings added to ${result.filePath}\n`);
+          } else if (result.reason === 'already-installed') {
+            process.stderr.write(`  ${c.dim('✓ Bahulam terminal keybindings are already configured in')} ${result.filePath}\n`);
+          } else if (result.reason === 'partial') {
+            process.stderr.write(`  ${c.green('✓')} Missing Bahulam terminal keybindings added to ${result.filePath}\n`);
+            process.stderr.write(`  ${c.yellow('!')} Existing ${result.conflicts.join(', ')} keybinding conflict left unchanged. Review the suggested rules below.\n`);
+            process.stderr.write(`  ${c.dim('Suggested Bahulam rules:')}\n${terminalSetupSnippet().split('\n').map(line => `    ${line}`).join('\n')}\n`);
+          } else {
+            process.stderr.write(`  ${c.yellow('!')} Existing ${result.conflicts.join(', ')} keybinding conflict in ${result.filePath}; left it unchanged.\n`);
+            process.stderr.write(`  ${c.dim('Suggested Bahulam rules:')}\n${terminalSetupSnippet().split('\n').map(line => `    ${line}`).join('\n')}\n`);
+          }
+        } catch (error) {
+          process.stderr.write(`  ${c.red('✗')} Could not update VS Code keybindings: ${error.message}\n`);
+          process.stderr.write(`  ${c.dim(`Settings file: ${vscodeKeybindingsPath()}`)}\n`);
+        }
+        return;
+      }
+      process.stderr.write(`\n  ${c.bold('Terminal setup')}\n`);
+      process.stderr.write(`  ${c.dim('TERM')}       ${process.env.TERM || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Terminal')}   ${process.env.TERM_PROGRAM || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Size')}       ${process.stdout.columns || 'unknown'} × ${process.stdout.rows || 'unknown'}\n`);
+      process.stderr.write(`  ${c.dim('Color')}      ${process.stdout.hasColors?.() ? 'available' : 'limited'}\n`);
+      process.stderr.write(`  ${c.dim('VS Code')}    ${vscodeKeybindingsPath()}\n`);
+      process.stderr.write(`  ${c.dim('Install Shift+Enter and safe terminal Ctrl+Q handling with')} ${c.brand('/terminal-setup install')}\n\n`);
       return;
     }
 
@@ -4051,6 +4290,8 @@ async function handleCommand(input, ctx) {
 
     case '/clear':
       session.history.length = 0;
+      session.rustSnapshotItems = [];
+      session.rustSnapshotHistoryLength = 0;
       session.agentHistory.length = 0;
       session.toolCalls = 0;
       session.subAgentToolCalls = 0;
@@ -4144,6 +4385,23 @@ async function handleCommand(input, ctx) {
     case '/approvals': {
       const parts = (rest || '').trim().split(/\s+/).filter(Boolean);
       const action = (parts[0] || 'list').toLowerCase();
+      if (_rustTuiActive && action === 'list' && !ctx._rustSkipApprovalPicker) {
+        const summary = ctx.approval.getSummary();
+        const current = summary.autoApprovedTypes || [];
+        const options = [
+          { value: 'show', label: `View grants · ${current.length ? current.join(', ') : 'none'}` },
+          ...['shell', 'read_file', 'write_file', 'edit_file', 'apply_patch'].filter(tool => !current.includes(tool)).map(tool => ({ value: `allow:${tool}`, label: `Allow ${tool} for this session` })),
+          ...(current.length ? current.map(tool => ({ value: `remove:${tool}`, label: `Remove ${tool} grant` })) : []),
+          { value: 'clear', label: 'Clear all session grants' },
+          { value: 'cancel', label: 'Close' },
+        ];
+        const selected = await rustTuiChoose('Manage session approvals', options, `Mode: ${ctx.approval.getModeLabel()}. Dangerous tiers still prompt.`);
+        if (!selected || selected === 'cancel') return;
+        if (selected === 'show') return handleCommand('/approvals list', { ...ctx, _rustSkipApprovalPicker: true });
+        if (selected === 'clear') return handleCommand('/approvals clear', ctx);
+        if (selected.startsWith('allow:')) return handleCommand(`/approvals allow ${selected.slice(6)}`, ctx);
+        if (selected.startsWith('remove:')) return handleCommand(`/approvals remove ${selected.slice(7)}`, ctx);
+      }
       if (action === 'clear') {
         const wasActive = ctx.approval.revoke();
         process.stderr.write(wasActive
@@ -4217,12 +4475,36 @@ async function handleCommand(input, ctx) {
       // 1. Resolve which session to resume.
       let picked = null;
       if (targetId) {
-        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId));
+        picked = resumable.find(s => s.sessionId === targetId || s.sessionId?.startsWith(targetId)
+          || s.linkedSessionIds?.some(id => id === targetId || id.startsWith(targetId)));
         if (!picked) {
           process.stderr.write(`  ${c.yellow('!')} ${c.dim(`No session found matching id: ${targetId}`)}\n`);
           return;
         }
       } else {
+        if (_rustTuiActive) {
+          // Keep the numeric columns compact. Checkpoint explanations belong
+          // after the preview, so one summarized session cannot widen every row.
+          const rows = resumable.map(item => ({
+            item,
+            project: stripTerminalControls(item.project || '(unknown)').replace(/[\r\n\t]/g, ' '),
+            messages: String(item.messageCount),
+            context: formatCtxTokens(Number(item.resumeSummary?.sourceMessageCount)
+              ? projectedTokensForChoice('checkpoint-full', item.contextTokens || 0, { resumeSummary: item.resumeSummary })
+              : item.contextTokens || 0),
+            checkpoint: Number(item.resumeSummary?.sourceMessageCount)
+              ? ` · ${stripAnsi(formatResumeContextStatus(item)).trim()}` : '',
+          }));
+          const projectWidth = Math.max(...rows.map(row => visibleWidth(row.project)));
+          const messageWidth = Math.max(...rows.map(row => row.messages.length));
+          const contextWidth = Math.max(...rows.map(row => visibleWidth(row.context)));
+          const choice = await rustTuiChoose('Resume a session', rows.map(({ item, project, messages, context, checkpoint }) => ({
+            value: item.sessionId,
+            label: `${project}${' '.repeat(projectWidth - visibleWidth(project))}  ${messages.padStart(messageWidth)} msgs  ${context.padStart(contextWidth)} ctx  ${oneLineInstruction(item.instruction, 1000)}${checkpoint}`,
+          })), 'Choose a saved transcript.');
+          if (!choice) { process.stderr.write(`  ${c.dim('Cancelled.')}\n`); return; }
+          picked = resumable.find(item => item.sessionId === choice) || null;
+        }
         while (!picked) {
           const pickResult = await pickResumableSession(resumable, ctx);
           if (!pickResult) { process.stderr.write(`\n  ${c.dim('Cancelled.')}\n`); return; }
@@ -4274,6 +4556,15 @@ async function handleCommand(input, ctx) {
         decision.resumeSummary = picked.resumeSummary || null;
         if (decision.mode === 'full') {
           mode = 'full';
+        } else if (_rustTuiActive) {
+          const choices = [
+            { value: 'full', label: 'Full transcript' },
+            { value: 'summary', label: 'Summary only' },
+            { value: 'tail-10', label: 'Summary + last 10 turns' },
+            { value: 'tail-20', label: 'Summary + last 20 turns' },
+          ].filter(option => option.value !== 'full' || decision.mode !== 'no-full-allowed');
+          mode = await rustTuiChoose('Choose resume history', choices, 'This controls both the displayed transcript and agent context.');
+          if (!mode) return;
         } else {
           // Yield before attaching the overlay listener — same race guard as
           // the preview branch above. Prevents a queued Enter from the picker
@@ -4308,13 +4599,14 @@ async function handleCommand(input, ctx) {
       }
 
       // 4. Report — succinct honest single line, then optional hydration warning.
-      const toolSummary = resumed.stats && resumed.stats.toolCalls
-        ? `${resumed.stats.toolCalls} tool calls`
-        : `${resumed.messages} msgs`;
+      const toolSummary = `${resumed.stats?.toolCalls || 0} tool calls`;
+      const checkpointLabel = resumed.checkpointSourceMessageCount
+        ? ` · ${resumed.checkpointSourceMessageCount} earlier messages summarized`
+        : '';
       const summaryLabel = mode !== 'full' && resumed.summarySource
         ? ` · summary: ${resumed.summarySource}`
         : '';
-      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
+      process.stderr.write(`\n  ${c.green('↺')} ${c.dim('Resumed')} ${c.brand(picked.project || path.basename(safeCwd()))} ${c.dim(`· ${resumed.messages} msgs · ${toolSummary}${checkpointLabel} · mode: ${resumeModeLabel(mode)}${summaryLabel}`)}\n`);
       if (resumed.summaryWarning) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`backend summary unavailable — using local summary (${resumed.summaryWarning})`)}\n`);
       }
@@ -4327,8 +4619,9 @@ async function handleCommand(input, ctx) {
         process.stderr.write(`  ${c.yellow('⚠')} ${c.dim(`resumed transcript from ${resumed.savedProjectPath} — running against ${safeCwd()}`)}\n`);
       }
 
-      // Display is bounded independently from the selected agent history mode.
-      renderResumePreview(resumed, { renderEvent, previewOnly: true, startup: true });
+      // Rust displays the selected transcript snapshot in its transcript pane.
+      // The inline TypeScript client replays all locally available history.
+      if (!_rustTuiActive) renderResumePreview(resumed, { renderEvent });
       return;
     }
 
@@ -4430,6 +4723,9 @@ async function fetchUser(ctx) {
 // Cache CWD at startup so safeCwd() has a fallback if the dir gets deleted
 
 export async function startTerminalRepl() {
+  const requestedView = process.env.BAHULAM_TUI;
+  const startInRust = process.stdin.isTTY && process.stdout.isTTY && (requestedView === 'rust' || (!requestedView && rustTuiAvailable()));
+  if (startInRust) process.env.BAHULAM_DAEMON_EVENTLOG = '1';
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
@@ -4454,6 +4750,7 @@ export async function startTerminalRepl() {
     stopSpinner();
     flushContent();
     const res = await askUserForm({
+      choose: _rustTuiActive ? rustTuiChoose : null,
       rl: ctx?._rl || null,
       question: req?.question || '',
       options: Array.isArray(req?.options) ? req.options : [],
@@ -4498,7 +4795,8 @@ export async function startTerminalRepl() {
   }
   let toolExecutor = null;
   const skipPerms = cliArgs.skipPermissions;
-  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+  let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
 
   // Session manager — persists conversation messages to .bahulam/conversations/
   let sessionMgr = new SessionManager(safeCwd());
@@ -4527,6 +4825,18 @@ export async function startTerminalRepl() {
     localSessionId,
   };
   ctx.refreshAuth = createSessionAuthSync({ auth, session });
+  const rustPreviewedAttachments = new Set();
+  ctx.rustAttachmentPreview = filePath => {
+    if (!_rustTuiHost) return;
+    const extension = path.extname(filePath).toLowerCase();
+    const mime = ({'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'})[extension];
+    if (!mime) return;
+    for (const artifact of rustAttachmentArtifacts({attachments:[{path:filePath,name:path.basename(filePath),kind:'image',mime_type:mime}]})) {
+      tapSseEvent(artifact, {sessionId:session.id});
+    }
+    rustPreviewedAttachments.add(filePath);
+    if (rustPreviewedAttachments.size > 128) rustPreviewedAttachments.delete(rustPreviewedAttachments.values().next().value);
+  };
   let recoveredFollowups = [];
 
   // Wake-on-finish: background jobs with on_complete dispatch their target
@@ -4570,7 +4880,8 @@ export async function startTerminalRepl() {
     hookRunner = new HookRunner({ cwd: safeCwd() });
     toolExecutor = makeToolExecutor();
     await attachPluginMcp(toolExecutor);
-    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgrRef.current = sessionMgr;
@@ -4581,7 +4892,12 @@ export async function startTerminalRepl() {
 
     Object.assign(session, {
       id: null,
+      backendSessionId: null,
+      historyMode: 'current',
+      rustSnapshotItems: [],
+      rustSnapshotHistoryLength: 0,
       startTime: Date.now(),
+      rustUsageBaseline: null,
       inputTokens: 0,
       outputTokens: 0,
       lastTurnInputTokens: 0,
@@ -4721,7 +5037,8 @@ export async function startTerminalRepl() {
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
     toolExecutor = makeToolExecutor();
     await attachPluginMcp(toolExecutor);
-    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy });
+    approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
+      getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgr.activateSession(sessionId, {
@@ -4783,8 +5100,39 @@ export async function startTerminalRepl() {
     for (const result of registered) if (!result.success) hydrationFailures.push(result.root);
 
     onProgress('preparing replay', 92);
+    session.rustUsageBaseline = rustUsageBaseline(session, detail.meta);
     session.history = displayHistory;
     session.agentHistory = agentHistory;
+    session.rustSnapshotHistoryLength = displayHistory.length;
+    session.rustSnapshotItems = (() => {
+      if (historyMode === 'summary') return richHistory.summary ? [{ kind: 'message', role: 'assistant', content: richHistory.summary }] : [];
+      const replayStartOrder = replayStartOrderForMode(displayHistory, historyMode);
+      const replay = filterResumeReplayEvents(detail.replayEvents || [])
+        .filter(item => !['resume_summary', 'resume_context'].includes(item?.event?.type))
+        .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
+      const users = displayHistory.filter(message => message.role === 'user').filter(message => replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+      const checkpointEvent = (detail.replayEvents || []).filter(item => item?.event?.type === 'resume_summary')
+        .sort((a, b) => Number(b.order || 0) - Number(a.order || 0))[0];
+      const checkpointOrder = Number(checkpointEvent?.order);
+      const historyStartOrder = historyMode === 'checkpoint-full' && Number.isFinite(checkpointOrder)
+        ? checkpointOrder + 1
+        : replayStartOrder;
+      const historyForMode = displayHistory.filter(message =>
+        historyStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= historyStartOrder);
+      const historyItems = historyForMode.map(message => ({ kind: 'message', role: message.role || 'assistant', content: message.content ?? '' }));
+      const checkpointCount = Number(detail.meta?.resumeSummary?.sourceMessageCount) || richHistory.summaryCheckpointMessageCount;
+      const checkpointCard = historyMode === 'full' && richHistory.priorSummary
+        ? [{ kind: 'notice', title: `Earlier transcript summary · ${checkpointCount} messages`, content: `${richHistory.priorSummary}\n\n[The original entries covered by this checkpoint are not present in the local transcript.]` }]
+        : [];
+      const continuityCard = historyMode !== 'full' && richHistory.summary
+        ? [{ kind: 'notice', title: 'Resume continuity summary', content: richHistory.summary }]
+        : [];
+      if (replay.length) {
+        const prefix = historyMode === 'full' ? checkpointCard : continuityCard;
+        return [...prefix, ...rustResumeItems(users, replay, historyForMode)];
+      }
+      return [...(historyMode === 'full' ? checkpointCard : continuityCard), ...historyItems];
+    })();
     recoveredFollowups = richHistory.pendingFollowups || [];
     if (recoveredFollowups.length) {
       process.stderr.write(`  ${c.dim(`${recoveredFollowups.length} saved follow-up(s) recovered; continuing as separate turns.`)}\n`);
@@ -4793,6 +5141,8 @@ export async function startTerminalRepl() {
       process.stderr.write(`  ${c.yellow('Some follow-ups have uncertain or interrupted delivery. Review /history before retrying; they will not run automatically.')}\n`);
     }
     session.id = sessionId;
+    session.backendSessionId = detail.meta?.backendSessionId || sessionId;
+    session.historyMode = historyMode;
     session.turns = displayHistory.filter(m => m.role === 'user').length;
     session.lastTask = detail?.meta?.firstPrompt || session.history.find(m => m.role === 'user')?.content || '';
 
@@ -4820,6 +5170,8 @@ export async function startTerminalRepl() {
       instruction: detail?.meta?.firstPrompt || '',
       historyMode,
       summary: richHistory.summary || '',
+      priorSummary: richHistory.priorSummary || '',
+      checkpointSourceMessageCount: Number(detail.meta?.resumeSummary?.sourceMessageCount) || richHistory.summaryCheckpointMessageCount || 0,
       summarySource,
       summaryWarning,
       history: displayHistory,
@@ -4833,7 +5185,8 @@ export async function startTerminalRepl() {
   // One owner from the first startup line through the first prompt. Keep
   // existing shell output in scrollback; never guess an absolute cursor row.
   orbitRef.current = createOrbit();
-  const inputDockActive = mountInputDock({ preserveScrollback: true });
+  // Rust owns the first composer too; startup output can use normal scrollback.
+  if (!startInRust) mountInputDock({ preserveScrollback: true });
   if (!cliArgs.resume) printBanner(auth);
   toolExecutor = makeToolExecutor();
   ctx.toolExecutor = toolExecutor;
@@ -4862,6 +5215,7 @@ export async function startTerminalRepl() {
   }
   // ── Resume previous session ──
   let resumedAtStartup = false;
+  let startupResumeMode = 'current';
   if (cliArgs.resume) {
     const lastSession = cliArgs.resumeSessionId
         ? { sessionId: cliArgs.resumeSessionId }
@@ -4871,6 +5225,7 @@ export async function startTerminalRepl() {
       const resumed = await activateResumedSession(lastSession.sessionId, 'startup');
       if (resumed.ok) {
         resumedAtStartup = true;
+        startupResumeMode = resumed.historyMode || 'full';
         const status = ['Resumed session: ' + messageCountLabel(resumed.messages),
           'project ' + path.basename(safeCwd()), 'agent ' + resumed.historyMode,
           resumed.switchedProject ? 'cwd restored' : '',
@@ -4899,9 +5254,9 @@ export async function startTerminalRepl() {
   // prefix and draft, making the cursor bounce when the next event arrives.
   // `unref()` ensures the timer never blocks process exit.
   let _dockTickTimer = null;
-  if (inputDockActive) {
-    process.on('beforeExit', unmountInputDock);
-    process.on('exit',       unmountInputDock);
+  process.on('beforeExit', unmountInputDock);
+  process.on('exit',       unmountInputDock);
+  if (isInputDockMounted()) {
     _dockTickTimer = setInterval(() => {
       if (!isInputDockMounted() || approval._approvalPromptActive) return;
       try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch { /* one bad tick is not fatal */ }
@@ -5308,6 +5663,11 @@ export async function startTerminalRepl() {
   }
 
   function promptInputLine() {
+    if (_rustTuiActive) {
+      inputActive = false;
+      rl.pause();
+      return;
+    }
     // When the fixed dock is active, readline should own only the input
     // buffer, not the visual prompt. If readline paints the prompt itself,
     // long wrapped input can leave a stale duplicate row inside the dock.
@@ -5319,6 +5679,7 @@ export async function startTerminalRepl() {
   }
 
   function printSubmittedInput(input) {
+    if (_rustTuiActive) return;
     if (!isInputDockMounted()) {
       printInputBottomRule();
       runtime.lastRenderedBlock = 'user';
@@ -5336,6 +5697,7 @@ export async function startTerminalRepl() {
 
   // Helper: show prompt with separator + vertical breathing room
   function showPrompt() {
+    if (_rustTuiActive) return;
     if (isInputDockMounted()) {
       prepareInputPrompt({ context: buildContextStrip(), meta: buildDockMeta(), tips: idleInputTips() });
       promptInputLine();
@@ -5346,7 +5708,7 @@ export async function startTerminalRepl() {
     promptInputLine();
   }
 
-  showPrompt();
+  if (!startInRust) showPrompt();
 
   // Shared login/logout is visible in already-open terminals. Never repaint
   // the input text or draft, and do not fetch a profile on every timer tick.
@@ -5367,7 +5729,6 @@ export async function startTerminalRepl() {
     ].filter(Boolean);
     if (parts.length) process.stderr.write(wrapCode(parts.join(' · ') + ' · /preflight for details', paint.text.muted, { indent: '  ' }) + '\n');
   }).catch(() => {});
-  _checkForUpgradeAndAnnounce().catch(() => {});
 
   if (process.stdin.isTTY) {
     readline.emitKeypressEvents(process.stdin, rl);
@@ -5418,6 +5779,315 @@ export async function startTerminalRepl() {
     process.stderr.write(`  ${c.red('Instruction failed: ' + error.message)}\n`);
     showPrompt();
   });
+  let submitActiveFollowup = null;
+  _submitExternalPrompt = instruction => queueOrRunLine(instruction);
+  function restoreNodeDock() {
+    if (mountInputDock({ preserveScrollback: true })) {
+      if (_dockTickTimer) clearInterval(_dockTickTimer);
+      _dockTickTimer = setInterval(() => {
+        if (!isInputDockMounted() || approval._approvalPromptActive) return;
+        try { refreshDockMetadata({ context: buildContextStrip(), meta: buildDockMeta() }); } catch {}
+      }, 1000);
+      _dockTickTimer.unref?.();
+    }
+  }
+  async function openRustView(view, snapshotMode = session.historyMode || 'current') {
+    if (_rustTuiActive) return;
+    ctx.rustTuiCapabilities = null;
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write('  Full-screen view requires an interactive terminal.\n');
+      return;
+    }
+    let restoreStderr = null;
+    let restoreStdout = null;
+    try {
+      // The Rust child owns the whole terminal. The dock's scroll region and
+      // its 1 Hz metadata repaint go through the render queue's raw channel,
+      // which was bound before the write patch below and would paint through
+      // the alternate screen. Give the terminal back before the child starts.
+      if (_dockTickTimer) { clearInterval(_dockTickTimer); _dockTickTimer = null; }
+      if (isInputDockMounted()) unmountInputDock();
+      restoreStderr = process.stderr.write.bind(process.stderr);
+      restoreStdout = process.stdout.write.bind(process.stdout);
+      const screenWrite = original => (chunk, encoding, callback) => {
+        if (!_rustTuiActive) return original(chunk, encoding, callback);
+        if (_rustTuiOutputCapture) {
+          const text = Buffer.isBuffer(chunk)
+            ? chunk.toString(typeof encoding === 'string' ? encoding : undefined)
+            : String(chunk);
+          const remaining = 1_048_576 - _rustTuiOutputCapture.output.length;
+          if (remaining > 0) _rustTuiOutputCapture.output += text.slice(0, remaining);
+          if (text.length > remaining) _rustTuiOutputCapture.truncated = true;
+          const done = typeof encoding === 'function' ? encoding : callback;
+          if (typeof done === 'function') done();
+        } else {
+          const done = typeof encoding === 'function' ? encoding : callback;
+          if (typeof done === 'function') done();
+        }
+        return true;
+      };
+      process.stderr.write = screenWrite(restoreStderr);
+      process.stdout.write = screenWrite(restoreStdout);
+      _rustTuiEnsureSessionId = () => {
+        // The writer initializes its property; ensureSessionId() returns void.
+        // Read the current writer after /new replaces it, just as Node's
+        // normal prompt path does. This adapter is only installed for Rust.
+        if (!session.id) {
+          jsonlWriter.ensureSessionId();
+          session.id = jsonlWriter.sessionId;
+        }
+        return session.id;
+      };
+      let stopBackgroundJobsSubscription = null;
+      let rustQuitRequested = false;
+      let rustDefaultRequested = false;
+      const rustTuiEnv = rustTuiEnvironment({cwd:safeCwd(), userTui:auth.getRawConfig()?.tui});
+      _rustTuiHost = startRustTuiHost({
+        env: rustTuiEnv,
+        mode: view,
+        onCommand: async command => {
+          const data = command?.data || {};
+          switch (command?.type) {
+            case 'hello':
+              if (data.client === 'bahulam-tui' && typeof data.capabilities?.report === 'string') ctx.rustTuiCapabilities = data.capabilities;
+              break;
+            case 'prompt': {
+              const instruction = String(data.text || '').trim();
+              if (instruction) {
+                if (submitActiveFollowup && !instruction.startsWith('/')) await submitActiveFollowup(instruction);
+                else _submitExternalPrompt?.(instruction);
+              }
+              break;
+            }
+            case 'run_slash': {
+              const name = String(data.name || '').trim();
+              const args = Array.isArray(data.args) ? data.args.map(value => String(value).trim()) : [];
+              if (!/^\/[a-z][a-z0-9_-]*$/i.test(name) || args.some(value => /[\r\n]/.test(value))) {
+                throw new Error('run_slash requires a slash command name and single-line arguments');
+              }
+              if (typeof _submitExternalPrompt !== 'function') throw new Error('terminal input is not ready');
+              _submitExternalPrompt([name, ...args].filter(Boolean).join(' '));
+              break;
+            }
+            case 'switch_model': {
+              const rawRole = String(data.role || 'reasoning').trim();
+              const role = normalizeModelRole(rawRole);
+              if (!role) throw new Error(`switch_model received an unsupported model role: ${rawRole}`);
+              const model = String(data.model || '').trim();
+              if (!model || /[\r\n]/.test(model)) throw new Error('switch_model requires a model ID');
+              if (typeof _submitExternalPrompt !== 'function') throw new Error('terminal input is not ready');
+              _submitExternalPrompt(`/model ${role} ${model}`);
+              break;
+            }
+            case 'interrupt':
+              _rustTuiInteractions?.cancel();
+              _rustApprovalBridge?.cancel();
+              streamClient?.cancel?.();
+              break;
+            case 'background': {
+              const toolId = String(data.tool_id || '').trim();
+              if (!toolId) throw new Error('background requires the running shell tool id');
+              const job = await streamClient?.promoteRunningToolToBackground?.(toolId);
+              if (!job) throw new Error('That shell command can no longer be moved to the background.');
+              tapSseEvent({
+                type: 'notice',
+                data: {
+                  level: 'success',
+                  title: 'Command sent to background',
+                  cause: `${job.id} · ${job.name}`,
+                  next_step: 'Track it with /jobs or job_output.',
+                },
+              }, { sessionId: session.id });
+              break;
+            }
+            case 'approve':
+              if (!_rustApprovalBridge?.answer('approve', data)) resolvePending('approve', data.apr_id, 'rust-tui', data.instruction);
+              break;
+            case 'deny':
+              if (!_rustApprovalBridge?.answer('deny', data)) resolvePending('deny', data.apr_id, 'rust-tui', data.instruction);
+              break;
+            case 'interaction_response':
+              _rustTuiInteractions?.answer(data);
+              break;
+            case 'show_details': {
+              const payloadRef = String(data.payload_ref || '');
+              const sendDetail = detail => _rustTuiHost?.send({
+                v: 2, seq: 1, ts: new Date().toISOString(), type: 'detail_loaded',
+                session_id: session.id, agent_id: 'main',
+                data: { payload_ref: payloadRef, ...detail },
+              });
+              try {
+                let payload;
+                if (payloadRef.startsWith('display:')) {
+                  const { displayPayloadStore } = await import('../daemon/display-payload-store.mjs');
+                  payload = await displayPayloadStore().get(payloadRef, session.id);
+                  if (!payload) throw new Error('display detail cache unavailable or expired (14 days / 256 MiB); saved session history is unchanged');
+                } else if (payloadRef.startsWith('memory:')) {
+                  payload = readTransientPayload(payloadRef);
+                  if (!payload) throw new Error('live detail payload expired; run the command again to capture it');
+                } else {
+                  if (!/^payloads\/event-[1-9]\d*\.json$/.test(payloadRef)) {
+                    throw new Error('invalid session payload reference');
+                  }
+                  const { daemonSessionDir } = await import('../core/paths.mjs');
+                  const sessionDir = fs.realpathSync(daemonSessionDir(session.id));
+                  const payloadPath = fs.realpathSync(path.join(sessionDir, payloadRef));
+                  if (!payloadPath.startsWith(`${sessionDir}${path.sep}`)) {
+                    throw new Error('payload path is outside this session');
+                  }
+                  const size = fs.statSync(payloadPath).size;
+                  if (size > 64 * 1024 * 1024) throw new Error('session payload exceeds 64 MiB');
+                  payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+                }
+                let detail;
+                if (payload.name && payload.args && typeof payload.args === 'object') {
+                  const args = payload.args;
+                  const tool = String(payload.name).toLowerCase();
+                  const filePath = args.file_path || args.path;
+                  if (isSensitiveConfigPath(filePath)) {
+                    detail = `${filePath}\n\n[content redacted · sensitive config file]`;
+                  } else if (tool === 'write_file') {
+                    detail = `${filePath || 'file'}\n\n${args.content ?? '(no content)'}`;
+                  } else if (tool === 'edit_file' || tool === 'multi_edit') {
+                    detail = `${filePath || 'file'}\n\nOLD\n${args.search ?? args.old_string ?? args.oldString ?? ''}\n\nNEW\n${args.replace ?? args.new_string ?? args.newString ?? ''}`;
+                  } else if (tool === 'apply_patch') {
+                    const patch = String(args.patch ?? args.content ?? '');
+                    detail = /(?:^|[/\\])\.env(?:\.|\s|$)/m.test(patch)
+                      ? '[patch content redacted · may contain sensitive config]'
+                      : patch;
+                  } else if (tool === 'write_project' && Array.isArray(args.files)) {
+                    detail = args.files.map(file => {
+                      const filePath = file.path || file.file_path || 'file';
+                      return isSensitiveConfigPath(filePath)
+                        ? `${filePath}\n\n[content redacted · sensitive config file]`
+                        : `${filePath}\n\n${file.content ?? '(no content)'}`;
+                    }).join('\n\n---\n\n');
+                  }
+                }
+                if (detail == null) {
+                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.hunks ?? payload.args ?? payload.cause ?? payload.summary ?? payload;
+                  detail = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+                }
+                const bytes = Buffer.from(detail, 'utf8');
+                const displayLimit = 2 * 1024 * 1024;
+                if (bytes.length > displayLimit) {
+                  detail = `${bytes.subarray(0, displayLimit).toString('utf8')}\n… details truncated at 2 MiB`;
+                }
+                sendDetail({ detail });
+              } catch (error) {
+                sendDetail({ error: error.message });
+              }
+              break;
+            }
+            case 'detach':
+              rustDefaultRequested = true;
+              break;
+            case 'bye':
+              // Rust is about to restore the terminal and exit normally. Do
+              // not kill it between its quit request and terminal cleanup.
+              rustQuitRequested = true;
+              break;
+            default:
+              throw new Error(`unsupported command ${String(command?.type)}`);
+          }
+        },
+        onCommandFailure: (error, command) => {
+          tapSseEvent({ type: 'error', data: {
+            message: `Terminal command ${command?.type || 'unknown'} failed: ${stripTerminalControls(error.message)}`,
+            next_step: 'Retry the command or use /tui default to return to the default view.',
+          } }, { sessionId: session.id });
+        },
+        onExit: ({ code, signal, failure, recentEvents, terminalState }) => {
+          stopBackgroundJobsSubscription?.();
+          stopBackgroundJobsSubscription = null;
+          _rustApprovalBridge?.close();
+          _rustApprovalBridge = null;
+          _rustTuiActive = false;
+          _rustApprovalPolicyState = null;
+          ctx.rustTuiCapabilities = null;
+          ctx._rustChoose = null;
+          _rustTuiEnsureSessionId = null;
+          process.stderr.write = restoreStderr;
+          process.stdout.write = restoreStdout;
+          _rustTuiOutputCapture = null;
+          // A killed child cannot run its terminal guard. Restore only modes
+          // that this renderer reported owning, after unpatching output.
+          if (terminalState?.active) {
+            if (terminalState.keyboard_enhancement) process.stderr.write('\x1b[<u');
+            if (terminalState.shell_command_marked || terminalState.shell_prompt_marked) process.stderr.write('\x1b]133;D\x1b\\');
+            if (terminalState.alternate_screen) process.stderr.write('\x1b[?1049l');
+            process.stderr.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[?2026l\x1b[0m\x1b[?25h');
+          }
+          if (!rustQuitRequested && !rustDefaultRequested) {
+            const reason = failure || (signal ? `signal ${signal}` : `exit ${code}`);
+            process.stderr.write(`\n  Rust terminal disconnected (${stripTerminalControls(reason)}). Session preserved in the default view.\n`);
+            for (const line of formatRustFallbackTranscript(recentEvents)) process.stderr.write(`${line}\n`);
+          }
+          _rustTuiHost = null;
+          _rustTuiInteractions?.close();
+          _rustTuiInteractions = null;
+          if (rustQuitRequested) {
+            // Reuse the existing CLI exit behavior after the renderer releases
+            // the terminal. Unexpected renderer exits retain Node recovery.
+            // Rust inherited readline's raw mode, so Node must release it too.
+            try { if (process.stdin.isTTY) process.stdin.setRawMode(false); } catch {}
+            void handleCommand('/exit', ctx);
+            return;
+          }
+          // The child disabled raw mode on its way out; readline needs it back.
+          try { if (process.stdin.isTTY) process.stdin.setRawMode(true); } catch {}
+          rl.resume();
+          // Rust's restoration disables paste reporting; Node's existing
+          // paste handler needs it enabled again when taking the terminal.
+          process.stderr.write('\x1b[?2004h');
+          if (rustDefaultRequested) process.stderr.write('\n  Default terminal view · session preserved\n');
+          restoreNodeDock();
+          showPrompt();
+        },
+      });
+      _rustApprovalBridge = createRustApprovalBridge({ emit: (type, data) => tapSseEvent({ type, data }, { sessionId: session.id || _rustTuiEnsureSessionId?.() }) });
+      _rustTuiActive = true;
+      _rustApprovalPolicyState = () => approval;
+      stopBackgroundJobsSubscription = backgroundTasks.onChange(() => sendRustSessionState());
+      sendRustSessionState();
+      _rustTuiInteractions = createRustInteractions({
+        send: event => _rustTuiHost?.send(event) ?? false,
+        getSessionId: () => session.id || _rustTuiEnsureSessionId?.(),
+      });
+      ctx._rustChoose = rustTuiChoose;
+      inputActive = false;
+      rl.pause();
+      const rustSessionId = _rustTuiEnsureSessionId();
+      const rustCompletions = [...new Set([
+        '/copy',
+        '/copy last',
+        '/copy code',
+        '/copy transcript',
+        '/tui',
+        '/tui default',
+        '/tui doctor',
+        '/tui inline',
+        '/tui fullscreen',
+        '/tui full screen',
+        ...commandCompletions('/'),
+        ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
+      ])].sort();
+      _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
+        data: { commands: rustCompletions.map(name => ({ name, description: ['/tui', '/tui default'].includes(name)
+          ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })) } });
+      await sendRustTranscriptSnapshot(snapshotMode);
+    } catch (error) {
+      _rustTuiEnsureSessionId = null;
+      if (restoreStderr) process.stderr.write = restoreStderr;
+      if (restoreStdout) process.stdout.write = restoreStdout;
+      process.stderr.write(`  ${c.yellow(`Rust terminal unavailable: ${error.message}; using Node terminal.`)}\n`);
+      restoreNodeDock();
+      showPrompt();
+    }
+  }
+  ctx.openRustView = openRustView;
+  if (startInRust) await openRustView(undefined, startupResumeMode);
+  _checkForUpgradeAndAnnounce().catch(() => {});
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
@@ -5545,6 +6215,43 @@ export async function startTerminalRepl() {
 
     // Slash commands
     if (!followupId && input.startsWith('/')) {
+      if (_rustTuiActive) {
+        const capture = { output: '', truncated: false };
+        const historyBeforeCommand = session.history;
+        let ok = true;
+        _rustTuiOutputCapture = capture;
+        try {
+          await handleCommand(input, ctx);
+        } catch (error) {
+          ok = false;
+          capture.output += `${capture.output ? '\n' : ''}${error?.message || String(error)}`;
+        } finally {
+          _rustTuiOutputCapture = null;
+        }
+        const result = `${capture.output.trim()}${capture.truncated ? '\n… output truncated at 1 MiB' : ''}`;
+        const command = input.trim().split(/\s+/)[0]?.toLowerCase();
+        const commandArg = input.trim().split(/\s+/)[1]?.toLowerCase() || '';
+        if (['/new', '/clear'].includes(command)) {
+          await sendRustTranscriptSnapshot(command === '/new' ? 'new session' : 'cleared');
+        } else if (command === '/resume') {
+          await sendRustTranscriptSnapshot(session.historyMode || 'current');
+        } else if (['/auto', '/approvals', '/plan'].includes(command) || (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg))) {
+          sendRustSessionState();
+        }
+        if (command === '/resume' && ok && session.history !== historyBeforeCommand) return;
+        const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
+        const preview = previewLines.slice(0, 8).join('\n').slice(0, 1200) +
+          (previewLines.length > 8 || result.length > 1200 ? '\n… open details for full output' : '');
+        // Before the first turn there is no session id yet and the tap would
+        // drop the frame, leaving /help with no visible result.
+        jsonlWriter.ensureSessionId();
+        if (!session.id) session.id = jsonlWriter.sessionId;
+        tapSseEvent({
+          type: 'command_result',
+          data: { name: input.split(/\s+/).slice(0, 2).join(' '), result: preview || '(no output)', output: result || '(no output)', ok, added_to_context: false },
+        }, { sessionId: session.id });
+        return;
+      }
       await handleCommand(input, ctx);
       showPrompt();
       return;
@@ -5633,7 +6340,7 @@ export async function startTerminalRepl() {
       });
     }
     const client = streamClient;
-    if (session.id && !client.sessionId) client.sessionId = session.id;
+    if (session.id && !client.sessionId) client.sessionId = session.backendSessionId || session.id;
 
     await _executeWithClient(client);
 
@@ -5666,6 +6373,11 @@ export async function startTerminalRepl() {
         extraPaths: pending,
       });
       if (prepared.attachments.length) {
+        if (_rustTuiHost) {
+          for (const artifact of rustAttachmentArtifacts({ attachments: prepared.attachments.map(publicAttachmentMetadata) })) {
+            if (!rustPreviewedAttachments.delete(artifact.data.path)) tapSseEvent(artifact, { sessionId: session.id });
+          }
+        }
         process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
         jsonlWriter.writeBahulamEvent({
           type: 'attachments',
@@ -5758,7 +6470,10 @@ export async function startTerminalRepl() {
     // and local-mode prompts have a durable transcript to attach to.
     jsonlWriter.ensureSessionId();
     if (!session.id) session.id = jsonlWriter.sessionId;
-    if (!client.sessionId) client.sessionId = session.id;
+    if (!client.sessionId) client.sessionId = session.backendSessionId || session.id;
+    // The backend never emits turn_started; the prompt only reaches the event
+    // stream (and the Rust transcript) if the REPL records it here.
+    tapSseEvent({ type: 'turn_started', data: { text: input } }, { sessionId: session.id });
     writeCurrentUserTurn();
     if (followupId) await jsonlWriter.persistFollowup({ id: followupId, instruction: input, status: 'started' });
 
@@ -5767,14 +6482,31 @@ export async function startTerminalRepl() {
     let turnCompleted = false;
     let turnCancelled = false;
     let turnFailed = false;
+    let gatewayInterventions;
     const followups = new TurnFollowups({
       persist: async (item, options) => {
         await jsonlWriter.persistFollowup(item, options);
         if (options?.initial) session.history.push({ role: 'user', content: item.instruction, interventionId: item.id });
       },
-      send: (instruction, options) => client.sendIntervention(instruction, options),
-      onDelivered: item => agentTurnHistory.addUserMessage(item.instruction),
+      send: (instruction, options) => {
+        if (!gatewayInterventions) return client.sendIntervention(instruction, options);
+        gatewayInterventions.push({ instruction, id: options.idempotencyKey });
+        return { status: 'accepted' };
+      },
+      onDelivered: item => {
+        agentTurnHistory.addUserMessage(item.instruction);
+        tapSseEvent({ type: 'followup_applied', data: { text: item.instruction } }, { sessionId: session.id });
+      },
     });
+
+    submitActiveFollowup = async instruction => {
+      try {
+        await followups.submit(instruction);
+      } catch (error) {
+        tapSseEvent({ type: 'followup_save_failed', data: { error: error.message,
+          cause: 'Could not save follow-up: ' + error.message, next_step: instruction } }, { sessionId: session.id });
+      }
+    };
 
     // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
     let executionPaused = false;
@@ -5925,7 +6657,9 @@ export async function startTerminalRepl() {
       return true;
     }
 
-    if (process.stdin.isTTY) {
+    // While the Rust client owns the terminal it also owns stdin; reading
+    // here would race it for every keystroke (Esc, Ctrl+C, follow-up text).
+    if (process.stdin.isTTY && !_rustTuiActive) {
       rl.pause();
       const wasRaw = process.stdin.isRaw;
       process.stdin.setRawMode(true);
@@ -6265,9 +6999,12 @@ export async function startTerminalRepl() {
           }
         }
         if (session.gatewaySession) {
+          gatewayInterventions = [];
           _turnIterable = createAgentLoop({
+            projectPrompt: execContext.project_context?.prompt_block,
+            interventions: gatewayInterventions,
             session: session.gatewaySession,
-            messages: session.agentHistory,
+            messages: session.agentHistory.flatMap(toOpenAIMessage),
             toolExecutor,
           });
         }
@@ -6286,6 +7023,14 @@ export async function startTerminalRepl() {
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
         // No-op otherwise; zero effect on the render path either way.
         tapSseEvent(event, { sessionId: session.id });
+        // Local execution begins as soon as the request is rendered; mark the
+        // card running so the client can show elapsed time and the agent's
+        // current tool. Attribution fields ride along so it lands on the same
+        // row as the request; arguments do not need to travel twice.
+        if (event.type === 'tool_call' || event.type === 'tool_request') {
+          const { args: _args, tool_input: _ti, input: _in, ...started } = event.data || {};
+          tapSseEvent({ type: 'tool_started', data: started }, { sessionId: session.id });
+        }
         if (event.type === 'plan_created' || event.type === 'goal_created') {
           persistProjectArtifacts(
             event.data,
@@ -6295,6 +7040,7 @@ export async function startTerminalRepl() {
         }
         if (isInputDockMounted()) moveToContent();
         renderEvent(event);
+        if (event.type === 'complete' || event.type === 'session_info') sendRustSessionState();
         focusExecutionInput();
 
         if (event.type === 'content_partial') {
@@ -6318,10 +7064,10 @@ export async function startTerminalRepl() {
           }
         }
 
-        // Local JSONL: capture session ID from backend
+        // Keep the local transcript ID stable; the transport tracks the backend ID separately.
         if (event.type === 'session_info' && event.data?.session_id) {
-          jsonlWriter.setSessionId(event.data.session_id);
-          hookRunner.sessionId = event.data.session_id;
+          jsonlWriter.setSessionId(session.id);
+          hookRunner.sessionId = session.id;
           writeCurrentUserTurn();
         }
 
@@ -6353,6 +7099,7 @@ export async function startTerminalRepl() {
       flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
+      submitActiveFollowup = null;
       // Clean up execution keypress listener
       runtime.afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
@@ -6360,6 +7107,9 @@ export async function startTerminalRepl() {
 
     const completedNormally = turnCompleted && !turnCancelled && !turnFailed;
     const nextFollowups = await followups.finish({ continueAutomatically: completedNormally });
+    if (!completedNormally && [...followups.items.values()].some(item => item.status === 'held')) {
+      tapSseEvent({ type: 'followup_held', data: {} }, { sessionId: session.id });
+    }
     const heldFollowups = completedNormally ? [] : queueOrRunLine.remove(item => Boolean(item?.followupId));
     for (const item of heldFollowups) {
       await jsonlWriter.persistFollowup({ id: item.followupId, instruction: item.instruction, status: 'held' });
@@ -6382,6 +7132,7 @@ export async function startTerminalRepl() {
       session.agentHistory.push({ role: 'assistant', content: assistantContent });
     }
 
+    sendRustSessionState();
     showPrompt();
     if (executionInputBuffer) {
       replaceReadlineLine(executionInputBuffer);
@@ -6393,6 +7144,10 @@ export async function startTerminalRepl() {
   }
 
   rl.on('close', async () => {
+    _rustTuiHost?.close();
+    _rustTuiHost = null;
+    _rustTuiActive = false;
+    _submitExternalPrompt = null;
     clearSlashHint({ restoreCursor: false });
     inputActive = false;
     stopSpinner();

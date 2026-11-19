@@ -15,19 +15,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as childProcessModule from 'node:child_process';
-import { bahulamHome } from './paths.mjs';
+import { sanitizeEventValue } from './history-event-value.mjs';
+import { sanitizeDisplayValue } from './display-sanitize.mjs';
+import { bahulamHome, transcriptProjectSlug } from './paths.mjs';
 
 const BAHULAM_DIR = bahulamHome();
 const FLUSH_INTERVAL_MS = 500;
-
-/**
- * Sanitize a cwd path into a project slug for the directory name.
- * /Users/sree/Sites/myproject → -Users-sree-Sites-myproject
- * Mirrors the Claude Code / Bahulam CLI convention.
- */
-function sanitizePath(p) {
-  return p.replace(/\//g, '-').replace(/^-/, '-');
-}
 
 function normalizeToolResultContent(output) {
   if (typeof output === 'string') return output;
@@ -40,22 +33,6 @@ function normalizeToolResultContent(output) {
   }
 }
 
-function sanitizeEventValue(value, depth = 0) {
-  if (depth > 8) return '[truncated-depth]';
-  if (typeof value === 'string') {
-    return value.length > 10000 ? value.slice(0, 10000) + '\n[...truncated...]' : value;
-  }
-  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeEventValue(item, depth + 1));
-  if (typeof value === 'object') {
-    const out = {};
-    for (const [key, item] of Object.entries(value).slice(0, 100)) {
-      out[key] = sanitizeEventValue(item, depth + 1);
-    }
-    return out;
-  }
-  return String(value);
-}
 
 export class JsonlWriter {
   /**
@@ -66,7 +43,7 @@ export class JsonlWriter {
     this.cwd = cwd;
     this.version = version;
     this.sessionId = null; // set by setSessionId() when backend assigns it
-    this.slug = sanitizePath(cwd);
+    this.slug = transcriptProjectSlug(cwd);
     this.projectDir = path.join(BAHULAM_DIR, 'projects', this.slug);
 
     // UUID chain for parent linking (cc-lens replay)
@@ -117,6 +94,7 @@ export class JsonlWriter {
     if (!this.sessionId) {
       this.setSessionId(randomUUID());
     }
+    return this.sessionId;
   }
 
   // ── Write Methods (called from REPL) ──
@@ -171,10 +149,10 @@ export class JsonlWriter {
    */
   writeBahulamEvent(event) {
     if (!event || !event.type) return;
-    const sanitized = sanitizeEventValue({
+    const sanitized = sanitizeEventValue(sanitizeDisplayValue({
       type: event.type,
       data: event.data || {},
-    });
+    }));
 
     if (!this.sessionId) {
       this._pendingBahulamEvents.push(sanitized);

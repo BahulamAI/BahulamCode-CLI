@@ -48,6 +48,17 @@ try {
         /Use global/,
     );
 
+    fs.mkdirSync(path.join(project, '.git'));
+    const nested = path.join(project, 'packages', 'web');
+    fs.mkdirSync(nested, { recursive: true });
+    writeSkill(path.join(home, '.agents', 'skills'), 'portable', 'Global portable', 'global');
+    writeSkill(path.join(project, '.agents', 'skills'), 'portable', '|\n  First line\n  second line', 'portable');
+    const ancestorLoader = new SkillsLoader({ homeDir: home }).load(nested);
+    const portable = ancestorLoader.list({ query: 'portable' })[0];
+    assert.equal(portable.source, 'agents-project');
+    assert.match(portable.description, /First line\nsecond line/);
+    assert.match(ancestorLoader.view('portable').instructions, /Use portable/);
+    assert.match(ancestorLoader.view('portable', null, { sourceId: 'agents-global:portable' }).instructions, /Use global/);
     const source = path.join(root, 'vendor-source');
     writeSkill(path.join(source, 'skills'), 'vendor-skill', 'Vendor procedure', 'vendor');
     const installer = new SkillInstaller({ cwd: project, homeDir: home });

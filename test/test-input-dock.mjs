@@ -177,6 +177,15 @@ test('long path in a 40-col terminal: chunks safely within budget', () => {
   }
 });
 
+test('buffered single-line input plus Enter submits, including slash commands', () => {
+  for (const text of ['/help', '/resume saved-session', 'a long ordinary prompt', '界']) {
+    for (const enter of ['\r', '\n', '\r\n']) {
+      assert.equal(isRawMultilinePasteChunk(text + enter), false, JSON.stringify(text + enter));
+    }
+  }
+  assert.equal(isRawMultilinePasteChunk('one\ntwo\n'), true);
+});
+
 test('raw multiline clipboard chunks are treated as paste edits', () => {
   assert.strictEqual(isRawMultilinePasteChunk('first line\nsecond line'), true);
   assert.strictEqual(isRawMultilinePasteChunk('first line\r\nsecond line\r\nthird line'), true);

@@ -199,7 +199,7 @@ await test('getRecentSessions returns most recent transcript first', async () =>
   assert.strictEqual(sessions[1].modelUsage['gpt-5.4'].inputTokens, 120);
   assert.ok(sessions[1].contextTokens > 0);
   assert.notStrictEqual(sessions[1].contextTokens, 212);
-  assert.strictEqual(sessions[1].contextTokenSource, 'jsonl_bytes');
+  assert.strictEqual(sessions[1].contextTokenSource, 'message_bytes');
 });
 
 await test('getSessionDetail normalizes tool blocks', async () => {

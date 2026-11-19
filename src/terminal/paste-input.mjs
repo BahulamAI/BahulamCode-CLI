@@ -1,14 +1,10 @@
 export function isRawMultilinePasteChunk(text) {
   const value = String(text || '');
   if (!value) return false;
-  if (!/[\r\n]/.test(value)) return false;
-
-  const withoutLineBreaks = value.replace(/[\r\n]/g, '');
-  if (!withoutLineBreaks.length) return false;
-
-  // A single printable char followed by Enter can be delivered in one chunk
-  // by some terminals; keep that as normal line submission.
-  return withoutLineBreaks.length > 1 || value.split(/\r?\n|\r/).length > 2;
+  // Buffered typing (including a slash command) can arrive together with Enter.
+  // Only a break inside the remaining text establishes a multiline paste.
+  const withoutTrailingBreak = value.replace(/\r\n$|\r$|\n$/, '');
+  return /[\r\n]/.test(withoutTrailingBreak);
 }
 
 export function normalizePastedText(text) {

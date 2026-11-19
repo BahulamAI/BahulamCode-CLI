@@ -44,7 +44,7 @@ export async function listResumableSessions(sessionIdPrefix) {
   // per-project state-only entries never had a transcript, so they can't be
   // replayed — silently dropping them removes a source of "picked a session
   // and got a flat history" surprises.
-  const rich = (await getRecentSessions(Infinity, { sessionIdPrefix })).map(normalizeResumableSession);
+  const rich = (await getRecentSessions(Infinity, { sessionIdPrefix, projectPath: safeCwd() })).map(normalizeResumableSession);
   return rich.sort((a, b) => {
     const at = Date.parse(a.updatedAt || a.startedAt || 0) || 0;
     const bt = Date.parse(b.updatedAt || b.startedAt || 0) || 0;
@@ -350,6 +350,13 @@ export async function previewResumeSession(session, ctx) {
  * elsewhere. Returns 'switch' | 'stay' | 'cancel'.
  */
 export async function confirmCwdSwitch(ctx, savedPath, currentPath) {
+  if (typeof ctx?._rustChoose === 'function') {
+    return await ctx._rustChoose('Resume from another project', [
+      { value: 'switch', label: `Switch to ${savedPath}` },
+      { value: 'stay', label: `Stay in ${currentPath}` },
+      { value: 'cancel', label: 'Cancel resume' },
+    ], 'The saved session belongs to a different project directory.') || 'cancel';
+  }
   if (!process.stdin.isTTY) return 'switch';
   const frame = [
     `  ${c.dim('This session lives in another repo:')}`,
@@ -451,14 +458,30 @@ export function renderResumePreview(resumed, ctx = {}) {
     process.stderr.write('\n');
   }
 
-  if (resumed.replayEvents?.length) {
-    const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
-    const replayEvents = filterResumeReplayEvents(resumed.replayEvents)
+  if (resumed.historyMode === 'full' && resumed.priorSummary) {
+    const count = Number(resumed.checkpointSourceMessageCount) || 0;
+    process.stderr.write(`\n  ${c.bold(`Earlier transcript summary${count ? ` · ${count} messages` : ''}`)}\n`);
+    process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
+    for (const line of resumed.priorSummary.split('\n')) process.stderr.write(`  ${c.dim(line)}\n`);
+    process.stderr.write(`  ${c.dim('[The source messages covered by this checkpoint are not present in the local transcript.]')}\n\n`);
+  }
+
+  const replaySource = filterResumeReplayEvents(resumed.replayEvents || [])
+    .filter(item => !['resume_summary', 'resume_context'].includes(item?.event?.type));
+  const replayStartOrder = replayStartOrderForMode(resumed.history || [], resumed.historyMode);
+  const historyForMode = (resumed.history || []).filter(message =>
+    replayStartOrder == null || !Number.isFinite(Number(message.order)) || Number(message.order) >= replayStartOrder);
+  if (replaySource.length) {
+    const replayEvents = replaySource
       .filter(item => replayStartOrder == null || !Number.isFinite(Number(item.order)) || Number(item.order) >= replayStartOrder);
     const userTurns = (resumed.history || [])
       .filter(m => m.role === 'user')
       .filter(m => replayStartOrder == null || !Number.isFinite(Number(m.order)) || Number(m.order) >= replayStartOrder);
-    const replayItems = mergeResumeReplayItems(userTurns, replayEvents);
+    const hasDurableFallback = replayEvents.some(item => item?.source === 'durable');
+    const transcriptMessages = hasDurableFallback
+      ? historyForMode.filter(message => message.role !== 'user')
+      : [];
+    const replayItems = mergeResumeReplayItems(userTurns, replayEvents, transcriptMessages);
     const replayTitle = tailTurns ? `Last ${tailTurns} Turns Replay` : 'Replayed Live Session Events';
     process.stderr.write(`\n  ${c.bold(replayTitle)} (${userTurns.length} turns, ${replayEvents.length} events)\n`);
     process.stderr.write(`  ${c.gray('─'.repeat(80))}\n`);
@@ -477,6 +500,18 @@ export function renderResumePreview(resumed, ctx = {}) {
           process.stderr.write(`\n  ${historyRoleLabel('user')}: ${content}\n`);
           continue;
         }
+        if (item.kind === 'history') {
+          flushContent();
+          stopSpinner();
+          const message = item.message;
+          renderHistoryEntries([message], {
+            limit: Infinity,
+            maxChars: Infinity,
+            preserveWhitespace: true,
+            title: null,
+          });
+          continue;
+        }
         renderEvent(item.event.event);
       }
       flushContent();
@@ -491,10 +526,11 @@ export function renderResumePreview(resumed, ctx = {}) {
     return;
   }
 
-  if (resumed.history?.length) {
-    renderHistoryEntries(resumed.history, {
+  if (historyForMode.length) {
+    renderHistoryEntries(historyForMode, {
       limit: Infinity,
-      maxChars: 220,
+      maxChars: Infinity,
+      preserveWhitespace: true,
       title: tailTurns ? `Last ${tailTurns} Turns` : 'Replayed Session History',
     });
   }

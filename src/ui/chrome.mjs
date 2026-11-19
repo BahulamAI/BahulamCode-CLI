@@ -36,6 +36,44 @@ export function sectionHeading(label, { detail = '', columns = term().columns, t
   return wrapToLines(title + suffix, budget).map(line => '  ' + line).join('\n');
 }
 
+// ── Record grammar ───────────────────────────────────────────────────────
+// Every non-prose transcript line uses one shape:
+//
+//   Reading src/ui/palette.mjs          ← head: two spaces, colored verb
+//   ⎿ 47 lines                          ← note: aligned gutter, outcome
+//
+// Before this, agent text, tool calls and shell cards each picked their own
+// indent, marker and separator glyph, so a long transcript read as three
+// different apps stacked on top of each other.
+
+function recordColor(tone) {
+  if (tone === 'danger') return paint.state.danger;
+  if (tone === 'warn') return paint.state.warn;
+  if (tone === 'success') return paint.state.success;
+  if (tone === 'muted') return paint.text.muted;
+  return paint.brand.primary;
+}
+
+/** Head of a record: `{indent}{verb} {detail}`, wrapping under the verb. */
+export function recordHead(role, detail = '', { columns = term().columns, tone = 'brand', indent = '  ', marker = '' } = {}) {
+  const lead = marker + paint.bold(recordColor(tone)(role));
+  const suffix = detail ? ' ' + paint.text.primary(detail) : '';
+  const budget = Math.max(1, columns - indent.length - marker.length);
+  return wrapToLines(lead + suffix, budget)
+    .map((line, i) => (i === 0 ? indent : ' '.repeat(indent.length + marker.length)) + line)
+    .join('\n');
+}
+
+/** Continuation of a record: outcome/detail aligned under the role name. */
+export function recordNote(text, { columns = term().columns, indent = '  ', tone = 'muted' } = {}) {
+  if (!text) return '';
+  const gutter = indent + glyph('⎿ ', '> ');
+  const budget = Math.max(1, columns - gutter.length);
+  return wrapToLines(recordColor(tone)(text), budget)
+    .map((line, i) => (i === 0 ? gutter : ' '.repeat(gutter.length)) + line)
+    .join('\n');
+}
+
 export function dockHeading(label, context, columns, { approval = false } = {}) {
   const budget = Math.max(1, columns);
   const title = clipLabel(label, Math.max(1, budget - 4));

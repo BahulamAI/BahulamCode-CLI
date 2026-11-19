@@ -51,8 +51,9 @@ const DEFAULT_ROTATE_AT_BYTES = 100 * 1024 * 1024;
 /** Flush the write buffer at most this often. */
 const FLUSH_INTERVAL_MS = 250;
 
-/** Schema version stamped on every event; readers reject unknown majors. */
-export const EVENT_SCHEMA_V = 1;
+/** Schema version stamped on every event; readers skip unknown majors. */
+export const EVENT_SCHEMA_V = 2;
+export const SUPPORTED_EVENT_SCHEMA_VERSIONS = [1, 2];
 
 // ── session id ───────────────────────────────────────────────────────
 
@@ -100,6 +101,7 @@ export function createEventLog({
   if (!sessionId) throw new Error('createEventLog: sessionId is required');
   const dir = sessionDir || daemonSessionDir(sessionId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  _repairTail(path.join(dir, EVENTS_FILE));
 
   // Recover the last seq from disk. If .seq is missing (fresh session or
   // interrupted crash before any write), scan the live tail to find it.
@@ -112,26 +114,49 @@ export function createEventLog({
   let flushChain = Promise.resolve();
   let closed = false;
 
-  function writeEvent(type, data, extra = {}) {
+  function appendEvent(type, data, extra = {}) {
     if (closed) throw new Error('event log is closed');
     if (typeof type !== 'string' || !type) {
       throw new Error('writeEvent: type must be a non-empty string');
     }
-    seq += 1;
+    const nextSeq = seq + 1;
+    const id = `${sessionId}:${nextSeq}`;
+    let payload = data == null ? {} : data;
+    if (typeof payload !== 'object' || Array.isArray(payload)) throw new Error('event data must be an object');
+    const serialized = JSON.stringify(payload);
+    let payloadRef;
+    if (Buffer.byteLength(serialized) > 4096) {
+      payloadRef = `payloads/event-${nextSeq}.json`;
+      fs.mkdirSync(path.join(dir, 'payloads'), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, payloadRef), serialized, { mode: 0o600 });
+      // Keep bounded scalar metadata for cards; the complete payload is available on expand.
+      payload = Object.fromEntries(Object.entries(payload).filter(([key, value]) =>
+        key !== 'args' && ((key === 'scopes' && Array.isArray(value) && value.length <= 4 && value.every(scope => ['once', 'session', 'project', 'type'].includes(scope))) || typeof value === 'boolean' || typeof value === 'number' ||
+          (typeof value === 'string' && Buffer.byteLength(value) <= (key === 'preview' ? 2400 : 256)))));
+      if (Buffer.byteLength(JSON.stringify(payload)) > 3072) payload = {};
+    }
     const evt = {
-      seq,
+      seq: nextSeq,
       ts: extra.ts || new Date().toISOString(),
       type,
       session_id: sessionId,
       v: EVENT_SCHEMA_V,
-      ...(extra.turnId ? { turn_id: extra.turnId } : {}),
-      data: data == null ? {} : data,
+      turn_id: extra.turnId || null,
+      agent_id: extra.agentId || 'main',
+      ...(extra.parentAgentId ? { parent_agent_id: extra.parentAgentId } : {}),
+      id,
+      ...(payloadRef ? { payload_ref: payloadRef } : {}),
+      data: payload,
     };
     const line = JSON.stringify(evt) + '\n';
+    seq = nextSeq;
     buffer.push(line);
     _scheduleFlush();
-    return seq;
+    // Broadcast exactly what was serialized (no undefined fields or shared SSE objects).
+    return JSON.parse(line);
   }
+
+  function writeEvent(type, data, extra) { return appendEvent(type, data, extra).seq; }
 
   function _scheduleFlush() {
     if (flushTimer || closed) return;
@@ -142,13 +167,14 @@ export function createEventLog({
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     if (buffer.length === 0) return;
     const pending = buffer.splice(0, buffer.length).join('');
+    const persistedSeq = seq;
     const target = livePath;
     flushChain = flushChain.then(async () => {
       try {
         await fs.promises.appendFile(target, pending, { mode: 0o600 });
         liveBytes += Buffer.byteLength(pending, 'utf-8');
         // Persist seq AFTER the append lands so recovery never overreads.
-        await fs.promises.writeFile(path.join(dir, SEQ_FILE), String(seq), { mode: 0o600 });
+        await fs.promises.writeFile(path.join(dir, SEQ_FILE), String(persistedSeq), { mode: 0o600 });
         if (liveBytes >= rotateAtBytes) await _rotate();
       } catch (err) {
         // Local logging is best-effort; do not throw into the daemon loop.
@@ -190,6 +216,7 @@ export function createEventLog({
     sessionId,
     dir,
     writeEvent,
+    appendEvent,
     flush,
     close,
     currentSeq: () => seq,
@@ -231,6 +258,7 @@ export async function* readEvents({ sessionId, sessionDir, sinceSeq = 0, maxEven
         try { process.stderr.write(`[event-log] skipping malformed line in ${filePath}\n`); } catch {}
         continue;
       }
+      if (!SUPPORTED_EVENT_SCHEMA_VERSIONS.includes(evt.v)) continue;
       if (typeof evt.seq !== 'number' || evt.seq <= sinceSeq) continue;
       yield evt;
       yielded += 1;
@@ -357,28 +385,41 @@ function _listEventFilesInOrder(dir) {
 }
 
 function _recoverSeq(dir) {
-  // Fast path: read .seq if present.
+  // The marker may lag the append (crash between the two writes). Compare
+  // against the last log file, including a rolled tail, before minting IDs.
+  let lastSeq = 0;
   const seqFile = path.join(dir, SEQ_FILE);
   try {
     const raw = fs.readFileSync(seqFile, 'utf-8').trim();
     const n = Number(raw);
-    if (Number.isFinite(n) && n >= 0) return n;
+    if (Number.isSafeInteger(n) && n >= 0) lastSeq = n;
   } catch {}
-  // Slow path: scan the tail of the live file for the last valid seq.
-  // Only runs when .seq is missing — first-write or crash mid-write.
-  const live = path.join(dir, EVENTS_FILE);
+  // Check the last rolled file as well when the live tail was just rotated.
+  const files = _listEventFilesInOrder(dir);
   try {
-    const raw = fs.readFileSync(live, 'utf-8');
-    let lastSeq = 0;
-    for (const line of raw.split('\n')) {
-      if (!line) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (typeof evt.seq === 'number' && evt.seq > lastSeq) lastSeq = evt.seq;
-      } catch { /* torn last line */ }
+    for (const file of files.slice(-2)) {
+      const raw = fs.readFileSync(file, 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (!line) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (Number.isSafeInteger(evt.seq) && evt.seq > lastSeq) lastSeq = evt.seq;
+        } catch { /* torn last line */ }
+      }
     }
     return lastSeq;
-  } catch { return 0; }
+  } catch { return lastSeq; }
+}
+
+function _repairTail(file) {
+  if (!fs.existsSync(file)) return;
+  const bytes = fs.readFileSync(file);
+  if (!bytes.length || bytes[bytes.length - 1] === 10) return;
+  const end = bytes.lastIndexOf(10) + 1;
+  try {
+    JSON.parse(bytes.subarray(end).toString('utf8'));
+    fs.appendFileSync(file, '\n');
+  } catch { fs.truncateSync(file, end); }
 }
 
 // Async line reader — small enough that pulling in `readline` is overkill.

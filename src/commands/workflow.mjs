@@ -90,7 +90,7 @@ function getAuthHeaders() {
     const auth = new BahulamAuth();
     const creds = auth.loadCredentials();
     if (!creds.token) {
-        process.stderr.write(`${RED}✗ Not authenticated. Run `bahulam-code login` first.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Not authenticated. Run 'bahulam-code login' first.${RESET}\n`);
         process.exit(1);
     }
     return {
@@ -111,7 +111,7 @@ async function apiFetch(path, options = {}) {
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-        process.stderr.write(`${RED}✗ Authentication failed. Run `bahulam-code login` to re-authenticate.${RESET}\n`);
+        process.stderr.write(`${RED}✗ Authentication failed. Run 'bahulam-code login' to re-authenticate.${RESET}\n`);
         process.exit(1);
     }
 
@@ -223,7 +223,7 @@ async function handleRun(args) {
         });
 
         if (response.status === 401) {
-            process.stderr.write(`${RED}✗ Authentication failed. Run `bahulam-code login` to re-authenticate.${RESET}\n`);
+            process.stderr.write(`${RED}✗ Authentication failed. Run 'bahulam-code login' to re-authenticate.${RESET}\n`);
             process.exit(1);
         }
         if (response.status === 404) {
@@ -531,7 +531,7 @@ async function handleRunMulti(args) {
         });
 
         if (response.status === 401) {
-            process.stderr.write(`${RED}✗ Authentication failed. Run `bahulam-code login` to re-authenticate.${RESET}\n`);
+            process.stderr.write(`${RED}✗ Authentication failed. Run 'bahulam-code login' to re-authenticate.${RESET}\n`);
             process.exit(1);
         }
         if (!response.ok) {

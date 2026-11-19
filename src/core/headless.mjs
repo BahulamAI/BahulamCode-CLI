@@ -11,6 +11,8 @@
  *   bahulam-code --headless --model deepseek/deepseek-chat-v3-0324 "Add tests"
  */
 
+import { instructionContext } from './context-envelope.mjs';
+import { loadProjectContext } from './project-context-loader.mjs';
 import { BahulamStreamClient } from './stream-client.mjs';
 import { createToolExecutor } from './tool-executor.mjs';
 import { buildWorkScope, promptProjectRoots } from './work-scope.mjs';
@@ -341,7 +343,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
             cwd: process.cwd(),
             projectResources,
         }),
-        agent_context: toolExecutor.getAgentContext(),
+        ...instructionContext(loadProjectContext({ cwd: process.cwd() }), toolExecutor.getAgentContext?.()),
     };
     const modelSelection = resolveModelSelection({
         explicitModel: model,
@@ -550,7 +552,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                     sessionId: _sid,
                                     meta: {
                                         cwd: process.cwd(),
-                                        model: options.model || null,
+                                        model: model || null,
                                         pid: process.pid,
                                         sock_path: server.sockPath,
                                         opened_at: new Date().toISOString(),
@@ -576,7 +578,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                     sessionId: _sid,
                                     token: creds.token,
                                     cwd: process.cwd(),
-                                    model: options.model || null,
+                                    model: model || null,
                                     status: 'running',
                                 }).catch(() => {});
                             } catch { /* silent */ }
@@ -797,7 +799,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                     sessionId: currentSessionId,
                     token: creds.token,
                     cwd: process.cwd(),
-                    model: options.model || null,
+                    model: model || null,
                     status: 'idle',
                 }).catch(() => {});
             } catch { /* silent */ }

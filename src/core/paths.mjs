@@ -38,6 +38,11 @@ function resolveHome() {
   return path.join(os.homedir(), '.bahulam');
 }
 
+/** Existing JSONL directory convention: /Users/name/project → -Users-name-project. */
+export function transcriptProjectSlug(cwd) {
+    return cwd.replace(/\//g, '-');
+}
+
 /**
  * Hash a project path to a short directory name.
  * Uses first 16 chars of SHA-256 (same as Claude Code).

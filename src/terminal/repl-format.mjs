@@ -178,11 +178,11 @@ export function replayStartOrderForMode(history = [], mode = '') {
 export function filterResumeReplayEvents(events = []) {
   return events.filter(item => {
     const type = item?.event?.type;
-    return !['status', 'session_info', 'complete', 'resumed', 'paused'].includes(type);
+    return !['status', 'session_info', 'complete', 'resumed', 'paused', 'session_started', 'session_state'].includes(type);
   });
 }
 
-export function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
+export function mergeResumeReplayItems(userTurns = [], replayEvents = [], transcriptMessages = []) {
   const items = [];
   let order = 0;
   for (const message of userTurns) {
@@ -203,7 +203,17 @@ export function mergeResumeReplayItems(userTurns = [], replayEvents = []) {
       time: Date.parse(event.timestamp || '') || 0,
     });
   }
+  for (const message of transcriptMessages) {
+    items.push({
+      kind: 'history',
+      message,
+      fileOrder: Number.isFinite(Number(message.order)) ? Number(message.order) : null,
+      order: order++,
+      time: Date.parse(message.timestamp || '') || 0,
+    });
+  }
   return items.sort((a, b) => {
+    if (a.time && b.time && a.time !== b.time) return a.time - b.time;
     if (a.fileOrder !== null && b.fileOrder !== null && a.fileOrder !== b.fileOrder) {
       return a.fileOrder - b.fileOrder;
     }
@@ -274,6 +284,7 @@ export function startResumeProgress(mode = 'full') {
 export function normalizeResumableSession(s) {
   return {
     sessionId: s.sessionId,
+    linkedSessionIds: s.linkedSessionIds || [],
     instruction: s.firstPrompt || s.instruction || '(no instruction)',
     startedAt: s.startTime || s.startedAt || '',
     updatedAt: s.endTime || s.updatedAt || (s.mtime ? new Date(s.mtime).toISOString() : ''),
@@ -310,13 +321,20 @@ export function historyRoleLabel(role) {
  * Render the tail of a conversation transcript to stderr. Used by
  * /history and /resume preview flows.
  */
-export function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation' } = {}) {
+export function renderHistoryEntries(entries, { limit = 20, maxChars = 120, title = 'Conversation', preserveWhitespace = false } = {}) {
   const shown = limit === Infinity ? entries : entries.slice(-limit);
   const count = shown.length + (shown.length === entries.length ? '' : ' of ' + entries.length);
-  process.stderr.write('\n' + wrapCode(title + ' (' + count + ' entries)', paint.brand.primary, { indent: '  ' }) + '\n');
+  if (title) process.stderr.write('\n' + wrapCode(title + ' (' + count + ' entries)', paint.brand.primary, { indent: '  ' }) + '\n');
   for (const msg of shown) {
-    const content = String(msg.content || '').replace(/\s+/g, ' ').trim();
-    process.stderr.write(wrapCode(stripAnsi(historyRoleLabel(msg.role)) + ': ' + content.slice(0, maxChars) + (content.length > maxChars ? '...' : ''), paint.text.primary, { indent: '    ' }) + '\n');
+    const raw = String(msg.content || '');
+    const content = preserveWhitespace ? raw.replace(/\r\n?/g, '\n').trimEnd() : raw.replace(/\s+/g, ' ').trim();
+    const truncated = content.length > maxChars;
+    const body = content.slice(0, maxChars) + (truncated ? '...' : '');
+    const lines = body.split('\n');
+    lines.forEach((line, index) => {
+      const prefix = index === 0 ? stripAnsi(historyRoleLabel(msg.role)) + ': ' : '';
+      process.stderr.write(wrapCode(prefix + line, paint.text.primary, { indent: index === 0 ? '    ' : '      ' }) + '\n');
+    });
   }
   process.stderr.write('\n');
 }

@@ -50,9 +50,19 @@ const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-f
 const entry = fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 try {
-  for (const outcome of ['late-accepted', 'delivered', 'cancelled']) {
-    const project = path.join(fixture, outcome), home = path.join(project, 'home');
+  const binary = fileURLToPath(new URL('../rust/target/debug/bahulam-tui', import.meta.url));
+  const cases = [['node', 'late-accepted'], ['node', 'delivered'], ['node', 'cancelled']];
+  if (fs.existsSync(binary)) cases.push(['inline', 'delivered'], ['fullscreen', 'late-accepted'], ['inline', 'cancelled']);
+  for (const [view, outcome] of cases) {
+    const project = path.join(fixture, view + '-' + outcome), home = path.join(project, 'home');
     fs.mkdirSync(project); fs.writeFileSync(path.join(project, 'package.json'), '{}');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), 'GLOBAL_RULE');
+    fs.writeFileSync(path.join(fixture, 'AGENTS.md'), 'WORKSPACE_RULE');
+    fs.writeFileSync(path.join(project, 'AGENTS.md'), 'LOCAL_RULE');
+    const skillDir = path.join(project, '.agents', 'skills', 'review');
+    fs.mkdirSync(skillDir, {recursive:true});
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: review\ndescription: Review test tasks\n---\nPRIVATE_SKILL_BODY');
     let child, output = '', stream, interventionId;
     const turns = [];
     const records = () => {
@@ -86,6 +96,11 @@ try {
       let raw = ''; for await (const chunk of req) raw += chunk;
       if (req.url === '/api/execute') {
         const body = JSON.parse(raw); turns.push(body);
+        const prompt = body.context.project_context.prompt_block;
+        assert.match(prompt, /GLOBAL_RULE[\s\S]*WORKSPACE_RULE[\s\S]*LOCAL_RULE/);
+        assert.match(body.context.agent_context.directory_instructions, /GLOBAL_RULE[\s\S]*WORKSPACE_RULE[\s\S]*LOCAL_RULE/);
+        assert.match(prompt, /Review test tasks/);
+        assert.doesNotMatch(prompt, /PRIVATE_SKILL_BODY/);
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Task-ID': 'fixture-task' });
         emit(res, 'session_info', { session_id: body.session_id, task_id: 'fixture-task' });
         if (turns.length === 1) {
@@ -97,6 +112,8 @@ try {
         }
       } else if (req.url === '/api/intervention/fixture-task') {
         const body = JSON.parse(raw); interventionId = body.intervention_id;
+        assert.equal(body.role, 'user');
+        assert.equal(body.instruction, 'also check the followup');
         assert.ok(records().some(row => row.type === 'user' && row.intervention_id === interventionId), 'saved before POST');
         if (outcome === 'delivered') emit(stream, 'user_intervention_delivered', { intervention_id: interventionId });
         emit(stream, outcome === 'cancelled' ? 'cancelled' : 'complete', { summary: 'FIRST_DONE' });
@@ -114,7 +131,8 @@ try {
       server.listen(0, '127.0.0.1'); await once(server, 'listening');
       child = spawn('python3', ['-u', '-c', bridge, process.execPath, entry], {
         cwd: project, stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, BAHULAM_HOME: home, B0_TOKEN: 'fixture-only', KEPLER_TOKEN: '',
+        env: { ...process.env, HOME: home, USERPROFILE: home, BAHULAM_HOME: home,
+          BAHULAM_TUI: view === 'node' ? 'node' : 'rust', BAHULAM_TUI_BINARY: binary, BAHULAM_TUI_MODE: view, B0_TOKEN: 'fixture-only', KEPLER_TOKEN: '',
           BAHULAM_RUNTIME_MODE: 'remote', BAHULAM_USE_GATEWAY_LOOP: '0', BAHULAM_NO_PREFLIGHT: '1',
           BAHULAM_MODEL_CATALOG_OFFLINE: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true', BAHULAM_SKIP_AUTO_REGISTER: 'true',
           BAHULAM_AUTO_ATTACH: '0', BAHULAM_DISABLE_TELEMETRY: '1', BAHULAM_PLAIN: '0',
@@ -122,7 +140,7 @@ try {
           TARANG_BACKEND_URL: 'http://127.0.0.1:' + server.address().port },
       });
       for (const pipe of [child.stdout, child.stderr]) pipe.on('data', chunk => { output += String(chunk); });
-      await until(() => output.includes('You ›'), 'startup');
+      await until(() => view === 'node' ? output.includes('You ›') : output.includes('Ask') && output.includes('Bahulam'), 'startup');
       await enter('initial task');
       await until(() => output.includes('RACE_READY'), 'active execution');
       await enter('also check the followup');
@@ -138,7 +156,7 @@ try {
       await enter('/exit');
       await until(() => child.exitCode != null, 'CLI exit');
       assert.equal(child.exitCode, 0);
-      console.log('  ✓ raw REPL follow-up: ' + outcome);
+      console.log('  ✓ ' + view + ' follow-up: ' + outcome);
     } finally {
       if (child && child.exitCode == null) {
         const exited = once(child, 'exit'); child.kill(); await exited;

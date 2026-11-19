@@ -14,9 +14,9 @@ import os from 'node:os';
 let passed = 0;
 let failed = 0;
 
-function test(name, fn) {
+async function test(name, fn) {
     try {
-        fn();
+        await fn();
         console.log(`  \x1b[32m✓\x1b[0m ${name}`);
         passed++;
     } catch (err) {
@@ -26,7 +26,7 @@ function test(name, fn) {
 }
 
 /** Create a temp project dir with files and a built index. */
-function createIndexedProject() {
+async function createIndexedProject() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-idx-'));
 
     // Create source files
@@ -56,7 +56,7 @@ function executeQuery(sql, params) {
 
     // Build index
     const retriever = new ContextRetriever(tmpDir);
-    retriever.buildIndex();
+    await retriever.buildIndex();
 
     return { tmpDir, retriever };
 }
@@ -69,16 +69,16 @@ console.log('\n\x1b[1mtest-index-freshness.mjs\x1b[0m\n');
 
 // ─── Baseline Tests ───
 
-test('search finds existing function in indexed project', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('search finds existing function in indexed project', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
     const results = retriever.retrieve('login authentication', 5);
     assert.ok(results.length > 0, 'Expected search results');
     assert.ok(results.some(r => r.id.includes('auth')), `Expected auth.js in results, got: ${results.map(r => r.id)}`);
     cleanup(tmpDir);
 });
 
-test('search finds database functions', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('search finds database functions', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
     const results = retriever.retrieve('database query connection', 5);
     assert.ok(results.some(r => r.id.includes('database')), `Expected database.js in results`);
     cleanup(tmpDir);
@@ -86,8 +86,8 @@ test('search finds database functions', () => {
 
 // ─── Incremental Update Tests ───
 
-test('new function is searchable after updateFile', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('new function is searchable after updateFile', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Add a new function
     const authPath = path.join(tmpDir, 'auth.js');
@@ -112,8 +112,8 @@ function resetPassword(email) {
     cleanup(tmpDir);
 });
 
-test('renamed function is searchable after updateFile', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('renamed function is searchable after updateFile', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Rename logout → signOut
     const authPath = path.join(tmpDir, 'auth.js');
@@ -132,8 +132,8 @@ test('renamed function is searchable after updateFile', () => {
     cleanup(tmpDir);
 });
 
-test('deleted file removed from index after updateFile', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('deleted file removed from index after updateFile', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Delete database.js
     const dbPath = path.join(tmpDir, 'database.js');
@@ -148,8 +148,8 @@ test('deleted file removed from index after updateFile', () => {
     cleanup(tmpDir);
 });
 
-test('new file is searchable after updateFile', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('new file is searchable after updateFile', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Create a new file
     const newPath = path.join(tmpDir, 'permissions.js');
@@ -174,8 +174,8 @@ function grant_access(user_id, resource, level) {
     cleanup(tmpDir);
 });
 
-test('multiple sequential updates keep index consistent', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('multiple sequential updates keep index consistent', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Edit auth.js — use snake_case for BM25 tokenizer compatibility
     const authPath = path.join(tmpDir, 'auth.js');
@@ -203,8 +203,8 @@ test('multiple sequential updates keep index consistent', () => {
 
 // ─── Persistence Tests ───
 
-test('updated index persists to disk and reloads', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('updated index persists to disk and reloads', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Add a function and update
     const authPath = path.join(tmpDir, 'auth.js');
@@ -228,8 +228,8 @@ test('updated index persists to disk and reloads', () => {
 
 // ─── Performance Tests ───
 
-test('single file updateFile completes under 50ms', () => {
-    const { tmpDir, retriever } = createIndexedProject();
+await test('single file updateFile completes under 50ms', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
 
     // Add 15 more files to make it realistic
     for (let i = 0; i < 15; i++) {
@@ -240,7 +240,7 @@ function process_${i}(data) { return transform(data); }
 class Service_${i} { constructor() {} run() {} }
 `);
     }
-    retriever.buildIndex(); // Rebuild with all files
+    await retriever.buildIndex(); // Rebuild with all files
 
     // Time a single file update
     const authPath = path.join(tmpDir, 'auth.js');

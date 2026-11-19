@@ -128,14 +128,15 @@ export function registerPending(meta = {}) {
  * @param {string} apr_id
  * @param {string} decided_by  attach_id of the answering client
  * @param {string} [note]
+ * @param {string} [scope] Requested scope; the owning approval manager validates it.
  */
-export function resolvePending(decision, apr_id, decided_by, note = '') {
+export function resolvePending(decision, apr_id, decided_by, note = '', scope = 'once') {
   const entry = _pending.get(apr_id);
   if (!entry || entry.consumed) return false;
   entry.consumed = true;
   _pending.delete(apr_id);
   if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
-  entry.resolve({ decision, decided_by, note });
+  entry.resolve({ decision, decided_by, note, scope });
   return true;
 }
 
@@ -184,12 +185,16 @@ export function shutdownAllPending(reason = 'shutdown') {
  * We do the emission here rather than inside registerPending so the
  * store stays transport-agnostic.
  */
-export async function interceptApproval(origCheck, { tool, args, req, ctx, sessionId, emit } = {}) {
+export async function interceptApproval(origCheck, { tool, args, req, ctx, sessionId, emit, remoteOnly = false } = {}) {
   const pending = registerPending({ kind: tool, subject: _subjectFromArgs(tool, args) });
   const eventData = {
     apr_id: pending.apr_id,
     kind: tool,
     subject: _subjectFromArgs(tool, args),
+    name: tool,
+    args,
+    cwd: ctx?.cwd || req?.cwd,
+    reason: req?.reason || _subjectFromArgs(tool, args),
     expires_at: pending.expiresAt,
   };
   if (typeof emit === 'function') {
@@ -198,7 +203,9 @@ export async function interceptApproval(origCheck, { tool, args, req, ctx, sessi
 
   // Race the local TTY prompt against the remote resolution promise.
   // Whichever resolves first wins; cancel the other.
-  const local = origCheck(tool, args, req, ctx).then(v => ({ __src: 'local', v }));
+  const local = remoteOnly
+    ? new Promise(() => {})
+    : origCheck(tool, args, req, ctx).then(v => ({ __src: 'local', v }));
   const remote = pending.race.then(v => ({ __src: 'remote', v }));
 
   const first = await Promise.race([local, remote]);

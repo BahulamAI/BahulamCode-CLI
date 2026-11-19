@@ -1,4 +1,5 @@
 node_modules/
+rust/target/
 __pycache__/
 
 # macOS Finder metadata — never track
@@ -26,3 +27,5 @@ benchmark/model-comparison/results/
 
 # Ephemeral benchmark run artifacts (large, machine-generated)
 benchmark/results/runs/
+
+/native/

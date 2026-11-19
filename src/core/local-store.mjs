@@ -8,7 +8,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { bahulamHome } from './paths.mjs';
+import { bahulamHome, transcriptProjectSlug } from './paths.mjs';
+import { readAllEvents } from './event-log.mjs';
 import { followupsFromTranscript } from './followups.mjs';
 
 const BAHULAM_DIR = bahulamHome();
@@ -182,20 +183,23 @@ function entryToolResults(entry) {
 }
 
 /**
- * List all session JSONL files across all projects.
+ * List session JSONL files, optionally restricted before directory traversal.
  * Returns [{slug, sessionId, filePath, mtime}] sorted by mtime desc.
  */
-function listSessionFiles() {
+function listSessionFiles(projectSlugs) {
   const results = [];
-  try {
-    const slugs = fs.readdirSync(PROJECTS_DIR);
-    for (const slug of slugs) {
+  let slugs;
+  try { slugs = projectSlugs || fs.readdirSync(PROJECTS_DIR); }
+  catch { return results; }
+  for (const slug of slugs) {
+    try {
       const slugDir = path.join(PROJECTS_DIR, slug);
       if (!fs.statSync(slugDir).isDirectory()) continue;
       const files = fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl'));
       for (const file of files) {
         const filePath = path.join(slugDir, file);
-        const stat = fs.statSync(filePath);
+        let stat;
+        try { stat = fs.statSync(filePath); } catch { continue; }
         results.push({
           slug,
           sessionId: file.replace('.jsonl', ''),
@@ -203,10 +207,39 @@ function listSessionFiles() {
           mtime: stat.mtimeMs,
         });
       }
-    }
-  } catch { /* projects dir may not exist yet */ }
+    } catch { /* project may not exist yet or have been removed */ }
+  }
   results.sort((a, b) => b.mtime - a.mtime);
   return results;
+}
+
+// Cache only lineage IDs, never transcript content. A backend-ID handoff keeps
+// parentUuid, so it can be recovered even when durable event logging was off.
+const lineageCache = new Map();
+async function linkedTranscriptIds(file, entries, visited) {
+  const parents = new Set(entries.map(entry => entry.parentUuid).filter(Boolean));
+  const unresolved = new Set(entries.filter(entry => entry.role === 'user' && entry.uuid && !parents.has(entry.uuid)).map(entry => entry.uuid));
+  const own = new Set(entries.map(entry => entry.uuid).filter(Boolean));
+  const missingParents = new Set([...parents].filter(id => !own.has(id)));
+  if (!unresolved.size && !missingParents.size) return [];
+  const links = [];
+  for (const candidate of listSessionFiles([file.slug]).filter(candidate => !visited.has(candidate.sessionId))) {
+    const stat = fs.statSync(candidate.filePath);
+    let cached = lineageCache.get(candidate.filePath);
+    if (!cached || cached.mtime !== stat.mtimeMs || cached.size !== stat.size) {
+      const ids = new Set();
+      const uuids = new Set();
+      const lines = readline.createInterface({ input: fs.createReadStream(candidate.filePath, { encoding: 'utf8' }), crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (!line.includes('parentUuid') && !line.includes('uuid')) continue;
+        try { const record = JSON.parse(line); if (record.message) { if (record.parentUuid) ids.add(record.parentUuid); if (record.uuid) uuids.add(record.uuid); } } catch {}
+      }
+      cached = { mtime: stat.mtimeMs, size: stat.size, ids, uuids };
+      lineageCache.set(candidate.filePath, cached);
+    }
+    if ([...unresolved].some(id => cached.ids.has(id)) || [...missingParents].some(id => cached.uuids.has(id))) links.push(candidate.sessionId);
+  }
+  return links;
 }
 
 function findSessionFile(sessionId) {
@@ -274,7 +307,7 @@ async function parseSessionMeta(filePath) {
   // PRD-068 §5.14.11: adds endStatus / contextTokens / costUsd / partial for
   // the /resume picker columns and the context-length driven mode decision.
   const meta = {
-    sessionId: null,
+    sessionId: path.basename(filePath, '.jsonl'),
     project: null,
     firstPrompt: null,
     userMessages: 0,
@@ -295,7 +328,7 @@ async function parseSessionMeta(filePath) {
     // ── PRD-068 §5.14 derived fields ───────────────────────────────────
     endStatus: 'unknown',   // 'completed' | 'interrupted' | 'errored' | 'unknown'
     contextTokens: 0,       // projected transcript size when serialized
-    contextTokenSource: 'jsonl_bytes',
+    contextTokenSource: 'message_bytes',
     costUsd: 0,             // sum of per-turn provider costs recorded in transcript
     partial: false,         // true if some lines failed to parse
     fileBytes: 0,           // raw file size (byte-based ctx fallback if no usage totals)
@@ -303,6 +336,7 @@ async function parseSessionMeta(filePath) {
   };
 
   const toolCounts = {};
+  let contextBytes = 0;
   const modelSet = new Set();
   const usageRecords = [];
 
@@ -325,6 +359,9 @@ async function parseSessionMeta(filePath) {
       try { obj = JSON.parse(line); }
       catch { meta.partial = true; continue; }
 
+      if (obj.message && typeof obj.message === 'object' && ['user', 'assistant'].includes(obj.message.role)) {
+        contextBytes += Buffer.byteLength(JSON.stringify({ role: obj.message.role, content: normalizeMessageContent(obj.message.content) }));
+      }
       if (obj.sessionId && !meta.sessionId) meta.sessionId = obj.sessionId;
       if (obj.cwd && !meta.project) meta.project = obj.cwd;
       if (obj.gitBranch && !meta.gitBranch) meta.gitBranch = obj.gitBranch;
@@ -356,6 +393,7 @@ async function parseSessionMeta(filePath) {
           if (eventCost) meta.costUsd += eventCost;
         }
         if (ev.type === 'session_info') {
+          if (typeof data.session_id === 'string') meta.backendSessionId = data.session_id;
           if (typeof data.total_cost_usd === 'number') meta.costUsd = data.total_cost_usd;
           const info = data;
           if (info.model_limits && typeof info.model_limits === 'object') {
@@ -438,11 +476,13 @@ async function parseSessionMeta(filePath) {
   applyUsageRecords(meta, modelSet, usageRecords);
   meta.models = [...modelSet];
 
+  // Estimate canonical message payload only: replay events and repeated resume
+  // metadata are display/log data, not additional model context.
   // Projected context size for resume should estimate the serialized payload,
   // not cumulative provider usage. Provider input tokens are charged per turn
   // and include repeated/cache-read context, so summing them can show millions
   // of "context" tokens for a transcript that serializes far smaller.
-  meta.contextTokens = Math.max(0, Math.round(meta.fileBytes / 4));
+  meta.contextTokens = Math.max(0, Math.round(contextBytes / 4));
 
   // Derive endStatus from the tail of the transcript.
   if (hadError) {
@@ -462,11 +502,29 @@ async function parseSessionMeta(filePath) {
  * Get recent sessions with metadata.
  * @param {number} n — max sessions to return
  */
-export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
-  const files = listSessionFiles().filter(file => !sessionIdPrefix || file.sessionId.startsWith(sessionIdPrefix)).slice(0, n);
+export async function getRecentSessions(n = 10, { sessionIdPrefix, projectPath } = {}) {
+  const canonicalPath = value => {
+    const resolved = path.resolve(value);
+    try { return fs.realpathSync(resolved); } catch { return resolved; }
+  };
+  const scope = projectPath ? canonicalPath(projectPath) : null;
+  // Restrict directory discovery before parsing JSONL. Slugs are lossy, so
+  // verify the recorded cwd as well (e.g. /a-b/c and /a/b-c share a slug).
+  const projectSlugs = scope ? new Set([projectPath, path.resolve(projectPath), scope].map(transcriptProjectSlug)) : undefined;
+  const candidates = listSessionFiles(projectSlugs).filter(file => !sessionIdPrefix || file.sessionId.startsWith(sessionIdPrefix));
+  const files = scope ? candidates : candidates.slice(0, n);
   const sessions = [];
+  const fragments = new Set();
   for (const f of files) {
-    const meta = await parseSessionMeta(f.filePath);
+    let meta = await parseSessionMeta(f.filePath);
+    if (scope && (!meta.project || canonicalPath(meta.project) !== scope)) continue;
+    if (meta.userMessages && (!meta.assistantMessages || (meta.backendSessionId && meta.backendSessionId !== f.sessionId))) {
+      const detail = await getSessionDetail(f.sessionId, { filePath: f.filePath });
+      if (detail?.linkedSessionIds?.length) {
+        meta = { ...detail.meta, linkedSessionIds: detail.linkedSessionIds };
+        detail.linkedSessionIds.forEach(id => fragments.add(id));
+      }
+    }
     sessions.push({
       ...meta,
       slug: f.slug,
@@ -474,7 +532,7 @@ export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
       mtime: f.mtime,
     });
   }
-  return sessions;
+  return sessions.filter(session => !fragments.has(session.sessionId)).slice(0, n);
 }
 
 /**
@@ -482,6 +540,9 @@ export async function getRecentSessions(n = 10, { sessionIdPrefix } = {}) {
  * @param {string} sessionId
  */
 export async function getSessionDetail(sessionId, options = {}) {
+  const visited = new Set(options.visited || []);
+  if (visited.has(sessionId) || visited.size >= 16) return null;
+  visited.add(sessionId);
   const file = options.filePath
     ? {
         sessionId,
@@ -536,8 +597,61 @@ export async function getSessionDetail(sessionId, options = {}) {
   }
 
   const meta = await parseSessionMeta(file.filePath);
+  // The daemon's durable event log can contain live activity that predates
+  // transcript event persistence. Prefer transcript events when they include
+  // real activity; otherwise use the event log as the available replay source.
+  const hasTranscriptActivity = replayEvents.some(item =>
+    !['resume_summary', 'resume_context', 'status', 'session_info', 'complete', 'resumed', 'paused', 'session_started', 'session_state'].includes(item?.event?.type));
+  let durableEvents = [];
+  try { durableEvents = await readAllEvents({ sessionId: file.sessionId }); } catch {}
+  if (!hasTranscriptActivity) {
+    replayEvents.push(...durableEvents.map(event => ({ timestamp: event.ts || null, source: 'durable', event })));
+  }
+  // Older clients moved the writer to the backend UUID after persisting the
+  // first prompt. Recover only explicitly recorded links, never guessed peers.
+  const linkedIds = new Set([
+    ...durableEvents.filter(event => event.type === 'session_started').map(event => event.data?.session_id_from_backend),
+    ...replayEvents.filter(item => item.event?.type === 'session_info').map(item => item.event.data?.session_id),
+  ].filter(id => typeof id === 'string' && id !== sessionId && !visited.has(id)));
+  for (const id of await linkedTranscriptIds(file, entries, visited)) linkedIds.add(id);
+  const linkedSessionIds = [];
+  for (const linkedId of linkedIds) {
+    const linked = await getSessionDetail(linkedId, { visited });
+    if (!linked) continue;
+    linkedSessionIds.push(linkedId, ...(linked.linkedSessionIds || []));
+    linkedSessionIds.forEach(id => visited.add(id));
+    const uuids = new Set(entries.map(entry => entry.uuid).filter(Boolean));
+    entries.push(...linked.entries.filter(entry => !entry.uuid || !uuids.has(entry.uuid)));
+    replayEvents.push(...linked.replayEvents);
+    const ancestorIds = new Set(linked.entries.map(entry => entry.uuid).filter(Boolean));
+    const containsParent = entries.some(entry => entry.parentUuid && ancestorIds.has(entry.parentUuid));
+    meta.backendSessionId ||= linked.meta.backendSessionId || (containsParent ? sessionId : linkedId);
+    meta.userMessages += linked.meta.userMessages;
+    meta.assistantMessages += linked.meta.assistantMessages;
+    meta.contextTokens += linked.meta.contextTokens;
+    meta.fileBytes += linked.meta.fileBytes;
+    meta.endStatus = linked.meta.endStatus;
+    for (const metric of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens', 'reasoningTokens', 'costUsd']) meta[metric] += linked.meta[metric] || 0;
+    meta.models = [...new Set([...meta.models, ...linked.meta.models])];
+    meta.modelLimits = { ...meta.modelLimits, ...linked.meta.modelLimits };
+    meta.toolCalls.push(...linked.meta.toolCalls);
+  }
+  const userTexts = new Set(entries.filter(entry => entry.role === 'user' && typeof entry.content === 'string').map(entry => entry.content));
+  for (let i = replayEvents.length - 1; i >= 0; i--) {
+    const event = replayEvents[i].event || {}, data = event.data || {};
+    if ((event.type === 'turn_started' && userTexts.has(data.text)) ||
+        (event.type === 'command_result' && /^\/?(?:resume|tui)(?:\s|$)/i.test(data.name || ''))) replayEvents.splice(i, 1);
+  }
+  if (linkedSessionIds.length) {
+    [...entries, ...replayEvents].sort((a, b) =>
+      (Date.parse(a.timestamp || '') || 0) - (Date.parse(b.timestamp || '') || 0) || (a.order || 0) - (b.order || 0)
+    ).forEach((item, order) => { item.order = order; });
+    entries.sort((a, b) => a.order - b.order);
+    replayEvents.sort((a, b) => a.order - b.order);
+  }
   return {
     sessionId: file.sessionId,
+    linkedSessionIds,
     slug: file.slug,
     filePath: file.filePath,
     mtime: file.mtime,
@@ -628,18 +742,21 @@ export function buildResumeHistory(detail, mode = 'compact') {
       const results = entryToolResults(entry);
       for (const result of results) {
         toolResults++;
-        const content = truncateText(result.content, 1200);
-        const label = `[tool_result] ${result.tool_use_id || 'tool'}${result.is_error ? ' (error)' : ''}: ${content}`;
+        const rawContent = typeof result.content === 'string'
+          ? result.content
+          : (result.content == null ? '' : JSON.stringify(result.content));
+        const content = truncateText(rawContent, 1200);
+        const prefix = `[tool_result] ${result.tool_use_id || 'tool'}${result.is_error ? ' (error)' : ''}: `;
         displayHistory.push({
           role: 'tool',
-          content: label,
+          content: `${prefix}${rawContent}`,
           timestamp: entry.timestamp,
           order: entry.order,
           tool: result.tool_use_id || 'tool',
           kind: 'result',
         });
-        fullAgentHistory.push({ role: 'user', content: label });
-        if (importantResults.length < 12 && content) importantResults.push(label);
+        fullAgentHistory.push({ role: 'user', content: `${prefix}${content}` });
+        if (importantResults.length < 12 && content) importantResults.push(`${prefix}${content}`);
       }
     }
   }

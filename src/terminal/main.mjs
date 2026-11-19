@@ -13,6 +13,7 @@ import {
   runStatsCommand,
   runHistoryCommand,
 } from './analytics.mjs';
+import { completeCliWords, generateShellCompletion } from './shell-completions.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { bahulamHome } from '../core/paths.mjs';
@@ -161,6 +162,17 @@ function detectInstallFirstRun() {
 }
 
 async function main() {
+  if (subcommand === 'completion') {
+    try { process.stdout.write(generateShellCompletion(subcommandArgs[0])); }
+    catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 2; }
+    return;
+  }
+  if (subcommand === '__complete') {
+    const completions = completeCliWords(subcommandArgs.filter(value => value !== '--'));
+    if (completions.length) process.stdout.write(`${completions.join('\n')}\n`);
+    return;
+  }
+
   // ── Telemetry bootstrap ──
   const _auth = new Auth();
   const _creds = _auth.loadCredentials();

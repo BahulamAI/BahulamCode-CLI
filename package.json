@@ -1,6 +1,6 @@
 {
   "name": "@bahulam/code",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Bahulam Code — abundance, in your terminal. CLI-first, reliability-first, sub-agents, 65.6% SWE-bench Verified.",
   "type": "module",
   "bin": {
@@ -11,6 +11,7 @@
   "files": [
     "src/",
     "assets/bahulam-plugin/",
+    "native/",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -20,13 +21,32 @@
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs --unit",
     "test:integration": "node scripts/run-tests.mjs --integration",
+    "protocol:generate": "node scripts/generate-session-protocol.mjs",
+    "protocol:check": "node scripts/generate-session-protocol.mjs --check",
+    "test:protocol": "node test/test-session-protocol.mjs && node test/test-protocol-cache-invariance.mjs",
+    "test:tui": "cargo test --manifest-path rust/Cargo.toml --locked",
+    "tui:build:runtime": "node scripts/build-tui-runtime.mjs",
+    "tui:build": "cargo build --manifest-path rust/Cargo.toml --locked --bin bahulam-tui",
+    "test:tui:roundtrip": "node scripts/test-tui-roundtrip.mjs",
+    "test:tui:popup": "node scripts/test-tui-resume-popup.mjs",
+    "test:tui:mouse": "node scripts/test-tui-mouse.mjs",
+    "test:tui:commands": "node scripts/test-tui-commands.mjs",
+    "test:tui:pty": "node scripts/test-tui-pty.mjs",
+    "test:tui:capabilities": "node scripts/test-tui-capability-cache.mjs && node scripts/test-tui-capability-probes.mjs",
+    "tui:rich-demo": "node scripts/tui-rich-demo.mjs",
+    "test:tui:rich": "node scripts/test-tui-rich.mjs",
+    "test:tui:agents": "node scripts/test-tui-agents.mjs",
+    "test:tui:inline": "node scripts/test-tui-inline.mjs",
+    "tui:replay": "cargo run --manifest-path rust/Cargo.toml --locked --bin bahulam-tui -- --replay test/fixtures/protocol/replay-v2.jsonl",
     "test:design:browser": "node test/test-design-browser.mjs",
     "test:design:terminal": "node test/test-dock-browser.mjs",
     "test:design:cards": "node test/test-code-cards-browser.mjs",
     "test:design:startup": "node test/test-startup-browser.mjs",
     "test:design:transcript": "node test/test-transcript-browser.mjs",
     "sync-catalog": "node scripts/sync-catalog.mjs",
-    "prepublishOnly": "node scripts/sync-catalog.mjs"
+    "prepublishOnly": "node scripts/sync-catalog.mjs",
+    "tui:native-validation": "node scripts/tui-native-validation.mjs",
+    "tui:benchmark": "cargo run --manifest-path rust/Cargo.toml --locked --release -p bahulam-tui --example session_benchmark --"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,4 +1,6 @@
 import assert from 'node:assert';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -103,7 +105,7 @@ test('imports clipboard image through explicit Windows clipboard command path', 
 
 test('clipboard image import explains unsupported platform fallback', () => {
   assert.throws(
-    () => writeClipboardImageToTemp({ platform: 'linux' }),
+    () => writeClipboardImageToTemp({ platform: 'freebsd' }),
     /supported on macOS and Windows/,
   );
 });
@@ -152,7 +154,16 @@ await asyncTest('parseAttachmentReferences recognises @clipboard as an image ref
   // so we accept EITHER: (a) it resolved to a temp path (rare but ok),
   // or (b) it was skipped with a stderr warning and no ref was added.
   // Both paths mean parsing didn't crash and the @token was consumed.
-  const parsed = parseAttachmentReferences('explain @clipboard');
+  const originalExec = childProcess.execFileSync;
+  let parsed;
+  try {
+    childProcess.execFileSync = () => { throw new Error('Fixture has no clipboard image'); };
+    syncBuiltinESMExports();
+    parsed = parseAttachmentReferences('explain @clipboard');
+  } finally {
+    childProcess.execFileSync = originalExec;
+    syncBuiltinESMExports();
+  }
   assert.ok(!parsed.instruction.includes('@clipboard'),
     '@clipboard token should be consumed from the instruction regardless of outcome');
   assert.ok(parsed.images.length <= 1, 'at most one clipboard image');
@@ -288,6 +299,24 @@ await asyncTest('publicDocumentMetadata drops text body', () => {
   assert.ok(!('text' in meta), 'text field stripped');
   assert.strictEqual(meta.name, 'foo.md');
   return Promise.resolve();
+});
+
+test('Linux clipboard reads a bounded image using Wayland then X11 without changing attachment parsing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-linux-clipboard-'));
+  try {
+    const png = path.join(dir, 'source.png'); writePng(png);
+    const bytes = fs.readFileSync(png);
+    const calls = [];
+    const result = writeClipboardImageToTemp({baseDir:dir,platform:'linux',runner:(command,args,options) => {
+      calls.push(command); assert.strictEqual(options.timeout, 5000);
+      if (command === 'wl-paste') throw new Error('Wayland unavailable');
+      assert.strictEqual(command, 'xclip');
+      return bytes;
+    }});
+    assert.deepStrictEqual(fs.readFileSync(result), bytes);
+    assert.ok(calls.includes('wl-paste') && calls.includes('xclip'));
+    assert.strictEqual(fs.statSync(result).mode & 0o777, 0o600);
+  } finally { fs.rmSync(dir, {recursive:true,force:true}); }
 });
 
 // Clean up.

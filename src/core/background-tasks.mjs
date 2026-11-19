@@ -39,12 +39,25 @@ class BackgroundTasks {
     this.jobs = new Map();
     this._seq = 0;
     this._listeners = new Set();
+    this._changeListeners = new Set();
     this._exitHookInstalled = false;
   }
 
   onExit(listener) {
     this._listeners.add(listener);
     return () => this._listeners.delete(listener);
+  }
+
+  onChange(listener) {
+    this._changeListeners.add(listener);
+    return () => this._changeListeners.delete(listener);
+  }
+
+  _notifyChange() {
+    const jobs = this.list();
+    for (const listener of this._changeListeners) {
+      try { listener(jobs); } catch { /* display observers are best-effort */ }
+    }
   }
 
   start({ command, cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, name = '', on_complete = null }) {
@@ -77,6 +90,7 @@ class BackgroundTasks {
       started_at: Date.now(),
       ended_at: null,
       log_path: logPath,
+      log_error: null,
       tail: '',
       timed_out: false,
       on_complete,
@@ -89,6 +103,12 @@ class BackgroundTasks {
       const next = job.tail + chunk.toString();
       job.tail = next.length > MAX_TAIL_BYTES ? next.slice(next.length - MAX_TAIL_BYTES) : next;
     };
+    let finalized = false;
+    logStream.on('error', err => {
+      job.log_error = err.message;
+      appendTail(`\n[Background output log unavailable: ${err.message}]\n`);
+      this._notifyChange();
+    });
     proc.stdout.on('data', (d) => { logStream.write(d); appendTail(d); });
     proc.stderr.on('data', (d) => { logStream.write(d); appendTail(d); });
 
@@ -102,6 +122,8 @@ class BackgroundTasks {
 
     job._done = new Promise((resolve) => {
       proc.on('close', (code) => {
+        if (finalized) return;
+        finalized = true;
         clearTimeout(timer);
         clearTimeout(killTimer);
         job.exit_code = code;
@@ -111,16 +133,20 @@ class BackgroundTasks {
           : code === 0 ? 'completed' : 'failed';
         job.tail = stripAnsi(job.tail);
         logStream.end();
+        this._notifyChange();
         for (const listener of this._listeners) {
           try { listener(this.describe(job.id)); } catch { /* listeners are best-effort */ }
         }
         resolve(this.describe(job.id));
       });
       proc.on('error', (err) => {
+        if (finalized) return;
+        finalized = true;
         job.status = 'failed';
         job.tail = `${job.tail}\n${err.message}`.trim();
         job.ended_at = Date.now();
         logStream.end();
+        this._notifyChange();
         resolve(this.describe(job.id));
       });
     });
@@ -128,6 +154,100 @@ class BackgroundTasks {
     proc.unref();
     setChildStdioRef(proc, false);
     this.jobs.set(id, job);
+    this._notifyChange();
+    return this.describe(id);
+  }
+
+  /** Adopt a live foreground child without restarting it. */
+  adopt({ proc, command, cwd = process.cwd(), startedAt = Date.now(), initialTail = '' }) {
+    if (!proc?.pid || proc.exitCode != null || proc.signalCode != null || proc.killed) {
+      throw new Error('The foreground process is no longer running.');
+    }
+    this._installExitHook();
+    const id = `job-${++this._seq}-${Date.now().toString(36)}`;
+    const managedCommand = String(command || '');
+    const logDir = path.join(cwd, '.bahulam', 'tmp', 'jobs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, `${id}.log`);
+    const logStream = fs.createWriteStream(logPath);
+    try { logStream.unref?.(); } catch { /* best effort */ }
+    const job = {
+      id,
+      name: managedCommand.slice(0, 60),
+      command: managedCommand,
+      original_command: null,
+      cwd,
+      pid: proc.pid,
+      status: 'running',
+      exit_code: null,
+      started_at: startedAt,
+      ended_at: null,
+      log_path: logPath,
+      log_error: null,
+      tail: String(initialTail || '').slice(-MAX_TAIL_BYTES),
+      timed_out: false,
+      on_complete: null,
+      _proc: proc,
+      _logStream: logStream,
+      _done: null,
+    };
+    if (job.tail) logStream.write(job.tail);
+    const appendTail = chunk => {
+      const next = job.tail + chunk.toString();
+      job.tail = next.length > MAX_TAIL_BYTES ? next.slice(next.length - MAX_TAIL_BYTES) : next;
+    };
+    let finalized = false;
+    logStream.on('error', error => {
+      job.log_error = error.message;
+      appendTail(`\n[Background output log unavailable: ${error.message}]\n`);
+      this._notifyChange();
+    });
+    proc.stdout?.on('data', chunk => { logStream.write(chunk); appendTail(chunk); });
+    proc.stderr?.on('data', chunk => { logStream.write(chunk); appendTail(chunk); });
+
+    let killTimer = null;
+    const timer = setTimeout(() => {
+      job.timed_out = true;
+      this._kill(job, 'SIGTERM');
+      killTimer = setTimeout(() => this._kill(job, 'SIGKILL'), KILL_ESCALATION_MS);
+    }, DEFAULT_TIMEOUT_MS);
+    timer.unref?.();
+    job._done = new Promise(resolve => {
+      proc.on('close', code => {
+        if (finalized) return;
+        finalized = true;
+        clearTimeout(timer);
+        clearTimeout(killTimer);
+        job.exit_code = code;
+        job.ended_at = Date.now();
+        job.status = job.timed_out ? 'timeout'
+          : job.status === 'killed' ? 'killed'
+          : code === 0 ? 'completed' : 'failed';
+        job.tail = stripAnsi(job.tail);
+        logStream.end();
+        this._notifyChange();
+        for (const listener of this._listeners) {
+          try { listener(this.describe(job.id)); } catch { /* best effort */ }
+        }
+        resolve(this.describe(job.id));
+      });
+      proc.on('error', error => {
+        if (finalized) return;
+        finalized = true;
+        clearTimeout(timer);
+        clearTimeout(killTimer);
+        job.status = 'failed';
+        job.tail = `${job.tail}\n${error.message}`.trim();
+        job.ended_at = Date.now();
+        logStream.end();
+        this._notifyChange();
+        resolve(this.describe(job.id));
+      });
+    });
+    proc.unref?.();
+    setChildStdioRef(proc, false);
+    this.jobs.set(id, job);
+    this._notifyChange();
     return this.describe(id);
   }
 
@@ -135,7 +255,9 @@ class BackgroundTasks {
   wait(id) {
     const job = this.jobs.get(id);
     if (!job) return Promise.resolve(null);
-    if (job.status !== 'running') return Promise.resolve(this.describe(id));
+    // A stop request changes status immediately, but the child may still be
+    // draining output or waiting for escalation. Completion requires close.
+    if (job.ended_at != null) return Promise.resolve(this.describe(id));
     // Background jobs are unref'd so fire-and-forget tasks do not pin the CLI
     // open. When a caller explicitly awaits wait(id), temporarily ref the
     // process so fast commands still get their close event before Node decides
@@ -163,6 +285,7 @@ class BackgroundTasks {
       exit_code: job.exit_code,
       duration_s: Math.round(((job.ended_at || Date.now()) - job.started_at) / 1000),
       log_path: job.log_path,
+      log_error: job.log_error,
       tail: job.tail,
       timed_out: job.timed_out,
       on_complete: job.on_complete || null,
@@ -181,8 +304,11 @@ class BackgroundTasks {
     if (!job) return null;
     if (job.status === 'running') {
       job.status = 'killed';
+      this._notifyChange();
       this._kill(job, 'SIGTERM');
-      setTimeout(() => this._kill(job, 'SIGKILL'), KILL_ESCALATION_MS)?.unref?.();
+      setTimeout(() => {
+        if (job.ended_at == null) this._kill(job, 'SIGKILL');
+      }, KILL_ESCALATION_MS)?.unref?.();
     }
     return this.describe(id);
   }
@@ -203,7 +329,7 @@ class BackgroundTasks {
     this._exitHookInstalled = true;
     process.on('exit', () => {
       for (const job of this.jobs.values()) {
-        if (job.status === 'running') this._kill(job, 'SIGKILL');
+        if (job.ended_at == null) this._kill(job, 'SIGKILL');
       }
     });
   }
