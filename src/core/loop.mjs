@@ -169,6 +169,8 @@ export async function* createAgentLoop({
     session,
     messages,
     toolExecutor,
+    projectPrompt = '',
+    interventions = [],
     gatewayFetch = _callGateway,
     maxTurns = MAX_TURNS,
 } = {}) {
@@ -185,7 +187,16 @@ export async function* createAgentLoop({
 
     for (let i = 0; i < maxTurns; i++) {
         // ── Call gateway (/v1/chat/completions) ─────────────────────
-        const turn = await gatewayFetch({ session, messages });
+        for (const { instruction, id } of interventions.splice(0)) {
+            messages.push({ role: 'user', content: instruction });
+            yield { type: 'user_intervention_delivered', data: { intervention_id: id } };
+        }
+        // Context is per request. Never append scoped instructions to saved chat history.
+        const requestMessages = projectPrompt
+            ? [{ role: 'system', content: [messages.find(m => m.role === 'system')?.content, projectPrompt].filter(Boolean).join('\n\n') },
+                ...messages.filter(m => m.role !== 'system')]
+            : messages;
+        const turn = await gatewayFetch({ session, messages: requestMessages });
         const asst = turn.message || {};
         usage = {
             input_tokens: (usage.input_tokens || 0) + (turn.usage?.prompt_tokens || 0),
@@ -248,6 +259,7 @@ export async function* createAgentLoop({
             }
             // Loop continues to next iteration
         } else {
+            if (interventions.length) continue;
             // ── No tool calls → turn is done ────────────────────────
             const duration = (Date.now() - startTime) / 1000;
             yield {

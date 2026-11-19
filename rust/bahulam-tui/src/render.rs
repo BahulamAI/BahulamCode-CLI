@@ -97,6 +97,17 @@ fn palette(theme: &str) -> Palette {
     resolved_palette(theme, if disabled { "none" } else { &level }, tokens)
 }
 
+pub fn selection_footer(hint: &str, confirmed: bool, theme: &str) -> Paragraph<'static> {
+    let p = palette(theme);
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!("  {hint}"),
+            Style::default().fg(if confirmed { p.info } else { p.text }),
+        ),
+        Span::styled(" · Esc clears selection", Style::default().fg(p.muted)),
+    ]))
+}
+
 fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Palette {
     if level == "none" {
         return Palette {
@@ -871,14 +882,13 @@ pub fn details_at(
         return None;
     }
     let lines = wrap_rows(
-        card_lines(
-            card,
+        displayed_lines(
+            model,
             *index,
             expanded,
             None,
             palette(theme),
             inner.width as usize,
-            usize::MAX,
         ),
         inner.width as usize,
     );
@@ -1323,13 +1333,17 @@ pub fn draw_with_view(
                 Style::default().fg(p.text),
             )),
             Line::from(Span::styled(
-                format!(
-                    "  Reason: {}",
-                    middle_ellipsis(
-                        &safe_text(&approval.reason).replace('\n', " "),
-                        rows[3].width.saturating_sub(14) as usize
+                if approval.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "  Reason: {}",
+                        middle_ellipsis(
+                            &safe_text(&approval.reason).replace('\n', " "),
+                            rows[3].width.saturating_sub(14) as usize
+                        )
                     )
-                ),
+                },
                 Style::default().fg(p.muted),
             )),
             Line::from(Span::styled(
@@ -1473,7 +1487,11 @@ pub fn draw_with_view(
     } else {
         "↑↓ scroll · Enter expand · Ctrl+O expand all · q quit".to_owned()
     };
-    let state = safe_text(&model.status);
+    let state = if live && model.thinking(agent_filter.unwrap_or("main")) {
+        "Thinking…".to_owned()
+    } else {
+        safe_text(&model.status)
+    };
     let tokens = if model.usage_known {
         format!(
             "{} in · {} out",
@@ -1544,8 +1562,13 @@ pub fn draw_with_view(
         rows[4],
     );
     frame.render_widget(
-        Paragraph::new(format!("  {shortcuts}"))
-            .style(Style::default().fg(p.muted).add_modifier(Modifier::DIM)),
+        Paragraph::new(format!("  {shortcuts}")).style(
+            if model.copy_confirmed && !model.selecting_text {
+                Style::default().fg(p.info)
+            } else {
+                Style::default().fg(p.muted).add_modifier(Modifier::DIM)
+            },
+        ),
         rows[5],
     );
     if interactive && focus_panel == 0 && detail_card.is_none() {
@@ -1965,10 +1988,18 @@ impl HistoryGeometry {
         })
     }
     pub fn anchored_scroll(&self, anchor: HistoryAnchor) -> usize {
-        let Some(index) = self.cards.iter().position(|(card, _)| *card == anchor.card) else {
+        // A completed read can join a group above it while the reader is inspecting another tool.
+        let Some(index) = self
+            .cards
+            .partition_point(|(card, _)| *card <= anchor.card)
+            .checked_sub(1)
+        else {
             return 0;
         };
-        let start = self.cards[index].1;
+        let (card, start) = self.cards[index];
+        if card != anchor.card {
+            return start;
+        }
         let end = self
             .cards
             .get(index + 1)
@@ -2016,6 +2047,113 @@ type RowOffsetEntry = (u64, u64, Vec<usize>, RowOffsets);
 thread_local! {
     static ROW_OFFSETS: RefCell<Vec<RowOffsetEntry>> = const { RefCell::new(Vec::new()) };
 }
+// Group successful adjacent observations only. The canonical cards, call IDs and payloads
+// stay individually addressable; expanding any member reveals the original calls.
+fn same_observation(first: &crate::model::Card, next: &crate::model::Card) -> bool {
+    first.status == "done"
+        && next.status == "done"
+        && !first.primary.is_empty()
+        && !next.primary.is_empty()
+        && first.agent == next.agent
+        && first.tool_name == next.tool_name
+        && matches!(
+            first.tool_name.as_str(),
+            "read_file" | "list_files" | "grep" | "search_code"
+        )
+}
+fn run_start(model: &Model, mut i: usize) -> usize {
+    while i > 0 && same_observation(&model.cards[i - 1], &model.cards[i]) {
+        i -= 1;
+    }
+    i
+}
+fn run_end(model: &Model, i: usize) -> usize {
+    let mut end = i + 1;
+    while end < model.cards.len() && same_observation(&model.cards[i], &model.cards[end]) {
+        end += 1;
+    }
+    end
+}
+fn collapsed(start: usize, end: usize, expanded: &HashSet<usize>) -> bool {
+    end > start + 1 && !expanded.iter().any(|i| (start..end).contains(i))
+}
+fn grouped_lines(
+    model: &Model,
+    start: usize,
+    end: usize,
+    p: Palette,
+    focused: Option<usize>,
+) -> Vec<Line<'static>> {
+    let cards = &model.cards[start..end];
+    let labels = cards
+        .iter()
+        .take(6)
+        .map(|card| {
+            let path = std::path::Path::new(&card.primary);
+            let label = path
+                .strip_prefix(&model.cwd)
+                .ok()
+                .and_then(|relative| relative.to_str())
+                .filter(|label| !label.is_empty())
+                .unwrap_or(&card.primary);
+            safe_text(label)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let more = if cards.len() > 6 {
+        format!(" | +{} more", cards.len() - 6)
+    } else {
+        String::new()
+    };
+    let focus = if focused.is_some_and(|i| (start..end).contains(&i)) {
+        "›"
+    } else {
+        " "
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{focus}{} ", status_glyph("✓")),
+                Style::default().fg(p.success),
+            ),
+            Span::styled(
+                format!("{} ×{}  ", cards[0].tool_name, cards.len()),
+                Style::default().fg(p.tool),
+            ),
+            Span::styled(format!("{labels}{more}"), Style::default().fg(p.text)),
+        ]),
+        Line::styled(
+            "   ＋ Show details · Click / Enter",
+            Style::default().fg(p.muted),
+        ),
+        Line::default(),
+    ]
+}
+fn displayed_lines(
+    model: &Model,
+    index: usize,
+    expanded: &HashSet<usize>,
+    focused: Option<usize>,
+    p: Palette,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if index == 0 || !same_observation(&model.cards[index - 1], &model.cards[index]) {
+        let end = run_end(model, index);
+        if collapsed(index, end, expanded) {
+            return grouped_lines(model, index, end, p, focused);
+        }
+    }
+    card_lines(
+        &model.cards[index],
+        index,
+        expanded,
+        focused,
+        p,
+        width,
+        usize::MAX,
+    )
+}
+
 fn measured_rows(
     model: &Model,
     expanded: &HashSet<usize>,
@@ -2042,42 +2180,41 @@ fn measured_rows(
             if revision == model.view_revision && old_expanded == expanded {
                 return rows;
             }
-            if let Some(from) = model.changed_since(revision) {
+            if let Some(from) = model
+                .changed_since(revision)
+                .filter(|_| old_expanded == expanded)
+            {
+                // A newly completed/appended read may join the previous group.
+                let from = if model.cards.is_empty() {
+                    0
+                } else {
+                    run_start(model, from.saturating_sub(1).min(model.cards.len() - 1))
+                };
                 let cut = rows.0.partition_point(|(index, _)| *index < from);
-                let mut prefix = Vec::with_capacity(cut);
-                let mut total = 0;
-                for (position, (index, start)) in rows.0.iter().take(cut).enumerate() {
-                    prefix.push((*index, total));
-                    if old_expanded.binary_search(index).is_ok()
-                        != expanded.binary_search(index).is_ok()
-                    {
-                        total +=
-                            card_row_count(&model.cards[*index], *index, &expanded_set, p, width);
-                    } else {
-                        total += rows
-                            .0
-                            .get(position + 1)
-                            .map(|(_, row)| *row)
-                            .unwrap_or(rows.1)
-                            - start;
-                    }
-                }
-                (prefix, total, from)
+                let total = rows.0.get(cut).map(|(_, row)| *row).unwrap_or(rows.1);
+                (rows.0[..cut].to_vec(), total, from)
             } else {
                 (Vec::new(), 0, 0)
             }
         } else {
             (Vec::new(), 0, 0)
         };
-        for (index, card) in model
-            .cards
-            .iter()
-            .enumerate()
-            .skip(from)
-            .filter(|(_, c)| c.belongs_to(agent_filter.unwrap_or("main")))
-        {
-            cards.push((index, total));
-            total += card_row_count(card, index, &expanded_set, p, width);
+        let mut i = from;
+        while i < model.cards.len() {
+            let end = run_end(model, i);
+            if model.cards[i].visible_in_transcript(agent_filter.unwrap_or("main")) {
+                if collapsed(i, end, &expanded_set) {
+                    cards.push((i, total));
+                    total += wrap_rows(grouped_lines(model, i, end, p, None), width).len();
+                } else {
+                    for index in i..end {
+                        cards.push((index, total));
+                        total +=
+                            card_row_count(&model.cards[index], index, &expanded_set, p, width);
+                    }
+                }
+            }
+            i = end;
         }
         let rows = (std::sync::Arc::new(cards), total);
         let mut cache = cache.borrow_mut();
@@ -2183,26 +2320,39 @@ fn transcript_lines(
 ) -> Vec<BrowserRow> {
     let budget = visible_rows.max(1);
     let mut output = Vec::with_capacity(budget);
-    let cards = model
-        .cards
-        .iter()
-        .enumerate()
-        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")));
     if scroll == usize::MAX {
-        // Only render enough cards to fill the tail, even in very long sessions.
-        for (index, card) in cards.rev() {
-            let lines = browser_card_rows(
-                card_lines(card, index, expanded, focused, p, width, usize::MAX),
-                card,
-                width,
-            );
-            for line in lines.into_iter().rev() {
-                output.push(line);
-                if output.len() >= budget {
-                    output.reverse();
-                    return output;
+        let mut end = model.cards.len();
+        while end > 0 {
+            let start = run_start(model, end - 1);
+            if model.cards[start].visible_in_transcript(agent_filter.unwrap_or("main")) {
+                let group = collapsed(start, end, expanded);
+                for index in (start..if group { start + 1 } else { end }).rev() {
+                    let lines = if group {
+                        grouped_lines(model, start, end, p, focused)
+                    } else {
+                        card_lines(
+                            &model.cards[index],
+                            index,
+                            expanded,
+                            focused,
+                            p,
+                            width,
+                            usize::MAX,
+                        )
+                    };
+                    for line in browser_card_rows(lines, &model.cards[index], width)
+                        .into_iter()
+                        .rev()
+                    {
+                        output.push(line);
+                        if output.len() >= budget {
+                            output.reverse();
+                            return output;
+                        }
+                    }
                 }
             }
+            end = start;
         }
         output.reverse();
     } else {
@@ -2214,7 +2364,7 @@ fn transcript_lines(
         for (index, _) in offsets.iter().skip(first).copied() {
             let card = &model.cards[index];
             let rows = browser_card_rows(
-                card_lines(card, index, expanded, focused, p, width, usize::MAX),
+                displayed_lines(model, index, expanded, focused, p, width),
                 card,
                 width,
             );
@@ -2470,11 +2620,13 @@ fn card_lines_with_preview(
     let foldable = card.is_foldable();
     let is_expanded = foldable && expanded.contains(&index);
     let expanded_text = if (is_expanded || !foldable) && !card.is_message() {
-        Some(if card.detail_loading && card.detail.is_none() {
-            "Loading complete result…".to_owned()
-        } else {
-            readable_detail(card.detail.as_deref().unwrap_or(&card.body))
-        })
+        Some(
+            if card.detail_loading && card.detail.is_none() && card.body.is_empty() {
+                "Loading complete result…".to_owned()
+            } else {
+                readable_detail(card.detail.as_deref().unwrap_or(&card.body))
+            },
+        )
     } else {
         None
     };
@@ -3282,6 +3434,7 @@ mod row_measurement_tests {
         ] {
             let card = Card {
                 final_reply: false,
+                has_tool_output: false,
                 archived: None,
                 preview: None,
                 agent: "main".into(),
@@ -3365,6 +3518,7 @@ mod row_measurement_tests {
     fn history_measurements_follow_streams_resize_fold_and_replacement() {
         let mut card = Card {
             final_reply: false,
+            has_tool_output: false,
             archived: None,
             preview: None,
             agent: "main".into(),
@@ -3409,6 +3563,7 @@ mod row_measurement_tests {
         });
         let card = Card {
             final_reply: false,
+            has_tool_output: false,
             archived: None,
             preview: None,
             agent: "main".into(),

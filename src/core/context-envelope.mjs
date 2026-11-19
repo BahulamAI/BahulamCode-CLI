@@ -1,4 +1,24 @@
-import { contextToPromptBlock } from './project-context-loader.mjs';
+import { contextToPromptBlock, directoryInstructions } from './project-context-loader.mjs';
+
+export function instructionContext(projectContext, agentContext = {}) {
+  const skills = new Map((projectContext?.available_skills || []).map(skill => [skill.name, skill]));
+  for (const skill of agentContext.global_skills || []) skills.set(skill.name, skill);
+  const availableSkills = [...skills.values()];
+  const instructions = directoryInstructions(projectContext?.files);
+  const catalog = availableSkills.length ? [
+    'Available skills. When a skill matches the task or the user names it, read its SKILL.md using skill_view or read_file before following it.',
+    ...availableSkills.map(skill => `- ${skill.name}: ${skill.description || ''}${skill.path ? ' (' + skill.path + ')' : ''}`),
+  ].join('\n') : '';
+  return {
+    agent_context: instructions ? { ...agentContext, directory_instructions: instructions } : agentContext,
+    project_context: {
+      loaded_files: projectContext?.loaded || [],
+      changed_files: projectContext?.changed?.map(f => ({ label: f.label, path: f.path, hash: f.hash })) || [],
+      prompt_block: [contextToPromptBlock(projectContext, instructions), catalog].filter(Boolean).join('\n\n'),
+    },
+    available_skills: availableSkills,
+  };
+}
 
 export function buildContextEnvelope({
   cwd = process.cwd(),
@@ -22,12 +42,7 @@ export function buildContextEnvelope({
   return {
     cwd,
     project_resources: projectResources,
-    agent_context: agentContext,
-    project_context: {
-      loaded_files: projectContext?.loaded || [],
-      changed_files: projectContext?.changed?.map(f => ({ label: f.label, path: f.path, hash: f.hash })) || [],
-      prompt_block: contextToPromptBlock(projectContext),
-    },
+    ...instructionContext(projectContext, agentContext),
     command_context: {
       active_command: activeCommand,
       source,
@@ -48,7 +63,6 @@ export function buildContextEnvelope({
       hook_timeout_seconds: policy.hooks?.timeoutSeconds ?? 5,
     },
     context_hints: activeHints,
-    available_skills: projectContext?.available_skills || [],
     task_state: projectContext?.task_state || [],
   };
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { LocalAgent } from '../src/core/local-agent.mjs';
 import { createAgentLoop } from '../src/core/loop.mjs';
 import { tapSseEvent, registerBroadcaster } from '../src/daemon/event-tap.mjs';
 
@@ -145,4 +146,34 @@ test('Rust host uses Windows console depth when cmd omits TERM', async () => {
     assert.equal(rustColorLevel({ TERM: 'dumb' }, 'none', 'win32', consoleStream), 'none');
     assert.equal(rustColorLevel({}, 'none', 'win32', { isTTY: false }), 'none');
   }
+});
+
+test('local and gateway requests carry scoped context and normal user follow-ups', async () => {
+  const projectPrompt = 'Scoped instructions from AGENTS.md';
+  const agent = new LocalAgent({ model: 'fixture', toolExecutor: {} });
+  let localCalls = 0;
+  agent._callLLM = async (system, messages, tools) => {
+    assert.ok(system.includes(projectPrompt));
+    assert.ok(tools.some(tool => tool.name === 'skill_view'));
+    if (!localCalls++) await agent.sendIntervention('switch target\nretain formatting');
+    else assert.deepEqual(messages.at(-1), { role: 'user', content: 'switch target\nretain formatting' });
+    return { content: [{ type: 'text', text: 'ack' }], stopReason: 'end_turn' };
+  };
+  for await (const _event of agent.execute('first', { project_context: { prompt_block: projectPrompt } })) {}
+  assert.equal(localCalls, 2);
+  const interventions = [];
+  const messages = [{role:'user', content:'first'}];
+  let calls = 0;
+  const events = [];
+  for await (const event of createAgentLoop({ session:{prompt:'base prompt'}, messages, projectPrompt, interventions,
+    gatewayFetch: async ({ messages: outgoing }) => {
+      assert.deepEqual(outgoing[0], {role:'system', content:'base prompt\n\n' + projectPrompt});
+      if (calls++) assert.deepEqual(outgoing.at(-1), {role:'user',content:'switch target\nretain formatting'});
+      else interventions.push({id:'correction',instruction:'switch target\nretain formatting'});
+      return { message: { content:'ack' } };
+    },
+  })) events.push(event);
+  assert.equal(calls, 2);
+  assert.equal(events.filter(e => e.type === 'user_intervention_delivered').length, 1);
+  assert.equal(messages.some(m => m.content.includes(projectPrompt)), false);
 });

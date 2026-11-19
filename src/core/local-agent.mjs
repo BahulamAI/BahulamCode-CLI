@@ -39,7 +39,7 @@ function toOpenAITool(tool) {
     };
 }
 
-function toOpenAIMessage(message) {
+export function toOpenAIMessage(message) {
     if (message.role === 'assistant' && Array.isArray(message.content)) {
         const text = message.content
             .filter(block => block.type === 'text')
@@ -75,6 +75,8 @@ function toOpenAIMessage(message) {
         }
     }
 
+    if (message.role === 'tool' && message.tool_call_id) return { role: 'tool', tool_call_id: message.tool_call_id, content: message.content };
+    if (message.role === 'assistant' && message.tool_calls) return { role: 'assistant', tool_calls: message.tool_calls, content: message.content };
     return { role: message.role, content: message.content };
 }
 
@@ -252,6 +254,11 @@ const TOOL_SCHEMAS = [
             },
             required: ['files'],
         },
+    },
+    {
+        name: 'skill_view',
+        description: 'Read a discovered skill or one of its bundled resources.',
+        input_schema: { type: 'object', properties: { name: { type: 'string' }, path: { type: 'string' } }, required: ['name'] },
     },
 ];
 
@@ -836,7 +843,7 @@ export class LocalAgent {
 
     _buildSystemPrompt(context, retrievedContext = null) {
         if (this.systemPromptOverride) {
-            return this.systemPromptOverride;
+            return [this.systemPromptOverride, context.project_context?.prompt_block].filter(Boolean).join('\n\n');
         }
 
         const parts = [
@@ -846,6 +853,7 @@ export class LocalAgent {
             'Shell command substitution (backticks, $()) is allowed but requires user approval — use it when it is the natural expression; otherwise prefer plain commands.',
         ];
         if (context.cwd) parts.push(`Working directory: ${context.cwd}`);
+        if (context.project_context?.prompt_block) parts.push(context.project_context.prompt_block);
         if (context.gitBranch) parts.push(`Git branch: ${context.gitBranch}`);
 
         if (retrievedContext && retrievedContext.length > 0) {

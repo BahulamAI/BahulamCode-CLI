@@ -168,12 +168,11 @@ fn toggle_expansion(
             return Ok(());
         }
         if expanded.remove(&index) {
-            state.composer_hint.clear();
+            state.set_composer_hint("");
             None
         } else {
             expanded.insert(index);
-            state.composer_hint =
-                "Expanded result · Esc collapse · type to write · Ctrl+Y copy".into();
+            state.set_composer_hint("Expanded result · Esc collapse · type to write · Ctrl+Y copy");
             state.request_details(index)
         }
     } else {
@@ -189,7 +188,7 @@ fn toggle_expansion(
 }
 fn input_hint(model: &Arc<Mutex<bahulam_tui::model::Model>>, hint: &str) {
     if let Ok(mut state) = model.lock() {
-        state.composer_hint = safe_text(hint);
+        state.set_composer_hint(hint);
     }
 }
 fn editable(
@@ -218,7 +217,7 @@ fn scoped_card_indices(
         .cards
         .iter()
         .enumerate()
-        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")))
+        .filter(|(_, card)| card.visible_in_transcript(agent_filter.unwrap_or("main")))
         .map(|(index, _)| index)
         .collect()
 }
@@ -449,6 +448,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scroll: usize = 0;
     let mut follow = stdio;
     let mut expansion_anchor = None;
+    let mut painted_anchor = None;
     let mut seen_transcript_revision = model
         .lock()
         .map(|state| state.transcript_revision)
@@ -528,6 +528,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 visible_link = None;
                 expanded.clear();
                 expansion_anchor = None;
+                painted_anchor = None;
                 scroll = 0;
                 follow = true;
                 focused_card = state.cards.len().saturating_sub(1);
@@ -667,7 +668,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .iter()
                         .enumerate()
                         .filter(|(i, card)| {
-                            (!card.is_foldable() || expanded.contains(i))
+                            card.title != "Thinking"
+                                && (!card.is_foldable() || expanded.contains(i))
                                 && card.payload_ref.is_some()
                                 && !card.has_detail()
                                 && !card.detail_loading
@@ -833,7 +835,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             write!(io::stdout(), "{sequence}")?;
                             io::stdout().flush()?;
                         }
-                        input_hint(&model, &result.message);
+                        if let Ok(mut state) = model.lock() {
+                            state.set_composer_hint(&result.message);
+                            state.copy_confirmed = true;
+                        }
                     }
                     Err(error) => input_hint(&model, &error.to_string()),
                 },
@@ -846,7 +851,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     m.cards
                         .iter()
                         .rposition(|card| {
-                            card.belongs_to(agent_filter.as_deref().unwrap_or("main"))
+                            card.visible_in_transcript(agent_filter.as_deref().unwrap_or("main"))
                         })
                         .unwrap_or(0)
                 })
@@ -872,12 +877,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
         };
         if let Some(anchor) = expansion_anchor.take() {
+            painted_anchor = None;
             if let Some(layout) = geometry() {
                 scroll = layout.anchored_scroll(anchor);
             }
             follow = false;
         }
-        let visible_scroll = if follow { usize::MAX } else { scroll };
         if dirty && (!selecting_text || selection_frame_pending) {
             selection_frame_pending = false;
             if integration_config.sync {
@@ -886,15 +891,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let completed = terminal.draw(|frame| {
                 if let Some(selection) = drag_selection.as_ref().filter(|s| s.dragging) {
                     selection.paint(frame.buffer_mut());
-                    let hint = if selection.released {
+                    let (hint, confirmed) = if selection.released {
                         model
                             .lock()
                             .ok()
-                            .map(|state| state.composer_hint.clone())
-                            .filter(|hint| !hint.is_empty())
-                            .unwrap_or_else(|| "Text selected".into())
+                            .filter(|state| !state.composer_hint.is_empty())
+                            .map(|state| (state.composer_hint.clone(), state.copy_confirmed))
+                            .unwrap_or_else(|| ("Text selected".into(), false))
                     } else {
-                        "Release mouse to copy".into()
+                        ("Release mouse to copy".into(), false)
                     };
                     let area = frame.area();
                     let footer = ratatui::layout::Rect::new(
@@ -905,18 +910,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     frame.render_widget(ratatui::widgets::Clear, footer);
                     frame.render_widget(
-                        ratatui::widgets::Paragraph::new(format!(
-                            "  {hint} · Esc clears selection"
-                        )),
+                        bahulam_tui::render::selection_footer(&hint, confirmed, &theme),
                         footer,
                     );
                     return;
                 }
                 if let Ok(model) = model.lock() {
+                    if !follow && !expanded.is_empty() && detail_card.is_none() {
+                        let layout = history_geometry(
+                            &model,
+                            frame.area(),
+                            &display_input,
+                            inline_mode,
+                            &expanded,
+                            &theme,
+                            agent_filter.as_deref(),
+                        );
+                        // Live events may reflow earlier cards between consecutive frames.
+                        // An explicit scroll or view switch takes precedence over that anchor.
+                        if let Some((revision, old_scroll, anchor)) = painted_anchor {
+                            if revision != model.view_revision && old_scroll == scroll {
+                                scroll = layout.anchored_scroll(anchor);
+                            }
+                        }
+                        painted_anchor = layout
+                            .anchor(scroll, false)
+                            .map(|anchor| (model.view_revision, scroll, anchor));
+                    } else {
+                        painted_anchor = None;
+                    }
                     draw_with_view(
                         frame,
                         &model,
-                        visible_scroll,
+                        if follow { usize::MAX } else { scroll },
                         stdio || watch,
                         &theme,
                         &display_input,
@@ -1626,9 +1652,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         expansion_anchor = geometry().and_then(|g| g.anchor(scroll, follow));
                         follow = false;
-                        let indices = model
-                            .lock()
-                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                        let indices: Vec<usize> = geometry()
+                            .map(|g| g.cards.iter().map(|(index, _)| *index).collect())
                             .unwrap_or_default();
                         if !indices.is_empty() {
                             if !indices.contains(&focused_card) {
@@ -1640,9 +1665,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let indices = model
-                            .lock()
-                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                        let indices: Vec<usize> = geometry()
+                            .map(|g| g.cards.iter().map(|(index, _)| *index).collect())
                             .unwrap_or_default();
                         if !indices.is_empty() {
                             let position = indices
@@ -1665,9 +1689,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let indices = model
-                            .lock()
-                            .map(|m| scoped_card_indices(&m, agent_filter.as_deref()))
+                        let indices: Vec<usize> = geometry()
+                            .map(|g| g.cards.iter().map(|(index, _)| *index).collect())
                             .unwrap_or_default();
                         if !indices.is_empty() {
                             let position = indices

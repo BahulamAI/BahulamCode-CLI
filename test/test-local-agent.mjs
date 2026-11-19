@@ -53,7 +53,8 @@ await test('_buildToolDefs returns tool definitions', async () => {
     const agent = new LocalAgent({ apiKey: 'test', toolExecutor: executor });
     const defs = agent._buildToolDefs();
     assert.ok(Array.isArray(defs));
-    assert.ok(defs.length === 14);
+    assert.equal(defs.length, 15);
+    assert.deepEqual(defs.find(tool => tool.name === 'skill_view')?.input_schema.required, ['name']);
     assert.ok(defs[0].name);
     assert.ok(defs[0].input_schema);
 });

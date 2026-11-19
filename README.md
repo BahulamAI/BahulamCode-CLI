@@ -9,9 +9,9 @@ prior sessions, and keeps local project context in `~/.bahulam/`.
 - Sub-agents, skills, workflows, and MCP support
 - Bring your own model (40+ supported)
 
-## Rust terminal beta
+## Rust terminal
 
-Run `npx --yes @bahulam/code@beta` in an interactive terminal. The beta
+Run `npx --yes @bahulam/code@latest` in an interactive terminal. The package
 ships Rust runtimes for macOS (Apple silicon and Intel), Linux with glibc
 (ARM64 and x64), and Windows x64. It starts in Rust inline view when the
 packaged runtime runs on your system.
@@ -40,6 +40,24 @@ For terminal visual checks, run `npm run test:design:terminal` with optional
 Playwright and xterm installations. `PLAYWRIGHT_MODULE` and `XTERM_MODULE` can point
 to existing installations; `BROWSER_EXECUTABLE` selects a browser. The test checks
 light/dark docks, streaming, paging, and resize without connecting to a backend.
+
+### Instructions, skills, and follow-ups
+
+Use `AGENTS.md` for directory-specific rules. Bahulam reads global instructions from
+`~/.bahulam/AGENTS.md` (or `$BAHULAM_HOME/AGENTS.md`), then ancestor files down to
+the launch directory. The closest directory has precedence. Use `/status context`
+to inspect the files collected for the turn.
+
+Place portable skills in `.agents/skills/<name>/SKILL.md` in a repository, or in
+`~/.agents/skills/<name>/SKILL.md` for your account. Each file starts with YAML
+frontmatter containing its name and description. Bahulam advertises the catalog
+to the agent and provides instructions and referenced files on demand. Use
+`/skills list` and `/skills view <name>` to inspect the resolved bundle.
+
+While a turn is running, type a correction and press Enter. Bahulam saves it and
+tries to deliver it at the next agent boundary. On ordinary completion, an
+undelivered correction runs as a new turn. After interruption, review `/history`
+for held follow-ups.
 
 ### Local-first startup and resume
 

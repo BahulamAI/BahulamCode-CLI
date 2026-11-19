@@ -1171,8 +1171,9 @@ fn thinking_phases_follow_tools_and_replace_iteration_status_without_losing_reas
             .unwrap();
         assert!(rows[answer - 1].contains("────") || rows[answer - 1].contains("----"));
         assert!(!text.contains("Processing (iteration"));
-        assert!(text.find("read_file").unwrap() < text.find("Actual reasoning").unwrap());
-        assert!(text.find("Actual reasoning").unwrap() < text.find("Final answer").unwrap());
+        assert!(!text.contains("Thinking"));
+        assert!(!text.contains("Actual reasoning"));
+        assert!(text.find("read_file").unwrap() < text.find("Final answer").unwrap());
     }
 }
 
@@ -1361,6 +1362,20 @@ fn checks_and_thinking_render_and_expand_in_both_rust_views() {
                     .iter()
                     .map(|cell| cell.symbol())
                     .collect::<String>();
+                if kind == "thinking_delta" && !details {
+                    assert!(!text.contains("THINKING_FIRST"));
+                    let buffer = terminal.backend().buffer();
+                    let status_row: String = buffer
+                        .content
+                        .chunks(110)
+                        .nth(buffer.area.height as usize - 2)
+                        .unwrap()
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect();
+                    assert!(status_row.contains("Thinking…"));
+                    continue;
+                }
                 assert!(
                     text.contains(expected),
                     "missing {expected}, inline={inline}, details={details}"
@@ -2304,6 +2319,64 @@ fn completed_tool_payload_replaces_arguments_before_hydration() {
         ))
         .unwrap();
     assert_eq!(model.cards[0].detail.as_deref(), Some("actual result"));
+}
+
+#[test]
+fn result_reference_supersedes_an_inflight_request_and_status_only_completion_keeps_output() {
+    let mut model = Model::default();
+    let mut request = event(
+        1,
+        "tool_requested",
+        "main",
+        json!({"tool_id":"shell","name":"shell"}),
+    );
+    request.payload_ref = Some("request".into());
+    model.apply(&request).unwrap();
+    assert_eq!(model.request_details(0).as_deref(), Some("request"));
+    model
+        .apply(&event(
+            2,
+            "tool_output_delta",
+            "main",
+            json!({"tool_id":"shell","chunk":"first\nsecond\nthird"}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            3,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"shell","ok":true}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].body, "first\nsecond\nthird");
+    let mut completion = event(
+        4,
+        "tool_finished",
+        "main",
+        json!({"tool_id":"shell","preview":"first"}),
+    );
+    completion.payload_ref = Some("result".into());
+    model.apply(&completion).unwrap();
+    assert_eq!(model.request_details(0).as_deref(), Some("result"));
+    model
+        .apply(&event(
+            5,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"request","detail":"stale args"}),
+        ))
+        .unwrap();
+    assert!(model.cards[0].detail_loading);
+    model
+        .apply(&event(
+            6,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"result","detail":"full result"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].detail.as_deref(), Some("full result"));
 }
 
 #[test]
@@ -3253,4 +3326,105 @@ fn completing_latest_tool_restores_only_pending_tools_for_its_agent() {
             .current_tool_id,
         "child"
     );
+}
+
+#[test]
+fn shell_approval_and_adjacent_reads_stay_readable_in_both_views() {
+    use bahulam_tui::render::{draw_with_view, history_geometry};
+    let mut model = Model::default();
+    let cmd = "cd project && echo \"EXIT: $?\"";
+    model
+        .apply(&event(
+            1,
+            "approval_required",
+            "main",
+            json!({"apr_id":"a","name":"shell",
+        "args":{"command":cmd},"reason":"Shell command requires approval: cd project"}),
+        ))
+        .unwrap();
+    assert_eq!(model.approval.as_ref().unwrap().command, cmd);
+    assert!(model.approval.as_ref().unwrap().reason.is_empty());
+    model
+        .apply(&event(
+            2,
+            "approval_decided",
+            "main",
+            json!({"apr_id":"a","decision":"approve"}),
+        ))
+        .unwrap();
+    for (i, path) in ["one.rs", "two.rs", "failed.rs"].iter().enumerate() {
+        let seq = 3 + 2 * i as i64;
+        model
+            .apply(&event(
+                seq,
+                "tool_requested",
+                "main",
+                json!({"tool_id":path,"name":"read_file","args":{"path":path}}),
+            ))
+            .unwrap();
+        model.apply(&event(seq+1,"tool_finished","main",json!({"tool_id":path,"name":"read_file","ok":i<2,"output":format!("Contents of {path}")}))).unwrap();
+    }
+    model.queue_prompt("next\nstep");
+    model
+        .apply(&event(
+            9,
+            "notice",
+            "main",
+            json!({"source":"followup_applied","cause":"next\nstep"}),
+        ))
+        .unwrap();
+    assert_eq!(model.pending_prompt_count(), 0);
+    assert_eq!(model.cards.last().unwrap().title, "Prompt");
+    assert_eq!(model.cards.last().unwrap().body, "next\nstep");
+    let area = Rect::new(0, 0, 140, 40);
+    for inline in [true, false] {
+        for expanded in [HashSet::new(), HashSet::from([1])] {
+            let geometry = history_geometry(&model, area, "", inline, &expanded, "dark", None);
+            assert_eq!(
+                geometry.cards.iter().any(|&(i, _)| i == 2),
+                !expanded.is_empty()
+            );
+            for scroll in [0, usize::MAX] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+                terminal
+                    .draw(|f| {
+                        draw_with_view(
+                            f,
+                            &model,
+                            scroll,
+                            true,
+                            "dark",
+                            "",
+                            0,
+                            &expanded,
+                            Some(1),
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert_eq!(text.matches(cmd).count(), 1);
+                assert!(!text.contains("{\"command\":"));
+                assert!(text.contains("failed.rs"));
+                if expanded.is_empty() {
+                    assert!(text.contains("one.rs | two.rs"));
+                } else {
+                    assert!(text.contains("Contents of one.rs"));
+                }
+            }
+        }
+    }
 }

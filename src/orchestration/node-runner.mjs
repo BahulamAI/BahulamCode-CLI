@@ -1,3 +1,5 @@
+import { instructionContext } from '../core/context-envelope.mjs';
+import { loadProjectContext } from '../core/project-context-loader.mjs';
 import { LocalAgent } from '../core/local-agent.mjs';
 import { backgroundTasks } from '../core/background-tasks.mjs';
 import { classifyShell, TIERS } from '../core/risk-tier.mjs';
@@ -75,7 +77,7 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
   });
   if (options.signal) options.signal.addEventListener('abort', () => localAgent.cancel?.(), { once: true });
 
-  yield* namespaceNodeEvents(localAgent.execute(instruction, {}), { node, runId: options.runId });
+  yield* namespaceNodeEvents(localAgent.execute(instruction, instructionContext(loadProjectContext({ cwd: ctx.cwd || process.cwd() }), ctx.toolExecutor.getAgentContext?.())), { node, runId: options.runId });
 }
 
 // A job node runs a process instead of an LLM. It blocks its graph edge

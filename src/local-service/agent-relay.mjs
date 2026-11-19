@@ -5,6 +5,8 @@
  * agent path used by the terminal: BahulamStreamClient + local ToolExecutor.
  */
 
+import { instructionContext } from '../core/context-envelope.mjs';
+import { loadProjectContext } from '../core/project-context-loader.mjs';
 import * as fs from 'node:fs';
 import { AssistantMessageStream } from './chat-presentation.mjs';
 import * as path from 'node:path';
@@ -964,7 +966,7 @@ export class LocalAgentRelay {
         cwd: this.session.root_path,
         projectResources,
       }),
-      agent_context: this.toolExecutor.getAgentContext(),
+      ...instructionContext(loadProjectContext({ cwd: this.session.root_path }), this.toolExecutor.getAgentContext?.()),
       local_service: {
         product: 'bahulam-local-service',
         session_id: this.session.id,

@@ -25,7 +25,7 @@ import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
 import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
 import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
-import { LocalAgent } from '../core/local-agent.mjs';
+import { LocalAgent, toOpenAIMessage } from '../core/local-agent.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
 import { JsonlWriter } from '../core/jsonl-writer.mjs';
 import { tapSseEvent, registerBroadcaster, readTransientPayload } from '../daemon/event-tap.mjs';
@@ -4724,8 +4724,7 @@ async function fetchUser(ctx) {
 
 export async function startTerminalRepl() {
   const requestedView = process.env.BAHULAM_TUI;
-  const betaDefault = !requestedView && VERSION.includes('-beta.');
-  const startInRust = process.stdin.isTTY && process.stdout.isTTY && (requestedView === 'rust' || (betaDefault && rustTuiAvailable()));
+  const startInRust = process.stdin.isTTY && process.stdout.isTTY && (requestedView === 'rust' || (!requestedView && rustTuiAvailable()));
   if (startInRust) process.env.BAHULAM_DAEMON_EVENTLOG = '1';
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
@@ -5780,6 +5779,7 @@ export async function startTerminalRepl() {
     process.stderr.write(`  ${c.red('Instruction failed: ' + error.message)}\n`);
     showPrompt();
   });
+  let submitActiveFollowup = null;
   _submitExternalPrompt = instruction => queueOrRunLine(instruction);
   function restoreNodeDock() {
     if (mountInputDock({ preserveScrollback: true })) {
@@ -5853,7 +5853,10 @@ export async function startTerminalRepl() {
               break;
             case 'prompt': {
               const instruction = String(data.text || '').trim();
-              if (instruction) _submitExternalPrompt?.(instruction);
+              if (instruction) {
+                if (submitActiveFollowup && !instruction.startsWith('/')) await submitActiveFollowup(instruction);
+                else _submitExternalPrompt?.(instruction);
+              }
               break;
             }
             case 'run_slash': {
@@ -5962,7 +5965,7 @@ export async function startTerminalRepl() {
                   }
                 }
                 if (detail == null) {
-                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.hunks ?? payload.args ?? payload.summary ?? payload;
+                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.hunks ?? payload.args ?? payload.cause ?? payload.summary ?? payload;
                   detail = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
                 }
                 const bytes = Buffer.from(detail, 'utf8');
@@ -6479,14 +6482,31 @@ export async function startTerminalRepl() {
     let turnCompleted = false;
     let turnCancelled = false;
     let turnFailed = false;
+    let gatewayInterventions;
     const followups = new TurnFollowups({
       persist: async (item, options) => {
         await jsonlWriter.persistFollowup(item, options);
         if (options?.initial) session.history.push({ role: 'user', content: item.instruction, interventionId: item.id });
       },
-      send: (instruction, options) => client.sendIntervention(instruction, options),
-      onDelivered: item => agentTurnHistory.addUserMessage(item.instruction),
+      send: (instruction, options) => {
+        if (!gatewayInterventions) return client.sendIntervention(instruction, options);
+        gatewayInterventions.push({ instruction, id: options.idempotencyKey });
+        return { status: 'accepted' };
+      },
+      onDelivered: item => {
+        agentTurnHistory.addUserMessage(item.instruction);
+        tapSseEvent({ type: 'followup_applied', data: { text: item.instruction } }, { sessionId: session.id });
+      },
     });
+
+    submitActiveFollowup = async instruction => {
+      try {
+        await followups.submit(instruction);
+      } catch (error) {
+        tapSseEvent({ type: 'followup_save_failed', data: { error: error.message,
+          cause: 'Could not save follow-up: ' + error.message, next_step: instruction } }, { sessionId: session.id });
+      }
+    };
 
     // ── Execution keypress listener (Esc = cancel, Space = pause/resume) ──
     let executionPaused = false;
@@ -6979,9 +6999,12 @@ export async function startTerminalRepl() {
           }
         }
         if (session.gatewaySession) {
+          gatewayInterventions = [];
           _turnIterable = createAgentLoop({
+            projectPrompt: execContext.project_context?.prompt_block,
+            interventions: gatewayInterventions,
             session: session.gatewaySession,
-            messages: session.agentHistory,
+            messages: session.agentHistory.flatMap(toOpenAIMessage),
             toolExecutor,
           });
         }
@@ -7076,6 +7099,7 @@ export async function startTerminalRepl() {
       flushContent();
       process.stderr.write(`  ${c.red('Error: ' + err.message)}\n`);
     } finally {
+      submitActiveFollowup = null;
       // Clean up execution keypress listener
       runtime.afterContentFlush = null;
       if (keypressCleanup) keypressCleanup();
@@ -7083,6 +7107,9 @@ export async function startTerminalRepl() {
 
     const completedNormally = turnCompleted && !turnCancelled && !turnFailed;
     const nextFollowups = await followups.finish({ continueAutomatically: completedNormally });
+    if (!completedNormally && [...followups.items.values()].some(item => item.status === 'held')) {
+      tapSseEvent({ type: 'followup_held', data: {} }, { sessionId: session.id });
+    }
     const heldFollowups = completedNormally ? [] : queueOrRunLine.remove(item => Boolean(item?.followupId));
     for (const item of heldFollowups) {
       await jsonlWriter.persistFollowup({ id: item.followupId, instruction: item.instruction, status: 'held' });

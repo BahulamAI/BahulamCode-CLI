@@ -14,6 +14,10 @@ import fs from 'node:fs';
 import { startRustTuiHost } from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs', import.meta.url).href)};
 const prompts=[];
 const host=startRustTuiHost({onCommand:command=>{
+ if(command.type==='show_details') {
+  setTimeout(()=>host.send({v:2,seq:1,ts:'',type:'detail_loaded',session_id:'focus',agent_id:'main',data:{payload_ref:command.data.payload_ref,detail:'one\\ntwo\\nthree\\nfour'}}),450);
+  setTimeout(()=>host.send({v:2,seq:2,ts:'',type:'tool_finished',session_id:'focus',agent_id:'main',data:{tool_id:'fixture',ok:true}}),700);
+ }
  if(command.type==='prompt') {
   prompts.push(command.data.text);fs.writeFileSync(process.argv[2]+".tmp",JSON.stringify(prompts));fs.renameSync(process.argv[2]+".tmp",process.argv[2]);
   const send=(seq,type,data)=>host.send({v:2,seq,ts:'',type,session_id:'focus',turn_id:'queue-test',agent_id:'main',data});
@@ -26,7 +30,7 @@ const host=startRustTuiHost({onCommand:command=>{
  }
 
 }});
-host.send({v:2,seq:1,ts:'',type:'tool_finished',session_id:'focus',agent_id:'main',data:{tool_id:'fixture',preview:'one\\ntwo',output:'one\\ntwo\\nthree\\nfour'}});
+host.send({v:2,seq:1,ts:'',type:'tool_finished',session_id:'focus',agent_id:'main',payload_ref:'fixture:result',data:{tool_id:'fixture',preview:'one\\ntwo'}});
 host.send({v:2,seq:1,ts:'',type:'command_catalog',session_id:'focus',agent_id:'main',data:{commands:[{name:'/resume',description:'history'},{name:'/report',description:'report'}]}});
 setTimeout(()=>host.close(),20000).unref();
 `);
@@ -90,6 +94,9 @@ try:
  submit(large,b'')
  send(b'draft')
  click('Show details');wait('Show less')
+ assert 'two' in screen.text() and 'loading…' in screen.text(),screen.text()
+ wait('four');pump(.45)
+ assert 'four' in screen.text() and 'Show less' in screen.text(),screen.text()
  click('Message',1)
  submit('click draft',b'\x1b[Hclick \x1b[F')
  click('Show less');wait('Show details')

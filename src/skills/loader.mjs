@@ -1,12 +1,13 @@
 /**
  * Portable Agent Skills loader.
  *
- * Discovers standard <root>/<skill>/SKILL.md bundles from Bahulam and Claude
+ * Discovers standard <root>/<skill>/SKILL.md bundles from .agents, Bahulam and Claude
  * locations. Only metadata is exposed eagerly; instructions and resources are
  * loaded on demand through view().
  */
 
 import crypto from 'node:crypto';
+import { load as parseYaml } from 'js-yaml';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,47 +19,14 @@ function isWithin(root, candidate) {
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function parseScalar(value) {
-    const trimmed = value.trim();
-    if (
-        (trimmed.startsWith('"') && trimmed.endsWith('"'))
-        || (trimmed.startsWith("'") && trimmed.endsWith("'"))
-    ) {
-        return trimmed.slice(1, -1);
-    }
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-        return trimmed.slice(1, -1).split(',').map(item => parseScalar(item)).filter(Boolean);
-    }
-    if (trimmed === 'true') return true;
-    if (trimmed === 'false') return false;
-    return trimmed;
-}
-
 export function parseSkill(content, fallbackName) {
     const match = content.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
     if (!match) throw new Error('SKILL.md requires YAML frontmatter');
 
-    const metadata = {};
-    let activeList = null;
-    for (const rawLine of match[1].split(/\r?\n/)) {
-        if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
-        const listMatch = rawLine.match(/^\s*-\s+(.+)$/);
-        if (listMatch && activeList) {
-            metadata[activeList].push(parseScalar(listMatch[1]));
-            continue;
-        }
-        const fieldMatch = rawLine.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-        if (!fieldMatch) continue;
-        const [, key, rawValue] = fieldMatch;
-        if (!rawValue.trim()) {
-            metadata[key] = [];
-            activeList = key;
-        } else {
-            metadata[key] = parseScalar(rawValue);
-            activeList = null;
-        }
+    const metadata = parseYaml(match[1]);
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+        throw new Error('SKILL.md requires a metadata mapping');
     }
-
     const name = String(metadata.name || fallbackName || '').trim();
     const description = String(metadata.description || '').trim();
     const instructions = content.slice(match[0].length).trim();
@@ -70,7 +38,7 @@ export function parseSkill(content, fallbackName) {
         name,
         description,
         aliases: Array.isArray(metadata.aliases) ? metadata.aliases : [],
-        compatibility: Array.isArray(metadata.compatibility) ? metadata.compatibility : [],
+        compatibility: metadata.compatibility || [],
         metadata,
         instructions,
         prompt: instructions,
@@ -78,7 +46,7 @@ export function parseSkill(content, fallbackName) {
 }
 
 export function discoverSkillDirectories(root) {
-    if (!root || !fs.existsSync(root)) return [];
+    if (!root || !fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) return [];
     const resolved = fs.realpathSync(root);
     if (fs.existsSync(path.join(resolved, 'SKILL.md'))) return [resolved];
     return fs.readdirSync(resolved, { withFileTypes: true })
@@ -124,6 +92,8 @@ function bounded(content, maxChars) {
 export class SkillsLoader {
     constructor({ homeDir = os.homedir() } = {}) {
         this.homeDir = homeDir;
+        this.bahulamDir = homeDir === os.homedir() && process.env.BAHULAM_HOME
+            ? process.env.BAHULAM_HOME : path.join(homeDir, '.bahulam');
         this.skills = new Map();
         this.versions = new Map();
         this.searchPaths = [];
@@ -133,12 +103,25 @@ export class SkillsLoader {
         this.skills.clear();
         this.versions.clear();
         const project = path.resolve(cwd);
-        this.searchPaths = [
-            { dir: path.join(project, '.bahulam', 'skills'), source: 'bahulam-project', scope: 'project', priority: 500 },
-            { dir: path.join(project, '.claude', 'skills'), source: 'claude-project', scope: 'project', priority: 400 },
-            { dir: path.join(this.homeDir, '.bahulam', 'skills'), source: 'bahulam-global', scope: 'global', priority: 300 },
+        const roots = [project];
+        // Discover repository bundles when the CLI starts inside a package.
+        for (let dir = project; ; dir = path.dirname(dir)) {
+            if (fs.existsSync(path.join(dir, '.git'))) {
+                while (roots.at(-1) !== dir) roots.push(path.dirname(roots.at(-1)));
+                break;
+            }
+            if (dir === path.dirname(dir)) break;
+        }
+        this.searchPaths = roots.flatMap((root, i) => [
+            { dir: path.join(root, '.bahulam', 'skills'), source: 'bahulam-project', scope: 'project', ancestor: i > 0, priority: 600 + (roots.length - i) * 3 },
+            { dir: path.join(root, '.agents', 'skills'), source: 'agents-project', scope: 'project', ancestor: i > 0, priority: 599 + (roots.length - i) * 3 },
+            { dir: path.join(root, '.claude', 'skills'), source: 'claude-project', scope: 'project', ancestor: i > 0, priority: 598 + (roots.length - i) * 3 },
+        ]);
+        this.searchPaths.push(
+            { dir: path.join(this.bahulamDir, 'skills'), source: 'bahulam-global', scope: 'global', priority: 300 },
+            { dir: path.join(this.homeDir, '.agents', 'skills'), source: 'agents-global', scope: 'global', priority: 250 },
             { dir: path.join(this.homeDir, '.claude', 'skills'), source: 'claude-global', scope: 'global', priority: 200 },
-        ];
+        );
 
         for (const config of this.searchPaths) this._loadFromDir(config);
         return this;
@@ -168,7 +151,7 @@ export class SkillsLoader {
                     ...parsed,
                     root: skillDir,
                     source: config.source,
-                    source_id: `${config.source}:${parsed.name}`,
+                    source_id: `${config.source}:${parsed.name}${config.ancestor ? '@' + config.dir : ''}`,
                     scope: config.scope,
                     priority: config.priority,
                     content_hash: contentHash(skillDir),
@@ -208,6 +191,7 @@ export class SkillsLoader {
                 source: skill.source,
                 source_id: skill.source_id,
                 scope: skill.scope,
+                path: path.join(skill.root, 'SKILL.md'),
                 content_hash: skill.content_hash,
                 compatibility: skill.compatibility,
                 shadowed_sources: (this.versions.get(skill.name) || []).slice(1).map(item => item.source_id),

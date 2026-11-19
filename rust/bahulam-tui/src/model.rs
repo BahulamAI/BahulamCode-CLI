@@ -5,6 +5,7 @@ use std::{collections::HashMap, time::Instant};
 #[derive(Debug, Clone, Hash)]
 pub struct Card {
     pub final_reply: bool,
+    pub has_tool_output: bool,
     pub archived: Option<crate::transcript_archive::Record>,
     pub preview: Option<crate::rich_preview::Preview>,
     pub agent: String,
@@ -43,12 +44,28 @@ impl Card {
         std::borrow::Cow::Owned(card)
     }
 
+    // Request arguments and result payloads can arrive independently. When output
+    // starts, an outstanding argument lookup must not block fetching the result.
+    fn begin_tool_output(&mut self) {
+        if !self.has_tool_output {
+            self.has_tool_output = true;
+            self.body.clear();
+            self.detail = None;
+            self.payload_ref = None;
+            self.detail_loading = false;
+        }
+    }
+
     pub fn is_foldable(&self) -> bool {
         !self.tool_name.is_empty() || self.title.starts_with("Tool ") || self.title == "Diff"
     }
 
     pub fn belongs_to(&self, agent: &str) -> bool {
         self.agent == agent || (self.title == "Agent report" && self.primary == agent)
+    }
+
+    pub fn visible_in_transcript(&self, agent: &str) -> bool {
+        self.title != "Thinking" && self.belongs_to(agent)
     }
 
     pub fn is_message(&self) -> bool {
@@ -169,6 +186,7 @@ pub struct Model {
     pub active_background_jobs: usize,
     pub status: String,
     pub composer_hint: String,
+    pub copy_confirmed: bool,
     pub selecting_text: bool,
     queued_prompts: usize,
     pub warnings: Vec<String>,
@@ -445,6 +463,7 @@ impl Model {
         let index = self.cards.len();
         self.cards.push(Card {
             final_reply: false,
+            has_tool_output: false,
             archived: None,
             preview: None,
             agent: agent.into(),
@@ -468,6 +487,18 @@ impl Model {
         if let Some(index) = self.messages.remove(key) {
             self.cards[index].status = "done".into();
         }
+    }
+
+    pub fn set_composer_hint(&mut self, hint: &str) {
+        self.composer_hint = safe_text(hint);
+        self.copy_confirmed = false;
+    }
+
+    pub fn thinking(&self, agent: &str) -> bool {
+        self.progress.values().any(|&index| {
+            let card = &self.cards[index];
+            card.title == "Thinking" && card.agent == agent && card.status == "streaming"
+        })
     }
 
     fn finish_thinking_segment(&mut self, key: &str) {
@@ -943,6 +974,10 @@ impl Model {
                 let card = &self.cards[index];
                 let detail = if event.data.get("error").is_some() {
                     format!("Could not load details: {}", text(&event.data, "error"))
+                } else if card.title == "Approval" {
+                    serde_json::from_str::<Value>(&detail)
+                        .map(|args| approval_arguments(&card.primary, &args))
+                        .unwrap_or_else(|_| detail.clone())
                 } else {
                     command_output(&card.title, &detail)
                 };
@@ -976,7 +1011,11 @@ impl Model {
                 .is_some_and(|approval| approval.payload_ref.as_deref() == Some(reference.as_str()))
             {
                 if let Some(approval) = self.approval.as_mut() {
-                    approval.command = detail;
+                    if event.data.get("error").is_none() {
+                        approval.command = serde_json::from_str::<Value>(&detail)
+                            .map(|args| approval_arguments(&approval.tool, &args))
+                            .unwrap_or(detail);
+                    }
                 }
             }
             return Ok(());
@@ -1283,7 +1322,12 @@ impl Model {
                         row.last_tool = row.current_tool.clone();
                     }
                 } else if kind == "tool_output_delta" {
-                    append_running_tool_output(&mut self.cards[index].body, &text(data, "chunk"));
+                    let chunk = text(data, "chunk");
+                    if !chunk.is_empty() {
+                        let card = &mut self.cards[index];
+                        card.begin_tool_output();
+                        append_running_tool_output(&mut card.body, &chunk);
+                    }
                 } else {
                     self.active_tools.remove(&index);
                     self.cards[index].status = if tool_succeeded(data) {
@@ -1293,38 +1337,43 @@ impl Model {
                     }
                     .into();
                     let preview = text(data, "preview");
-                    self.cards[index].body = if preview.is_empty() {
+                    let summary = if preview.is_empty() {
                         text(data, "summary")
                     } else {
                         preview
                     };
-                    // Older JSONL completions use `result`, sometimes as an
-                    // object. Preserve it as the full result, not a string-only
-                    // summary that silently drops structured saved output.
-                    if let Some(output) = data
+                    let output = data
                         .get("output")
                         .filter(|value| !value.is_null())
-                        .or_else(|| data.get("result").filter(|value| !value.is_null()))
-                    {
-                        let detail = output
-                            .as_str()
-                            .map(safe_text)
-                            .unwrap_or_else(|| pretty_json(output));
-                        self.cards[index].detail = Some(detail);
-                        self.cards[index].payload_ref =
-                            if data.get("cached_full_payload").and_then(Value::as_bool)
-                                == Some(true)
-                            {
-                                event.payload_ref.clone()
-                            } else {
-                                None
-                            };
-                    } else if let Some(reference) = &event.payload_ref {
-                        self.cards[index].detail = None;
-                        self.cards[index].payload_ref = Some(reference.clone());
-                    } else {
-                        self.cards[index].detail = Some(self.cards[index].body.clone());
-                        self.cards[index].payload_ref = None;
+                        .or_else(|| data.get("result").filter(|value| !value.is_null()));
+                    let card = &mut self.cards[index];
+                    if output.is_some() || event.payload_ref.is_some() || !summary.is_empty() {
+                        card.begin_tool_output();
+                        if !summary.is_empty() {
+                            card.body = summary;
+                        }
+                        if card.payload_ref != event.payload_ref {
+                            card.detail_loading = false;
+                        }
+                        if let Some(value) = output {
+                            let detail = value
+                                .as_str()
+                                .map(safe_text)
+                                .unwrap_or_else(|| pretty_json(value));
+                            if card.body.is_empty() {
+                                card.body = detail.lines().take(2).collect::<Vec<_>>().join("\n");
+                            }
+                            card.detail = Some(detail);
+                            card.payload_ref = event.payload_ref.clone().filter(|_| {
+                                data.get("cached_full_payload").and_then(Value::as_bool)
+                                    == Some(true)
+                            });
+                        } else if let Some(reference) = &event.payload_ref {
+                            if card.payload_ref.as_ref() != Some(reference) {
+                                card.detail = None;
+                            }
+                            card.payload_ref = Some(reference.clone());
+                        }
                     }
                     let mut metadata = Vec::new();
                     if let Some(code) = data.get("exit_code").and_then(Value::as_i64) {
@@ -1537,6 +1586,33 @@ impl Model {
                     self.apply_usage(data);
                 }
             }
+            "notice" if text(data, "source") == "followup_held" => {
+                self.queued_prompts = 0;
+                self.set_composer_hint("Follow-ups held after interruption · review /history");
+            }
+            "notice" if text(data, "source") == "followup_save_failed" => {
+                self.queued_prompts = self.queued_prompts.saturating_sub(1);
+                self.card(
+                    agent,
+                    "Follow-up could not be saved",
+                    format!("{}\n{}", text(data, "cause"), text(data, "next_step")),
+                    "error",
+                );
+            }
+            "notice" if text(data, "source") == "followup_applied" => {
+                self.finish_message_segment(&message_key);
+                self.finish_thinking_segment(&message_key);
+                self.queued_prompts = self.queued_prompts.saturating_sub(1);
+                let index = self.card(agent, "Prompt", text(data, "cause"), "sent");
+                self.cards[index].payload_ref = event.payload_ref.clone();
+            }
+            "notice"
+                if matches!(
+                    text(data, "source").as_str(),
+                    "user_intervention_accepted"
+                        | "user_intervention_delivered"
+                        | "user_intervention_queued"
+                ) => {}
             "notice" => {
                 // Some producers expose worker tool progress without full tool-call events.
                 if let Some(active) = data.get("tool_active").and_then(Value::as_bool) {
@@ -1650,6 +1726,21 @@ impl Model {
                     .map(|key| text(data, key))
                     .find(|name| !name.is_empty())
                     .unwrap_or_else(|| "tool".into());
+                let command = data
+                    .get("args")
+                    .map(|args| approval_arguments(&name, args))
+                    .unwrap_or_default();
+                let mut reason = text(data, "reason");
+                if !command.is_empty()
+                    && reason
+                        .strip_prefix("Shell command requires approval: ")
+                        .is_some_and(|quoted| {
+                            command
+                                .starts_with(quoted.trim_end_matches('…').trim_end_matches("..."))
+                        })
+                {
+                    reason.clear();
+                }
                 if !self.replaying_history {
                     self.approval = Some(Approval {
                         agent: agent.into(),
@@ -1667,9 +1758,9 @@ impl Model {
                             })
                             .unwrap_or_else(|| vec!["once".into()]),
                         risk: text(data, "risk_tier"),
-                        command: data.get("args").map(safe_text_json).unwrap_or_default(),
+                        command: command.clone(),
                         cwd: text(data, "cwd"),
-                        reason: text(data, "reason"),
+                        reason: reason.clone(),
                         payload_ref: event.payload_ref.clone(),
                     });
                 }
@@ -1678,15 +1769,13 @@ impl Model {
                 } else {
                     "waiting"
                 };
-                let index = self.card(agent, "Approval", text(data, "reason"), status);
+                let body = [command, reason]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let index = self.card(agent, "Approval", body, status);
                 self.cards[index].primary = name;
-                if let Some(args) = data.get("args") {
-                    self.cards[index].detail = Some(format!(
-                        "{}\n{}",
-                        safe_text_json(args),
-                        text(data, "reason")
-                    ));
-                }
                 self.approvals
                     .insert(format!("{origin}/{}", text(data, "apr_id")), index);
                 if self.replaying_history {
@@ -1951,6 +2040,7 @@ impl Model {
     pub fn transcript(&self) -> Vec<String> {
         self.cards
             .iter()
+            .filter(|card| card.title != "Thinking")
             .flat_map(|card| {
                 let card = card.materialized();
                 let mut lines = vec![format!(
@@ -2144,6 +2234,38 @@ fn format_artifact_size(bytes: u64) -> String {
     }
 }
 
+fn approval_arguments(tool: &str, args: &Value) -> String {
+    fn describe(value: &Value) -> String {
+        match value {
+            Value::String(text) => safe_text(text),
+            Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| format!("{}: {}", safe_text(key), describe(value)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Value::Array(items) => items.iter().map(describe).collect::<Vec<_>>().join(", "),
+            other => other.to_string(),
+        }
+    }
+    if tool.eq_ignore_ascii_case("shell") {
+        if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+            let mut lines = vec![safe_text(cmd)];
+            if let Some(fields) = args.as_object() {
+                lines.extend(
+                    fields
+                        .iter()
+                        .filter(|(key, _)| *key != "command")
+                        .map(|(key, value)| format!("{}: {}", safe_text(key), describe(value))),
+                );
+            }
+            return lines.join("\n");
+        }
+    }
+    if args.as_object().is_some_and(|fields| fields.is_empty()) {
+        return "(no arguments)".into();
+    }
+    describe(args)
+}
 fn safe_text_json(value: &Value) -> String {
     safe_text(&value.to_string())
 }

@@ -151,7 +151,7 @@ const SSE_TO_V2 = Object.freeze({
   status: 'notice', phase_start: 'notice', phase_update: 'notice', phase_summary: 'notice',
   delegation: 'notice', sub_agent_tool: 'notice', sub_agent_tool_result: 'notice',
   summarize: 'notice', change: 'notice', goal_created: 'notice',
-  user_intervention_queued: 'notice', user_intervention_accepted: 'notice', user_intervention_delivered: 'notice',
+  followup_applied: 'notice', followup_held: 'notice', followup_save_failed: 'notice', user_intervention_queued: 'notice', user_intervention_accepted: 'notice', user_intervention_delivered: 'notice',
   cancelled: 'turn_ended', paused: 'notice', resumed: 'notice', pause_instruction: 'notice',
   approval_granted: 'approval_decided', approval_denied: 'approval_decided',
   graph_node_start: 'agent_spawned', graph_node_result: 'agent_finished',

@@ -12,10 +12,22 @@ const driver = path.join(temp, 'driver.mjs');
 fs.writeFileSync(driver, `
 import fs from 'node:fs';
 import {startRustTuiHost} from ${JSON.stringify(new URL('../src/daemon/rust-tui-host.mjs', import.meta.url).href)};
-const host=startRustTuiHost({onCommand:c=>{if(c.type==='prompt') {
- fs.writeFileSync(process.argv[2]+'.tmp',c.data.text);fs.renameSync(process.argv[2]+'.tmp',process.argv[2]);
-}}});
-for(let i=0;i<12;i++) host.send({v:2,seq:i+1,ts:'',type:'tool_finished',session_id:'anchor',agent_id:'main',data:{tool_id:'fixture-'+i,preview:'MARKER_'+i+'_0\\nMARKER_'+i+'_1',output:Array.from({length:7},(_,j)=>'MARKER_'+i+'_'+j).join('\\n')}});
+let seq=0;
+const send=(type,data,payload_ref)=>host.send({v:2,seq:++seq,ts:'',type,session_id:'anchor',agent_id:'main',data,payload_ref});
+const output=i=>Array.from({length:7},(_,j)=>'MARKER_'+i+'_'+j).join('\\n');
+const host=startRustTuiHost({onCommand:c=>{
+ if(c.type==='prompt') {
+  fs.writeFileSync(process.argv[2]+'.tmp',c.data.text);fs.renameSync(process.argv[2]+'.tmp',process.argv[2]);
+ }
+ if(c.type==='show_details') {
+  const ref=c.data.payload_ref;
+  setTimeout(()=>{
+   send('detail_loaded',{payload_ref:ref,detail:output(Number(ref.split(':')[1]))});
+   send('tool_finished',{tool_id:'fixture-0',preview:'updated',output:'updated'});
+  },300);
+ }
+}});
+for(let i=0;i<12;i++) send('tool_finished',{tool_id:'fixture-'+i,preview:'MARKER_'+i+'_0\\nMARKER_'+i+'_1'},'fixture:'+i);
 setTimeout(()=>host.close(),20000).unref();
 `);
 const python = String.raw`
@@ -53,7 +65,7 @@ try:
  wait('Show details');send(b'draft')
  for scrolled in (False,True):
   if scrolled:send(b'\x1b[<64;12;8M'*3)
-  before=anchor();click('Show details',1);wait('Show less');check(before)
+  before=anchor();click('Show details',1);wait('Show less');pump(.45);check(before)
   click('Show less');wait('Show details');check(before)
   click('Show details',1);wait('Show less');check(before)
   send(b'\x1b');wait('Show details');check(before)

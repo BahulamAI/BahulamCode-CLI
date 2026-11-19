@@ -74,7 +74,7 @@ try:
    row,line=next((i,line) for i,line in enumerate(text.splitlines()) if 'Show details' in line)
    col=line.index('Show details')
    keys=('\x1b[<0;%d;%dM\x1b[<0;%d;%dm'%(col+2,row+1,col+2,row+1)).encode();stage=39
-  elif stage==40 and 'Expanded result' in text and 'REPLY_003' in text:
+  elif stage==40 and 'Expanded result' in text and 'stdout' in text and 'REPLY_001' in text:
    assert 'Details ·' not in text
    # Scrolling within a long expanded card must keep Esc on that card,
    # not select the following assistant message.
