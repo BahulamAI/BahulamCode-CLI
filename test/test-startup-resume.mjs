@@ -164,7 +164,7 @@ fs.writeFileSync(transcript, records.map(record => JSON.stringify(record)).join(
 const started = performance.now();
 const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), '--resume', 'startup-fixture'], {
   cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
-  env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
+  env: { ...process.env, HOME: fixture, USERPROFILE: fixture, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
     BAHULAM_SKIP_AUTO_REGISTER: 'false', BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
 });
 const startupOutput = (child.stdout || '') + (child.stderr || '');
@@ -184,7 +184,7 @@ console.log('End-to-end offline resume: ' + Math.round(performance.now() - start
 for (const args of [[], ['--resume', 'missing-fixture']]) {
   const fresh = spawnSync(process.execPath, [fileURLToPath(new URL('../src/terminal/main.mjs', import.meta.url)), ...args], {
     cwd: startupProject, input: '/exit\n', encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
+    env: { ...process.env, HOME: fixture, USERPROFILE: fixture, BAHULAM_NO_PREFLIGHT: '1', BAHULAM_SKIP_UPGRADE_CHECK: 'true',
       BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', B0_TOKEN: '', KEPLER_TOKEN: '' },
   });
   const output = (fresh.stdout || '') + (fresh.stderr || '');

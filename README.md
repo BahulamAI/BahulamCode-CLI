@@ -9,6 +9,17 @@ prior sessions, and keeps local project context in `~/.bahulam/`.
 - Sub-agents, skills, workflows, and MCP support
 - Bring your own model (40+ supported)
 
+## Rust terminal beta
+
+Run `npx --yes @bahulam/code@beta` in an interactive terminal. The beta
+ships Rust runtimes for macOS (Apple silicon and Intel), Linux with glibc
+(ARM64 and x64), and Windows x64. It starts in Rust inline view when the
+packaged runtime runs on your system.
+Use `/tui fullscreen` for the full-screen view or `/tui default` to return
+to Node in the same session. Set `BAHULAM_TUI=node` to start in Node.
+Other platforms and Linux installations with incompatible system libraries
+automatically start in Node.
+
 ## Appearance
 
 The terminal and local workspace follow Bahulam's paper, ink, and indigo visual

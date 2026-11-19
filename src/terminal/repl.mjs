@@ -15,6 +15,7 @@
  * - Safety guardrails on all tool execution
  */
 
+import { availableUpdate, promptUpdate } from './cli-update.mjs';
 import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -33,8 +34,8 @@ import { backgroundTasks } from '../core/background-tasks.mjs';
 import { stripTerminalControls } from '../core/display-sanitize.mjs';
 import { installBahulamShiftEnterKeybinding, terminalSetupSnippet, vscodeKeybindingsPath } from './vscode-keybindings.mjs';
 import { rustTuiEnvironment } from '../daemon/rust-tui-settings.mjs';
-import { startRustTuiHost } from '../daemon/rust-tui-host.mjs';
-import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage } from '../daemon/rust-tui-snapshot.mjs';
+import { rustTuiAvailable, startRustTuiHost } from '../daemon/rust-tui-host.mjs';
+import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage, rustAttachmentArtifacts } from '../daemon/rust-tui-snapshot.mjs';
 import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
 import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
@@ -948,6 +949,7 @@ function handleAttachCommand(rest = '', ctx) {
     try {
       const filePath = writeClipboardImageToTemp();
       pending.push(filePath);
+      ctx.rustAttachmentPreview?.(filePath);
       process.stderr.write(`  ${c.green('✓')} ${c.dim('attached clipboard image for next prompt:')} ${c.brand(path.basename(filePath))}\n`);
     } catch (err) {
       process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message || String(err))}\n`);
@@ -956,6 +958,7 @@ function handleAttachCommand(rest = '', ctx) {
   }
   const resolved = resolveAttachmentPath(value, safeCwd());
   pending.push(resolved);
+  ctx.rustAttachmentPreview?.(resolved);
   process.stderr.write(`  ${c.green('✓')} ${c.dim('attached for next prompt:')} ${c.brand(path.basename(resolved))}\n`);
 }
 
@@ -1423,32 +1426,22 @@ function printBanner(auth) {
 /** Non-blocking check of npm registry for a newer bahulam version. */
 async function _checkForUpgradeAndAnnounce() {
   if (process.env.BAHULAM_SKIP_UPGRADE_CHECK === 'true') return;
-  const currentPkg = __require('../../package.json');
-  const pkgName = currentPkg.name || 'bahulam';
-  const current = currentPkg.version;
-  const url = `https://registry.npmjs.org/${encodeURIComponent(pkgName)}/latest`;
-  let latest;
-  try {
-    // Node 18+ has global fetch. 3-second timeout keeps banner snappy.
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) return;
-    const body = await res.json();
-    latest = String(body?.version || '');
-  } catch { return; }
-  if (!latest || latest === current) return;
-  // Semver-aware "newer than current" — split and compare number tuples.
-  // Anything unparseable is treated as newer (rare pre-release names) to
-  // err on the side of nudging the user.
-  const asTuple = v => String(v).split('.').map(x => parseInt(x, 10));
-  const [a, b, c1] = asTuple(latest);
-  const [x, y, z] = asTuple(current);
-  const newer = (a > x) || (a === x && b > y) || (a === x && b === y && c1 > z);
-  if (!newer) return;
-  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(`${pkgName}@${latest}`))} ${c.dim(`(installed ${current})`)}\n`);
-  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkgName + '@latest')}\n\n`);
+  const pkg = __require('../../package.json');
+  const host = _rustTuiHost;
+  const version = await availableUpdate(pkg);
+  if (!version || _rustTuiHost !== host) return;
+  if (host && _rustTuiActive) {
+    await promptUpdate({ pkg, version,
+      choose: (...args) => _rustTuiHost === host ? rustTuiChoose(...args) : null,
+      notify: (title, cause) => _rustTuiHost === host && host.send({
+        v: 2, seq: 1, ts: new Date().toISOString(), type: 'notice',
+        session_id: session.id || _rustTuiEnsureSessionId?.(), agent_id: 'main', data: { level: 'info', title, cause },
+      }),
+    });
+    return;
+  }
+  process.stderr.write(`  ${c.brand('◆')} ${c.dim('Update available:')} ${c.bold(c.green(pkg.name + '@' + version))} ${c.dim('(installed ' + pkg.version + ')')}\n`);
+  process.stderr.write(`  ${c.dim('  Install:')} ${c.dim('npm install -g ' + pkg.name + '@' + version)}\n\n`);
 }
 
 // ── Prompt Chrome ──
@@ -2136,19 +2129,28 @@ function rustTuiChoose(title, options, message = '', preferences = {}) {
   return _rustTuiInteractions?.choose(title, options, message, preferences) ?? Promise.resolve(null);
 }
 
+let rustSnapshotGeneration = 0;
 async function sendRustTranscriptSnapshot(mode = 'current') {
   if (!_rustTuiActive || !_rustTuiHost) return;
   const sessionId = session.id || _rustTuiEnsureSessionId?.();
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   const modeLabel = mode === 'current' ? mode : resumeModeLabel(mode);
+  const host = _rustTuiHost;
+  const generation = ++rustSnapshotGeneration;
   const items = rustTranscriptItems(session);
-  const chunks = [];
-  for (let offset = 0; offset < items.length; offset += 32) chunks.push(items.slice(offset, offset + 32));
-  if (!chunks.length) chunks.push([]);
-  for (let index = 0; index < chunks.length; index++) {
+  const { displayPayloadStore } = await import('../daemon/display-payload-store.mjs');
+  const displayStore = displayPayloadStore();
+  const displayIndex = process.env.BAHULAM_TUI_RETAIN_DETAILS === '0' ? new Set() : await displayStore.indexForSession(sessionId);
+  for (let offset = 0; offset < Math.max(1, items.length); offset += 32) {
+    const restored = await Promise.all(items.slice(offset, offset + 32).map(async item => {
+      if (item.kind !== 'event' || !item.event || item.event.payload_ref) return item;
+      const reference = await displayStore.referenceForEvent(item.event, sessionId, displayIndex);
+      return reference ? {...item,event:{...item.event,payload_ref:reference,data:{...item.event.data,cached_full_payload:true}}} : item;
+    }));
+    if (!_rustTuiActive || _rustTuiHost !== host || session.id !== sessionId || generation !== rustSnapshotGeneration) return;
     await _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'transcript_snapshot', session_id: sessionId,
-      agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: index === 0, items: chunks[index] } });
+      agent_id: 'main', data: { mode: modeLabel, cwd: safeCwd(), model: session.model || '', replace: offset === 0, items: restored } });
   }
   sendRustSessionState();
 }
@@ -4721,6 +4723,10 @@ async function fetchUser(ctx) {
 // Cache CWD at startup so safeCwd() has a fallback if the dir gets deleted
 
 export async function startTerminalRepl() {
+  const requestedView = process.env.BAHULAM_TUI;
+  const betaDefault = !requestedView && VERSION.includes('-beta.');
+  const startInRust = process.stdin.isTTY && process.stdout.isTTY && (requestedView === 'rust' || (betaDefault && rustTuiAvailable()));
+  if (startInRust) process.env.BAHULAM_DAEMON_EVENTLOG = '1';
   safeCwd(); // prime the cache in repl-utils.mjs for later recovery
 
   const cliArgs = parseArgs(process.argv.slice(2));
@@ -4820,6 +4826,18 @@ export async function startTerminalRepl() {
     localSessionId,
   };
   ctx.refreshAuth = createSessionAuthSync({ auth, session });
+  const rustPreviewedAttachments = new Set();
+  ctx.rustAttachmentPreview = filePath => {
+    if (!_rustTuiHost) return;
+    const extension = path.extname(filePath).toLowerCase();
+    const mime = ({'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'})[extension];
+    if (!mime) return;
+    for (const artifact of rustAttachmentArtifacts({attachments:[{path:filePath,name:path.basename(filePath),kind:'image',mime_type:mime}]})) {
+      tapSseEvent(artifact, {sessionId:session.id});
+    }
+    rustPreviewedAttachments.add(filePath);
+    if (rustPreviewedAttachments.size > 128) rustPreviewedAttachments.delete(rustPreviewedAttachments.values().next().value);
+  };
   let recoveredFollowups = [];
 
   // Wake-on-finish: background jobs with on_complete dispatch their target
@@ -5168,7 +5186,6 @@ export async function startTerminalRepl() {
   // One owner from the first startup line through the first prompt. Keep
   // existing shell output in scrollback; never guess an absolute cursor row.
   orbitRef.current = createOrbit();
-  const startInRust = process.env.BAHULAM_TUI === 'rust' && process.stdin.isTTY && process.stdout.isTTY;
   // Rust owns the first composer too; startup output can use normal scrollback.
   if (!startInRust) mountInputDock({ preserveScrollback: true });
   if (!cliArgs.resume) printBanner(auth);
@@ -5713,7 +5730,6 @@ export async function startTerminalRepl() {
     ].filter(Boolean);
     if (parts.length) process.stderr.write(wrapCode(parts.join(' · ') + ' · /preflight for details', paint.text.muted, { indent: '  ' }) + '\n');
   }).catch(() => {});
-  _checkForUpgradeAndAnnounce().catch(() => {});
 
   if (process.stdin.isTTY) {
     readline.emitKeypressEvents(process.stdin, rl);
@@ -5899,7 +5915,11 @@ export async function startTerminalRepl() {
               });
               try {
                 let payload;
-                if (payloadRef.startsWith('memory:')) {
+                if (payloadRef.startsWith('display:')) {
+                  const { displayPayloadStore } = await import('../daemon/display-payload-store.mjs');
+                  payload = await displayPayloadStore().get(payloadRef, session.id);
+                  if (!payload) throw new Error('display detail cache unavailable or expired (14 days / 256 MiB); saved session history is unchanged');
+                } else if (payloadRef.startsWith('memory:')) {
                   payload = readTransientPayload(payloadRef);
                   if (!payload) throw new Error('live detail payload expired; run the command again to capture it');
                 } else {
@@ -6064,6 +6084,7 @@ export async function startTerminalRepl() {
   }
   ctx.openRustView = openRustView;
   if (startInRust) await openRustView(undefined, startupResumeMode);
+  _checkForUpgradeAndAnnounce().catch(() => {});
   let _pasteLines = [];
   let _pasteFlushTimer = null;
 
@@ -6349,6 +6370,11 @@ export async function startTerminalRepl() {
         extraPaths: pending,
       });
       if (prepared.attachments.length) {
+        if (_rustTuiHost) {
+          for (const artifact of rustAttachmentArtifacts({ attachments: prepared.attachments.map(publicAttachmentMetadata) })) {
+            if (!rustPreviewedAttachments.delete(artifact.data.path)) tapSseEvent(artifact, { sessionId: session.id });
+          }
+        }
         process.stderr.write(`  ${c.brand('◇')} ${c.dim(`attached ${prepared.attachments.length} image${prepared.attachments.length === 1 ? '' : 's'}:`)} ${prepared.attachments.map(attachmentSummaryLine).join(c.dim(' · '))}\n`);
         jsonlWriter.writeBahulamEvent({
           type: 'attachments',

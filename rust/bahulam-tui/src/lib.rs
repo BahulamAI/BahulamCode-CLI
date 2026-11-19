@@ -11,6 +11,7 @@ pub mod paste;
 #[rustfmt::skip]
 pub mod protocol;
 pub mod render;
+pub mod rich_preview;
 pub mod text_selection;
 
 use model::Model;
@@ -104,3 +105,7 @@ pub fn replay(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     }
     Ok(model)
 }
+
+pub mod native_graphics;
+
+pub mod transcript_archive;

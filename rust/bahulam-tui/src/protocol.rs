@@ -44,6 +44,8 @@ pub struct TurnEndedData {
     pub duration_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_cost_usd: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TextDeltaData {
@@ -152,6 +154,10 @@ pub struct AgentStatusData {
     pub total_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentFinishedData {
@@ -169,6 +175,10 @@ pub struct AgentFinishedData {
     pub total_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlanUpdatedData {
@@ -189,6 +199,12 @@ pub struct ArtifactCreatedData {
     pub pages: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages_read: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_url: Option<String>,
 }
@@ -216,6 +232,8 @@ pub struct UsageUpdateData {
     pub cost_estimated: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_agent: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NoticeData {

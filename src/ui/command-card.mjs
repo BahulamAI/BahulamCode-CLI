@@ -74,7 +74,9 @@ function compactDirectory(directory, cwd = process.cwd()) {
     if (home && (resolved === home || resolved.startsWith(`${home}${path.sep}`))) {
       return `~${resolved.slice(home.length)}`;
     }
-    return `…/${path.basename(path.dirname(resolved))}/${path.basename(resolved)}`;
+    const parent = path.dirname(resolved);
+    if (path.dirname(parent) === parent) return resolved;
+    return `…/${path.basename(parent)}/${path.basename(resolved)}`;
   } catch {
     return value;
   }

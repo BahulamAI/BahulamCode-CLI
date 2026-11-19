@@ -4,6 +4,9 @@ use std::{collections::HashMap, time::Instant};
 
 #[derive(Debug, Clone, Hash)]
 pub struct Card {
+    pub final_reply: bool,
+    pub archived: Option<crate::transcript_archive::Record>,
+    pub preview: Option<crate::rich_preview::Preview>,
     pub agent: String,
     pub title: String,
     pub primary: String,
@@ -19,6 +22,27 @@ pub struct Card {
     pub tool_name: String,
 }
 impl Card {
+    pub fn has_detail(&self) -> bool {
+        self.detail.is_some() || self.archived.as_ref().is_some_and(|r| r.has_detail)
+    }
+    pub fn materialized(&self) -> std::borrow::Cow<'_, Self> {
+        let Some(record) = &self.archived else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let mut card = self.clone();
+        match record.read() {
+            Ok(text) => {
+                card.body = text.body;
+                card.detail = text.detail;
+            }
+            Err(error) => {
+                card.body = format!("Archived text unavailable: {error}. Reopen the saved session to reload its canonical history.");
+            }
+        }
+        card.archived = None;
+        std::borrow::Cow::Owned(card)
+    }
+
     pub fn is_foldable(&self) -> bool {
         !self.tool_name.is_empty() || self.title.starts_with("Tool ") || self.title == "Diff"
     }
@@ -94,6 +118,8 @@ impl Agent {
         if let Some(cost) = data
             .get("cost_usd")
             .or_else(|| data.get("cost"))
+            .or_else(|| usage.get("cost_usd"))
+            .or_else(|| usage.get("cost"))
             .and_then(Value::as_f64)
             .filter(|v| v.is_finite() && *v >= 0.0)
         {
@@ -115,6 +141,8 @@ pub struct Approval {
 }
 #[derive(Debug, Default)]
 pub struct Model {
+    pub view_revision: u64,
+    layout_changes: std::collections::VecDeque<(u64, usize)>,
     pub transcript_revision: u64,
     pub session: String,
     pub cwd: String,
@@ -149,12 +177,16 @@ pub struct Model {
     pub slash_menu: crate::composer::SlashMenu,
     pub interaction: Option<Interaction>,
     tools: HashMap<String, usize>,
+    active_tools: std::collections::BTreeSet<usize>,
     messages: HashMap<String, usize>,
     // Card indices only: keep streamed segments in arrival order without copying text.
     message_segments: HashMap<String, Vec<usize>>,
     progress: HashMap<String, usize>,
     approvals: HashMap<String, usize>,
     agent_reports: HashMap<String, usize>,
+    turn_starts: HashMap<String, usize>,
+    archive: Option<std::sync::Arc<crate::transcript_archive::Archive>>,
+    retention_events: usize,
     replaying_history: bool,
 }
 #[derive(Debug, Clone)]
@@ -383,6 +415,10 @@ impl Model {
     }
 
     pub fn request_details(&mut self, index: usize) -> Option<String> {
+        if index >= self.cards.len() {
+            return None;
+        }
+        self.restore_card(index);
         let card = self.cards.get_mut(index)?;
         if card.detail.is_some() {
             return None;
@@ -398,15 +434,19 @@ impl Model {
     pub fn detail_line_count(&self, index: usize) -> usize {
         self.cards
             .get(index)
-            .and_then(|card| card.detail.as_deref().or(Some(card.body.as_str())))
-            .map(str::lines)
-            .map(Iterator::count)
+            .map(|card| {
+                let card = card.materialized();
+                card.detail.as_deref().unwrap_or(&card.body).lines().count()
+            })
             .unwrap_or(0)
     }
 
     fn card(&mut self, agent: &str, title: &str, body: String, status: &str) -> usize {
         let index = self.cards.len();
         self.cards.push(Card {
+            final_reply: false,
+            archived: None,
+            preview: None,
             agent: agent.into(),
             title: title.into(),
             primary: String::new(),
@@ -442,7 +482,7 @@ impl Model {
     fn message_suffix<'a>(&self, indices: &[usize], before: usize, text: &'a str) -> &'a str {
         let mut remaining = text;
         for &index in indices.iter().take_while(|&&i| i < before) {
-            match remaining.strip_prefix(self.cards[index].body.as_str()) {
+            match remaining.strip_prefix(self.cards[index].materialized().body.as_str()) {
                 Some(suffix) => remaining = suffix,
                 None => return text, // A standalone message, not a cumulative result.
             }
@@ -461,7 +501,148 @@ impl Model {
         self.queued_prompts
     }
 
+    pub fn enforce_retention(&mut self, budget: usize) -> std::io::Result<()> {
+        let mut bytes: usize = self
+            .cards
+            .iter()
+            .map(|c| c.body.len() + c.detail.as_ref().map_or(0, String::len))
+            .sum();
+        if bytes <= budget {
+            return Ok(());
+        }
+        if self.archive.is_none() {
+            self.archive = Some(crate::transcript_archive::Archive::create()?);
+        }
+        let archive = self.archive.as_ref().unwrap();
+        for card in &mut self.cards {
+            if bytes <= budget {
+                break;
+            }
+            if card.archived.is_some()
+                || card.detail_loading
+                || matches!(
+                    card.status.as_str(),
+                    "running" | "streaming" | "working" | "requested" | "waiting"
+                )
+            {
+                continue;
+            }
+            let size = card.body.len() + card.detail.as_ref().map_or(0, String::len);
+            if size == 0 {
+                continue;
+            }
+            let record = archive.append(&card.body, card.detail.as_deref())?;
+            card.archived = Some(record);
+            card.body = String::new();
+            card.detail = None;
+            bytes = bytes.saturating_sub(size);
+        }
+        Ok(())
+    }
+    fn restore_card(&mut self, index: usize) {
+        if self.cards[index].archived.is_some() {
+            self.cards[index] = self.cards[index].materialized().into_owned();
+        }
+    }
+    pub fn touch_view(&mut self) {
+        self.touch_view_from(0);
+    }
+    pub fn touch_view_from(&mut self, index: usize) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.view_revision = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.layout_changes.push_back((self.view_revision, index));
+        if self.layout_changes.len() > 256 {
+            self.layout_changes.pop_front();
+        }
+    }
+    pub fn changed_since(&self, revision: u64) -> Option<usize> {
+        if revision == self.view_revision {
+            return Some(self.cards.len());
+        }
+        if self.layout_changes.len() == 256
+            && self
+                .layout_changes
+                .front()
+                .is_some_and(|(r, _)| *r > revision)
+        {
+            return None;
+        }
+        self.layout_changes
+            .iter()
+            .filter(|(r, _)| *r > revision)
+            .map(|(_, i)| *i)
+            .min()
+    }
+    fn affected_card(&self, event: &EventEnvelope) -> usize {
+        let agent = event.agent_id.as_deref().unwrap_or("main");
+        let turn = event.turn_id.as_deref().unwrap_or("legacy");
+        let origin = if self.replaying_history {
+            "history"
+        } else {
+            "live"
+        };
+        let prefix = format!("{origin}/{turn}/{agent}");
+        let latest = self.cards.len();
+        match event.r#type.as_str() {
+            "text_delta" | "message_end" | "thinking_delta" | "notice" => self
+                .messages
+                .get(&prefix)
+                .copied()
+                .into_iter()
+                .chain(
+                    self.progress
+                        .iter()
+                        .filter(|(key, _)| key.starts_with(&prefix))
+                        .map(|(_, i)| *i),
+                )
+                .min()
+                .unwrap_or(latest),
+            "tool_requested" | "tool_started" | "tool_finished" | "tool_output_delta"
+            | "tool_call" | "tool_result" => {
+                let key = format!("{prefix}/{}", text(&event.data, "tool_id"));
+                self.tools
+                    .get(&key)
+                    .copied()
+                    .into_iter()
+                    .chain(self.messages.get(&prefix).copied())
+                    .min()
+                    .unwrap_or(latest)
+            }
+            "detail_loaded" => {
+                let reference = text(&event.data, "payload_ref");
+                self.cards
+                    .iter()
+                    .position(|c| c.payload_ref.as_deref() == Some(&reference))
+                    .unwrap_or(latest)
+            }
+            "turn_started" | "artifact_created" | "test_result" | "diff" | "command_result"
+            | "usage_update" | "tokens_used" | "session_state" | "command_catalog" => latest,
+            _ => 0,
+        }
+    }
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
+        let affected = self.affected_card(event);
+        let result = self.apply_event(event);
+        self.touch_view_from(affected);
+        self.retention_events = self.retention_events.wrapping_add(1);
+        let large_event = event.data.as_object().is_some_and(|data| {
+            data.values()
+                .filter_map(Value::as_str)
+                .map(str::len)
+                .sum::<usize>()
+                > 64 * 1024
+        });
+        if self.retention_events.is_multiple_of(128) || large_event {
+            if let Err(error) = self.enforce_retention(16 * 1024 * 1024) {
+                let warning = format!("Transcript memory budget unavailable: {error}");
+                if !self.warnings.contains(&warning) {
+                    self.warnings.push(warning);
+                }
+            }
+        }
+        result
+    }
+    fn apply_event(&mut self, event: &EventEnvelope) -> Result<(), String> {
         if self.replaying_history
             && matches!(
                 event.r#type.as_str(),
@@ -483,11 +664,14 @@ impl Model {
                 self.cost_known = false;
                 self.context_known = false;
                 self.cards.clear();
+                self.archive = None;
                 self.agents.clear();
                 self.agents_open = false;
                 self.agent_reports.clear();
+                self.turn_starts.clear();
                 self.plan.clear();
                 self.tools.clear();
+                self.active_tools.clear();
                 self.messages.clear();
                 self.message_segments.clear();
                 self.progress.clear();
@@ -641,6 +825,7 @@ impl Model {
                             other => other,
                         };
                         let index = self.card("main", title, content, "done");
+                        self.cards[index].final_reply = role == "assistant";
                         self.cards[index].detail = Some(self.cards[index].body.clone());
                     }
                 }
@@ -734,6 +919,17 @@ impl Model {
             return Ok(());
         }
         if event.r#type == "detail_loaded" {
+            let reference = text(&event.data, "payload_ref");
+            let indices: Vec<_> = self
+                .cards
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.payload_ref.as_deref() == Some(reference.as_str()))
+                .map(|(i, _)| i)
+                .collect();
+            for index in indices {
+                self.restore_card(index);
+            }
             let reference = text(&event.data, "payload_ref");
             let detail = text(&event.data, "detail");
             let indices: Vec<_> = self
@@ -832,6 +1028,22 @@ impl Model {
         };
         let key = format!("{origin}/{turn}/{agent}/{tool_id}");
         let message_key = format!("{origin}/{turn}/{agent}");
+        if let Some(index) = self.tools.get(&key).copied() {
+            self.restore_card(index);
+        }
+        if let Some(index) = self.messages.get(&message_key).copied() {
+            self.restore_card(index);
+        }
+        let indices: Vec<_> = self
+            .progress
+            .iter()
+            .chain(self.agent_reports.iter())
+            .filter(|(k, _)| k.starts_with(&message_key))
+            .map(|(_, i)| *i)
+            .collect();
+        for index in indices {
+            self.restore_card(index);
+        }
         // Thinking belongs to a chronological phase, not a single card pinned
         // to the start of the turn. Other agents must not end this agent's phase.
         if matches!(
@@ -858,8 +1070,12 @@ impl Model {
                 self.card(agent, "Session", text(data, "cwd"), "ready");
             }
             "turn_started" => {
-                self.status = "working".into();
-                if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
+                self.turn_starts
+                    .insert(message_key.clone(), self.cards.len());
+                if agent == "main" {
+                    self.status = "working".into();
+                }
+                if let Some(main) = self.agents.iter_mut().find(|row| row.id == agent) {
                     main.status = "working".into();
                     main.started_at = (!self.replaying_history).then(Instant::now);
                 }
@@ -875,13 +1091,6 @@ impl Model {
                 let progress_key = format!("{message_key}/thinking");
                 let chunk = text(data, "chunk");
                 let is_status = is_iteration_status(&chunk);
-                if self.progress.get(&progress_key).is_some_and(|index| {
-                    !self.cards[*index].body.is_empty()
-                        && is_iteration_status(&self.cards[*index].body) != is_status
-                }) {
-                    // Keep actual reasoning separate from replaceable status text.
-                    self.finish_thinking_segment(&message_key);
-                }
                 let index = if let Some(index) = self.progress.get(&progress_key) {
                     *index
                 } else {
@@ -899,12 +1108,10 @@ impl Model {
                     self.progress.insert(progress_key, index);
                     index
                 };
-                if is_status {
-                    self.cards[index].body = chunk;
-                } else {
+                if !is_status {
                     self.cards[index].body.push_str(&chunk);
+                    self.cards[index].payload_ref = event.payload_ref.clone();
                 }
-                self.cards[index].payload_ref = event.payload_ref.clone();
             }
             "test_result" => {
                 let status = if data.get("ok").and_then(Value::as_bool) == Some(false)
@@ -1045,6 +1252,7 @@ impl Model {
                     }
                 }
                 self.tools.insert(key, index);
+                self.active_tools.insert(index);
                 if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
                     row.current_tool = name.clone();
                     row.last_tool = name;
@@ -1066,6 +1274,7 @@ impl Model {
                     index
                 };
                 if kind == "tool_started" {
+                    self.active_tools.insert(index);
                     self.cards[index].status = "running".into();
                     self.cards[index].started_at = (!self.replaying_history).then(Instant::now);
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
@@ -1076,6 +1285,7 @@ impl Model {
                 } else if kind == "tool_output_delta" {
                     append_running_tool_output(&mut self.cards[index].body, &text(data, "chunk"));
                 } else {
+                    self.active_tools.remove(&index);
                     self.cards[index].status = if tool_succeeded(data) {
                         "done"
                     } else {
@@ -1101,7 +1311,14 @@ impl Model {
                             .map(safe_text)
                             .unwrap_or_else(|| pretty_json(output));
                         self.cards[index].detail = Some(detail);
-                        self.cards[index].payload_ref = None;
+                        self.cards[index].payload_ref =
+                            if data.get("cached_full_payload").and_then(Value::as_bool)
+                                == Some(true)
+                            {
+                                event.payload_ref.clone()
+                            } else {
+                                None
+                            };
                     } else if let Some(reference) = &event.payload_ref {
                         self.cards[index].detail = None;
                         self.cards[index].payload_ref = Some(reference.clone());
@@ -1129,11 +1346,16 @@ impl Model {
                     self.cards[index].metadata = metadata.join(" · ");
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
                         if row.current_tool_id == tool_id {
-                            let next = self.cards.iter().rev().find(|card| {
-                                card.agent == agent
-                                    && !card.tool_name.is_empty()
-                                    && matches!(card.status.as_str(), "requested" | "running")
-                            });
+                            let next = self
+                                .active_tools
+                                .iter()
+                                .rev()
+                                .map(|&i| &self.cards[i])
+                                .find(|card| {
+                                    card.agent == agent
+                                        && !card.tool_name.is_empty()
+                                        && matches!(card.status.as_str(), "requested" | "running")
+                                });
                             row.current_tool = next.map(|c| c.title.clone()).unwrap_or_default();
                             row.current_tool_id =
                                 next.map(|c| c.tool_id.clone()).unwrap_or_default();
@@ -1296,8 +1518,17 @@ impl Model {
                     row.update_usage(data);
                 }
                 if let Some(per_agent) = data.get("per_agent").and_then(Value::as_object) {
-                    for row in &mut self.agents {
-                        if let Some(usage) = per_agent.get(&row.id) {
+                    for (id, usage) in per_agent {
+                        if !self.agents.iter().any(|row| &row.id == id) {
+                            self.agents.push(Agent {
+                                id: id.clone(),
+                                label: safe_text(id),
+                                status: "idle".into(),
+                                historical: self.replaying_history,
+                                ..Agent::default()
+                            });
+                        }
+                        if let Some(row) = self.agents.iter_mut().find(|row| &row.id == id) {
                             row.update_usage(usage);
                         }
                     }
@@ -1360,7 +1591,7 @@ impl Model {
                 } else {
                     self.card(agent, &text(data, "title"), body, &text(data, "level"))
                 };
-                if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
+                if event.payload_ref.is_some() && self.cards[index].body.is_empty() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else {
                     self.cards[index].detail = Some(self.cards[index].body.clone());
@@ -1492,16 +1723,18 @@ impl Model {
                 }
             }
             "turn_ended" | "agent_complete" => {
-                self.status = if text(data, "outcome") == "cancelled" {
+                let outcome = if text(data, "outcome") == "cancelled" {
                     "cancelled"
                 } else if data.get("ok").and_then(Value::as_bool) == Some(false) {
                     "failed"
                 } else {
                     "complete"
+                };
+                if agent == "main" {
+                    self.status = outcome.into();
                 }
-                .into();
-                if let Some(main) = self.agents.iter_mut().find(|row| row.id == "main") {
-                    main.status = self.status.clone();
+                if let Some(main) = self.agents.iter_mut().find(|row| row.id == agent) {
+                    main.status = outcome.into();
                     if let Some(started) = main.started_at.take() {
                         main.elapsed_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
                     }
@@ -1516,7 +1749,7 @@ impl Model {
                             "requested" | "running" | "unknown"
                         )
                     {
-                        self.cards[*index].status = if self.status == "cancelled" {
+                        self.cards[*index].status = if outcome == "cancelled" {
                             "cancelled"
                         } else {
                             "incomplete"
@@ -1530,7 +1763,7 @@ impl Model {
                     if (key == &message_key || key.starts_with(&prefix))
                         && self.cards[*index].status == "streaming"
                     {
-                        self.cards[*index].status = if self.status == "cancelled" {
+                        self.cards[*index].status = if outcome == "cancelled" {
                             "cancelled"
                         } else {
                             "done"
@@ -1540,14 +1773,56 @@ impl Model {
                 }
                 for (key, index) in &self.tools {
                     if key.starts_with(&prefix) {
+                        self.active_tools.remove(index);
                         self.cards[*index].started_at = None;
                         self.cards[*index].tool_id.clear();
                     }
                 }
                 self.messages.remove(&message_key);
                 self.progress.retain(|key, _| !key.starts_with(&prefix));
-                let index = self.card(agent, "Turn", text(data, "summary"), &self.status.clone());
-                if event.payload_ref.is_some() && self.cards[index].body.len() <= 220 {
+                let start = self.turn_starts.remove(&message_key).unwrap_or_else(|| {
+                    self.tools
+                        .iter()
+                        .filter(|(key, _)| key.starts_with(&prefix))
+                        .map(|(_, index)| *index)
+                        .min()
+                        .unwrap_or(self.cards.len())
+                });
+                if agent == "main" && outcome == "complete" {
+                    if let Some(&index) = self
+                        .message_segments
+                        .get(&message_key)
+                        .and_then(|items| items.last())
+                    {
+                        // A tool-only ending can have earlier assistant commentary.
+                        if !self.cards[index + 1..].iter().any(|card| {
+                            card.agent == agent
+                                && (!card.tool_name.is_empty() || card.title == "Thinking")
+                        }) {
+                            self.cards[index].final_reply = true;
+                        }
+                    }
+                }
+                let summary = turn_summary(&self.cards[start..], agent, &text(data, "summary"));
+                // Short successful answers need no extra completion card.
+                if summary.is_none()
+                    && outcome == "complete"
+                    && text(data, "summary").is_empty()
+                    && event.payload_ref.is_none()
+                {
+                    return Ok(());
+                }
+                if summary.is_some() && event.payload_ref.is_some() {
+                    let result = self.card(agent, "Assistant", text(data, "summary"), outcome);
+                    self.cards[result].payload_ref = event.payload_ref.clone();
+                }
+                let index = self.card(
+                    agent,
+                    "Turn",
+                    summary.unwrap_or_else(|| text(data, "summary")),
+                    outcome,
+                );
+                if event.payload_ref.is_some() && self.cards[index].body.is_empty() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else if data.get("summary").is_some() {
                     self.cards[index].detail = Some(self.cards[index].body.clone());
@@ -1556,8 +1831,13 @@ impl Model {
                 if let Some(ms) = data.get("duration_ms").and_then(Value::as_f64) {
                     metadata.push(format!("{:.1}s", ms / 1000.0));
                 }
-                if self.cost > 0.0 {
-                    metadata.push(format!("${:.4}", self.cost));
+                // Session cumulative cost is not a turn cost. Only label explicitly scoped data.
+                if let Some(cost) = data
+                    .get("turn_cost_usd")
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                {
+                    metadata.push(format!("${cost:.4}"));
                 }
                 self.cards[index].metadata = metadata.join(" · ");
             }
@@ -1566,13 +1846,13 @@ impl Model {
                 let title = if title.is_empty() { "Artifact" } else { &title };
                 let kind = text(data, "kind");
                 let mime = text(data, "mime");
+                let path = text(data, "path");
+                let format = artifact_format(&mime, &path, &kind);
                 let pages = data.get("pages").and_then(Value::as_u64);
                 let bytes = data.get("bytes").and_then(Value::as_u64);
                 let mut metadata = Vec::new();
-                if !mime.is_empty() {
-                    metadata.push(mime);
-                } else if !kind.is_empty() {
-                    metadata.push(kind.clone());
+                if !format.is_empty() {
+                    metadata.push(format);
                 }
                 if let Some(pages) = pages {
                     metadata.push(format!("{pages} page{}", if pages == 1 { "" } else { "s" }));
@@ -1580,13 +1860,55 @@ impl Model {
                 if let Some(bytes) = bytes {
                     metadata.push(format_artifact_size(bytes));
                 }
-                let path = text(data, "path");
-                let preview = if path.is_empty() {
-                    "Alt+O opens this artifact".to_owned()
-                } else {
-                    path
-                };
+                let url = data
+                    .get("open_url")
+                    .or_else(|| data.get("url"))
+                    .and_then(Value::as_str)
+                    .filter(|value| crate::browser_links::valid_url(value));
+                let mut lines = Vec::new();
+                if !path.is_empty() {
+                    lines.push(path.clone());
+                }
+                if let Some(read) = artifact_read_progress(data, pages) {
+                    lines.push(read);
+                } else if kind == "document" || pages.is_some() {
+                    lines.push("Reading progress not reported".into());
+                }
+                if let (Some(width), Some(height)) = (
+                    data.get("width").and_then(Value::as_u64),
+                    data.get("height").and_then(Value::as_u64),
+                ) {
+                    lines.push(format!("{width} × {height} pixels"));
+                }
+                lines.push(
+                    if url.is_some() {
+                        "Open in browser below · Alt+O opens"
+                    } else if !path.is_empty() {
+                        "Alt+O opens · Alt+L shows file link"
+                    } else {
+                        "No opening target supplied"
+                    }
+                    .into(),
+                );
+                let preview = lines.join("\n");
                 let index = self.card(agent, title, preview, "done");
+                if mime.starts_with("image/")
+                    || matches!(
+                        std::path::Path::new(&path)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase()
+                            .as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                {
+                    self.cards[index].preview = Some(if path.is_empty() {
+                        crate::rich_preview::Preview::Unavailable("No local image supplied".into())
+                    } else {
+                        crate::rich_preview::Preview::Pending(path.clone())
+                    });
+                }
                 self.cards[index].primary = if kind.is_empty() {
                     "artifact".into()
                 } else {
@@ -1605,6 +1927,24 @@ impl Model {
             }
             _ => {}
         }
+        if data.get("cached_full_payload").and_then(Value::as_bool) == Some(true) {
+            if let Some(reference) = event.payload_ref.as_deref() {
+                for card in self
+                    .cards
+                    .iter_mut()
+                    .filter(|c| c.payload_ref.as_deref() == Some(reference))
+                {
+                    if card.body.is_empty() {
+                        card.body = text(data, "output")
+                            .lines()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                    }
+                    card.detail = None;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1612,6 +1952,7 @@ impl Model {
         self.cards
             .iter()
             .flat_map(|card| {
+                let card = card.materialized();
                 let mut lines = vec![format!(
                     "[{}] {}{} ({})",
                     card.status,
@@ -1643,6 +1984,80 @@ fn is_iteration_status(value: &str) -> bool {
 }
 
 // Saved resume progress is transient UI, never part of the recovered conversation.
+fn turn_summary(cards: &[Card], agent: &str, supplied: &str) -> Option<String> {
+    let cards: Vec<_> = cards.iter().filter(|card| card.agent == agent).collect();
+    let tools: Vec<_> = cards.iter().filter(|c| !c.tool_name.is_empty()).collect();
+    let mut files = std::collections::BTreeSet::new();
+    let mut edits = 0;
+    for card in &cards {
+        if card.status == "done"
+            && matches!(
+                card.tool_name.as_str(),
+                "write_file"
+                    | "edit_file"
+                    | "multi_edit"
+                    | "apply_patch"
+                    | "write_project"
+                    | "delete_file"
+            )
+        {
+            edits += 1;
+            if matches!(
+                card.tool_name.as_str(),
+                "write_file" | "edit_file" | "multi_edit" | "delete_file"
+            ) && !card.primary.is_empty()
+            {
+                files.insert(card.primary.as_str());
+            }
+        }
+        if card.title == "Diff" && !card.primary.is_empty() {
+            files.insert(card.primary.as_str());
+        }
+    }
+    if tools.len() <= 5 && edits == 0 && files.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    if !supplied.is_empty() {
+        lines.push(supplied.to_owned());
+    }
+    if !files.is_empty() {
+        lines.push(format!(
+            "Changed  {}",
+            files.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    } else if edits > 0 {
+        lines.push(format!(
+            "Changes  {edits} successful edit operations · file list unavailable"
+        ));
+    }
+    lines.push(format!("Tools    {} calls", tools.len()));
+    let checks: Vec<_> = cards.iter().filter(|c| c.title == "Check").collect();
+    if checks.is_empty() {
+        lines.push("Checks   No check results reported".into());
+    }
+    for check in checks {
+        lines.push(format!(
+            "Checks   {} · {}",
+            check.status,
+            check.materialized().body
+        ));
+    }
+    let failed = tools
+        .iter()
+        .filter(|c| matches!(c.status.as_str(), "failed" | "incomplete" | "cancelled"))
+        .count();
+    if failed > 0 {
+        lines.push(format!(
+            "Not done {failed} tool calls failed, were cancelled or have no final result"
+        ));
+    }
+    if edits > 0 {
+        lines.push("Next     /diff to review changes".into());
+    }
+    Some(lines.join("\n"))
+}
+
 fn command_output(name: &str, output: &str) -> String {
     if name != "/resume" && !name.starts_with("/resume ") && !name.starts_with("Command /resume") {
         return safe_text(output);
@@ -1652,6 +2067,71 @@ fn command_output(name: &str, output: &str) -> String {
         .filter(|line| !(line.contains('%') && (line.contains('█') || line.contains('░'))))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn artifact_format(mime: &str, path: &str, kind: &str) -> String {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match (mime, extension.as_str()) {
+        ("application/pdf", _) | (_, "pdf") => "PDF".into(),
+        (_, "doc" | "docx" | "odt") => "Document".into(),
+        (_, "ppt" | "pptx" | "odp") => "Slides".into(),
+        (_, "xls" | "xlsx" | "ods" | "csv") => "Spreadsheet".into(),
+        (mime, _) if mime.starts_with("image/") => mime.trim_start_matches("image/").to_uppercase(),
+        ("", _) => kind.into(),
+        _ => mime.into(),
+    }
+}
+
+fn artifact_read_progress(data: &Value, total: Option<u64>) -> Option<String> {
+    let raw = data.get("pages_read")?.as_array()?;
+    let mut pages: Vec<_> = raw
+        .iter()
+        .take(4096)
+        .filter_map(Value::as_u64)
+        .filter(|page| *page > 0 && total.is_none_or(|total| *page <= total))
+        .collect();
+    pages.sort_unstable();
+    pages.dedup();
+    if pages.is_empty() {
+        return raw.is_empty().then(|| "No pages read".into());
+    }
+    let mut ranges = Vec::new();
+    let mut start = pages[0];
+    let mut end = start;
+    for page in pages
+        .iter()
+        .copied()
+        .skip(1)
+        .chain(std::iter::once(u64::MAX))
+    {
+        if end.checked_add(1) == Some(page) && page != u64::MAX {
+            end = page;
+            continue;
+        }
+        ranges.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}–{end}")
+        });
+        start = page;
+        end = page;
+    }
+    let omitted = ranges.len().saturating_sub(12);
+    let mut label = format!(
+        "Read pages {}",
+        ranges.into_iter().take(12).collect::<Vec<_>>().join(", ")
+    );
+    if omitted > 0 || raw.len() > 4096 {
+        label.push_str(" … (partial list)");
+    }
+    if let Some(total) = total {
+        label.push_str(&format!(" of {total}"));
+    }
+    Some(label)
 }
 
 fn format_artifact_size(bytes: u64) -> String {

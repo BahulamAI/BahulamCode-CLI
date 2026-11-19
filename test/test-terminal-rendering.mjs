@@ -595,14 +595,14 @@ test('REPL prompt keeps a small bottom cushion', () => {
 
 test('REPL mounts one startup writer before banner and restores locally before network checks', () => {
   const replSource = fs.readFileSync(new URL('../src/terminal/repl.mjs', import.meta.url), 'utf-8');
-  const mount = replSource.indexOf('const inputDockActive = mountInputDock({ preserveScrollback: true })');
+  const mount = replSource.indexOf('if (!startInRust) mountInputDock({ preserveScrollback: true })');
   assert.ok(mount > 0 && mount < replSource.indexOf('if (!cliArgs.resume) printBanner(auth);', mount));
   assert.ok(!replSource.includes('function trackStartupOutput(chunk)'));
   assert.ok(!replSource.includes('startInlineSpinner'));
   assert.ok(replSource.includes('deferProjectIndex: true'));
   assert.ok(replSource.includes('registerProjectRoots(rootsToRegister, { deferIndex: true, bypassProjectMarkers: false })'));
-  const prompt = replSource.indexOf('  showPrompt();', mount);
-  assert.ok(prompt < replSource.indexOf('void refreshStartupChecks(', mount));
+  const prompt = replSource.indexOf('if (!startInRust) showPrompt();', mount);
+  assert.ok(prompt > mount && prompt < replSource.indexOf('void refreshStartupChecks(', mount));
 });
 
 test('resume preview avoids circular renderEvent import during repl split', () => {

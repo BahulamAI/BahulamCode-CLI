@@ -45,7 +45,9 @@ def pump(predicate):
 
 def send(keys, predicate):
     os.write(master, keys)
-    pump(predicate)
+    # Let the standalone Escape timeout settle before another key sequence.
+    sent = time.monotonic()
+    pump(lambda text: time.monotonic() - sent >= 0.08 and predicate(text))
 
 def commands():
     return json.load(open(os.path.join(home, 'commands.json')))
@@ -64,6 +66,8 @@ try:
     calls = json.load(open(os.path.join(home, 'editor.json')))
     assert len(calls) == 2 and all(not c['raw'] and c['mode'] == 0o600 for c in calls)
     assert all(c['args'] == ['--wait'] and not os.path.exists(c['path']) for c in calls), 'Editor arguments/cleanup'
+    send(b'\x1b[118;6u', lambda t: any(c['type'] == 'run_slash' and c['data']['name'] == '/attach' and c['data']['args'] == ['clipboard'] for c in commands()))
+    assert 'edited answer' in screen.text() and 'line two' in screen.text(), 'Image attachment changed the draft'
     send(b'\x15\x16', lambda t: 'paste alpha' in t and 'second' in t and 'Pasted text' in t)
     send(b'\r', lambda t: 'Ask Bahulam' in t and any(c['type'] == 'prompt' for c in commands()))
     assert [c['data']['text'] for c in commands() if c['type'] == 'prompt'] == ['paste alpha\nsecond']

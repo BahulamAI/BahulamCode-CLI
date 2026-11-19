@@ -38,6 +38,7 @@ impl std::fmt::Display for OpenError {
 }
 
 fn candidate_text(card: &Card) -> String {
+    let card = card.materialized();
     let primary = card.primary.chars().take(8 * 1024).collect::<String>();
     let body = card.body.chars().take(8 * 1024).collect::<String>();
     format!("{primary}\n{body}")
@@ -171,7 +172,25 @@ fn uses_system_viewer(path: &Path) -> bool {
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str(),
-        "html" | "htm" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf"
+        "html"
+            | "htm"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "svg"
+            | "pdf"
+            | "doc"
+            | "docx"
+            | "odt"
+            | "ppt"
+            | "pptx"
+            | "odp"
+            | "xls"
+            | "xlsx"
+            | "ods"
+            | "csv"
     )
 }
 

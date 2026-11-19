@@ -17,6 +17,7 @@
  *     the socket server, not the SSE stream).
  */
 
+import { displayPayloadStore } from './display-payload-store.mjs';
 import { createEventLog } from '../core/event-log.mjs';
 import { createHash } from 'node:crypto';
 import { toLegacyEvent } from '../protocol/compat.mjs';
@@ -83,10 +84,10 @@ let _wireState = null;
  * opt in with `live: true`. Existing subscribers get v1; a new client can
  * request schema version 2.
  */
-export function registerBroadcaster(fn, { schemaVersion = 1, live = false } = {}) {
+export function registerBroadcaster(fn, { schemaVersion = 1, live = false, retainDetails = false } = {}) {
   if (typeof fn !== 'function') throw new Error('registerBroadcaster: fn must be a function');
   if (![1, 2].includes(schemaVersion)) throw new Error('Unsupported broadcaster schema version');
-  const subscriber = { fn, schemaVersion, live: live === true };
+  const subscriber = { fn, schemaVersion, live: live === true, retainDetails: retainDetails === true };
   _broadcasters.push(subscriber);
   return () => {
     const i = _broadcasters.indexOf(subscriber);
@@ -237,14 +238,16 @@ function compactToolPrimary(args = {}) {
   return '';
 }
 
-function agentTokenTotal(tokens) {
-  if (typeof tokens === 'number') return tokens;
-  if (!tokens || typeof tokens !== 'object') return undefined;
-  if (typeof tokens.total === 'number') return tokens.total;
-  if (typeof tokens.total_tokens === 'number') return tokens.total_tokens;
-  const input = tokens.input_tokens ?? tokens.input;
-  const output = tokens.output_tokens ?? tokens.output;
-  return typeof input === 'number' || typeof output === 'number' ? (typeof input === 'number' ? input : 0) + (typeof output === 'number' ? output : 0) : undefined;
+function normalizedUsage(src = {}) {
+  src ||= {};
+  const usage = src.tokens ?? src.usage ?? src;
+  const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  const input = numeric(usage.input_tokens ?? usage.total_input_tokens ?? usage.prompt_tokens ?? usage.input ?? usage.prompt);
+  const output = numeric(usage.output_tokens ?? usage.total_output_tokens ?? usage.completion_tokens ?? usage.output ?? usage.completion);
+  const total = numeric(typeof usage === 'number' ? usage : usage.total_tokens ?? usage.total)
+    ?? (input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined);
+  return { input_tokens: input, output_tokens: output, total_tokens: total,
+    cost_usd: numeric(src.cost_usd ?? src.total_cost_usd ?? src.cost ?? usage.cost_usd ?? usage.total_cost_usd ?? usage.total_cost ?? usage.cost) };
 }
 
 function project(type, src, identity) {
@@ -286,7 +289,7 @@ function project(type, src, identity) {
     case 'turn_ended':
       return { ok: !src.error && src.ok !== false && identity.sourceType !== 'cancelled',
         outcome: identity.sourceType === 'cancelled' ? 'cancelled' : undefined,
-        summary: asText(src.summary ?? src.message ?? src.reason), duration_ms: src.duration_ms };
+        summary: asText(src.summary ?? src.message ?? src.reason), duration_ms: src.duration_ms, turn_cost_usd: src.turn_cost_usd };
     case 'agent_spawned':
       return { agent_id: identity.agentId, type: src.type || src.worker || src.name || src.agent || src.sub_agent || 'agent',
         task: src.task || src.query || '', model: src.model };
@@ -296,21 +299,19 @@ function project(type, src, identity) {
       const error = asText(src.error);
       return { agent_id: identity.agentId, ok,
         report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
-        tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens, total_tokens: agentTokenTotal(src.tokens),
-        cost_usd: src.cost_usd, elapsed_ms: src.elapsed_ms ?? src.duration_ms, error };
+        tokens: typeof src.tokens === 'number' ? {total:src.tokens} : (src.tokens ?? normalizedUsage(src)), ...normalizedUsage(src), elapsed_ms: src.elapsed_ms ?? src.duration_ms, error };
     }
     case 'agent_status':
       return { agent_id: identity.agentId, status: src.status || src.message || (identity.sourceType === 'complete' ? 'done' : identity.sourceType === 'cancelled' ? 'cancelled' : 'working'),
-        current_tool_id: src.current_tool_id, tokens: typeof src.tokens === 'number' ? { total: src.tokens } : src.tokens, total_tokens: agentTokenTotal(src.tokens), cost_usd: src.cost_usd, elapsed_ms: src.elapsed_ms };
+        current_tool_id: src.current_tool_id, tokens: typeof src.tokens === 'number' ? {total:src.tokens} : (src.tokens ?? normalizedUsage(src)), ...normalizedUsage(src), elapsed_ms: src.elapsed_ms };
     case 'plan_updated':
       return { items: src.items || src.steps || src.plan?.items || [] };
     case 'usage_update': {
       const usage = src.usage || src;
-      return { input_tokens: usage.input_tokens ?? usage.total_input_tokens ?? usage.prompt_tokens ?? usage.prompt,
-        output_tokens: usage.output_tokens ?? usage.total_output_tokens ?? usage.completion_tokens ?? usage.completion,
+      return { ...normalizedUsage(src),
         cache_tokens: usage.cache_tokens ?? usage.cache_read_input_tokens ?? usage.cached_tokens ?? usage.cached,
-        context_used_pct: usage.context_used_pct, cost_usd: usage.cost_usd ?? usage.total_cost,
-        per_agent: usage.per_agent || {} };
+        context_used_pct: usage.context_used_pct,
+        per_agent: Object.fromEntries(Object.entries(usage.per_agent || {}).map(([id, value]) => [id, normalizedUsage(value)])) };
     }
     case 'test_result':
       return { ...src, ok: !src.error && src.ok !== false && src.success !== false && !(Number(src.failed) > 0) };
@@ -387,8 +388,10 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
       const serialized = JSON.stringify(data);
       let payloadRef;
       if (Buffer.byteLength(serialized) > 4096) {
-        payloadRef = `memory:${sessionId}:${nextSeq}`;
-        if (!retainTransientPayload(payloadRef, serialized)) {
+        const retain = _broadcasters.some(subscriber => subscriber.live && subscriber.retainDetails);
+        payloadRef = retain ? displayPayloadStore().put(sessionId, serialized, event) : undefined;
+        if (!payloadRef) payloadRef = `memory:${sessionId}:${nextSeq}`;
+        if (payloadRef.startsWith('memory:') && !retainTransientPayload(payloadRef, serialized)) {
           throw new Error('live detail payload exceeds the 64 MiB display limit');
         }
         data = boundedMetadata(data);

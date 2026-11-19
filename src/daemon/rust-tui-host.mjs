@@ -56,6 +56,31 @@ function fallbackEvent(event) {
   return { type: event.type, agent_id: take(event.agent_id, 100), data };
 }
 
+export function rustTuiBinary(env = process.env) {
+  const name = process.platform === 'win32' ? 'bahulam-tui.exe' : 'bahulam-tui';
+  const bundled = path.resolve(here, '../../native', process.platform + '-' + process.arch, name);
+  const debug = path.resolve(here, '../../rust/target/debug', name);
+  return env.BAHULAM_TUI_BINARY || (fs.existsSync(debug) ? debug : bundled);
+}
+
+// A matching architecture alone cannot establish that the host loader and
+// shared libraries can run the packaged executable (especially on Linux).
+export function rustTuiAvailable() {
+  const binary = rustTuiBinary();
+  return fs.existsSync(binary) && spawnSync(binary, ['--version'], {
+    stdio: 'ignore', timeout: 2000, windowsHide: true,
+  }).status === 0;
+}
+
+// cmd.exe and Windows Terminal commonly omit TERM. Node's Windows TTY
+// implementation can determine color depth directly from the console.
+export function rustColorLevel(env, fallback, platform = process.platform, stream = process.stdout) {
+  if (platform !== 'win32' || env.TERM || !stream.isTTY ||
+      env.NO_COLOR || env.BAHULAM_PLAIN === '1' || env.FORCE_COLOR !== undefined) return fallback;
+  const depth = stream.getColorDepth?.(env) ?? 4;
+  return depth >= 24 ? 'truecolor' : depth >= 8 ? 'ansi256' : depth >= 4 ? 'ansi16' : 'none';
+}
+
 /** Host the Rust renderer while Node keeps ownership of the coding session. */
 export function startRustTuiHost({
   onCommand,
@@ -65,7 +90,7 @@ export function startRustTuiHost({
   mode,
   maxPendingEventBytes = MAX_PENDING_EVENT_BYTES,
 } = {}) {
-  const binary = env.BAHULAM_TUI_BINARY || path.resolve(here, '../../rust/target/debug/bahulam-tui');
+  const binary = rustTuiBinary(env);
   if (!fs.existsSync(binary)) throw new Error(`Rust terminal client is not built: ${binary}. Run npm run tui:build.`);
   const savedTerminalMode = captureTerminalMode();
   const requestedTheme = (env.BAHULAM_THEME || '').toLowerCase();
@@ -75,7 +100,7 @@ export function startRustTuiHost({
     BAHULAM_TUI_PROBE_CACHE: cachedCapabilities(capabilityIdentity),
     BAHULAM_THEME: ['dark','light','high-contrast','ansi'].includes(requestedTheme) ? requestedTheme : term().appearance,
     BAHULAM_TUI_THEME_SOURCE: ['dark','light','high-contrast','ansi'].includes(requestedTheme) ? 'explicit' : 'inferred',
-    BAHULAM_TUI_COLOR_LEVEL: term().colorLevel,
+    BAHULAM_TUI_COLOR_LEVEL: rustColorLevel(env, term().colorLevel),
     BAHULAM_TUI_PALETTE: JSON.stringify({ dark: TOKENS, light: LIGHT_TOKENS }),
   } });
   const events = child.stdio[3];
@@ -136,7 +161,7 @@ export function startRustTuiHost({
       if (recentEvents.length > 100) recentEvents.shift();
     }
     void send(event);
-  }, { schemaVersion: 2, live: true });
+  }, { schemaVersion: 2, live: true, retainDetails: process.env.BAHULAM_TUI_RETAIN_DETAILS !== '0' });
 
   commands.setEncoding('utf8');
   commands.on('data', chunk => {

@@ -1,0 +1,44 @@
+name: Package Rust terminal
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, platform: darwin-arm64 }
+          - { runner: macos-15-intel, platform: darwin-x64 }
+          - { runner: ubuntu-22.04, platform: linux-x64 }
+          - { runner: ubuntu-22.04-arm, platform: linux-arm64 }
+          - { runner: windows-2022, platform: win32-x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run tui:build:runtime
+      - run: tar -cf runtime-${{ matrix.platform }}.tar native/${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.platform }}
+          path: runtime-${{ matrix.platform }}.tar
+  package:
+    needs: runtime
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          merge-multiple: true
+      - run: |
+          for archive in runtime-*.tar; do tar -xf "$archive"; done
+          npm pack --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bahulam-code
+          path: '*.tgz'

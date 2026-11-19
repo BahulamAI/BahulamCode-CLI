@@ -468,7 +468,7 @@ fn assistant_replies_are_complete_and_scrollable_in_both_views() {
                     "missing line {n} in inline={inline}"
                 );
             }
-            assert!(render(u16::MAX).contains("Reply line 200"));
+            assert!(render(usize::MAX).contains("Reply line 200"));
         }
     }
 }
@@ -527,7 +527,7 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
                 );
             }
             let mut tail = Terminal::new(TestBackend::new(width, height)).unwrap();
-            tail.draw(|frame| draw(frame, &model, u16::MAX)).unwrap();
+            tail.draw(|frame| draw(frame, &model, usize::MAX)).unwrap();
             let tail_text = tail
                 .backend()
                 .buffer()
@@ -551,7 +551,7 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
                     draw_with_input(
                         frame,
                         &model,
-                        u16::MAX,
+                        usize::MAX,
                         false,
                         "dark",
                         "",
@@ -613,7 +613,7 @@ fn tool_results_restore_compact_previews_and_grey_details_actions() {
             draw_with_input(
                 frame,
                 &model,
-                u16::MAX,
+                usize::MAX,
                 false,
                 "dark",
                 "",
@@ -681,7 +681,7 @@ fn tool_results_restore_compact_previews_and_grey_details_actions() {
     );
     let done_status = tool_row
         .iter()
-        .position(|cell| cell.symbol() == "✓")
+        .position(|cell| matches!(cell.symbol(), "✓" | "+"))
         .unwrap();
     assert_eq!(
         tool_row[done_status].bg,
@@ -721,7 +721,7 @@ fn input_panel_is_distinct_and_footer_has_separate_status_and_hints() {
             draw_with_input(
                 frame,
                 &model,
-                u16::MAX,
+                usize::MAX,
                 true,
                 "dark",
                 "draft",
@@ -855,7 +855,7 @@ fn details_click_targets_the_painted_card_after_scroll_resize_and_approval() {
         }
         for inline in [true, false] {
             for (width, height) in [(120, 36), (60, 28)] {
-                for scroll in [0, u16::MAX] {
+                for scroll in [0, usize::MAX] {
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                     terminal
                         .draw(|frame| {
@@ -1104,6 +1104,7 @@ fn thinking_phases_follow_tools_and_replace_iteration_status_without_losing_reas
         ),
         ("thinking_delta", "main", json!({"chunk":"continues."})),
         ("message_end", "main", json!({"text":"Final answer"})),
+        ("turn_ended", "main", json!({"ok":true})),
     ];
     for (index, (kind, agent, data)) in steps.into_iter().enumerate() {
         model
@@ -1119,11 +1120,12 @@ fn thinking_phases_follow_tools_and_replace_iteration_status_without_losing_reas
         main.iter()
             .map(|card| card.title.as_str())
             .collect::<Vec<_>>(),
-        ["Thinking", "read_file", "Thinking", "Thinking", "Assistant"]
+        ["Thinking", "read_file", "Thinking", "Assistant"]
     );
-    assert_eq!(main[0].body, "Processing (iteration 2)...");
-    assert_eq!(main[2].body, "Processing (iteration 4)...");
-    assert_eq!(main[3].body, "Actual reasoning continues.");
+    assert!(main[0].body.is_empty());
+    assert_eq!(main[2].body, "Actual reasoning continues.");
+    assert!(main[3].final_reply);
+    assert!(!main[..3].iter().any(|card| card.final_reply));
     assert!(main.iter().all(|card| card.status == "done"));
     for inline in [true, false] {
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -1156,9 +1158,21 @@ fn thinking_phases_follow_tools_and_replace_iteration_status_without_losing_reas
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.find("iteration 2").unwrap() < text.find("read_file").unwrap());
-        assert!(text.find("read_file").unwrap() < text.find("iteration 4").unwrap());
-        assert!(text.find("iteration 4").unwrap() < text.find("Final answer").unwrap());
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        let answer = rows
+            .iter()
+            .position(|row| row.contains("Final answer"))
+            .unwrap();
+        assert!(rows[answer - 1].contains("────") || rows[answer - 1].contains("----"));
+        assert!(!text.contains("Processing (iteration"));
+        assert!(text.find("read_file").unwrap() < text.find("Actual reasoning").unwrap());
+        assert!(text.find("Actual reasoning").unwrap() < text.find("Final answer").unwrap());
     }
 }
 
@@ -1949,8 +1963,9 @@ fn artifacts_show_metadata_and_open_valid_urls_without_claiming_image_rendering(
     let card = model.cards.last().unwrap();
     assert_eq!(card.title, "Report");
     assert_eq!(card.status, "done");
-    assert_eq!(card.metadata, "application/pdf · 2 pages · 2.5 KB");
-    assert_eq!(card.body, "reports/output.pdf");
+    assert_eq!(card.metadata, "PDF · 2 pages · 2.5 KB");
+    assert!(card.body.starts_with("reports/output.pdf\n"));
+    assert!(card.body.contains("Reading progress not reported"));
     assert_eq!(
         card.open_url.as_deref(),
         Some("https://example.test/report")
@@ -2002,7 +2017,7 @@ fn browser_targets_match_painted_rows_after_wrap_scroll_resize_and_replacement()
     let before = model.transcript();
     for inline in [true, false] {
         for (width, height) in [(120, 36), (60, 24), (40, 20)] {
-            for scroll in [0, 12, u16::MAX] {
+            for scroll in [0, 12, usize::MAX] {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal
                     .draw(|f| {
@@ -2052,7 +2067,7 @@ fn browser_targets_match_painted_rows_after_wrap_scroll_resize_and_replacement()
                         "inline Markdown label must be clickable"
                     );
                 }
-                if scroll == u16::MAX {
+                if scroll == usize::MAX {
                     assert!(!hits.is_empty());
                 }
                 for hit in hits {
@@ -2721,4 +2736,521 @@ fn metadata_only_worker_tool_progress_updates_the_row_without_control_handles() 
     model.apply(&event(3,"notice","worker",json!({"current_tool":"grep","tool_active":false,"progress_key":"agent-tool","cause":"Found results"}))).unwrap();
     assert!(model.agents[0].current_tool.is_empty());
     assert_eq!(model.agents[0].last_tool, "grep");
+}
+
+#[test]
+fn turn_summary_is_gated_and_uses_observed_results_without_hiding_answers() {
+    for (count, edit, failed, expected) in [
+        (5, false, false, false),
+        (6, false, false, true),
+        (1, true, false, true),
+        (1, true, true, false),
+    ] {
+        let mut model = Model::default();
+        let mut seq = 0;
+        let mut send = |kind: &str, data: serde_json::Value| {
+            seq += 1;
+            model.apply(&event(seq, kind, "main", data)).unwrap();
+        };
+        send("turn_started", json!({"text":"Work"}));
+        for i in 0..count {
+            send(
+                "tool_requested",
+                json!({"tool_id":format!("t{i}"),"name":if edit {"edit_file"} else {"read_file"},"args":{"path":"src/app.rs"}}),
+            );
+            send(
+                "tool_finished",
+                json!({"tool_id":format!("t{i}"),"ok":!failed,"output":"result"}),
+            );
+        }
+        send(
+            "message_end",
+            json!({"text":"Full final answer stays here"}),
+        );
+        send("turn_ended", json!({"ok":true}));
+        let summary = model.cards.iter().find(|c| c.title == "Turn");
+        assert_eq!(summary.is_some(), expected);
+        if let Some(summary) = summary {
+            assert!(summary.body.contains("No check results reported"));
+            assert_eq!(summary.body.contains("Changed"), edit);
+            assert!(!summary.is_foldable());
+        }
+        assert!(model
+            .cards
+            .iter()
+            .any(|c| c.body == "Full final answer stays here"));
+        let before = model.cards.len();
+        model
+            .apply(&event(
+                seq + 1,
+                "turn_started",
+                "main",
+                json!({"text":"Short follow-up"}),
+            ))
+            .unwrap();
+        model
+            .apply(&event(seq + 2, "turn_ended", "main", json!({"ok":true})))
+            .unwrap();
+        assert!(!model.cards[before..].iter().any(|c| c.title == "Turn"));
+    }
+}
+
+#[test]
+fn document_cards_show_observed_reading_progress_in_both_views() {
+    use bahulam_tui::render::draw_with_view;
+    let mut model = Model::default();
+    model.apply(&event(1,"artifact_created","main",json!({"item_id":"doc1","title":"Quarterly report","kind":"document","path":"reports/quarterly report.pdf","pages":24,"pages_read":[6,1,2,3,4,5,5,0,99],"bytes":1800000}))).unwrap();
+    assert!(model.cards[0].body.contains("Read pages 1–6 of 24"));
+    for inline in [true, false] {
+        for width in [60, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_with_view(
+                        frame,
+                        &model,
+                        0,
+                        true,
+                        "dark",
+                        "draft",
+                        5,
+                        &HashSet::new(),
+                        Some(0),
+                        true,
+                        None,
+                        None,
+                        0,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("Read pages 1–6 of 24"), "{text}");
+            assert!(text.contains("Alt+O opens"));
+        }
+    }
+    model
+        .apply(&event(
+            2,
+            "artifact_created",
+            "main",
+            json!({"title":"Unread","kind":"document","pages":10,"pages_read":[]}),
+        ))
+        .unwrap();
+    assert!(model.cards[1].body.contains("No pages read"));
+    assert!(model.cards[1].body.contains("No opening target supplied"));
+    model
+        .apply(&event(
+            3,
+            "artifact_created",
+            "main",
+            json!({"title":"Unknown","kind":"document","pages":10,"pages_read":[-1,0,11,"all"]}),
+        ))
+        .unwrap();
+    assert!(model.cards[2]
+        .body
+        .contains("Reading progress not reported"));
+}
+
+#[test]
+fn transcript_scroll_and_anchors_cross_65535_rows() {
+    use bahulam_tui::render::{draw_with_view, history_geometry};
+    let mut model = Model::default();
+    let body = (0..70_000)
+        .map(|n| format!("History row {n:05}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    model
+        .apply(&event(1, "message_end", "main", json!({"text":body})))
+        .unwrap();
+    for inline in [true, false] {
+        let expanded = HashSet::new();
+        let geometry = history_geometry(
+            &model,
+            Rect::new(0, 0, 100, 32),
+            "draft",
+            inline,
+            &expanded,
+            "dark",
+            None,
+        );
+        assert!(geometry.end > 69_000);
+        for offset in [65_534, 65_536, 69_000, geometry.end] {
+            let anchor = geometry.anchor(offset, false).unwrap();
+            assert_eq!(geometry.anchored_scroll(anchor), offset);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_view(
+                    frame,
+                    &model,
+                    geometry.end,
+                    true,
+                    "dark",
+                    "draft",
+                    0,
+                    &expanded,
+                    Some(0),
+                    true,
+                    None,
+                    None,
+                    0,
+                    None,
+                    0,
+                    inline,
+                )
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("History row 69999"), "inline={inline}");
+        assert!(text.contains("draft"));
+    }
+}
+
+#[test]
+fn native_image_protocols_render_only_inside_a_complete_visible_preview() {
+    use bahulam_tui::{
+        native_graphics::Graphics,
+        render::draw_with_view,
+        rich_preview::{load_with_graphics, Preview},
+    };
+    use ratatui_image::picker::ProtocolType;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/fixtures/rich-preview/gradient.png");
+    for (protocol, marker) in [
+        (ProtocolType::Kitty, "\x1b_G"),
+        (ProtocolType::Sixel, "\x1bP"),
+        (ProtocolType::Iterm2, "\x1b]1337;"),
+    ] {
+        for inline in [true, false] {
+            let mut model = Model::default();
+            model
+                .apply(&event(
+                    1,
+                    "artifact_created",
+                    "main",
+                    json!({"title":"Image fixture","kind":"image","mime":"image/png","path":path}),
+                ))
+                .unwrap();
+            let image = load_with_graphics(
+                &path,
+                Some(Graphics {
+                    protocol,
+                    cell: [10, 20],
+                }),
+            )
+            .unwrap();
+            assert!(image.native.is_some());
+            model.cards.last_mut().unwrap().preview = Some(Preview::Ready(image));
+            let render = |width, height| {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        draw_with_view(
+                            frame,
+                            &model,
+                            0,
+                            true,
+                            "dark",
+                            "draft",
+                            0,
+                            &HashSet::new(),
+                            None,
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+            };
+            assert!(
+                render(120, 50).contains(marker),
+                "{protocol:?} inline={inline}"
+            );
+            assert!(
+                !render(24, 12).contains(marker),
+                "clipped graphics escaped viewport"
+            );
+        }
+    }
+}
+
+#[test]
+fn archived_transcript_keeps_rendering_copy_details_and_late_tool_results() {
+    use bahulam_tui::{copy_menu, render::draw_with_view};
+    let mut model = Model::default();
+    let reply = "## Archived answer\n```rust\nlet preserved = 42;\n```\nhttps://example.com\n";
+    model
+        .apply(&event(1, "message_end", "main", json!({"text":reply})))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "tool_requested",
+            "main",
+            json!({"tool_id":"first","name":"read_file","args":{"path":"one.rs"}}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            3,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"first","ok":true,"output":"complete original result\n".repeat(200)}),
+        ))
+        .unwrap();
+    let before = model.transcript();
+    let copy_before = copy_menu::selection_text(&model, "transcript", 0);
+    model.enforce_retention(0).unwrap();
+    assert!(model
+        .cards
+        .iter()
+        .all(|c| c.body.is_empty() && c.detail.is_none()));
+    assert_eq!(model.transcript(), before);
+    assert_eq!(
+        copy_menu::selection_text(&model, "transcript", 0),
+        copy_before
+    );
+    assert_eq!(
+        copy_menu::selection_text(&model, "last", 0).as_deref(),
+        Some(reply)
+    );
+    assert_eq!(
+        copy_menu::selection_text(&model, "code:0:0", 0).as_deref(),
+        Some("let preserved = 42;\n")
+    );
+    assert!(model.cards[1].has_detail());
+    assert_eq!(model.request_details(1), None);
+    model.enforce_retention(0).unwrap();
+    for inline in [true, false] {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_view(
+                    frame,
+                    &model,
+                    0,
+                    true,
+                    "dark",
+                    "draft",
+                    0,
+                    &HashSet::new(),
+                    None,
+                    true,
+                    None,
+                    None,
+                    0,
+                    None,
+                    0,
+                    inline,
+                )
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("Archived answer"));
+        assert!(text.contains("Show details"));
+        assert!(text.contains("draft"));
+    }
+    model
+        .apply(&event(
+            4,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"first","ok":true,"output":"late corrected result"}),
+        ))
+        .unwrap();
+    assert_eq!(
+        model.cards[1].materialized().detail.as_deref(),
+        Some("late corrected result")
+    );
+    assert_eq!(model.cards.len(), 2);
+}
+
+#[test]
+fn per_agent_accounting_can_arrive_before_agent_lifecycle() {
+    let mut model = Model::default();
+    model.apply(&event(1,"usage_update","main",json!({"input_tokens":100,"output_tokens":20,"cost_usd":0.3,"per_agent":{"worker":{"total_tokens":40,"cost_usd":0.05}}}))).unwrap();
+    let worker = model.agents.iter().find(|a| a.id == "worker").unwrap();
+    assert_eq!(worker.tokens, Some(40));
+    assert_eq!(worker.cost, Some(0.05));
+    model
+        .apply(&event(
+            2,
+            "agent_spawned",
+            "worker",
+            json!({"type":"explore"}),
+        ))
+        .unwrap();
+    assert_eq!(model.agents.iter().filter(|a| a.id == "worker").count(), 1);
+    assert_eq!(
+        model.agents.iter().find(|a| a.id == "worker").unwrap().cost,
+        Some(0.05)
+    );
+    model
+        .apply(&event(
+            3,
+            "turn_ended",
+            "main",
+            json!({"summary":"done","turn_cost_usd":0.02}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards.last().unwrap().metadata, "$0.0200");
+}
+
+#[test]
+fn reopened_cached_tool_details_are_loaded_instead_of_accepting_the_truncated_inline_copy() {
+    let mut model = Model::default();
+    let mut saved = event(
+        1,
+        "tool_finished",
+        "main",
+        json!({"tool_id":"cached","ok":true,"output":"short saved prefix\n[...truncated...]","cached_full_payload":true}),
+    );
+    saved.payload_ref = Some("display:session:full".into());
+    model.apply(&saved).unwrap();
+    assert!(model.cards[0].body.contains("short saved prefix"));
+    assert_eq!(
+        model.request_details(0).as_deref(),
+        Some("display:session:full")
+    );
+    model
+        .apply(&event(
+            2,
+            "detail_loaded",
+            "main",
+            json!({"payload_ref":"display:session:full","detail":"complete retained result"}),
+        ))
+        .unwrap();
+    assert_eq!(
+        model.cards[0].detail.as_deref(),
+        Some("complete retained result")
+    );
+}
+
+#[test]
+fn turn_summary_does_not_count_interleaved_child_tools() {
+    let mut model = Model::default();
+    model
+        .apply(&event(1, "turn_started", "main", json!({"text":"parent"})))
+        .unwrap();
+    for i in 0..6 {
+        model.apply(&event(2+i*2, "tool_requested", "child", json!({"tool_id":format!("child-{i}"),"name":"edit_file","args":{"path":"child-only.rs"}}))).unwrap();
+        model
+            .apply(&event(
+                3 + i * 2,
+                "tool_finished",
+                "child",
+                json!({"tool_id":format!("child-{i}"),"ok":true,"output":"edited"}),
+            ))
+            .unwrap();
+    }
+    model
+        .apply(&event(20, "turn_ended", "main", json!({"ok":true})))
+        .unwrap();
+    assert!(!model
+        .cards
+        .iter()
+        .any(|card| card.agent == "main" && card.title == "Turn"));
+    model
+        .apply(&event(21, "turn_ended", "child", json!({"ok":true})))
+        .unwrap();
+    let summary = model
+        .cards
+        .iter()
+        .find(|card| card.agent == "child" && card.title == "Turn")
+        .unwrap();
+    assert!(summary.body.contains("6 calls"));
+    assert!(summary.body.contains("child-only.rs"));
+}
+
+#[test]
+fn completing_latest_tool_restores_only_pending_tools_for_its_agent() {
+    let mut model = Model::default();
+    for (seq, agent, id) in [
+        (1, "main", "first"),
+        (2, "child", "child"),
+        (3, "main", "last"),
+    ] {
+        model
+            .apply(&event(
+                seq,
+                "tool_requested",
+                agent,
+                json!({"tool_id":id,"name":"read_file"}),
+            ))
+            .unwrap();
+    }
+    model
+        .apply(&event(
+            4,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"last","ok":true}),
+        ))
+        .unwrap();
+    assert_eq!(
+        model
+            .agents
+            .iter()
+            .find(|a| a.id == "main")
+            .unwrap()
+            .current_tool_id,
+        "first"
+    );
+    model
+        .apply(&event(
+            5,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"first","ok":true}),
+        ))
+        .unwrap();
+    assert!(model
+        .agents
+        .iter()
+        .find(|a| a.id == "main")
+        .unwrap()
+        .current_tool_id
+        .is_empty());
+    assert_eq!(
+        model
+            .agents
+            .iter()
+            .find(|a| a.id == "child")
+            .unwrap()
+            .current_tool_id,
+        "child"
+    );
 }

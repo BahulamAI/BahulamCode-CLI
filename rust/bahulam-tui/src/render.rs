@@ -839,7 +839,7 @@ pub fn details_at(
     expanded: &HashSet<usize>,
     theme: &str,
     agent_filter: Option<&str>,
-    scroll: u16,
+    scroll: usize,
     position: Position,
 ) -> Option<usize> {
     if model.interaction.is_some() {
@@ -855,17 +855,17 @@ pub fn details_at(
         return None;
     }
     let geometry = history_geometry(model, area, input, inline, expanded, theme, agent_filter);
-    let offset = if scroll == u16::MAX {
+    let offset = if scroll == usize::MAX {
         geometry.end
     } else {
         scroll
     };
-    let row = offset as usize + (position.y - inner.y) as usize;
+    let row = offset + (position.y - inner.y) as usize;
     let (index, start) = geometry
         .cards
         .iter()
         .rev()
-        .find(|(_, start)| *start as usize <= row)?;
+        .find(|(_, start)| *start <= row)?;
     let card = &model.cards[*index];
     if card.is_message() {
         return None;
@@ -882,7 +882,7 @@ pub fn details_at(
         ),
         inner.width as usize,
     );
-    let line = lines.get(row - *start as usize)?;
+    let line = lines.get(row - *start)?;
     let text: String = line
         .spans
         .iter()
@@ -997,7 +997,7 @@ pub fn mouse_panel_at_view(
     }
 }
 
-pub fn draw(frame: &mut Frame, model: &Model, scroll: u16) {
+pub fn draw(frame: &mut Frame, model: &Model, scroll: usize) {
     draw_with_input(
         frame,
         model,
@@ -1021,7 +1021,7 @@ pub fn draw(frame: &mut Frame, model: &Model, scroll: u16) {
 pub fn draw_with_input(
     frame: &mut Frame,
     model: &Model,
-    scroll: u16,
+    scroll: usize,
     live: bool,
     theme: &str,
     input: &str,
@@ -1033,7 +1033,7 @@ pub fn draw_with_input(
     focused_agent: Option<usize>,
     focus_panel: u8,
     detail_card: Option<usize>,
-    detail_scroll: u16,
+    detail_scroll: usize,
 ) {
     draw_with_view(
         frame,
@@ -1059,7 +1059,7 @@ pub fn draw_with_input(
 pub fn draw_with_view(
     frame: &mut Frame,
     model: &Model,
-    scroll: u16,
+    scroll: usize,
     live: bool,
     theme: &str,
     input: &str,
@@ -1071,7 +1071,7 @@ pub fn draw_with_view(
     focused_agent: Option<usize>,
     focus_panel: u8,
     detail_card: Option<usize>,
-    detail_scroll: u16,
+    detail_scroll: usize,
     inline: bool,
 ) {
     BROWSER_LINK_HITS.with(|hits| hits.borrow_mut().clear());
@@ -1117,7 +1117,14 @@ pub fn draw_with_view(
         model
             .cards
             .get(index)
-            .map(|card| detail_lines(card, p))
+            .map(|card| {
+                let inner = transcript_rect(columns[0], inline);
+                wrap_rows(detail_lines(card, p), inner.width as usize)
+                    .into_iter()
+                    .skip(detail_scroll)
+                    .take(inner.height as usize)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
     } else {
         let inner = transcript_rect(columns[0], inline);
@@ -1190,14 +1197,6 @@ pub fn draw_with_view(
         Paragraph::new(transcript)
             .style(Style::default().fg(p.text))
             .wrap(Wrap { trim: false })
-            .scroll((
-                if detail_card.is_some() {
-                    detail_scroll
-                } else {
-                    0
-                },
-                0,
-            ))
             .block({
                 let block = Block::default()
                     .padding(Padding::horizontal(1))
@@ -1216,6 +1215,25 @@ pub fn draw_with_view(
             }),
         columns[0],
     );
+    if detail_card.is_none()
+        && model.approval.is_none()
+        && model.interaction.is_none()
+        && !input.starts_with('/')
+    {
+        draw_native_images(
+            frame,
+            model,
+            area,
+            input,
+            inline,
+            expanded,
+            focused,
+            theme,
+            agent_filter,
+            scroll,
+            p,
+        );
+    }
 
     if !compact {
         draw_agents(
@@ -1582,9 +1600,12 @@ pub fn draw_with_view(
         }
         // Reserve borders, title/message, spacing, continuation markers and
         // controls before choosing the session window. Labels occupy one row.
-        let visible = (height.saturating_sub(8) as usize)
-            .max(1)
-            .min(interaction.options.len());
+        let option_rows = usize::from(height).saturating_sub(lines.len() + 3);
+        let visible = if interaction.options.len() <= option_rows {
+            interaction.options.len()
+        } else {
+            option_rows.saturating_sub(2).max(1)
+        };
         let start = interaction
             .selected
             .saturating_sub(visible.saturating_sub(1))
@@ -1805,6 +1826,18 @@ fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let mut rows = Vec::new();
     for line in lines {
+        // UTF-8 byte length bounds the displayed width. Most transcript lines
+        // fit without wrapping, so retain their spans and skip segmentation.
+        if line
+            .spans
+            .iter()
+            .map(|span| span.content.len())
+            .sum::<usize>()
+            <= width
+        {
+            rows.push(line);
+            continue;
+        }
         let indent = list_hanging_indent(&line);
         // Leave room for a wide grapheme even in extremely narrow terminals.
         let indent = if indent + 2 <= width { indent } else { 0 };
@@ -1905,11 +1938,12 @@ fn card_row_count(
     })
 }
 
+#[derive(Clone)]
 pub struct HistoryGeometry {
     pub total_rows: usize,
-    pub end: u16,
-    pub page: u16,
-    pub cards: Vec<(usize, u16)>,
+    pub end: usize,
+    pub page: usize,
+    pub cards: std::sync::Arc<Vec<(usize, usize)>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1918,27 +1952,27 @@ pub struct HistoryAnchor {
     offset: usize,
 }
 impl HistoryGeometry {
-    pub fn anchor(&self, scroll: u16, follow: bool) -> Option<HistoryAnchor> {
-        let top = if follow { self.end } else { scroll } as usize;
-        let (card, row) = self
+    pub fn anchor(&self, scroll: usize, follow: bool) -> Option<HistoryAnchor> {
+        let top = if follow { self.end } else { scroll };
+        let position = self
             .cards
-            .iter()
-            .rev()
-            .find(|(_, row)| *row as usize <= top)?;
+            .partition_point(|(_, row)| *row <= top)
+            .checked_sub(1)?;
+        let (card, row) = &self.cards[position];
         Some(HistoryAnchor {
             card: *card,
-            offset: top - *row as usize,
+            offset: top - *row,
         })
     }
-    pub fn anchored_scroll(&self, anchor: HistoryAnchor) -> u16 {
+    pub fn anchored_scroll(&self, anchor: HistoryAnchor) -> usize {
         let Some(index) = self.cards.iter().position(|(card, _)| *card == anchor.card) else {
             return 0;
         };
-        let start = self.cards[index].1 as usize;
+        let start = self.cards[index].1;
         let end = self
             .cards
             .get(index + 1)
-            .map(|(_, row)| *row as usize)
+            .map(|(_, row)| *row)
             .unwrap_or(self.total_rows);
         // If collapse removed the very row being viewed, keep that tool in view.
         let offset = if anchor.offset < end.saturating_sub(start) {
@@ -1946,7 +1980,7 @@ impl HistoryGeometry {
         } else {
             0
         };
-        (start + offset).min((u16::MAX - 1) as usize) as u16
+        start.saturating_add(offset)
     }
 }
 
@@ -1966,27 +2000,94 @@ pub fn history_geometry(
     };
     let inner = transcript_rect(layout.columns[0], inline);
     let width = inner.width as usize;
-    let page = inner.height.max(1);
+    let page = inner.height.max(1) as usize;
     let p = palette(theme);
-    let mut total = 0usize;
-    let mut cards = Vec::new();
-    for (index, card) in model
-        .cards
-        .iter()
-        .enumerate()
-        .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")))
-    {
-        cards.push((index, total.min((u16::MAX - 1) as usize) as u16));
-        total += card_row_count(card, index, expanded, p, width);
-    }
+    let (cards, total) = measured_rows(model, expanded, p, width, agent_filter);
     HistoryGeometry {
         total_rows: total,
-        end: total
-            .saturating_sub(page as usize)
-            .min((u16::MAX - 1) as usize) as u16,
+        end: total.saturating_sub(page),
         page,
         cards,
     }
+}
+
+type RowOffsets = (std::sync::Arc<Vec<(usize, usize)>>, usize);
+type RowOffsetEntry = (u64, u64, Vec<usize>, RowOffsets);
+thread_local! {
+    static ROW_OFFSETS: RefCell<Vec<RowOffsetEntry>> = const { RefCell::new(Vec::new()) };
+}
+fn measured_rows(
+    model: &Model,
+    expanded: &HashSet<usize>,
+    p: Palette,
+    width: usize,
+    agent_filter: Option<&str>,
+) -> RowOffsets {
+    let mut hash = DefaultHasher::new();
+    (model as *const Model as usize).hash(&mut hash);
+    width.hash(&mut hash);
+    agent_filter.hash(&mut hash);
+    let mut expanded: Vec<_> = expanded.iter().copied().collect();
+    expanded.sort_unstable();
+    let key = hash.finish();
+    ROW_OFFSETS.with(|cache| {
+        let previous = cache
+            .borrow()
+            .iter()
+            .find(|(stored, _, _, _)| *stored == key)
+            .cloned();
+        let expanded_set: HashSet<_> = expanded.iter().copied().collect();
+        let (mut cards, mut total, from) = if let Some((_, revision, old_expanded, rows)) = previous
+        {
+            if revision == model.view_revision && old_expanded == expanded {
+                return rows;
+            }
+            if let Some(from) = model.changed_since(revision) {
+                let cut = rows.0.partition_point(|(index, _)| *index < from);
+                let mut prefix = Vec::with_capacity(cut);
+                let mut total = 0;
+                for (position, (index, start)) in rows.0.iter().take(cut).enumerate() {
+                    prefix.push((*index, total));
+                    if old_expanded.binary_search(index).is_ok()
+                        != expanded.binary_search(index).is_ok()
+                    {
+                        total +=
+                            card_row_count(&model.cards[*index], *index, &expanded_set, p, width);
+                    } else {
+                        total += rows
+                            .0
+                            .get(position + 1)
+                            .map(|(_, row)| *row)
+                            .unwrap_or(rows.1)
+                            - start;
+                    }
+                }
+                (prefix, total, from)
+            } else {
+                (Vec::new(), 0, 0)
+            }
+        } else {
+            (Vec::new(), 0, 0)
+        };
+        for (index, card) in model
+            .cards
+            .iter()
+            .enumerate()
+            .skip(from)
+            .filter(|(_, c)| c.belongs_to(agent_filter.unwrap_or("main")))
+        {
+            cards.push((index, total));
+            total += card_row_count(card, index, &expanded_set, p, width);
+        }
+        let rows = (std::sync::Arc::new(cards), total);
+        let mut cache = cache.borrow_mut();
+        cache.retain(|(stored, _, _, _)| *stored != key);
+        if cache.len() >= 2 {
+            cache.remove(0);
+        }
+        cache.push((key, model.view_revision, expanded, rows.clone()));
+        rows
+    })
 }
 
 struct BrowserSpan {
@@ -2077,7 +2178,7 @@ fn transcript_lines(
     p: Palette,
     width: usize,
     agent_filter: Option<&str>,
-    scroll: u16,
+    scroll: usize,
     visible_rows: usize,
 ) -> Vec<BrowserRow> {
     let budget = visible_rows.max(1);
@@ -2087,7 +2188,7 @@ fn transcript_lines(
         .iter()
         .enumerate()
         .filter(|(_, card)| card.belongs_to(agent_filter.unwrap_or("main")));
-    if scroll == u16::MAX {
+    if scroll == usize::MAX {
         // Only render enough cards to fill the tail, even in very long sessions.
         for (index, card) in cards.rev() {
             let lines = browser_card_rows(
@@ -2105,15 +2206,13 @@ fn transcript_lines(
         }
         output.reverse();
     } else {
-        let mut skip = scroll as usize;
-        for (index, card) in cards {
-            if skip > 0 {
-                let height = card_row_count(card, index, expanded, p, width);
-                if skip >= height {
-                    skip -= height;
-                    continue;
-                }
-            }
+        let (offsets, _) = measured_rows(model, expanded, p, width, agent_filter);
+        let first = offsets
+            .partition_point(|(_, row)| *row <= scroll)
+            .saturating_sub(1);
+        let mut skip = scroll.saturating_sub(offsets.get(first).map(|(_, row)| *row).unwrap_or(0));
+        for (index, _) in offsets.iter().skip(first).copied() {
+            let card = &model.cards[index];
             let rows = browser_card_rows(
                 card_lines(card, index, expanded, focused, p, width, usize::MAX),
                 card,
@@ -2186,6 +2285,8 @@ fn readable_detail(text: &str) -> String {
 }
 
 fn detail_lines(card: &crate::model::Card, p: Palette) -> Vec<Line<'static>> {
+    let materialized = card.materialized();
+    let card = materialized.as_ref();
     let detail = card.detail.as_deref().unwrap_or(&card.body);
     let mut lines = if card.detail_loading && card.detail.is_none() {
         vec![Line::from(Span::styled(
@@ -2217,6 +2318,22 @@ fn card_lines(
     width: usize,
     budget: usize,
 ) -> Vec<Line<'static>> {
+    card_lines_with_preview(card, index, expanded, focused, p, width, budget, &mut None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn card_lines_with_preview(
+    card: &crate::model::Card,
+    index: usize,
+    expanded: &HashSet<usize>,
+    focused: Option<usize>,
+    p: Palette,
+    width: usize,
+    budget: usize,
+    preview_row: &mut Option<usize>,
+) -> Vec<Line<'static>> {
+    let materialized = card.materialized();
+    let card = materialized.as_ref();
     let (glyph, color) = match card.status.as_str() {
         "requested" | "queued" => ("○", p.muted),
         "running" | "streaming" | "working" => ("◐", p.info),
@@ -2337,6 +2454,14 @@ fn card_lines(
     let mut heading = Line::from(heading);
     if is_user {
         heading.style = heading.style.bg(p.input_bg);
+    }
+    // Use the existing speaker row so the boundary does not move the viewport.
+    if card.final_reply {
+        let rule = if ascii_glyphs() { "-" } else { "─" };
+        heading.spans.push(Span::styled(
+            rule.repeat(width.saturating_sub(heading.width())),
+            Style::default().fg(p.border),
+        ));
     }
     let mut lines = vec![heading];
     if budget <= 1 {
@@ -2467,6 +2592,48 @@ fn card_lines(
         }
     }
     lines.extend(rendered_body.into_iter().take(body_room));
+    if let Some(preview) = &card.preview {
+        *preview_row = Some(wrap_rows(lines.clone(), width).len());
+        let level = std::env::var("BAHULAM_TUI_COLOR_LEVEL").unwrap_or_else(|_| "truecolor".into());
+        let mut rows = crate::rich_preview::image_rows(preview, width, p.input_bg);
+        let disabled = level == "none"
+            || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
+            || std::env::var("FORCE_COLOR").is_ok_and(|v| matches!(v.trim(), "0" | "false"));
+        if disabled {
+            for row in &mut rows {
+                for span in &mut row.spans {
+                    if let Some(Color::Rgb(r, g, b)) = span.style.fg {
+                        let luminance = (r as usize * 3 + g as usize * 6 + b as usize) / 10;
+                        span.content =
+                            [" ", "░", "▒", "▓", "█"][(luminance * 4 / 255).min(4)].into();
+                        span.style = Style::default();
+                    }
+                }
+            }
+        }
+        for row in &mut rows {
+            for span in &mut row.spans {
+                span.style.fg = span.style.fg.map(|color| limit_color(color, &level));
+                span.style.bg = span.style.bg.map(|color| limit_color(color, &level));
+            }
+        }
+        lines.extend(rows);
+    }
+    if !foldable {
+        let mut remaining = body;
+        while let Some((_, after)) = remaining.split_once("```mermaid\n") {
+            let Some((source, rest)) = after.split_once("```") else {
+                break;
+            };
+            if let Some(preview) = crate::rich_preview::diagram(source, width.saturating_sub(6)) {
+                let preview = preview.into_iter().map(|s| {
+                    Line::from(Span::styled(format!("   {s}"), Style::default().fg(p.info)))
+                });
+                lines.extend(preview);
+            }
+            remaining = rest;
+        }
+    }
     if has_more && lines.len() < budget {
         let hint = if is_expanded {
             " · Esc to collapse".to_owned()
@@ -3114,6 +3281,9 @@ mod row_measurement_tests {
             ("123) ", "123) ", p.numbered_emphasis),
         ] {
             let card = Card {
+                final_reply: false,
+                archived: None,
+                preview: None,
                 agent: "main".into(),
                 title: "Assistant".into(),
                 primary: String::new(),
@@ -3194,6 +3364,9 @@ mod row_measurement_tests {
     #[test]
     fn history_measurements_follow_streams_resize_fold_and_replacement() {
         let mut card = Card {
+            final_reply: false,
+            archived: None,
+            preview: None,
             agent: "main".into(),
             title: "shell".into(),
             primary: String::new(),
@@ -3235,6 +3408,9 @@ mod row_measurement_tests {
             *cache.borrow_mut() = (0..MAX_ROW_MEASUREMENTS as u64).map(|i| (i, 1)).collect();
         });
         let card = Card {
+            final_reply: false,
+            archived: None,
+            preview: None,
             agent: "main".into(),
             title: "Prompt".into(),
             primary: String::new(),
@@ -3251,5 +3427,79 @@ mod row_measurement_tests {
         };
         assert!(card_row_count(&card, 0, &HashSet::new(), palette("dark"), 80) > 1);
         ROW_MEASUREMENTS.with(|cache| assert!(cache.borrow().len() <= MAX_ROW_MEASUREMENTS));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_native_images(
+    frame: &mut Frame,
+    model: &Model,
+    area: Rect,
+    input: &str,
+    inline: bool,
+    expanded: &HashSet<usize>,
+    focused: Option<usize>,
+    theme: &str,
+    agent_filter: Option<&str>,
+    scroll: usize,
+    p: Palette,
+) {
+    if !model.cards.iter().any(|c| matches!(&c.preview, Some(crate::rich_preview::Preview::Ready(image)) if image.native.is_some())) { return; }
+    let layout = if inline {
+        inline_layout(area, input, model)
+    } else {
+        view_layout(area, input, model)
+    };
+    let inner = transcript_rect(layout.columns[0], inline);
+    let geometry = history_geometry(model, area, input, inline, expanded, theme, agent_filter);
+    let top = if scroll == usize::MAX {
+        geometry.end
+    } else {
+        scroll
+    };
+    let first = geometry
+        .cards
+        .partition_point(|(_, row)| *row <= top)
+        .saturating_sub(1);
+    for (index, start) in geometry.cards[first..]
+        .iter()
+        .copied()
+        .take_while(|(_, row)| *row < top.saturating_add(geometry.page))
+    {
+        let card = &model.cards[index];
+        let Some(crate::rich_preview::Preview::Ready(image)) = &card.preview else {
+            continue;
+        };
+        let Some(native) = &image.native else {
+            continue;
+        };
+        let mut offset = None;
+        card_lines_with_preview(
+            card,
+            index,
+            expanded,
+            focused,
+            p,
+            inner.width as usize,
+            usize::MAX,
+            &mut offset,
+        );
+        let Some(offset) = offset else { continue };
+        let row = start.saturating_add(offset);
+        // Use cell previews for partial images: Sixel/iTerm2 cannot safely clip vertically.
+        if row < top
+            || row.saturating_add(8) > top.saturating_add(inner.height as usize)
+            || inner.width < native.0.size().width.saturating_add(4)
+        {
+            continue;
+        }
+        let target = Rect::new(
+            inner.x + 3,
+            inner.y + (row - top) as u16,
+            inner.width - 4,
+            8,
+        );
+        frame.render_widget(ratatui::widgets::Clear, target);
+        frame.render_widget(ratatui_image::Image::new(&native.0), target);
     }
 }

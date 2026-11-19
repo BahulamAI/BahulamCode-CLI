@@ -112,3 +112,37 @@ test('background agent tools retain their turn after the main turn completes', (
   assert.equal(frames[2].turn_id, frames[5].turn_id);
   assert.notEqual(frames[2].turn_id, frames[6].turn_id);
 });
+
+test('usage aliases and per-agent totals survive projection, including completion-only accounting', () => {
+  const frames = capture('usage-parity', [
+    e('usage_update', { usage: { prompt_tokens: 120, completion_tokens: 30, total_cost_usd: 0.2,
+      per_agent: { worker: { usage: { input: 50, output: 20, cost: 0.07 } } } } }),
+    e('sub_agent_complete', { run_id: 'worker', usage: { prompt_tokens: 50, completion_tokens: 20, total_cost_usd: 0.07 }, report: 'done' }),
+    e('complete', { turn_cost_usd: 0.04 }),
+  ]);
+  assert.equal(frames[0].data.cost_usd, 0.2);
+  assert.equal(frames[0].data.total_tokens, 150);
+  assert.deepEqual({ ...frames[0].data.per_agent.worker }, { input_tokens: 50, output_tokens: 20, total_tokens: 70, cost_usd: 0.07 });
+  assert.equal(frames[1].data.total_tokens, 70);
+  assert.equal(frames[1].data.cost_usd, 0.07);
+  assert.equal(frames[2].data.turn_cost_usd, 0.04);
+});
+
+test('every declared remote stream event has a presentation route', async () => {
+  const { EVENT_TYPES } = await import('../src/core/stream-client.mjs');
+  for (const type of Object.values(EVENT_TYPES)) {
+    const frames = capture(`coverage-${type}`, [e(type, { message: 'fixture', tool_call_id: 'call', tool: 'read_file' })]);
+    assert.equal(frames.length, 1, `unhandled producer event: ${type}`);
+  }
+});
+
+test('Rust host uses Windows console depth when cmd omits TERM', async () => {
+  const { rustColorLevel } = await import('../src/daemon/rust-tui-host.mjs');
+  for (const [depth, level] of [[1, 'none'], [4, 'ansi16'], [8, 'ansi256'], [24, 'truecolor']]) {
+    const consoleStream = { isTTY: true, getColorDepth: () => depth };
+    assert.equal(rustColorLevel({}, 'none', 'win32', consoleStream), level);
+    assert.equal(rustColorLevel({ NO_COLOR: '1' }, 'none', 'win32', consoleStream), 'none');
+    assert.equal(rustColorLevel({ TERM: 'dumb' }, 'none', 'win32', consoleStream), 'none');
+    assert.equal(rustColorLevel({}, 'none', 'win32', { isTTY: false }), 'none');
+  }
+});

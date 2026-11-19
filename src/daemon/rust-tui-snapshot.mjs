@@ -49,9 +49,11 @@ export function rustResumeItems(users, replay, history) {
       })) remove.add(item);
     }
     flush();
-    output.push(...group.filter(item => !remove.has(item)).map(item => {
-      if (item.kind === 'user' || item.kind === 'history') return { kind: 'message', role: item.message.role || 'assistant', content: item.message.content ?? '' };
-      return { kind: 'event', event: item.event.event };
+    output.push(...group.filter(item => !remove.has(item)).flatMap(item => {
+      if (item.kind === 'user' || item.kind === 'history') return [{ kind: 'message', role: item.message.role || 'assistant', content: item.message.content ?? '' }];
+      const event = item.event.event;
+      if (event?.type === 'attachments') return rustAttachmentArtifacts(event.data).map(artifact => ({kind:'event',event:{...event,...artifact}}));
+      return [{ kind: 'event', event }];
     }));
   }
   return output;
@@ -81,4 +83,18 @@ export function rustSessionUsage(session) {
     cost_estimated: !session.costAccurate, context_tokens: Math.ceil(bytes / 4),
     context_used_pct: bytes / 4 / window.tokens * 100, context_estimated: true,
     context_window: window.tokens, context_window_source: window.source };
+}
+
+// Display only: retain the exact already-resolved attachment path; never re-read the clipboard on replay.
+export function rustAttachmentArtifacts(data = {}) {
+  return [...(data.attachments || []), ...(data.documents || [])].filter(item => item && typeof item.path === 'string').map(item => ({
+    type: 'artifact_created', data: {
+      item_id: item.id, kind: item.kind || (String(item.mime_type).startsWith('image/') ? 'image' : 'document'),
+      title: `Attached ${item.kind || 'file'} · ${item.name || item.path.split(/[\\/]/).at(-1)}`,
+      path: item.path, mime: item.mime_type, bytes: item.bytes,
+      ...(Number.isInteger(item.width) && item.width > 0 ? {width:item.width}:{}),
+      ...(Number.isInteger(item.height) && item.height > 0 ? {height:item.height}:{}),
+      ...(Number.isInteger(item.pages) ? {pages:item.pages}:{}),
+    },
+  }));
 }

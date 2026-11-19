@@ -330,6 +330,99 @@ resume. Protocol/cache-invariance and real approval-policy tests cover the share
 bridge changes. Native terminal acceptance still needs the user's live run;
 producer coverage and agent-summary UX remain release work.
 
+## Next batch: end-of-turn summary foundation
+
+Rust now adds an operational summary for turns with successful edit operations,
+reported diffs, or more than five tool calls. It lists observed file targets,
+check results and unresolved tool calls, and suggests `/diff` after edits.
+Absent check evidence is explicitly reported rather than treated as verification.
+Short successful turns produce no empty completion card; producer-supplied
+completion text remains available. This changes Rust presentation only.
+
+This is the summary foundation, not full summary acceptance: exact aggregate
+line changes, per-turn/per-agent token deltas, complete multi-file patch target
+metadata and editor-opening actions still need a separate reviewed batch.
+
+## Rich output batch 1: document/artifact metadata
+
+Document cards now show readable formats, supplied page counts and file sizes,
+and validated `pages_read` ranges. Missing reading progress is labeled unknown;
+an empty reported list means no pages read. Image metadata can show supplied pixel
+dimensions. These are metadata cards, not terminal image thumbnails.
+
+A supplied web target uses the existing clickable browser action; local targets
+advertise Alt+O and Alt+L. Missing targets no longer claim they can be opened.
+Office documents, slides and spreadsheets use the system viewer instead of the
+configured code editor. No files are opened or fetched during redraw.
+
+The existing artifact event contract accepts optional pages_read/width/height.
+Producers must supply reading metadata; the renderer does not infer it from prose
+or claim the agent read a document solely because an artifact exists. Real native
+viewer validation remains part of the OS matrix. Next rich-output batches cover
+thumbnail decoding/layout, graphics transport and diagram rendering.
+
+## Rich output batch 2: portable image and flowchart previews
+
+`npm run tui:rich-demo` opens a local, model-free fixture containing a PNG,
+a PDF card and a Mermaid flowchart. `/tui inline` and `/tui fullscreen` switch
+layouts; normal scroll, resize, draft input and Ctrl+C twice apply.
+
+PNG/JPEG/WebP artifact paths decode off the UI thread, one at a time, with a
+16 MiB input limit, 4096-pixel dimension limits and an 80 MiB decoder allocation
+budget. Each card retains a small thumbnail; at most 64 decoded previews remain.
+Eight reserved transcript rows avoid loading-time shifts. Half-block colored
+cells follow ordinary terminal scrolling/clearing; color depth is reduced for
+256/16-color profiles and NO_COLOR uses monochrome shading. This is the portable
+fallback, not Kitty/Sixel/iTerm graphics transport. Remote images are not fetched.
+
+Closed Mermaid fences support a conservative flowchart subset: named nodes,
+chains, branches and edge labels, drawn as box/arrow relationships with original
+source retained above. Unsupported syntax stays as source. Diagram parsing is
+bounded and cached across redraws. Sequence diagrams, SVG/raster layout, native
+graphics transport, pasted-image chip expansion, artifact producer coverage and
+higher-resolution previews remain separate acceptance work.
+
+`npm run test:tui:rich` exercises all three content types together in both layouts,
+including narrow/tall resize, scroll cleanup and draft preservation. Native visual
+acceptance still belongs to the user's terminal run.
+
+## Rich output batch 3: sequence diagrams
+
+Mermaid sequence fences now share the cached cell-preview path. The supported
+subset includes explicit/implicit participants, actor declarations, aliases,
+plain autonumber, solid `->>` calls, dashed `-->>` replies and self-calls.
+Participant columns preserve declaration/first-appearance order. Rendering is
+bounded to six participants and 64 messages; narrow layouts or unsupported
+constructs retain the complete source without an inaccurate partial preview.
+Loops/alternatives, activation bars, notes and additional arrow types still
+require further Mermaid work. No browser or external Mermaid process runs.
+
+The model-free rich demo and combined PTY test now include a sequence diagram.
+
+## Sequence continuation: notes and activations
+
+Sequence previews now recognize `activate`/`deactivate`, nested activation depth,
+and arrow `+`/`-` shortcuts (start the recipient, finish the sender). Active
+lifelines use a thick stroke. Notes are boxed annotations explicitly labeled
+with their participant names and placement; their placement is described rather
+than reproducing Mermaid's pixel layout. Notes do not consume message numbers.
+Invalid activation transitions and unsupported/narrow note layouts retain source.
+The combined rich demo now includes a read-only tool note and nested agent/tool
+activation lifetimes. Loops/alternatives and native graphics remain pending.
+
+## Sequence continuation: decision and repetition blocks
+
+Sequence cell previews now show nested `alt`/`else`, `opt` and `loop` groups
+with explicit labels and boundaries. A fixed group gutter keeps participant
+lifelines aligned across nesting. Notes and activation markers remain inside
+their group, and only messages consume automatic numbering.
+
+Nesting is capped at eight levels. Unclosed/orphan blocks, `else` outside an
+`alt`, narrow layouts and activation changes that escape a branch/block fall
+back to complete source. This conservative subset does not claim parallel
+blocks or complete Mermaid semantics. The combined demo now includes a cache
+alternative and nested retry loop alongside its document and image cards.
+
 ## PRD work after backports
 
 This table supersedes older pending tables below. The historical batch sections
@@ -338,17 +431,81 @@ record intermediate states; they are not the current pending-commit list.
 | Workstream | Remaining acceptance/work |
 | --- | --- |
 | Capability detection | CSI mode/keyboard/geometry/DA1 and OSC11 background probing implemented. Graphics, Windows/multiplexer handling and actual per-terminal validation remain. |
-| Rich output | Image/diagram/document presentation with protocol choice, resource limits and readable fallback. Artifact metadata/opening and image attachments are already separate supported paths. |
-| Long sessions | Payload retention across detach/reopen, bounded transcript memory, incremental viewport measurement, scrolling beyond the current u16 row limit and sustained workload benchmarks. Bounded row caching/tool tails alone do not close this. |
+| Rich output | Kitty/Sixel/iTerm2 encoders, bounded higher-resolution images, visible-image loading and pasted-image handoff implemented. Sequence previews add parallel/critical/break groups. Real emulator acceptance and unsupported Mermaid constructs remain. |
+| Long sessions | Private retained payload cache, cold-text archive, usize scrolling and indexed viewport measurement implemented. Total metadata/RSS is not bounded; cold layout and the 2 MiB detail-view limit remain open. |
 | Runtime parity | End-to-end producer/route coverage, including background promotion outside the stream-client route; lifecycle, question routing and support/agent-summary UX acceptance against the PRD. |
 | Native integrations | Real clipboard, external editor, file/link opening, desktop notification, focus/keyboard and signal checks on supported OS/emulators; fake helpers establish routing only. |
-| Distribution | Platform binaries/packages, release resolution instead of a debug build, protocol/version compatibility, clean-install/upgrade checks and signing where needed. Current npm package still does not contain Rust binaries. |
+| Distribution | Platform binaries/packages, release resolution instead of a debug build, protocol/version compatibility, clean-install/upgrade checks and signing where needed. The local npm preview includes native macOS and Linux ARM64 binaries. The manual packaging workflow assembles builds for five targets. |
 | Release gates | Resolve the two pre-existing Node test failures without regressing the live renderer; run macOS/Linux/Windows and VS Code/iTerm2/Ghostty/Windows Terminal/SSH/tmux acceptance. |
 
 The external specs' November 15 implementation notes describe the original
 branch, not release acceptance for this recovery branch. Start the next phase
 from this verified backport inventory rather than importing the old combined
 renderer again.
+
+## November 18 completion work: implementation and measured limits
+
+The canonical JSONL remains authoritative and unchanged. A separate private Rust
+presentation cache retains large results across detach/reopen (256 MiB disk,
+14-day TTL). Reopened truncated events resolve through a session-scoped index;
+ambiguous matches are refused. Expired/evicted results are explicitly unavailable.
+The cache can be disabled with `BAHULAM_TUI_RETAIN_DETAILS=0`.
+
+Cold completed card text is spooled to a private temporary archive, with a
+16 MiB in-memory text target checked periodically. Rendering, copying and late
+tool updates read it back. This is **not a hard process memory limit**: active
+cards, metadata, indexes and transient detail/copy buffers consume additional
+memory. The archive is disposable; canonical history is never rewritten.
+
+Native image encoding uses Kitty, Sixel or iTerm2 where selected, with cell
+fallback for unsupported, clipped or narrow views. Automatic selection does not
+claim real-terminal verification. `BAHULAM_TUI_GRAPHICS=cells` forces fallback.
+Images are loaded on visibility, with at most 64 ready previews and a 16 MiB
+pixel target; encoded protocol storage is additional. Ctrl+Shift+V uses the
+existing Node `/attach clipboard` handoff and preserves the current draft.
+
+On macOS arm64, the release synthetic benchmark with 100,000 tools / 220,000
+events / 120,000 cards measured 2.54 seconds ingestion after replacing the
+completion-time transcript scan with a pending-tool index (103 seconds before).
+Warm frame p95 was 0.69 ms inline and 0.62 ms fullscreen over 100 frames per view.
+Cold layout remained 2.38 / 2.31 seconds. The workload archived 87,602 cards and
+retained about 16.0 MiB of body/detail text. These are synthetic TestBackend
+measurements, not emulator latency or a peak-RSS guarantee. Reproduce with:
+
+```sh
+npm run tui:benchmark -- 100000
+```
+
+Protocol/cache-invariance checks prove unchanged Node context/history bytes.
+Replay tests cover retained-result precedence and interleaved agent-summary
+isolation. Headless Linux Docker testing uses Rust 1.95 and read-only source
+mounts; it does not certify native clipboard, graphics or Windows behavior.
+Release builds use the tested Rust 1.95 toolchain.
+
+Run `npm run tui:native-validation` in each real terminal to exercise the
+model-free rich demo and record explicit pass/fail/unsupported/not-run evidence.
+Reports include OS, terminal, Git revision and actual worktree dirty state.
+SSH to Linux validates the local terminal's rendering, not a remote desktop.
+Windows Terminal and desktop integration acceptance remain outstanding until
+those environments run the checks. No release/version bump is authorized here.
+
+## November 19 runtime build and performance measurements
+
+Run `npm run tui:build:runtime` on a build host to stage its release binary
+under `native/<platform>-<arch>/`. The npm file list includes this directory.
+The host accepts an explicit binary override, uses a debug binary when present
+in a checkout, and otherwise loads the bundled executable. The manual
+`Package Rust terminal` workflow collects macOS ARM64/x64, Linux ARM64/x64
+and Windows x64 builds into a single npm tarball. Local ARM64 Linux builds
+used Debian Bookworm. The other platforms still require native runner results.
+
+On macOS ARM64 the 120,000-card workload measured about 1.4 seconds for
+first layout after skipping grapheme wrapping on lines that fit. Peak RSS
+was 127,434,752 bytes in a separate run using `/usr/bin/time -l`.
+This includes both views, caches and indexes. Total resident memory still
+depends on card count. A child turn now updates the child agent's lifecycle
+independently of its parent. Superseded Rust resume snapshots stop sending
+chunks when a newer snapshot takes over, including within the same session.
 
 ## Accepted baseline
 

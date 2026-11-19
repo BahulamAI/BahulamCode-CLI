@@ -27,6 +27,7 @@ export interface TurnEndedData {
   summary?: string;
   duration_ms?: number;
   outcome?: string;
+  turn_cost_usd?: number;
 }
 export interface TextDeltaData {
   chunk: string;
@@ -95,6 +96,8 @@ export interface AgentStatusData {
   elapsed_ms?: number;
   total_tokens?: number;
   cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 export interface AgentFinishedData {
   agent_id: string;
@@ -105,6 +108,8 @@ export interface AgentFinishedData {
   error?: string;
   total_tokens?: number;
   elapsed_ms?: number;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 export interface PlanUpdatedData {
   items: unknown[];
@@ -118,6 +123,9 @@ export interface ArtifactCreatedData {
   source?: string;
   pages?: number;
   bytes?: number;
+  pages_read?: unknown[];
+  width?: number;
+  height?: number;
   open_url?: string;
 }
 export interface UsageUpdateData {
@@ -132,6 +140,7 @@ export interface UsageUpdateData {
   context_window_source?: string;
   cost_estimated?: boolean;
   per_agent?: Record<string, unknown>;
+  total_tokens?: number;
 }
 export interface NoticeData {
   level: string;

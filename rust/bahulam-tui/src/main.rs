@@ -223,7 +223,7 @@ fn scoped_card_indices(
         .collect()
 }
 
-fn scroll_history(scroll: &mut u16, follow: &mut bool, end: u16, down: bool, amount: u16) {
+fn scroll_history(scroll: &mut usize, follow: &mut bool, end: usize, down: bool, amount: usize) {
     if *follow {
         *scroll = end;
     }
@@ -233,6 +233,31 @@ fn scroll_history(scroll: &mut u16, follow: &mut bool, end: u16, down: bool, amo
         scroll.saturating_sub(amount).min(end)
     };
     *follow = down && *scroll >= end;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visible_image_cards(
+    model: &bahulam_tui::model::Model,
+    area: ratatui::layout::Rect,
+    input: &str,
+    inline: bool,
+    expanded: &std::collections::HashSet<usize>,
+    theme: &str,
+    agent: Option<&str>,
+    scroll: usize,
+    follow: bool,
+) -> std::collections::HashSet<usize> {
+    let g = history_geometry(model, area, input, inline, expanded, theme, agent);
+    let top = if follow { g.end } else { scroll };
+    let first = g
+        .cards
+        .partition_point(|(_, row)| *row <= top)
+        .saturating_sub(1);
+    g.cards[first..]
+        .iter()
+        .take_while(|(_, start)| *start < top.saturating_add(g.page))
+        .map(|(index, _)| *index)
+        .collect()
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -421,7 +446,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         terminal.get_frame().area(),
         &model,
     )?;
-    let mut scroll: u16 = 0;
+    let mut scroll: usize = 0;
     let mut follow = stdio;
     let mut expansion_anchor = None;
     let mut seen_transcript_revision = model
@@ -447,15 +472,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut focused_agent = 0usize;
     let mut focus_panel = 0u8; // prompt, transcript, agents
     let mut agent_filter: Option<String> = None;
-    let mut agent_return: Option<(u16, bool, usize, Option<bahulam_tui::render::HistoryAnchor>)> =
-        None;
+    let mut agent_return: Option<(
+        usize,
+        bool,
+        usize,
+        Option<bahulam_tui::render::HistoryAnchor>,
+    )> = None;
     let mut pressed_agent = None;
     let mut detail_card: Option<usize> = None;
-    let mut detail_scroll = 0u16;
+    let mut detail_scroll = 0usize;
     // Live mode: one Ctrl+C interrupts the agent, a second within two
     // seconds quits. One accidental press never ends the session.
     let mut last_ctrl_c: Option<std::time::Instant> = None;
     let mut last_timer_draw = std::time::Instant::now();
+    let mut image_job: Option<
+        std::sync::mpsc::Receiver<(usize, u64, bahulam_tui::rich_preview::Preview)>,
+    > = None;
     let mut dirty = true;
     let mut drawn_revision = 0;
     loop {
@@ -506,6 +538,118 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 focus_panel = 0;
             }
         }
+        if let Some((index, revision, preview)) =
+            image_job.as_ref().and_then(|job| job.try_recv().ok())
+        {
+            image_job = None;
+            if let Ok(mut state) = model.lock() {
+                if state.transcript_revision == revision {
+                    if let Some(card) = state.cards.get_mut(index) {
+                        card.preview = Some(preview);
+                        dirty = true;
+                    }
+                    state.touch_view();
+                    let visible = visible_image_cards(
+                        &state,
+                        terminal.get_frame().area(),
+                        &input,
+                        inline_mode,
+                        &expanded,
+                        &theme,
+                        agent_filter.as_deref(),
+                        scroll,
+                        follow,
+                    );
+                    let ready: Vec<_> = state
+                        .cards
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, c)| {
+                            if let Some(bahulam_tui::rich_preview::Preview::Ready(image)) =
+                                &c.preview
+                            {
+                                Some((
+                                    i,
+                                    image.pixels.len(),
+                                    image.source.to_string_lossy().into_owned(),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let mut count = ready.len();
+                    let mut bytes: usize = ready.iter().map(|(_, size, _)| size).sum();
+                    for (index, size, path) in ready {
+                        if count <= 64 && bytes <= 16 * 1024 * 1024 {
+                            break;
+                        }
+                        if visible.contains(&index) {
+                            continue;
+                        }
+                        state.cards[index].preview =
+                            Some(bahulam_tui::rich_preview::Preview::Dormant(path));
+                        count -= 1;
+                        bytes = bytes.saturating_sub(size);
+                    }
+                    state.touch_view();
+                }
+            }
+        }
+        if image_job.is_none() {
+            let pending = model.lock().ok().and_then(|mut state| {
+                if !state.cards.iter().any(|c| {
+                    matches!(
+                        c.preview,
+                        Some(
+                            bahulam_tui::rich_preview::Preview::Pending(_)
+                                | bahulam_tui::rich_preview::Preview::Dormant(_)
+                        )
+                    )
+                }) {
+                    return None;
+                }
+                let visible = visible_image_cards(
+                    &state,
+                    terminal.get_frame().area(),
+                    &input,
+                    inline_mode,
+                    &expanded,
+                    &theme,
+                    agent_filter.as_deref(),
+                    scroll,
+                    follow,
+                );
+                let (index, path) = state
+                    .cards
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| visible.contains(i))
+                    .find_map(|(i, card)| match &card.preview {
+                        Some(
+                            bahulam_tui::rich_preview::Preview::Pending(path)
+                            | bahulam_tui::rich_preview::Preview::Dormant(path),
+                        ) => Some((i, path.clone())),
+                        _ => None,
+                    })?;
+                let path = std::path::Path::new(&state.cwd).join(path);
+                state.cards[index].preview = Some(bahulam_tui::rich_preview::Preview::Loading);
+                Some((index, state.transcript_revision, path))
+            });
+            if let Some((index, revision, path)) = pending {
+                let (tx, rx) = std::sync::mpsc::channel();
+                image_job = Some(rx);
+                let graphics = bahulam_tui::native_graphics::Graphics::detect(&capabilities);
+                thread::spawn(move || {
+                    let result =
+                        match bahulam_tui::rich_preview::load_with_graphics(&path, graphics) {
+                            Ok(image) => bahulam_tui::rich_preview::Preview::Ready(image),
+                            Err(error) => bahulam_tui::rich_preview::Preview::Unavailable(error),
+                        };
+                    let _ = tx.send((index, revision, result));
+                });
+            }
+        }
         if watch && !stdio && last_refresh.elapsed() >= Duration::from_millis(100) {
             if let Some(file) = &file {
                 *model.lock().map_err(|_| "view model lock poisoned")? = replay(file)?;
@@ -525,7 +669,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .filter(|(i, card)| {
                             (!card.is_foldable() || expanded.contains(i))
                                 && card.payload_ref.is_some()
-                                && card.detail.is_none()
+                                && !card.has_detail()
                                 && !card.detail_loading
                         })
                         .take(4)
@@ -594,7 +738,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .find(|(i, c)| {
                             (selection == "transcript" || Some(*i) == target_index)
                                 && c.payload_ref.is_some()
-                                && c.detail.is_none()
+                                && !c.has_detail()
                         })
                         .map(|(i, c)| (i, c.detail_loading));
                     if let Some((i, loading)) = needed {
@@ -733,7 +877,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             follow = false;
         }
-        let visible_scroll = if follow { u16::MAX } else { scroll };
+        let visible_scroll = if follow { usize::MAX } else { scroll };
         if dirty && (!selecting_text || selection_frame_pending) {
             selection_frame_pending = false;
             if integration_config.sync {
@@ -790,7 +934,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })?;
             if !drag_selection.as_ref().is_some_and(|s| s.dragging) {
-                painted_buffer = Some(completed.buffer.clone());
+                let mut snapshot = completed.buffer.clone();
+                for cell in &mut snapshot.content {
+                    if cell.symbol().contains('\u{1b}') || cell.symbol().contains('\u{10eeee}') {
+                        cell.set_symbol(" ");
+                    }
+                }
+                painted_buffer = Some(snapshot);
             }
             let show_links =
                 !selecting_text && !drag_selection.as_ref().is_some_and(|s| s.dragging);
@@ -844,7 +994,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 event::read()?
             };
             // A response arriving after the probe deadline is never composer input.
-            if matches!(event, Event::TerminalResponse(_)) {
+            if let Event::TerminalResponse(reply) = &event {
+                let before = capabilities.probe.cell_pixels;
+                capabilities.probe.accept(reply);
+                if capabilities.probe.cell_pixels != before {
+                    if let Ok(mut state) = model.lock() {
+                        for card in &mut state.cards {
+                            if let Some(bahulam_tui::rich_preview::Preview::Ready(image)) =
+                                &card.preview
+                            {
+                                card.preview = Some(bahulam_tui::rich_preview::Preview::Pending(
+                                    image.source.to_string_lossy().into_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    if let Ok(mut state) = model.lock() {
+                        state.touch_view();
+                    }
+                    dirty = true;
+                }
                 continue;
             }
             dirty |= match &event {
@@ -1184,13 +1353,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
                         && editable(&model, focus_panel, detail_card) =>
                 {
-                    paste::insert_clipboard_image_reference(
-                        &mut input,
-                        &mut cursor,
-                        &mut paste_chips,
-                        &mut paste_sequence,
-                    );
-                    input_hint(&model, "Clipboard image attached · Enter sends through the shared attachment parser");
+                    write_command(
+                        &command_writer,
+                        serde_json::json!({"type":"run_slash","data":{"name":"/attach","args":["clipboard"]}}),
+                    )?;
+                    input_hint(&model, "Reading clipboard image through /attach · preview appears before sending · /attach clear removes pending attachments");
                 }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
@@ -1222,11 +1389,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         model.lock().ok().and_then(|mut state| {
                             let card = state.cards.get(index)?;
-                            if card.payload_ref.is_some() && card.detail.is_none() {
+                            if card.payload_ref.is_some() && !card.has_detail() {
                                 payload = state.request_details(index);
                                 None
                             } else {
-                                Some(card.detail.as_ref().unwrap_or(&card.body).clone())
+                                Some({
+                                    let card = card.materialized();
+                                    card.detail.as_ref().unwrap_or(&card.body).clone()
+                                })
                             }
                         })
                     };
@@ -1485,7 +1655,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             scroll = geometry()
                                 .and_then(|g| {
                                     g.cards
-                                        .into_iter()
+                                        .iter()
+                                        .copied()
                                         .find(|(index, _)| *index == focused_card)
                                         .map(|(_, row)| row)
                                 })
@@ -1509,7 +1680,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             scroll = geometry()
                                 .and_then(|g| {
                                     g.cards
-                                        .into_iter()
+                                        .iter()
+                                        .copied()
                                         .find(|(index, _)| *index == focused_card)
                                         .map(|(_, row)| row)
                                 })
@@ -1680,7 +1852,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             expansion_anchor = None;
                             agent_filter = Some(agent);
                             focused_card = last_card;
-                            scroll = u16::MAX;
+                            scroll = usize::MAX;
                             follow = true;
                             focus_panel = 1;
                         }
@@ -1834,7 +2006,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 model
                                     .detail_line_count(detail_card.unwrap_or(0))
                                     .saturating_sub(1)
-                                    .min(u16::MAX as usize) as u16
                             })
                             .unwrap_or(0);
                     }
@@ -2053,7 +2224,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                         })
                                         .unwrap_or(0);
                                     agent_filter = Some(hit.id);
-                                    scroll = u16::MAX;
+                                    scroll = usize::MAX;
                                     follow = true;
                                     focus_panel = 1;
                                     if let Ok(mut state) = model.lock() {
@@ -2130,7 +2301,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 &expanded,
                                 &theme,
                                 agent_filter.as_deref(),
-                                if follow { u16::MAX } else { scroll },
+                                if follow { usize::MAX } else { scroll },
                                 ratatui::layout::Position::new(mouse.column, mouse.row),
                             )
                         });
@@ -2192,15 +2363,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             Some(MousePanel::Transcript) if detail_card.is_some() => {
                                 let end = state
                                     .detail_line_count(detail_card.unwrap_or(0))
-                                    .saturating_sub(1)
-                                    .min(u16::MAX as usize)
-                                    as u16;
+                                    .saturating_sub(1);
                                 detail_scroll = if down {
                                     detail_scroll
-                                        .saturating_add(capabilities.scroll_lines)
+                                        .saturating_add(capabilities.scroll_lines as usize)
                                         .min(end)
                                 } else {
-                                    detail_scroll.saturating_sub(capabilities.scroll_lines)
+                                    detail_scroll.saturating_sub(capabilities.scroll_lines as usize)
                                 };
                             }
                             Some(MousePanel::Transcript) => {
@@ -2218,7 +2387,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     &mut follow,
                                     g.end,
                                     down,
-                                    capabilities.scroll_lines,
+                                    usize::from(capabilities.scroll_lines),
                                 );
                                 if let Some((index, _)) = g
                                     .cards
@@ -2244,13 +2413,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::Resize(width, height) => {
+                    if capabilities.query_safe {
+                        write!(io::stdout(), "\x1b[16t")?;
+                        io::stdout().flush()?;
+                    }
                     pressed_browser_link = None;
                     // Keep the visible message anchored when reflow changes row
                     // counts. Following output continues to track the new tail.
                     let anchor = if !follow && detail_card.is_none() {
                         geometry().and_then(|g| {
                             g.cards
-                                .into_iter()
+                                .iter()
+                                .copied()
                                 .rev()
                                 .find(|(_, row)| *row <= scroll)
                                 .map(|(index, row)| (index, scroll.saturating_sub(row)))

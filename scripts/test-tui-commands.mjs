@@ -92,23 +92,18 @@ try:
   elif stage==4 and b'mode:newsession' in screen and b'0in' in screen and b'0out' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, '/new left the old reply on screen'
    keys=b'/help\r'
-  elif stage==5 and b'Command/help' in screen: keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
-  elif stage==6 and diagnostics and b'Bahulamterminalcapabilities' in screen:
-   keys=b'\t\r';stage=39
-  elif stage==40 and b'Expandedresult' in screen and b'activequeriesnotimplemented' in screen:
-   assert b'Rustviewfullscreen' in screen and b'Viewport120x36' in screen
-   assert b'Colordepthtruecolor(Nodehost)' in screen and b'Mousecaptureinactive' in screen
-   keys=b'\x1b'
-  elif stage==41 and b'Expandedresult' not in screen and b'Showdetails' in screen:
-   keys=b'/clear\r';stage=6
-  elif stage==6 and b'Command/modelstatus' in screen: keys=b'/clear\r'
+  elif stage==5 and (b'Command/help' in screen or b'/helpworktree' in screen): keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
+  elif stage==6 and diagnostics and b'Mousecaptureinactive' in screen:
+   assert b'Imagerenderer' in screen or b'Bracketedpaste' in screen
+   keys=b'/clear\r'
+  elif stage==6 and (b'Command/modelstatus' in screen or b'Sessionoverrides' in screen): keys=b'/clear\r'
   elif stage==7 and b'mode:cleared' in screen:
    assert b'Command/help' not in screen and b'Command/modelstatus' not in screen, '/clear left old command cards'
    keys=b'/resume\r'
   elif stage==8 and b'Chooseasavedtranscript.' in screen: keys=b'\x1b'
   elif stage==9 and b'Cancelled.' in screen: keys=b'/resume command-fixture\r'
   elif stage==10 and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/help\r'
-  elif stage==11 and b'Command/help' in screen:
+  elif stage==11 and (b'Command/help' in screen or b'/helpworktree' in screen):
    keys=(b'/tui\r' if bare_tui else b'/tui default\r') if return_default else b'/resume\r'
   elif return_default and stage==12 and b'Default terminal view' in recent:
    assert b'\x1b[?1049l' in stage_output, 'Renderer did not release alternate screen'
@@ -171,8 +166,8 @@ finally:
       const result = spawnSync('python3', ['-c', python, mode, process.execPath,
         path.join(root, 'src/terminal/main.mjs'), ...(startupResume ? ['--resume', 'command-fixture'] : [])], {
         cwd: project, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, BAHULAM_HOME: home, B0_TOKEN: '', KEPLER_TOKEN: '',
-          BAHULAM_TUI: mode.endsWith('from Node') ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
+        env: { ...process.env, HOME: temp, USERPROFILE: temp, BAHULAM_HOME: home, B0_TOKEN: '', KEPLER_TOKEN: '',
+          BAHULAM_TUI: mode === 'default Rust startup' ? '' : mode.endsWith('from Node') ? 'node' : 'rust', TARANG_ENV: 'local', BAHULAM_TUI_MOUSE: '0',
           BAHULAM_TUI_MODE: mode === 'default Rust startup' ? '' : 'fullscreen',
           NO_COLOR: '', FORCE_COLOR: '3', BAHULAM_THEME: 'auto', COLORFGBG: mode === 'return via /tui' ? '0;15' : '15;0',
           BAHULAM_TUI_BINARY: mode === 'missing Rust binary' ? path.join(temp, 'missing-tui') : path.join(root, 'rust/target/debug/bahulam-tui'),

@@ -50,7 +50,10 @@ const SKIPPED = new Map([
 // Self-contained: no network, no spawned long-running processes, no auth tokens.
 // Must pass on any contributor machine with `node >= 18` and `npm install`.
 const UNIT_TESTS = [
+    'test/test-display-payload-store.mjs',
+    'test/test-rust-attachment-previews.mjs',
     'test/test-rust-interactions.mjs',
+    'test/test-cli-update.mjs',
     'test/test-rust-approval.mjs',
     'test/test-rust-event-parity.mjs',
     'test/test-rust-usage.mjs',

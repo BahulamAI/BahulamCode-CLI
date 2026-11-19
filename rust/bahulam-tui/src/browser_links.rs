@@ -84,6 +84,8 @@ pub fn extract(text: &str) -> Vec<LinkTarget> {
 }
 
 pub fn for_card(card: &Card) -> Vec<LinkTarget> {
+    let materialized = card.materialized();
+    let card = materialized.as_ref();
     let mut links = extract(card.detail.as_deref().unwrap_or(&card.body));
     if let Some(uri) = card.open_url.as_ref().filter(|uri| valid_url(uri)) {
         if !links.iter().any(|link| link.uri == *uri) {

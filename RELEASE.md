@@ -1,6 +1,6 @@
 # Release Checklist
 
-This repo publishes the npm package `@bahulam/code`.
+This repo publishes the npm package `@bahulam/code`. For public testing releases, follow the [beta publishing skill](.agents/skills/publish-bahulam-code/SKILL.md). The `latest` commands below apply to stable releases.
 
 ## Branch Flow
 

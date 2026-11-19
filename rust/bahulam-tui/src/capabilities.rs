@@ -321,7 +321,7 @@ impl TerminalCapabilities {
             "scroll_lines": self.scroll_lines,
             "integrations": crate::integrations::Config::from_caps(self).report(),
             "synchronized_output": crate::integrations::Config::from_caps(self).sync, "focus_reporting": crate::integrations::Config::from_caps(self).focus,
-            "osc8_links": crate::integrations::Config::from_caps(self).links, "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": "not restored",
+            "osc8_links": crate::integrations::Config::from_caps(self).links, "clipboard": self.clipboard_mode, "prompt_editor": "Ctrl+G via VISUAL/EDITOR", "prompt_history": "shared JSONL; Up/Down and Ctrl+R", "images": format!("{:?}", crate::native_graphics::Graphics::detect(self).map(|g| g.protocol)),
             "notifications": crate::integrations::Config::from_caps(self).notifications, "report": self.report(view, size),
         })
     }
@@ -431,7 +431,10 @@ impl TerminalCapabilities {
                 "Pixel geometry       cell {:?} · window {:?} (at probe time)",
                 self.probe.cell_pixels, self.probe.window_pixels
             ),
-            "Graphics queries     pending; images not rendered".to_owned(),
+            format!(
+                "Image renderer       {:?} · cell preview fallback",
+                crate::native_graphics::Graphics::detect(self).map(|g| g.protocol)
+            ),
         ]
         .join("\n")
     }

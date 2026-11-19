@@ -11,6 +11,7 @@ pub fn options(model: &Model, focused_card: usize) -> Vec<InteractionOption> {
         });
     }
     for (card_index, card) in model.cards.iter().enumerate() {
+        let card = card.materialized();
         let content = card.detail.as_deref().unwrap_or(&card.body);
         for (block_index, (language, _)) in fenced_code_blocks(content).iter().enumerate() {
             let language = if language.is_empty() {
@@ -61,25 +62,31 @@ pub fn options(model: &Model, focused_card: usize) -> Vec<InteractionOption> {
 
 pub fn selection_text(model: &Model, selection: &str, focused_card: usize) -> Option<String> {
     let selected_content = |index: usize| {
-        model
-            .cards
-            .get(index)
-            .map(|item| item.detail.as_deref().unwrap_or(&item.body))
+        model.cards.get(index).map(|item| {
+            let item = item.materialized();
+            item.detail.as_deref().unwrap_or(&item.body).to_owned()
+        })
     };
     match selection {
         "last" => model
             .cards
             .iter()
             .rev()
-            .find(|card| card.title == "Assistant" && !card.body.is_empty())
-            .map(|card| card.detail.as_deref().unwrap_or(&card.body).to_owned()),
-        "card" => selected_content(focused_card).map(str::to_owned),
-        "code" => selected_content(focused_card).and_then(first_fenced_code_block),
+            .find(|card| {
+                card.title == "Assistant" && (!card.body.is_empty() || card.archived.is_some())
+            })
+            .map(|card| {
+                let card = card.materialized();
+                card.detail.as_deref().unwrap_or(&card.body).to_owned()
+            }),
+        "card" => selected_content(focused_card),
+        "code" => selected_content(focused_card).and_then(|text| first_fenced_code_block(&text)),
         "transcript" => Some(
             model
                 .cards
                 .iter()
                 .map(|card| {
+                    let card = card.materialized();
                     format!(
                         "{}\n{}",
                         card.title,
@@ -92,8 +99,7 @@ pub fn selection_text(model: &Model, selection: &str, focused_card: usize) -> Op
         value if value.starts_with("card:") => value
             .strip_prefix("card:")
             .and_then(|index| index.parse().ok())
-            .and_then(selected_content)
-            .map(str::to_owned),
+            .and_then(selected_content),
         value if value.starts_with("command:") => value
             .strip_prefix("command:")
             .and_then(|index| index.parse::<usize>().ok())
@@ -102,14 +108,13 @@ pub fn selection_text(model: &Model, selection: &str, focused_card: usize) -> Op
         value if value.starts_with("diff:") => value
             .strip_prefix("diff:")
             .and_then(|index| index.parse().ok())
-            .and_then(selected_content)
-            .map(str::to_owned),
+            .and_then(selected_content),
         value if value.starts_with("code:") => {
             let mut parts = value.split(':');
             let _ = parts.next();
             let card_index = parts.next()?.parse::<usize>().ok()?;
             let block_index = parts.next()?.parse::<usize>().ok()?;
-            let card = model.cards.get(card_index)?;
+            let card = model.cards.get(card_index)?.materialized();
             let content = card.detail.as_deref().unwrap_or(&card.body);
             fenced_code_blocks(content)
                 .get(block_index)

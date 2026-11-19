@@ -688,6 +688,9 @@
         },
         "outcome": {
           "type": "string"
+        },
+        "turn_cost_usd": {
+          "type": "number"
         }
       },
       "required": [],
@@ -786,7 +789,15 @@
         },
         "scopes": {
           "type": "array",
-          "items": { "type": "string", "enum": ["once", "session", "project", "type"] }
+          "items": {
+            "type": "string",
+            "enum": [
+              "once",
+              "session",
+              "project",
+              "type"
+            ]
+          }
         },
         "warnings": {
           "type": "array",
@@ -930,6 +941,12 @@
         },
         "cost_usd": {
           "type": "number"
+        },
+        "input_tokens": {
+          "type": "number"
+        },
+        "output_tokens": {
+          "type": "number"
         }
       },
       "required": [
@@ -963,6 +980,12 @@
           "type": "number"
         },
         "elapsed_ms": {
+          "type": "number"
+        },
+        "input_tokens": {
+          "type": "number"
+        },
+        "output_tokens": {
           "type": "number"
         }
       },
@@ -1012,6 +1035,21 @@
         "bytes": {
           "type": "integer"
         },
+        "pages_read": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
         "open_url": {
           "type": "string"
         }
@@ -1041,13 +1079,26 @@
         "cost_usd": {
           "type": "number"
         },
-        "context_estimated": {"type": "boolean"},
-        "context_tokens": {"type": "number"},
-        "context_window": {"type": "number"},
-        "context_window_source": {"type": "string"},
-        "cost_estimated": {"type": "boolean"},
+        "context_estimated": {
+          "type": "boolean"
+        },
+        "context_tokens": {
+          "type": "number"
+        },
+        "context_window": {
+          "type": "number"
+        },
+        "context_window_source": {
+          "type": "string"
+        },
+        "cost_estimated": {
+          "type": "boolean"
+        },
         "per_agent": {
           "type": "object"
+        },
+        "total_tokens": {
+          "type": "number"
         }
       },
       "required": [],
@@ -1100,8 +1151,12 @@
           "type": "boolean"
         },
         "result": {},
-        "output": {"type": "string"},
-        "ok": {"type": "boolean"}
+        "output": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
       },
       "required": [
         "name",
@@ -1112,38 +1167,105 @@
     "TranscriptSnapshotData": {
       "type": "object",
       "properties": {
-        "mode": {"type": "string"},
-        "items": {"type": "array", "items": {}},
-        "cwd": {"type": "string"},
-        "model": {"type": "string"},
-        "replace": {"type": "boolean"}
+        "mode": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {}
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "replace": {
+          "type": "boolean"
+        }
       },
-      "required": ["mode", "items"],
+      "required": [
+        "mode",
+        "items"
+      ],
       "additionalProperties": true
     },
     "SessionStateData": {
       "type": "object",
-      "properties": {"cwd": {"type": "string"}, "model": {"type": "string"}, "git_branch": {"type": "string"}, "permission_mode": {"type": "string"}, "model_mode": {"type": "string"}, "model_route": {"type": "string"}, "status": {"type": "string"}, "usage": {"type": "object"}, "active_background_jobs": {"type": "integer", "minimum": 0}},
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "git_branch": {
+          "type": "string"
+        },
+        "permission_mode": {
+          "type": "string"
+        },
+        "model_mode": {
+          "type": "string"
+        },
+        "model_route": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object"
+        },
+        "active_background_jobs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
       "required": [],
       "additionalProperties": true
     },
     "CommandCatalogData": {
       "type": "object",
-      "properties": {"commands": {"type": "array", "items": {}}},
-      "required": ["commands"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "commands"
+      ],
       "additionalProperties": true
     },
     "InteractionRequestedData": {
       "type": "object",
       "properties": {
-        "request_id": {"type": "string"},
-        "allow_free_text": {"type": "boolean"},
-        "cancelled": {"type": "boolean"},
-        "title": {"type": "string"},
-        "message": {"type": "string"},
-        "options": {"type": "array", "items": {}}
+        "request_id": {
+          "type": "string"
+        },
+        "allow_free_text": {
+          "type": "boolean"
+        },
+        "cancelled": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {}
+        }
       },
-      "required": ["request_id", "title", "options"],
+      "required": [
+        "request_id",
+        "title",
+        "options"
+      ],
       "additionalProperties": true
     },
     "DiffData": {
@@ -1347,8 +1469,21 @@
     },
     "InteractionResponseCommand": {
       "type": "object",
-      "properties": {"request_id": {"type": "string"}, "value": {"type": "string"}, "cancelled": {"type": "boolean"}},
-      "required": ["request_id", "cancelled"],
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "cancelled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "request_id",
+        "cancelled"
+      ],
       "additionalProperties": true
     },
     "ByeCommand": {
