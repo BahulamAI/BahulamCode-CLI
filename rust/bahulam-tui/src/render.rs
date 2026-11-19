@@ -2207,10 +2207,10 @@ fn measured_rows(
                     cards.push((i, total));
                     total += wrap_rows(grouped_lines(model, i, end, p, None), width).len();
                 } else {
-                    for index in i..end {
+                    for (offset, card) in model.cards[i..end].iter().enumerate() {
+                        let index = i + offset;
                         cards.push((index, total));
-                        total +=
-                            card_row_count(&model.cards[index], index, &expanded_set, p, width);
+                        total += card_row_count(card, index, &expanded_set, p, width);
                     }
                 }
             }

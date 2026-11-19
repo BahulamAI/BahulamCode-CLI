@@ -387,7 +387,7 @@ fn open_default(path: &Path) -> Result<(), OpenError> {
                 }
             }
         }
-        return spawn_detached("xdg-open", &[path.display().to_string()]);
+        spawn_detached("xdg-open", &[path.display().to_string()])
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     spawn_detached(command, &[path.display().to_string()])
