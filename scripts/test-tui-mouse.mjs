@@ -58,6 +58,12 @@ def wait_text(text):
  deadline=time.time()+3
  while text not in screen() and time.time()<deadline: pump(0.03)
  assert text in screen(), 'Missing '+str(text)+'\n'+screen()[-4000:].decode('utf8','replace')
+def scroll_until(code,label):
+ deadline=time.monotonic()+5
+ while label not in terminal_screen.text() and time.monotonic()<deadline:
+  os.write(master, ('\x1b[<%d;10;4M'%code).encode()*5)
+  pump(.08)
+ assert label in terminal_screen.text(), 'Scroll failed to reach '+label+'\n'+terminal_screen.text()
 def refresh(columns):
  global terminal_screen
  terminal_screen=Screen(24,columns)
@@ -84,12 +90,10 @@ try:
   pump(0.2)
   refresh(100)
   wait_text(b'HISTORY_29')
-  os.write(master,b'\x1b[<64;10;4M'*150)
-  pump(.5)
+  scroll_until(64,'HISTORY_00')
   refresh(99)
   wait_text(b'HISTORY_00')
-  os.write(master,b'\x1b[<65;10;4M'*150)
-  pump(.5)
+  scroll_until(65,'HISTORY_29')
   refresh(100)
   wait_text(b'HISTORY_29')
  os.write(master,b'\r')
