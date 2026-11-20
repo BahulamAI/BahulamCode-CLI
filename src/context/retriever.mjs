@@ -5,6 +5,7 @@
 
 import { BM25Index } from './bm25.mjs';
 import { SymbolIndexer } from './symbol-indexer.mjs';
+import { GraphIndexer } from './graph-indexer.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
@@ -23,6 +24,7 @@ export class ContextRetriever {
         this.index = null;
         this.symbolIndexer = null;
         this.chunkTexts = new Map(); // id → original text content
+        this.graphIndexer = null; // cross-language reference graph (graph.json)
     }
 
     /** Build or rebuild the search index (BM25 chunks + symbol index). */
@@ -66,7 +68,12 @@ export class ContextRetriever {
         fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
         fs.writeFileSync(path.join(this.indexDir, 'symbols.json'), JSON.stringify(this.symbolIndexer.toJSON()));
 
-        return { fileCount: files.length, chunkCount: documents.length, symbolCount: this.symbolIndexer.symbolCount };
+        // Cross-language reference graph (additive; graph.json beside bm25.json).
+        this.graphIndexer = new GraphIndexer(this.projectDir);
+        await this.graphIndexer.buildGraph(files);
+        this.graphIndexer.persist(this.indexDir);
+
+        return { fileCount: files.length, chunkCount: documents.length, symbolCount: this.symbolIndexer.symbolCount, edgeCount: this.graphIndexer.edges.length };
     }
 
     /**
@@ -128,6 +135,16 @@ export class ContextRetriever {
             fs.writeFileSync(path.join(this.indexDir, 'bm25.json'), JSON.stringify(this.index.toJSON()));
             fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
         } catch { /* best-effort persist */ }
+
+        // Cross-language graph: recompute edges for this file, and re-resolve
+        // importers when their target changed/vanished.
+        if (!this.graphIndexer) this.graphIndexer = GraphIndexer.load(this.indexDir, this.projectDir);
+        if (this.graphIndexer) {
+            const changed = fs.existsSync(absPath);
+            const content = changed ? (() => { try { return fs.readFileSync(absPath, 'utf-8'); } catch { return null; } })() : null;
+            this.graphIndexer.updateFile(relPath, { content, isConfig: ['.json', '.toml', '.yaml', '.yml'].includes(path.extname(absPath).toLowerCase()) });
+            this.graphIndexer.persist(this.indexDir);
+        }
 
         return true;
     }
@@ -246,6 +263,12 @@ export class ContextRetriever {
             fs.writeFileSync(path.join(this.indexDir, 'chunks.json'), JSON.stringify(Object.fromEntries(this.chunkTexts)));
         } catch { /* best-effort */ }
 
+        // Graph cleanup: drop the removed source's edges and re-resolve importers.
+        if (this.graphIndexer) {
+            this.graphIndexer.updateFile(sourceId, { content: null });
+            this.graphIndexer.persist(this.indexDir);
+        }
+
         return oldIds.size;
     }
 
@@ -268,6 +291,8 @@ export class ContextRetriever {
                 const symData = JSON.parse(fs.readFileSync(symbolsPath, 'utf-8'));
                 this.symbolIndexer = SymbolIndexer.fromJSON(symData);
             }
+            // Cross-language reference graph (optional; absent on old indexes).
+            this.graphIndexer = GraphIndexer.load(this.indexDir, this.projectDir);
             return true;
         } catch {
             return false;
@@ -289,6 +314,27 @@ export class ContextRetriever {
     formatSymbolResults(results) {
         if (!this.symbolIndexer || !results.length) return '';
         return this.symbolIndexer.formatResults(results);
+    }
+
+    /**
+     * Cross-language reference graph lookups. Explicit, NOT wired into
+     * search_code output — the agent calls these when it needs to answer
+     * "who imports this?" or trace across the Node ⇄ Rust bridge.
+     */
+    getImporters(filePath) {
+        return this.graphIndexer?.getImporters(path.relative(this.projectDir, filePath)) ?? [];
+    }
+
+    getImports(filePath) {
+        return this.graphIndexer?.getImports(path.relative(this.projectDir, filePath)) ?? [];
+    }
+
+    resolvePath(moduleSpec, importerFile) {
+        return this.graphIndexer?.resolvePath(moduleSpec, path.relative(this.projectDir, importerFile)) ?? null;
+    }
+
+    tracePath(fromFile, toFile) {
+        return this.graphIndexer?.tracePath(path.relative(this.projectDir, fromFile), path.relative(this.projectDir, toFile)) ?? [];
     }
 
     /** Retrieve relevant context chunks for a query, with full text. */

@@ -80,6 +80,7 @@ const UNIT_TESTS = [
     'test/test-work-scope.mjs',
     'test/test-kepler-contract.mjs',
     'test/test-index-freshness.mjs',
+    'test/test-graph-index.mjs',
     'test/test-lint-resolver.mjs',
     'test/test-local-service.mjs',
     'test/test-workspace-voice.mjs',
