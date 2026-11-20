@@ -14,6 +14,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const LANG_BY_EXT = {
   '.js': 'js', '.mjs': 'js', '.jsx': 'js',
@@ -23,7 +24,12 @@ const LANG_BY_EXT = {
   '.sql': 'sql',
 };
 
-const CONFIG_EXTS = new Set(['.json', '.toml', '.yaml', '.yml']);
+const GRAPH_VERSION = 2;
+export const MAX_GRAPH_SOURCE_BYTES = 2 * 1024 * 1024;
+
+export function isGraphSource(filePath) {
+  return Boolean(LANG_BY_EXT[path.extname(filePath).toLowerCase()]);
+}
 
 // ── Known cross-language handoff pathways (Bahulam's own architecture) ─────
 const NODE_RUST_HOST = 'src/daemon/rust-tui-host.mjs';
@@ -47,6 +53,11 @@ export class GraphIndexer {
 
   /** @param {string[]} files absolute paths */
   async buildGraph(files) {
+    return this.indexFiles(files);
+  }
+
+  // Also used by synchronous index loading to upgrade an older saved graph.
+  indexFiles(files) {
     this.nodes.clear();
     this.edges = [];
     this.reverseIndex = new Map();
@@ -60,14 +71,7 @@ export class GraphIndexer {
       this.nodes.set(rel, { kind: 'File', language });
     }
 
-    for (const abs of files) {
-      const rel = normalizeRel(path.relative(this.projectDir, abs));
-      const ext = path.extname(abs).toLowerCase();
-      if (!LANG_BY_EXT[ext]) continue;
-      let content = '';
-      try { content = fs.readFileSync(abs, 'utf-8'); } catch { /* unreadable */ }
-      this._extractAndAdd(rel, content, ext);
-    }
+    for (const rel of this.nodes.keys()) this._extractFile(rel);
     this._rebuildReverseIndex();
     return { nodeCount: this.nodes.size, edgeCount: this.edges.length };
   }
@@ -77,87 +81,72 @@ export class GraphIndexer {
   /**
    * Recompute edges cheaply after one file change.
    * @param {string} relPath project-relative path (posix separators ok)
-   * @param {{content: string|null, isConfig?: boolean}} opts
+   * @param {{content: string|null, isConfig?: boolean, fromDisk?: boolean}} opts
    *   content null => file deleted; isConfig => alias/mapping file changed
    */
-  updateFile(relPath, { content = null, isConfig = false } = {}) {
+  updateFile(relPath, { content = null, isConfig = false, fromDisk = false } = {}) {
     const rel = normalizeRel(relPath);
     const wasKnown = this.nodes.has(rel);
-    const before = this.edges.map((e, i) => i);
-
-    // Remove outgoing edges of the changed file, and edges pointing AT it
-    // (their importers must re-resolve). Remember which importers to redo.
-    const impactedFrom = new Set();
-    const kept = [];
-    for (let i = 0; i < this.edges.length; i++) {
-      const e = this.edges[i];
-      if (e.from === rel) continue;
-      if (e.to === rel) { impactedFrom.add(e.from); continue; }
-      kept.push(e);
-    }
-    this.edges = kept;
+    const before = this.edges.length;
 
     if (isConfig) {
       this._configCache.delete(rel);
-      this._reExtractSubtree(path.dirname(rel) === '.' ? '' : path.dirname(rel));
+      this._reExtractSubtree(path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel));
       this._rebuildReverseIndex();
-      return before.length !== this.edges.length;
+      return before !== this.edges.length;
     }
 
-    if (content !== null) {
-      const ext = path.extname(rel).toLowerCase();
-      this.nodes.set(rel, { kind: 'File', language: LANG_BY_EXT[ext] || 'text' });
-      this._extractAndAdd(rel, content, ext);
-    } else {
-      this.nodes.delete(rel);
+    if (!isGraphSource(rel)) return false;
+    let exists = content !== null;
+    if (fromDisk) {
+      try { exists = fs.lstatSync(path.join(this.projectDir, rel)).isFile(); }
+      catch { exists = false; }
     }
-
-    // Importers whose edges pointed at this file: re-extract from source.
-    for (const fromRel of impactedFrom) {
-      if (!this.nodes.has(fromRel)) continue;
-      const abs = path.join(this.projectDir, ...fromRel.split('/'));
-      let source = '';
-      try { source = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
-      this._extractAndAdd(fromRel, source, path.extname(fromRel).toLowerCase());
-    }
-
-    // A NEW file can now satisfy previously-unresolved references.
-    if (content !== null && !wasKnown && this.nodes.has(rel)) {
-      const unresolvedEdges = this.edges.filter(e => e.status === 'unresolved' && e.from !== rel);
-      for (const e of unresolvedEdges) {
-        const fromAbs = path.join(this.projectDir, ...e.from.split('/'));
-        let source = '';
-        try { source = fs.readFileSync(fromAbs, 'utf-8'); } catch { continue; }
-        const ext = path.extname(e.from).toLowerCase();
-        const refs = this._extractEdges(e.from, source, ext);
-        // Re-extract edges for this importer wholesale (removes + re-adds).
-        this.edges = this.edges.filter(edge => edge.from !== e.from);
-        for (const ref of refs) this._addEdge(ref);
+    const affected = new Set([rel]);
+    for (const edge of this.edges) {
+      if (edge.to === rel || (exists && !wasKnown && edge.status === 'unresolved')) {
+        affected.add(edge.from);
       }
     }
+    if (exists) this.nodes.set(rel, { kind: 'File', language: LANG_BY_EXT[path.extname(rel).toLowerCase()] });
+    else this.nodes.delete(rel);
 
+    this.edges = this.edges.filter(edge => !affected.has(edge.from));
+    for (const file of affected) {
+      if (this.nodes.has(file)) this._extractFile(file, file === rel && !fromDisk ? content : undefined);
+    }
     this._rebuildReverseIndex();
     return true;
   }
 
   _reExtractSubtree(prefix) {
-    const affected = [...this.nodes.keys()].filter(rel =>
-      prefix === '' || rel.startsWith(prefix + '/'),
-    );
-    // Drop their old edges first (all of them), then re-extract each file.
-    this.edges = this.edges.filter(e => !affected.includes(e.from));
-    for (const rel of affected) {
-      const abs = path.join(this.projectDir, ...rel.split('/'));
-      let source = '';
-      try { source = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
-      this._extractAndAdd(rel, source, path.extname(rel).toLowerCase());
-    }
+    const affected = new Set([...this.nodes.keys()].filter(rel => !prefix || rel.startsWith(prefix + '/')));
+    this.edges = this.edges.filter(edge => !affected.has(edge.from));
+    for (const rel of affected) this._extractFile(rel);
   }
 
-  // ── Extraction + resolution ──────────────────────────────────────────────
-
-  _extractAndAdd(rel, content, ext) {
-    for (const e of this._extractEdges(rel, content, ext)) this._addEdge(e);
+  _extractFile(rel, content) {
+    const node = this.nodes.get(rel);
+    delete node.referencesSkipped;
+    try {
+      const abs = path.join(this.projectDir, rel);
+      const size = content === undefined ? fs.statSync(abs).size : Buffer.byteLength(content);
+      if (size > MAX_GRAPH_SOURCE_BYTES) {
+        node.referencesSkipped = 'size_limit';
+        return;
+      }
+      content ??= fs.readFileSync(abs, 'utf8');
+    } catch {
+      node.referencesSkipped = 'unreadable';
+      return;
+    }
+    // All pre-existing outgoing edges for this file have been removed.
+    const seen = new Set();
+    for (const edge of this._extractEdges(rel, content, path.extname(rel).toLowerCase())) {
+      const key = JSON.stringify([edge.to, edge.kind, edge.line]);
+      if (!seen.has(key)) this.edges.push(edge);
+      seen.add(key);
+    }
   }
 
   _extractEdges(rel, content, ext) {
@@ -521,14 +510,6 @@ export class GraphIndexer {
 
   // ── Edge bookkeeping ─────────────────────────────────────────────────────
 
-  _addEdge(edge) {
-    const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}\u0000${edge.line}`;
-    for (const e of this.edges) {
-      if (`${e.from}\u0000${e.to}\u0000${e.kind}\u0000${e.line}` === key) return;
-    }
-    this.edges.push(edge);
-  }
-
   _rebuildReverseIndex() {
     this.reverseIndex = new Map();
     for (let i = 0; i < this.edges.length; i++) {
@@ -603,7 +584,7 @@ export class GraphIndexer {
 
   toJSON() {
     return {
-      version: 1,
+      version: GRAPH_VERSION,
       nodes: Object.fromEntries(this.nodes),
       edges: this.edges,
     };
@@ -619,11 +600,14 @@ export class GraphIndexer {
   }
 
   persist(indexDir) {
+    const temporary = path.join(indexDir, `.graph-${randomUUID()}.tmp`);
     try {
-      if (!fs.existsSync(indexDir)) fs.mkdirSync(indexDir, { recursive: true });
-      fs.writeFileSync(path.join(indexDir, 'graph.json'), JSON.stringify(this.toJSON()));
+      fs.mkdirSync(indexDir, { recursive: true });
+      fs.writeFileSync(temporary, JSON.stringify(this.toJSON()));
+      fs.renameSync(temporary, path.join(indexDir, 'graph.json'));
       return true;
     } catch {
+      try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
       return false;
     }
   }
@@ -632,7 +616,8 @@ export class GraphIndexer {
     const graphPath = path.join(indexDir, 'graph.json');
     if (!fs.existsSync(graphPath)) return null;
     try {
-      return GraphIndexer.fromJSON(JSON.parse(fs.readFileSync(graphPath, 'utf-8')), projectDir);
+      const data = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+      return data.version === GRAPH_VERSION ? GraphIndexer.fromJSON(data, projectDir) : null;
     } catch {
       return null;
     }
