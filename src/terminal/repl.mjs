@@ -6329,7 +6329,10 @@ export async function startTerminalRepl() {
         toolExecutor,
         verbose: Boolean(cliArgs.verbose),
         cwd: safeCwd(),
-        maxTurns: 50,
+        // No maxTurns here — LocalAgent falls back to its own
+        // MAX_ITERATIONS constant (BAHULAM_MAX_TURNS overridable), same as
+        // the headless --local/--direct paths. This used to be its own,
+        // independently-hardcoded 50.
         gatewayUrl: runtimeMode === 'local' ? gatewayUrl : null,
         gatewayToken: runtimeMode === 'local' ? creds.token : null,
         sessionId: session.id || localSessionId,

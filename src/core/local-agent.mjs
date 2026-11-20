@@ -28,7 +28,25 @@ import {
 import { normalizeUsage } from './usage-normalization.mjs';
 import { fetchWithRetry, RequestError, requestErrorData } from './request-retry.mjs';
 
-const MAX_ITERATIONS = 50;
+// Single source of truth for the agent-loop turn cap. Previously duplicated
+// as a hardcoded 50 in headless.mjs (x2) and repl.mjs, independently of this
+// constant and of each other — a config drift hazard, and a hard ceiling
+// autonomous/headless callers had no way to raise for problems that need
+// more exploration than 50 turns. BAHULAM_MAX_TURNS overrides it for every
+// caller (headless, REPL, orchestration) since LocalAgent.maxTurns falls
+// back to this constant whenever a caller doesn't pass its own value.
+//
+// Default raised 50 -> 999 (2026-11-20): on a hard SWE-bench Verified
+// instance (pydata__xarray-6992, >4h difficulty, unresolved by every model
+// in our Aug 2026 baseline including the 67.8%-overall champion), three
+// different candidate models each produced a genuinely correct fix once
+// given room to finish — one had been cut off mid-fix with a wrong patch
+// at exactly turn 50. 999 is "effectively no cap" while still bounding a
+// runaway loop; --timeout / BAHULAM_MAX_TURNS remain the real backstops.
+const MAX_ITERATIONS = (() => {
+    const envValue = Number(process.env.BAHULAM_MAX_TURNS);
+    return Number.isFinite(envValue) && envValue > 0 ? envValue : 999;
+})();
 
 function toOpenAITool(tool) {
     return {

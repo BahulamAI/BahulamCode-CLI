@@ -230,7 +230,10 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 toolExecutor,
                 verbose,
                 cwd: process.cwd(),
-                maxTurns: 50,
+                // No maxTurns here — LocalAgent falls back to its own
+                // MAX_ITERATIONS constant, which BAHULAM_MAX_TURNS can
+                // override. See local-agent.mjs for why this used to be a
+                // second, independently-hardcoded 50 here.
                 gatewayUrl,
                 gatewayToken,
                 sessionId: localSessionId,
@@ -265,7 +268,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 toolExecutor,
                 verbose,
                 cwd: process.cwd(),
-                maxTurns: 50,
+                // No maxTurns here either — see the --local branch above.
                 extraToolSchemas: pluginSchemas,
             }).execute(instr, ctx),
         };
