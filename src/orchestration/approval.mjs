@@ -1,7 +1,7 @@
 import { canonicalToolName } from '../terminal/agents.mjs';
 
 // Baseline read tools every graph run may use regardless of member agents.
-const BASE_READ_TOOLS = ['read_file', 'search_code', 'list_files', 'get_file_info', 'get_project_overview'];
+const BASE_READ_TOOLS = ['read_file', 'search_code', 'query_code_graph', 'list_files', 'get_file_info', 'get_project_overview'];
 
 /**
  * Derive the approval scope for a graph run from the union of its member

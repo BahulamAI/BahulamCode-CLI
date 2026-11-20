@@ -34,6 +34,7 @@ import { GitStatusTool } from './git-status.mjs';
 import { WriteProjectTool } from './write-project.mjs';
 import { ReadFilesTool } from './read-files.mjs';
 import { SearchFilesTool } from './search-files.mjs';
+import { QueryCodeGraphTool } from './query-code-graph.mjs';
 import { AnalyzeCodeTool } from './analyze-code.mjs';
 import { ExploreTool, PlanTool, VerifyTool, DebugTool, RefactorTool } from './meta-tools.mjs';
 import { RememberTool } from './remember.mjs';
@@ -73,6 +74,7 @@ const BUILTIN_TOOLS = [
     ReadFilesTool,
     SearchFilesTool,
     AnalyzeCodeTool,
+    QueryCodeGraphTool,
     AnalyzeImageTool,
     GenerateImageTool,
     ExploreTool,

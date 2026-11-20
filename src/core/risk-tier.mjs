@@ -57,7 +57,7 @@ export function behavior(tier) {
 
 const READ_TOOLS = new Set([
   'read_file', 'read_files',
-  'search_code', 'search_files', 'grep',
+  'search_code', 'query_code_graph', 'search_files', 'grep',
   'list_files', 'get_file_info', 'get_project_overview',
   'git_status', 'git_diff',
   'analyze_code',

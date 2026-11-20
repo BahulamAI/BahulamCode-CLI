@@ -61,7 +61,7 @@ export function formatToolSummary(toolName, input) {
  */
 export function requiresPermission(toolName) {
     const SAFE_TOOLS = new Set([
-        'read_file', 'list_files', 'search_code',
+        'read_file', 'list_files', 'search_code', 'query_code_graph',
         'grep', 'search_files', 'LS', 'ToolSearch',
         'AskUser', 'CronList', 'TodoWrite',
     ]);

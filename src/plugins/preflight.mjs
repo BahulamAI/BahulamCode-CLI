@@ -33,7 +33,7 @@ const AGENT_SLUG_RE = /^[a-z][a-z0-9-]{0,63}$/;
 // sanitize_client_tools), so we reject upfront with a clear error.
 export const RESERVED_TOOL_NAMES = new Set([
   // read
-  'read_file', 'read_files', 'read_batch', 'read_attachment', 'search_code',
+  'read_file', 'read_files', 'read_batch', 'read_attachment', 'search_code', 'query_code_graph',
   'search_files', 'grep', 'list_files', 'analyze_code', 'get_file_info',
   'get_project_overview', 'git_status', 'git_diff', 'validate_file',
   'validate_structure', 'validate_build', 'lint_check', 'run_tests',

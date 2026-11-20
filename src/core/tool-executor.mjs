@@ -1853,6 +1853,8 @@ export function createToolExecutor({
             );
         },
 
+        query_code_graph: (args) => occRegistry.call('query_code_graph', args, { projectRegistry }),
+
         // 6. search_code → combined rg + BM25 for best results
         search_code: async (args) => {
             _searchCodeUsed = true;

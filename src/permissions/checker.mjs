@@ -42,7 +42,7 @@ export function createPermissionChecker(config = {}) {
                     return true;
                 case 'auto': return true; // AI decides
                 case 'dontAsk': return false; // deny everything not pre-approved
-                case 'plan': return toolName === 'read_file' || toolName === 'list_files' || toolName === 'search_code' || toolName === 'grep';
+                case 'plan': return toolName === 'read_file' || toolName === 'list_files' || toolName === 'search_code' || toolName === 'query_code_graph' || toolName === 'grep';
                 case 'default':
                 default:
                     // In default mode, safe tools pass through

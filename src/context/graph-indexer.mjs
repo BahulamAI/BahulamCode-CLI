@@ -24,7 +24,7 @@ const LANG_BY_EXT = {
   '.sql': 'sql',
 };
 
-const GRAPH_VERSION = 2;
+const GRAPH_VERSION = 3;
 export const MAX_GRAPH_SOURCE_BYTES = 2 * 1024 * 1024;
 
 export function isGraphSource(filePath) {
@@ -143,7 +143,7 @@ export class GraphIndexer {
     // All pre-existing outgoing edges for this file have been removed.
     const seen = new Set();
     for (const edge of this._extractEdges(rel, content, path.extname(rel).toLowerCase())) {
-      const key = JSON.stringify([edge.to, edge.kind, edge.line]);
+      const key = JSON.stringify([edge.to, edge.kind, edge.line, edge.spec]);
       if (!seen.has(key)) this.edges.push(edge);
       seen.add(key);
     }
@@ -164,10 +164,10 @@ export class GraphIndexer {
     const edges = [];
     const dir = path.posix.dirname(rel);
     // import x from 's' | import 's' | import type {..} from 's' | export .. from 's'
-    const fromRe = /(?:^|\n)\s*(?:import|export)([\s\S]*?)from\s*['"]([^'"]+)['"]/g;
-    const sideEffectRe = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
-    const dynamicRe = /(?:^|\n)\s*import\(\s*['"]([^'"]+)['"]\s*\)/g;
-    const requireRe = /(?:^|\n)\s*(?:const|let|var)?[^;\n]*?require\(\s*['"]([^'"]+)['"]\s*\)/g;
+    const fromRe = /^[ \t]*(?:import|export)\b\s*((?:type\s+)?(?:[\w$]+\s*,?\s*)?(?:\{[^}]*\}|\*(?:\s+as\s+[\w$]+)?)?)\s*\bfrom\s*['"]([^'"]+)['"]/gm;
+    const sideEffectRe = /^[ \t]*import\s*['"]([^'"]+)['"]/gm;
+    const dynamicRe = /^[ \t]*import\(\s*['"]([^'"]+)['"]\s*\)/gm;
+    const requireRe = /^[ \t]*(?:const|let|var)?[^;\n]*?require\(\s*['"]([^'"]+)['"]\s*\)/gm;
 
     const pushLine = (spec, lineIdx, prefix = '') => {
       const kind = /type\b/.test(prefix) ? 'type-import' : 'imports';
@@ -201,7 +201,7 @@ export class GraphIndexer {
   _extractPython(rel, content) {
     const edges = [];
     const dir = path.posix.dirname(rel);
-    const re = /(?:^|\n)\s*(?:from\s+(\.+)([\w.]*)\s+import\s+([\w.*]+(?:\s*,\s*[\w.*]+)*)|from\s+([\w.]+)\s+import\s+([\w.*]+(?:\s*,\s*[\w.*]+)*)|import\s+([\w.]+))/g;
+    const re = /^[ \t]*(?:from\s+(\.+)([\w.]*)\s+import\s+([\w.*]+(?:\s*,\s*[\w.*]+)*)|from\s+([\w.]+)\s+import\s+([\w.*]+(?:\s*,\s*[\w.*]+)*)|import\s+([\w.]+))/gm;
     let m;
     while ((m = re.exec(content))) {
       const lineIdx = 1 + content.slice(0, m.index).split('\n').length - 1;
@@ -214,7 +214,7 @@ export class GraphIndexer {
         relMod = fromImports.trim().split(/[\s,]+/)[0] || '';
       }
       let spec;
-      if (relDots) spec = relDots + (relMod ? '.' + relMod : '');
+      if (relDots) spec = relDots + relMod;
       else spec = absMod;
 
       if (relDots) {
@@ -236,7 +236,7 @@ export class GraphIndexer {
     const crateRoot = this._rustCrateRoot(rel);
 
     // mod foo;  →  foo.rs | foo/mod.rs
-    const modRe = /(?:^|\n)\s*(?:pub\s+)?mod\s+(\w+)\s*;/g;
+    const modRe = /^[ \t]*(?:pub\s+)?mod\s+(\w+)\s*;/gm;
     let m;
     while ((m = modRe.exec(content))) {
       const lineIdx = 1 + content.slice(0, m.index).split('\n').length - 1;
@@ -249,7 +249,7 @@ export class GraphIndexer {
     }
 
     // use path::Item;  |  pub use path as Alias;  (re-export)
-    const useRe = /(?:^|\n)\s*(pub\s+)?use\s+([^;]+);/g;
+    const useRe = /^[ \t]*(pub\s+)?use\s+([^;]+);/gm;
     while ((m = useRe.exec(content))) {
       const lineIdx = 1 + content.slice(0, m.index).split('\n').length - 1;
       const isPub = Boolean(m[1]);
@@ -561,6 +561,7 @@ export class GraphIndexer {
     if (from === to) return [];
     const adj = new Map();
     for (const e of this.edges) {
+      if (e.status !== 'resolved') continue;
       if (!adj.has(e.from)) adj.set(e.from, []);
       adj.get(e.from).push(e);
     }
@@ -568,7 +569,7 @@ export class GraphIndexer {
     const visited = new Set([from]);
     while (queue.length > 0) {
       const [node, trail] = queue.shift();
-      if (trail.length > maxDepth) continue;
+      if (trail.length >= maxDepth) continue;
       for (const e of adj.get(node) || []) {
         if (e.to === to) return [...trail, e];
         if (!visited.has(e.to)) {

@@ -298,6 +298,54 @@ await test('search_code routes through the registered project index', async () =
     assert.ok(result.output.includes('tool-executor'));
 });
 
+await test('query_code_graph returns source evidence and enforces the selected project', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-graph-tool-'));
+    try {
+        const roots = ['first', 'second'].map(name => path.join(fixture, name));
+        for (const root of roots) {
+            fs.mkdirSync(root);
+            fs.writeFileSync(path.join(root, 'package.json'), '{}');
+            fs.writeFileSync(path.join(root, 'leaf.ts'), 'export type Leaf = number;');
+        }
+        const [root, other] = roots;
+        fs.writeFileSync(path.join(root, 'app.ts'), "// entry\n\nimport './middle';\nimport './missing';");
+        fs.writeFileSync(path.join(root, 'middle.ts'), "// types\nimport type { Leaf } from './leaf';");
+        const scoped = createExecutorWithoutAutoRegister({ deferProjectIndex: true });
+        const [first] = await scoped.registerProjectRoots(roots);
+        const project_id = first.resource.project_id;
+        const query = (operation, args = {}) => scoped.execute('query_code_graph', {
+            project_id, operation, file: 'app.ts', ...args,
+        });
+
+        const imports = await query('imports');
+        assert.strictEqual(imports.success, true, imports.output);
+        assert.deepStrictEqual(JSON.parse(imports.output).results[0], {
+            file: 'app.ts', line: 3, target: 'middle.ts', edge_type: 'imports', status: 'resolved',
+        });
+        assert.strictEqual(imports.results[1].status, 'unresolved');
+        const incoming = await query('importers', { file: 'middle.ts' });
+        assert.deepStrictEqual(incoming.results, [imports.results[0]]);
+        const trace = await query('trace', { target: 'leaf.ts' });
+        assert.deepStrictEqual(trace.results.map(e => [e.file, e.line, e.edge_type]),
+            [['app.ts', 3, 'imports'], ['middle.ts', 2, 'type-import']]);
+        const resolve = await query('resolve', { file: 'middle.ts', specifier: './leaf' });
+        assert.deepStrictEqual(resolve.results, [trace.results[1]]);
+        const inferred = await query('resolve', { specifier: './leaf' });
+        assert.strictEqual(inferred.results[0].line, null);
+        assert.strictEqual(inferred.results[0].target, 'leaf.ts');
+        fs.writeFileSync(path.join(root, 'missing.ts'), 'export {};');
+        assert.strictEqual((await query('resolve', { specifier: './missing' })).results[0].status, 'resolved');
+
+        for (const args of [{ project_id: undefined }, { project_id: 'unknown' }, { operation: 'delete' },
+            { file: '../second/leaf.ts' }, { operation: 'trace', target: path.join(other, 'leaf.ts') },
+            { operation: 'resolve' }, { operation: 'trace' }]) {
+            assert.strictEqual((await query('imports', args)).success, false, JSON.stringify(args));
+        }
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
 await test('agent_create returns runnable spec for same-turn delegation refresh', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-agent-create-'));
     const previousCwd = process.cwd();

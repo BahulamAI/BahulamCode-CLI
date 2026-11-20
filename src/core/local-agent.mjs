@@ -4,6 +4,7 @@
  * Yields events matching the same format as BahulamStreamClient.
  */
 
+import { QueryCodeGraphTool } from '../tools/query-code-graph.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
 import { PromptCache } from './cache.mjs';
@@ -148,8 +149,18 @@ const TOOL_SCHEMAS = [
         },
     },
     {
+        name: QueryCodeGraphTool.name,
+        description: QueryCodeGraphTool.description,
+        input_schema: QueryCodeGraphTool.inputSchema,
+    },
+    {
+        name: 'get_project_overview',
+        description: 'Register a project root and obtain its project_id for indexed queries.',
+        input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    },
+    {
         name: 'search_code',
-        description: 'Search file contents using a regex pattern. Returns matching lines with file paths and line numbers.',
+        description: 'Discover relevant code using text, symbols and BM25-ranked snippets.',
         input_schema: {
             type: 'object',
             properties: {
@@ -871,6 +882,7 @@ export class LocalAgent {
         const parts = [
             'You are Bahulam Code, Bahulam\'s AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
+            'Use search_code for discovery. For a known file, use query_code_graph with its registered project_id to inspect imports, find importers, resolve a module specifier or trace a dependency path. Cite the source file and line of resolved edges.',
             'Use tools to accomplish the user\'s request. Be concise and direct.',
             'Shell command substitution (backticks, $()) is allowed but requires user approval — use it when it is the natural expression; otherwise prefer plain commands.',
         ];

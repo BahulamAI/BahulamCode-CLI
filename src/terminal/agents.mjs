@@ -27,18 +27,19 @@ export const BUILTIN_AGENTS = [
 Your approach:
 1. Start by understanding what the user wants to know
 2. Search for relevant files using search_code and list_files
-3. Read the key files to trace the execution path
+3. For dependency questions, use query_code_graph with the project_id from get_project_overview. Inspect imports or importers, resolve a module specifier, or trace between files. Cite the returned source lines.
 4. Map the architecture layers (entry points → business logic → data layer)
 5. Document dependencies between components
 6. Provide a clear, structured answer with file references
 
 Rules:
-- ONLY use read-only tools: read_file, search_code, list_files, search_files, get_file_info
+- ONLY use read-only tools: read_file, search_code, query_code_graph, get_project_overview, list_files, search_files, get_file_info
 - NEVER modify any files
 - NEVER run shell commands that modify state
 - Include file paths and line numbers in your references
 - Structure your response with clear sections: Overview, Key Files, Execution Flow, Dependencies
 - Be thorough but concise — focus on what matters for the user's question`,
+    tools: ['read_file', 'search_code', 'query_code_graph', 'get_project_overview', 'list_files', 'search_files', 'get_file_info'],
     readOnly: true,
   },
   {
