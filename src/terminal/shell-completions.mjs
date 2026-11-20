@@ -1,6 +1,6 @@
 const CLI_COMMANDS = [
-  'agent', 'attach', 'completion', 'daemonize', 'dashboard', 'device', 'help',
-  'history', 'init', 'install', 'list', 'local', 'login', 'logout', 'mcp',
+  'agent', 'attach', 'completion', 'daemonize', 'dashboard', 'device', 'graph',
+  'help', 'history', 'init', 'install', 'list', 'local', 'login', 'logout', 'mcp',
   'pair', 'plugin', 'plugins', 'pull', 'remote', 'sessions', 'skills', 'skill',
   'stats', 'stop', 'version', 'workflow', 'workspace', 'workspaces',
 ];

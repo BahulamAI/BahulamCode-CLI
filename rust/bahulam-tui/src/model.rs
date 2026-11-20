@@ -58,7 +58,9 @@ impl Card {
     }
 
     pub fn is_foldable(&self) -> bool {
-        !self.tool_name.is_empty() || self.title.starts_with("Tool ") || self.title == "Diff"
+        !self.tool_name.is_empty()
+            || self.title.starts_with("Tool ")
+            || matches!(self.title.as_str(), "Diff" | "Approval")
     }
 
     pub fn belongs_to(&self, agent: &str) -> bool {
@@ -165,6 +167,8 @@ pub struct Model {
     layout_changes: std::collections::VecDeque<(u64, usize)>,
     pub transcript_revision: u64,
     pub session: String,
+    session_announced: bool,
+    last_mcp_inventory: Option<String>,
     pub cwd: String,
     pub git_branch: String,
     pub permission_mode: String,
@@ -435,6 +439,12 @@ impl Model {
             .unwrap_or(false);
     }
 
+    pub fn pending_approval_card(&self) -> Option<usize> {
+        self.approvals
+            .get(&format!("live/{}", self.approval.as_ref()?.id))
+            .copied()
+    }
+
     pub fn request_details(&mut self, index: usize) -> Option<String> {
         if index >= self.cards.len() {
             return None;
@@ -695,6 +705,7 @@ impl Model {
             self.last_seq = 0;
             let replace = event.data.get("replace").and_then(Value::as_bool) != Some(false);
             if replace {
+                self.last_mcp_inventory = None;
                 self.usage_known = false;
                 self.cost_known = false;
                 self.context_known = false;
@@ -724,6 +735,7 @@ impl Model {
             self.model = text(&event.data, "model");
             self.status = format!("Resumed · {}", text(&event.data, "mode"));
             if replace || self.cards.is_empty() {
+                self.session_announced = true;
                 self.card(
                     "main",
                     "Session",
@@ -1107,10 +1119,24 @@ impl Model {
         }
         match kind {
             "session_started" => {
-                self.cwd = text(data, "cwd");
-                self.model = text(data, "model");
-                self.status = self.model.clone();
-                self.card(agent, "Session", text(data, "cwd"), "ready");
+                if let Some(cwd) = data
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    self.cwd = safe_text(cwd);
+                }
+                if let Some(model) = data
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    self.model = safe_text(model);
+                }
+                if !self.session_announced {
+                    self.session_announced = true;
+                    self.card(agent, "Session", self.cwd.clone(), "ready");
+                }
             }
             "turn_started" => {
                 self.turn_starts
@@ -1245,9 +1271,31 @@ impl Model {
             "tool_requested" | "tool_call" if !self.tools.contains_key(&key) => {
                 self.finish_message_segment(&message_key);
                 let name = text(data, "name");
-                let args_value = data.get("args").cloned().unwrap_or(Value::Null);
+                let args_value = &data["args"];
+                let peer_call = matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "plan" | "explore" | "verify" | "debug" | "refactor" | "delegate"
+                );
                 let primary = text(data, "primary");
-                let primary = if !primary.is_empty() {
+                let primary = if peer_call && args_value.is_object() {
+                    // Older transcripts have the arguments but no display summary.
+                    let handoff = &args_value["handoff"];
+                    [
+                        &handoff["context"],
+                        &handoff["objective"],
+                        &args_value["task"],
+                    ]
+                    .into_iter()
+                    .filter_map(Value::as_str)
+                    .find(|value| !value.trim().is_empty())
+                    .map(|value| {
+                        safe_text(value)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default()
+                } else if peer_call || !primary.is_empty() {
                     primary
                 } else {
                     [
@@ -1270,7 +1318,9 @@ impl Model {
                     .unwrap_or_default()
                 };
                 let preview = text(data, "preview");
-                let body = if !preview.is_empty() {
+                let body = if peer_call {
+                    String::new()
+                } else if !preview.is_empty() {
                     preview
                 } else if let Some(args) = data.get("args") {
                     tool_arguments_preview(&name, args)
@@ -1644,6 +1694,20 @@ impl Model {
                         | "user_intervention_queued"
                 ) => {}
             "notice" => {
+                if agent == "main" && data["source"] == "status" && data["level"] == "info" {
+                    if let Some(summary) = data["cause"].as_str().filter(|s| is_mcp_inventory(s)) {
+                        if self.last_mcp_inventory.as_deref() != Some(summary) {
+                            self.last_mcp_inventory = Some(summary.to_owned());
+                            self.card(
+                                agent,
+                                "MCP",
+                                summary.trim_start_matches("MCP: ").to_owned(),
+                                "ready",
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
                 // Some producers expose worker tool progress without full tool-call events.
                 if let Some(active) = data.get("tool_active").and_then(Value::as_bool) {
                     let name = text(data, "current_tool");
@@ -1670,9 +1734,24 @@ impl Model {
                         row.status = activity;
                     }
                 }
+                let title = text(data, "title");
                 let cause = text(data, "cause");
+                let is_stagnation = matches!(
+                    data["source"].as_str(),
+                    Some("stagnation" | "stagnation_detected")
+                );
+                let title = if is_stagnation && cause == title && !cause.is_empty() {
+                    "Stagnation".to_owned()
+                } else {
+                    title
+                };
+                let cause = if is_stagnation {
+                    cause.strip_prefix("Stagnation: ").unwrap_or(&cause)
+                } else {
+                    &cause
+                };
                 let next_step = text(data, "next_step");
-                let body = [cause, next_step]
+                let body = [cause, &next_step]
                     .into_iter()
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
@@ -1682,20 +1761,19 @@ impl Model {
                 let index = if !progress_kind.is_empty() {
                     if let Some(index) = self.progress.get(&progress_key) {
                         let index = *index;
-                        self.cards[index].title = text(data, "title");
+                        self.cards[index].title = title;
                         self.cards[index].body = body;
                         self.cards[index].status = text(data, "level");
                         self.cards[index].detail = None;
                         self.cards[index].payload_ref = None;
                         index
                     } else {
-                        let index =
-                            self.card(agent, &text(data, "title"), body, &text(data, "level"));
+                        let index = self.card(agent, &title, body, &text(data, "level"));
                         self.progress.insert(progress_key.clone(), index);
                         index
                     }
                 } else {
-                    self.card(agent, &text(data, "title"), body, &text(data, "level"))
+                    self.card(agent, &title, body, &text(data, "level"))
                 };
                 if event.payload_ref.is_some() && self.cards[index].body.is_empty() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
@@ -2103,6 +2181,17 @@ impl Model {
             })
             .collect()
     }
+}
+
+fn is_mcp_inventory(value: &str) -> bool {
+    let mut words = value.split_whitespace();
+    words.next() == Some("MCP:")
+        && words.next().is_some_and(|n| n.parse::<u32>().is_ok())
+        && words.next() == Some("tools")
+        && words.next() == Some("from")
+        && words.next().is_some_and(|n| n.parse::<u32>().is_ok())
+        && words.next() == Some("servers")
+        && words.next().is_none()
 }
 
 fn is_iteration_status(value: &str) -> bool {

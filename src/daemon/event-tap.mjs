@@ -230,7 +230,12 @@ function compactToolPreview(name, args = {}) {
   return preview;
 }
 
-function compactToolPrimary(args = {}) {
+function compactToolPrimary(name, args = {}) {
+  if (['plan', 'explore', 'verify', 'debug', 'refactor', 'delegate'].includes(String(name).toLowerCase())) {
+    const summary = [args.handoff?.context, args.handoff?.objective, args.task]
+      .find(value => typeof value === 'string' && value.trim());
+    return summary ? truncateUtf8(summary.trim().replace(/\s+/gu, ' '), 220) : '';
+  }
   for (const key of ['path', 'file_path', 'command', 'query', 'pattern', 'target', 'url']) {
     if (typeof args[key] === 'string' && args[key]) return args[key].slice(0, 220);
   }
@@ -257,7 +262,7 @@ function project(type, src, identity) {
       const name = src.tool || src.name || 'unknown';
       const args = src.args || src.tool_input || src.input || {};
       return { name, tool_id: toolId,
-        args, primary: compactToolPrimary(args), preview: compactToolPreview(name, args), cwd: src.cwd,
+        args, primary: compactToolPrimary(name, args), preview: compactToolPreview(name, args), cwd: src.cwd,
         risk_tier: src.risk_tier, reason: src.reason };
     }
     case 'tool_started':

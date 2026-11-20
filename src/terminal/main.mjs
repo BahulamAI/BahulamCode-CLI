@@ -239,6 +239,12 @@ async function main() {
     return;
   }
 
+  if (subcommand === 'graph') {
+    const { runGraphCommand } = await import('../graph/viewer.mjs');
+    await runGraphCommand(subcommandArgs);
+    return;
+  }
+
   if (subcommand === 'init') {
     const { runInitCommand } = await import('./init.mjs');
     await runInitCommand(subcommandArgs);
@@ -360,6 +366,8 @@ async function main() {
                               Attach an image via the vision analysis pipeline
     bahulam --resume               Resume last conversation
     bahulam dashboard              Open analytics dashboard
+    bahulam graph [path]           Visualize the code reference graph in a browser
+    bahulam graph --list           List repos with an indexed code graph
     bahulam workspace open [path]  Open a local browser workspace
     bahulam login                  Sign in via browser
     bahulam logout                 Sign out and clear credentials

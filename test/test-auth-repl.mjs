@@ -23,6 +23,11 @@ let unavailable = false;
 const observers = new Set();
 const notify = () => { for (const observer of observers) observer(); };
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/cli/message-windows') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ windows: { rolling_5h: { used: 3, limit: -1 } } }));
+    return;
+  }
   assert.equal(req.url, '/api/user/me');
   requests++;
   const id = req.headers.authorization === 'Bearer fixture-alice' ? 'alice' : 'bob';
@@ -47,7 +52,7 @@ try {
     env: { ...process.env, B0_TOKEN: '', KEPLER_TOKEN: '', BAHULAM_NO_PREFLIGHT: '1',
       BAHULAM_SKIP_UPGRADE_CHECK: 'true', BAHULAM_SKIP_AUTO_REGISTER: 'true',
       BAHULAM_AUTO_ATTACH: '0', BAHULAM_PLAIN: '1', BAHULAM_DISABLE_TELEMETRY: '1',
-      TARANG_BACKEND_URL: 'http://127.0.0.1:' + server.address().port },
+      TARANG_ENV: 'local', TARANG_BACKEND_URL: 'http://127.0.0.1:' + server.address().port },
   });
   watchdog = setTimeout(() => child.kill(), 20000);
   watchdog.unref();
@@ -61,7 +66,9 @@ try {
   login.saveCredentials({ token: 'fixture-alice' });
   await until(() => requests === 1, 'idle terminal to discover shared login');
   child.stdin.write('/status\n');
-  await until(() => /User\s+alice/.test(output), 'shared account on status');
+  await until(() => output.includes('3 used · no cap'), 'completed status report');
+  assert.match(output, /User\s+alice/);
+  assert.doesNotMatch(output, /^\s*(Backend\s+http\S*|Permissions|System)\s*$/m);
   assert.equal(requests, 1, 'status reuses the profile fetched by the shared-auth poll');
 
   login.saveCredentials({ token: 'fixture-bob' });

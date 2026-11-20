@@ -22,6 +22,52 @@ fn event(seq: i64, kind: &str, agent: &str, data: serde_json::Value) -> EventEnv
 }
 
 #[test]
+fn stagnation_notice_displays_the_reason_once() {
+    let mut model = Model::default();
+    let reason = "Tool 'shell' called 3 times in a row with identical arguments";
+    let message = format!("Stagnation: {reason}");
+    model
+        .apply(&event(
+            1,
+            "notice",
+            "main",
+            json!({
+                "source":"stagnation","title":message,"cause":message,"level":"info"
+            }),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].title, "Stagnation");
+    assert_eq!(model.cards[0].body, reason);
+}
+
+#[test]
+fn followups_refresh_session_metadata_and_only_announce_changed_mcp_counts() {
+    let mut model = Model::default();
+    let inventory = |count| json!({"source":"status","title":"status","level":"info","cause":format!("MCP: {count} tools from 5 servers"),"progress_key":"status"});
+    for (i, (kind, data)) in [
+        ("session_started", json!({"model":"first","cwd":"/project"})),
+        ("notice", inventory(71)),
+        ("turn_started", json!({"text":"follow up"})),
+        ("session_started", json!({})),
+        ("notice", inventory(71)),
+        ("session_started", json!({"model":"second"})),
+        ("notice", inventory(73)),
+        ("notice", json!({"source":"status","title":"MCP failure","level":"error","cause":"MCP unavailable"})),
+    ].into_iter().enumerate() {
+        model.apply(&event(i as i64 + 1, kind, "main", data)).unwrap();
+    }
+    assert_eq!(model.model, "second");
+    assert_eq!(model.cwd, "/project");
+    assert_eq!(model.status, "working");
+    assert_eq!(
+        model.cards.iter().filter(|c| c.title == "Session").count(),
+        1
+    );
+    assert_eq!(model.cards.iter().filter(|c| c.title == "MCP").count(), 2);
+    assert!(model.cards.iter().any(|c| c.body == "MCP unavailable"));
+}
+
+#[test]
 fn v2_reconstructs_messages_tools_agents_plan_and_usage() {
     let model = replay(&fixture("replay-v2.jsonl")).unwrap();
     assert_eq!(model.last_seq, 14);
@@ -580,6 +626,80 @@ fn cell_buffers_reflow_at_narrow_wide_and_tiny_sizes() {
             );
         }
     }
+}
+
+#[test]
+fn peer_tool_requests_show_one_handoff_summary_until_output_arrives() {
+    let mut model = Model::default();
+    for (i, (args, expected)) in [
+        (json!({"handoff":{"context":"Two tracks ongoing.\nReview release notes.","objective":"Objective","constraints":["Keep compatibility"]},"task":"Task"}), "Two tracks ongoing. Review release notes."),
+        (json!({"handoff":{"context":" ","objective":"Objective"},"task":"Task"}), "Objective"),
+        (json!({"task":"Task"}), "Task"),
+    ].into_iter().enumerate() {
+        model.apply(&event(i as i64 + 1, "tool_requested", "main", json!({
+            "name":"plan", "tool_id":i.to_string(), "args":args, "preview":args.to_string()
+        }))).unwrap();
+        let card = model.cards.last().unwrap();
+        assert_eq!(card.primary, expected);
+        assert!(card.body.is_empty());
+        assert_eq!(serde_json::from_str::<serde_json::Value>(card.detail.as_ref().unwrap()).unwrap(), args);
+    }
+    model
+        .apply(&event(4, "tool_started", "main", json!({"tool_id":"0"})))
+        .unwrap();
+    let card = &model.cards[0];
+    assert_eq!(card.status, "running");
+    assert!(card.body.is_empty());
+    for inline in [true, false] {
+        for expanded in [HashSet::new(), HashSet::from([0])] {
+            let mut terminal = Terminal::new(TestBackend::new(160, 54)).unwrap();
+            terminal
+                .draw(|frame| {
+                    bahulam_tui::render::draw_with_view(
+                        frame,
+                        &model,
+                        0,
+                        true,
+                        "dark",
+                        "",
+                        0,
+                        &expanded,
+                        Some(0),
+                        false,
+                        None,
+                        None,
+                        0,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(screen.contains("Two tracks ongoing."));
+            assert!(!screen.contains(r#"{"handoff""#));
+            assert_eq!(screen.contains("Keep compatibility"), expanded.contains(&0));
+            if expanded.is_empty() {
+                assert_eq!(screen.matches("Two tracks ongoing.").count(), 1);
+                assert!(screen.contains("Show details"));
+            }
+        }
+    }
+    model
+        .apply(&event(
+            5,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"0","output":"Release checklist ready."}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].body, "Release checklist ready.");
 }
 
 #[test]
@@ -3326,6 +3446,76 @@ fn completing_latest_tool_restores_only_pending_tools_for_its_agent() {
             .current_tool_id,
         "child"
     );
+}
+
+#[test]
+fn pending_script_previews_three_rows_and_opens_complete_literal_details() {
+    use bahulam_tui::render::draw_with_view;
+    let mut model = Model::default();
+    let script = format!(
+        "first-row\n  second-row\nthird-row\n# fourth-row **literal**\n{}LAST_TOKEN",
+        "abcdefgh ".repeat(260)
+    );
+    model
+        .apply(&event(
+            1,
+            "approval_required",
+            "main",
+            json!({
+                "apr_id":"ask","tool":"shell","args":{"command":script},"reason":"Review script"
+            }),
+        ))
+        .unwrap();
+    let index = model.pending_approval_card().unwrap();
+    for inline in [true, false] {
+        for (width, height) in [(68, 28), (120, 38)] {
+            let screen = |detail: Option<usize>, offset| {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|f| {
+                        draw_with_view(
+                            f,
+                            &model,
+                            0,
+                            true,
+                            "dark",
+                            "draft\n".repeat(20).as_str(),
+                            100,
+                            &HashSet::new(),
+                            Some(index),
+                            true,
+                            None,
+                            None,
+                            if detail.is_some() { 1 } else { 0 },
+                            detail,
+                            offset,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let preview = screen(None, 0);
+            let (_, prompt) = preview.split_once("Permission needed").unwrap();
+            assert!(
+                prompt.contains("F2 full details")
+                    && prompt.contains("first-row")
+                    && prompt.contains("  second-row")
+                    && prompt.contains("third-row")
+            );
+            assert!(!preview.contains("fourth-row"));
+            assert!(prompt.contains("[1] allow once") && prompt.contains("[2] deny"));
+            assert!(screen(Some(index), 0).contains("# fourth-row **literal**"));
+            assert!(screen(Some(index), usize::MAX).contains("LAST_TOKEN"));
+        }
+    }
 }
 
 #[test]

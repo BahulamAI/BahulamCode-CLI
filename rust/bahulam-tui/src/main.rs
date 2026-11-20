@@ -959,6 +959,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             })?;
+            if detail_card.is_some() {
+                detail_scroll = detail_scroll.min(bahulam_tui::render::painted_detail_scroll_end());
+            }
             if !drag_selection.as_ref().is_some_and(|s| s.dragging) {
                 let mut snapshot = completed.buffer.clone();
                 for cell in &mut snapshot.content {
@@ -1469,7 +1472,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && model.lock().is_ok_and(|m| m.approval.is_some())
                         && !matches!(
                             key.code,
-                            KeyCode::Char('1'..='9') | KeyCode::Esc | KeyCode::Tab
+                            KeyCode::Char('1'..='9') | KeyCode::Esc | KeyCode::Tab | KeyCode::F(2)
                         )
                         && !(key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL)) => {}
@@ -1720,15 +1723,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             focus_panel = 1;
                         }
                     }
+                    KeyCode::F(2) if detail_card.is_none() => {
+                        let request = model.lock().ok().and_then(|mut state| {
+                            let index = state.pending_approval_card()?;
+                            Some((index, state.request_details(index)))
+                        });
+                        if let Some((index, reference)) = request {
+                            detail_card = Some(index);
+                            detail_scroll = 0;
+                            focus_panel = 1;
+                            if let Some(reference) = reference {
+                                write_command(
+                                    &command_writer,
+                                    serde_json::json!({"type":"show_details","data":{"payload_ref":reference}}),
+                                )?;
+                            }
+                        }
+                    }
                     KeyCode::Char('1') if stdio && focus_panel == 0 => {
                         let action = model.lock().ok().and_then(|mut model| {
                             model.approval.clone().map(|approval| {
                                 if approval.command.trim().is_empty() {
-                                    let index = model.cards.iter().rposition(|card| {
-                                        card.title == "Approval"
-                                            && approval.payload_ref.as_deref()
-                                                == card.payload_ref.as_deref()
-                                    });
+                                    let index = model.pending_approval_card();
                                     let request = index.and_then(|index| {
                                         model
                                             .request_details(index)
@@ -2031,14 +2047,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Home if detail_card.is_some() => detail_scroll = 0,
                     KeyCode::End if detail_card.is_some() => {
-                        detail_scroll = model
-                            .lock()
-                            .map(|model| {
-                                model
-                                    .detail_line_count(detail_card.unwrap_or(0))
-                                    .saturating_sub(1)
-                            })
-                            .unwrap_or(0);
+                        detail_scroll = bahulam_tui::render::painted_detail_scroll_end();
                     }
                     KeyCode::Up | KeyCode::Down if focus_panel == 1 => {
                         if let Some(g) = geometry() {
@@ -2392,9 +2401,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             inline_mode,
                         ) {
                             Some(MousePanel::Transcript) if detail_card.is_some() => {
-                                let end = state
-                                    .detail_line_count(detail_card.unwrap_or(0))
-                                    .saturating_sub(1);
+                                let end = bahulam_tui::render::painted_detail_scroll_end();
                                 detail_scroll = if down {
                                     detail_scroll
                                         .saturating_add(capabilities.scroll_lines as usize)

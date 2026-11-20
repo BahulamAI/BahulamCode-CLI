@@ -93,6 +93,13 @@ const events2 = await readAllEvents({ sessionId: sessionId2 });
 assert(events2.length === 1 && events2[0].type === 'session_started', 'new session id → new log');
 assert(events2[0].data.cwd === '/x', 'session_started projection');
 
+const handoff = { context: 'Two tracks ongoing.\nReview release notes.', findings: ['x'.repeat(5000)] };
+tapSseEvent({ type: 'tool_request', data: { tool: 'plan', args: { handoff, task: 'Plan the release' } } }, { sessionId: sessionId2 });
+await closeActiveEventLog();
+const plan = (await readAllEvents({ sessionId: sessionId2 })).at(-1);
+assert(plan.payload_ref && !plan.data.args && plan.data.primary === 'Two tracks ongoing. Review release notes.',
+  'large planning requests retain their handoff context when arguments are stored separately');
+
 // 4. Missing sessionId → skip silently.
 tapSseEvent({ type: 'tool_request', data: {} }, { sessionId: undefined });
 assert(true, 'tap tolerates missing sessionId without throwing');

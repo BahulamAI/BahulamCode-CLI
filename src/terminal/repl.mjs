@@ -3917,10 +3917,6 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
 
       const creds = ctx.auth.loadCredentials();
       const env = process.env.TARANG_ENV || 'production';
-      const os = await import('node:os');
-      const mem = process.memoryUsage();
-      const approvalSummary = ctx.approval.getSummary();
-
       process.stderr.write(`\n  ${c.bold('Session')}\n`);
       process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
       process.stderr.write(`  ${c.dim('ID')}           ${session.id || c.dim('(not assigned yet)')}\n`);
@@ -3934,9 +3930,6 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
           .join(', ');
         const more = modelOverrides.length > 4 ? ` +${modelOverrides.length - 4} more` : '';
         process.stderr.write(`  ${c.dim('Overrides')}    ${summary}${more}\n`);
-      }
-      if (env === 'local') {
-        process.stderr.write(`  ${c.dim('Backend')}      ${creds.backendUrl}\n`);
       }
       process.stderr.write(`  ${c.dim('Env')}          ${env}\n`);
       process.stderr.write(`  ${c.dim('Turns')}        ${session.turns}\n`);
@@ -3992,21 +3985,6 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
         }
       }
 
-      // Permissions
-      process.stderr.write(`\n  ${c.bold('Permissions')}\n`);
-      process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
-      process.stderr.write(`  ${c.dim('Approved')}     ${approvalSummary.approved}  ${c.dim('Denied')} ${approvalSummary.denied}\n`);
-      if (approvalSummary.autoApproveAll) {
-        process.stderr.write(`  ${c.dim('Mode')}         ${c.yellow('approve-all active')}\n`);
-      }
-      if (approvalSummary.autoApprovedTypes.length > 0) {
-        process.stderr.write(`  ${c.dim('Auto-types')}   ${approvalSummary.autoApprovedTypes.join(', ')}\n`);
-      }
-      if (approvalSummary.trust) {
-        process.stderr.write(`  ${c.dim('Trust')}        ${approvalSummary.trust.sessionRules} session, ${approvalSummary.trust.projectRules} project rules\n`);
-      }
-      process.stderr.write(`  ${c.dim('Blocked')}      ${session.blockedOps} by safety guardrails\n`);
-
       // Orchestration
       if (session.delegations.length > 0 || session.phases.length > 0) {
         process.stderr.write(`\n  ${c.bold('Orchestration')}\n`);
@@ -4034,13 +4012,7 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
         }
       }
 
-      // System
-      process.stderr.write(`\n  ${c.bold('System')}\n`);
-      process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
-      process.stderr.write(`  ${c.dim('Node')}         ${process.version}\n`);
-      process.stderr.write(`  ${c.dim('Platform')}     ${process.platform} ${os.arch()}\n`);
-      process.stderr.write(`  ${c.dim('Heap')}         ${(mem.heapUsed / 1024 / 1024).toFixed(0)} MB\n`);
-      process.stderr.write(`  ${c.dim('Memory')}       ${((os.totalmem() - os.freemem()) / 1024 / 1024 / 1024).toFixed(1)}G / ${(os.totalmem() / 1024 / 1024 / 1024).toFixed(1)}G\n\n`);
+      process.stderr.write('\n');
       return;
     }
 

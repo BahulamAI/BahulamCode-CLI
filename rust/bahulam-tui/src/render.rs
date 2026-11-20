@@ -9,7 +9,7 @@ use ratatui::{
 };
 use std::sync::OnceLock;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
 };
@@ -707,7 +707,7 @@ fn composer_height(area: Rect, input: &str, inline: bool) -> u16 {
 fn view_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
     let compact = area.width < 72 || area.height < 16;
     let prompt_height = if model.approval.is_some() {
-        7.min(area.height.saturating_sub(12).max(4))
+        8.min(area.height.saturating_sub(10).max(4))
     } else {
         composer_height(area, input, false)
     };
@@ -746,7 +746,7 @@ fn view_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
 
 fn inline_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
     let prompt_height = if model.approval.is_some() {
-        7
+        8
     } else {
         composer_height(area, input, true)
     };
@@ -790,8 +790,14 @@ pub struct BrowserLinkHit {
     pub style: Style,
 }
 thread_local! {
+    static DETAIL_SCROLL_END: Cell<usize> = const { Cell::new(0) };
     static BROWSER_LINK_HITS: RefCell<Vec<BrowserLinkHit>> = const { RefCell::new(Vec::new()) };
 }
+/// Last scroll offset in the wrapped details shown by the current frame.
+pub fn painted_detail_scroll_end() -> usize {
+    DETAIL_SCROLL_END.with(Cell::get)
+}
+
 /// Targets come from this frame's clipped rows, never from guessed card positions.
 pub fn painted_browser_links() -> Vec<BrowserLinkHit> {
     BROWSER_LINK_HITS.with(|hits| hits.borrow().clone())
@@ -1081,6 +1087,7 @@ pub fn draw_with_view(
     detail_scroll: usize,
     inline: bool,
 ) {
+    DETAIL_SCROLL_END.with(|end| end.set(0));
     BROWSER_LINK_HITS.with(|hits| hits.borrow_mut().clear());
     AGENT_HITS.with(|hits| hits.borrow_mut().clear());
     let p = palette(theme);
@@ -1126,9 +1133,11 @@ pub fn draw_with_view(
             .get(index)
             .map(|card| {
                 let inner = transcript_rect(columns[0], inline);
-                wrap_rows(detail_lines(card, p), inner.width as usize)
-                    .into_iter()
-                    .skip(detail_scroll)
+                let rows = wrap_rows(detail_lines(card, p), inner.width as usize);
+                let end = rows.len().saturating_sub(inner.height as usize);
+                DETAIL_SCROLL_END.with(|limit| limit.set(end));
+                rows.into_iter()
+                    .skip(detail_scroll.min(end))
                     .take(inner.height as usize)
                     .collect::<Vec<_>>()
             })
@@ -1287,85 +1296,88 @@ pub fn draw_with_view(
         .max(1) as usize;
     let input_layout = PromptLayout::new(input, input_width);
     let prompt = if let Some(approval) = &model.approval {
-        vec![
-            Line::from(vec![
-                Span::styled(
-                    "? ",
-                    Style::default().fg(p.warning).add_modifier(Modifier::BOLD),
+        let header = Line::from(vec![
+            Span::styled(
+                "? ",
+                Style::default().fg(p.warning).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                middle_ellipsis(
+                    &[
+                        &approval.agent,
+                        &approval.tool,
+                        &approval.risk,
+                        &approval.cwd,
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .map(|value| safe_text(value))
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                    rows[3].width.saturating_sub(6) as usize,
                 ),
-                Span::styled(
-                    middle_ellipsis(
-                        &[
-                            &approval.agent,
-                            &approval.tool,
-                            &approval.risk,
-                            &approval.cwd,
-                        ]
-                        .into_iter()
-                        .filter(|value| !value.is_empty())
-                        .map(|value| safe_text(value))
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                        rows[3].width.saturating_sub(6) as usize,
-                    ),
-                    Style::default().fg(p.text),
-                ),
-            ]),
-            Line::from(Span::styled(
-                if approval.command.is_empty() {
-                    if approval.payload_ref.is_some() {
-                        "  Command details are stored · open them before approving".to_owned()
-                    } else {
-                        "  Command details unavailable · approval is blocked".to_owned()
-                    }
-                } else {
-                    format!(
-                        "  {}",
-                        middle_ellipsis(
-                            &safe_text(&approval.command).replace('\n', " "),
-                            rows[3].width.saturating_sub(6) as usize
-                        )
-                    )
-                },
                 Style::default().fg(p.text),
-            )),
-            Line::from(Span::styled(
-                if approval.reason.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "  Reason: {}",
-                        middle_ellipsis(
-                            &safe_text(&approval.reason).replace('\n', " "),
-                            rows[3].width.saturating_sub(14) as usize
-                        )
-                    )
-                },
-                Style::default().fg(p.muted),
-            )),
-            Line::from(Span::styled(
+            ),
+        ]);
+        let mut lines = vec![header];
+        let capacity = rows[3].height.saturating_sub(2) as usize;
+        let width = input_width.saturating_sub(2).max(1);
+        let show_reason = !approval.reason.is_empty() && capacity >= 4;
+        let preview_rows = capacity.saturating_sub(2 + usize::from(show_reason)).min(3);
+        if approval.command.is_empty() && preview_rows > 0 {
+            lines.push(Line::raw(if approval.payload_ref.is_some() {
+                "  F2 to load command details"
+            } else {
+                "  Command details unavailable · approval is blocked"
+            }));
+        } else {
+            for row in approval
+                .command
+                .lines()
+                .flat_map(|line| wrap_text(line, width, true))
+                .take(preview_rows)
+            {
+                lines.push(Line::styled(
+                    format!("  {row}"),
+                    Style::default().fg(p.text),
+                ));
+            }
+        }
+        if show_reason {
+            lines.push(Line::styled(
                 format!(
-                    "  [1] allow once    [2] deny{}",
-                    approval
-                        .scopes
-                        .iter()
-                        .filter(|scope| scope.as_str() != "once")
-                        .enumerate()
-                        .map(|(i, scope)| format!(
-                            "    [{}] {}",
-                            i + 3,
-                            match scope.as_str() {
-                                "type" => "allow tool this session",
-                                "session" => "trust similar this session",
-                                "project" => "trust this project",
-                                _ => "unavailable",
-                            }
-                        ))
-                        .collect::<String>()
+                    "  Reason: {}",
+                    middle_ellipsis(
+                        &approval.reason.replace('\n', " "),
+                        input_width.saturating_sub(10)
+                    )
                 ),
-                Style::default().fg(p.warning),
-            )),
-        ]
+                Style::default().fg(p.muted),
+            ));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  [1] allow once    [2] deny{}",
+                approval
+                    .scopes
+                    .iter()
+                    .filter(|scope| scope.as_str() != "once")
+                    .enumerate()
+                    .map(|(i, scope)| format!(
+                        "    [{}] {}",
+                        i + 3,
+                        match scope.as_str() {
+                            "type" => "allow tool this session",
+                            "session" => "trust similar this session",
+                            "project" => "trust this project",
+                            _ => "unavailable",
+                        }
+                    ))
+                    .collect::<String>()
+            ),
+            Style::default().fg(p.warning),
+        )));
+        lines
     } else {
         if input.is_empty() {
             vec![Line::from(vec![
@@ -1390,7 +1402,11 @@ pub fn draw_with_view(
     let suggestion_rows = prompt.len().saturating_sub(input_layout.lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
     let (cursor_row, cursor_column) = input_layout.cursor(cursor);
-    let prompt_scroll = cursor_row.saturating_sub(prompt_visible_rows.saturating_sub(1) as usize);
+    let prompt_scroll = if model.approval.is_some() {
+        0
+    } else {
+        cursor_row.saturating_sub(prompt_visible_rows.saturating_sub(1) as usize)
+    };
     frame.render_widget(
         Paragraph::new(prompt)
             .style(Style::default().bg(p.input_bg))
@@ -1411,7 +1427,11 @@ pub fn draw_with_view(
                         p.border
                     }))
                     .title(if model.approval.is_some() {
-                        " Permission needed "
+                        if detail_card.is_some() {
+                            " Permission needed · Esc to return "
+                        } else {
+                            " Permission needed · F2 full details "
+                        }
                     } else if inline {
                         " Message "
                     } else if interactive {
@@ -2440,6 +2460,11 @@ fn detail_lines(card: &crate::model::Card, p: Palette) -> Vec<Line<'static>> {
             "Loading the complete result from the session log…",
             Style::default().fg(p.muted),
         ))]
+    } else if card.title == "Approval" && !detail.is_empty() {
+        detail
+            .lines()
+            .map(|s| Line::styled(s.to_owned(), Style::default().fg(p.text)))
+            .collect()
     } else if detail.is_empty() {
         vec![Line::from(Span::styled(
             "No detail text is available for this item.",
@@ -2620,6 +2645,8 @@ fn card_lines_with_preview(
         Some(
             if card.detail_loading && card.detail.is_none() && card.body.is_empty() {
                 "Loading complete result…".to_owned()
+            } else if card.title == "Approval" {
+                card.detail.as_deref().unwrap_or(&card.body).to_owned()
             } else {
                 readable_detail(card.detail.as_deref().unwrap_or(&card.body))
             },
@@ -2655,7 +2682,7 @@ fn card_lines_with_preview(
         && (body.starts_with("content · ") || body.starts_with("replacement · "));
     let limit = if !foldable {
         usize::MAX
-    } else if card.title == "Diff" || card.has_edit_diff {
+    } else if matches!(card.title.as_str(), "Approval" | "Diff") || card.has_edit_diff {
         3
     } else if source_preview {
         4 // argument label plus three source lines
@@ -2723,7 +2750,11 @@ fn card_lines_with_preview(
                 wrapped.push((*line).to_owned());
                 continue;
             }
-            wrapped.extend(wrap_text(line, wrap_width, in_code));
+            wrapped.extend(wrap_text(
+                line,
+                wrap_width,
+                in_code || card.title == "Approval",
+            ));
         }
         let visible_rows = body_room;
         if tail && wrapped.len() > visible_rows {
@@ -2744,7 +2775,12 @@ fn card_lines_with_preview(
     } else {
         p
     };
-    let mut rendered_body = if source_preview && !is_expanded && !is_diff {
+    let mut rendered_body = if card.title == "Approval" {
+        body_lines
+            .iter()
+            .map(|s| Line::styled(format!("   {s}"), Style::default().fg(body_palette.text)))
+            .collect()
+    } else if source_preview && !is_expanded && !is_diff {
         let mut rows = body_lines.iter();
         let label = rows.next().map(|line| {
             Line::styled(

@@ -30,7 +30,7 @@ host=startRustTuiHost({onCommand:async command=>{
 process.stderr.write=(_chunk,_encoding,callback)=>{if(typeof callback==='function')callback();return true;};
 results.push(await manager.check('bahulam_info',{query:'where are you located?',topic:'runtime'},true));
 results.push(await manager.check('unknown_info',{query:'fixture request'},true,{reason:'Fixture permission check'}));
-results.push(await manager.check('shell',{command:'custom-cli inspect'},true,{reason:'Fixture shell approval'}));
+results.push(await manager.check('shell',{command:['custom-cli inspect', ...Array.from({length:45}, (_,i)=>'echo STEP_'+(i+1)), 'echo TAIL_OF_SCRIPT'].join('\\n')},true,{reason:'Fixture shell approval'}));
 fs.writeFileSync(${JSON.stringify(resultFile)},JSON.stringify(results));
 send('message_end',{}, {payload_ref:'memory:fixture-reply'});
 setTimeout(()=>host.close(),10000).unref();
@@ -57,6 +57,14 @@ try:
    os.write(master,b'IGNORED\r3');stage=1
   elif stage==1 and 'Permission needed' in text and 'custom-cli inspect' in text:
    assert 'shell' in text and '[2] deny' in text
+   assert 'F2 full details' in text and 'TAIL_OF_SCRIPT' not in text
+   os.write(master,b'\x1bOQ');stage='review'
+  elif stage=='review' and 'Esc to return' in text and 'STEP_4' in text:
+   os.write(master,b'\x1b[F');stage='tail'
+  elif stage=='tail' and 'TAIL_OF_SCRIPT' in text:
+   os.write(master,b'\x1b');stage='return'
+  elif stage=='return' and 'F2 full details' in text:
+   assert '[2] deny' in text
    os.write(master,b'2');stage=2
   elif stage==2 and 'HYDRATED_012' in text:
    assert 'HYDRATED_001' in text,'Assistant still folded behind details'

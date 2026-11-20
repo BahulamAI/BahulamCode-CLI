@@ -81,6 +81,7 @@ const UNIT_TESTS = [
     'test/test-kepler-contract.mjs',
     'test/test-index-freshness.mjs',
     'test/test-graph-index.mjs',
+    'test/test-graph-viewer.mjs',
     'test/test-lint-resolver.mjs',
     'test/test-local-service.mjs',
     'test/test-workspace-voice.mjs',
