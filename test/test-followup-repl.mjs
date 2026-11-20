@@ -143,6 +143,11 @@ try {
       await until(() => view === 'node' ? output.includes('You ›') : output.includes('Ask') && output.includes('Bahulam'), 'startup');
       await enter('initial task');
       await until(() => output.includes('RACE_READY'), 'active execution');
+      if (view !== 'node') {
+        await enter('/auto');
+        await until(() => output.includes('routine') && output.includes('auto-approve'), 'mid-turn /auto confirmation');
+        assert.equal(turns.length, 1);
+      }
       await enter('also check the followup');
       await until(() => hasState(outcome === 'late-accepted' ? 'completed' : outcome === 'delivered' ? 'delivered' : 'held'), 'durable outcome');
       await delay(350);

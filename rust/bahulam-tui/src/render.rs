@@ -584,12 +584,9 @@ fn draw_agents(
         };
         let (glyph, color) = agent_state(&agent.status, p);
         let stats = [
-            Some(
-                agent
-                    .tokens
-                    .map(|tokens| format!("{} tok", format_token_count(tokens)))
-                    .unwrap_or_else(|| "tokens pending".into()),
-            ),
+            agent
+                .tokens
+                .map(|tokens| format!("{} tok", format_token_count(tokens))),
             agent_elapsed(agent),
             agent.cost.map(|cost| format!("${cost:.4}")),
         ]
@@ -1188,11 +1185,11 @@ pub fn draw_with_view(
             .find(|row| row.id == agent)
             .map(|row| {
                 format!(
-                    "{} · {} · {}",
+                    "{}{} · {}",
                     agent_display_name(row),
                     row.tokens
-                        .map(|tokens| format!("{} tok", format_token_count(tokens)))
-                        .unwrap_or_else(|| "tokens pending".into()),
+                        .map(|tokens| format!(" · {} tok", format_token_count(tokens)))
+                        .unwrap_or_default(),
                     agent_activity(row)
                 )
             })
@@ -1526,7 +1523,7 @@ pub fn draw_with_view(
     let configured = std::env::var("BAHULAM_TUI_STATUS_SEGMENTS")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "activity,permission,tokens,context,cost,jobs".into());
+        .unwrap_or_else(|| "activity,permission,tokens,context,cost,model,jobs".into());
     let mut seen = HashSet::new();
     for key in configured
         .split(',')
@@ -2652,6 +2649,14 @@ fn card_lines_with_preview(
     let is_message = is_assistant || is_user;
     let limit = if !foldable {
         usize::MAX
+    } else if card.title == "Diff" || card.has_edit_diff {
+        3
+    } else if matches!(
+        card.tool_name.as_str(),
+        "write_file" | "edit_file" | "multi_edit"
+    ) && !card.has_tool_output
+    {
+        4 // argument label plus three source lines
     } else {
         match card.status.as_str() {
             "running" | "streaming" => 2,
@@ -2731,7 +2736,11 @@ fn card_lines_with_preview(
             .collect()
     };
     let markdown_lines: Vec<&str> = body_lines.iter().map(String::as_str).collect();
-    let mut rendered_body = format_markdown(&markdown_lines, p, card.title == "Diff");
+    let mut rendered_body = format_markdown(
+        &markdown_lines,
+        p,
+        card.title == "Diff" || card.has_edit_diff,
+    );
     if is_assistant {
         for line in &mut rendered_body {
             line.spans.insert(0, Span::raw("    "));
@@ -3435,6 +3444,7 @@ mod row_measurement_tests {
             let card = Card {
                 final_reply: false,
                 has_tool_output: false,
+                has_edit_diff: false,
                 archived: None,
                 preview: None,
                 agent: "main".into(),
@@ -3519,6 +3529,7 @@ mod row_measurement_tests {
         let mut card = Card {
             final_reply: false,
             has_tool_output: false,
+            has_edit_diff: false,
             archived: None,
             preview: None,
             agent: "main".into(),
@@ -3564,6 +3575,7 @@ mod row_measurement_tests {
         let card = Card {
             final_reply: false,
             has_tool_output: false,
+            has_edit_diff: false,
             archived: None,
             preview: None,
             agent: "main".into(),

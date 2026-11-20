@@ -2221,8 +2221,8 @@ fn tools_restore_details_for_separate_results_and_commands_never_fold() {
             (
                 "diff",
                 json!({"path":"src/main.rs","hunks":[{"text":"--- a/main.rs\n+++ b/main.rs\n@@ -1 +1,2 @@\n-old\n+new\n+THIRD"}]}),
-                "src/main.rs",
                 "+THIRD",
+                "+++ b/main.rs",
                 true,
             ),
             (
@@ -3427,4 +3427,22 @@ fn shell_approval_and_adjacent_reads_stay_readable_in_both_views() {
             }
         }
     }
+}
+
+#[test]
+fn write_result_and_following_diff_share_one_preview() {
+    let mut model = Model::default();
+    model.apply(&event(1, "tool_requested", "main", json!({"tool_id":"call","name":"write_file","args":{"path":"a","content":"a\nb\nc\nd"}}))).unwrap();
+    model.apply(&event(2, "tool_finished", "main", json!({"tool_id":"call","ok":true,"has_edit_diff":true,"preview":"+a\n+b\n+c","output":"saved\n+a\n+b\n+c\n+d"}))).unwrap();
+    model
+        .apply(&event(
+            3,
+            "diff",
+            "main",
+            json!({"call_id":"call","count":1,"path":"a","preview":"+a\n+b\n+c"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards.len(), 1);
+    assert_eq!(model.cards[0].body, "+a\n+b\n+c");
+    assert!(model.cards[0].detail.as_ref().unwrap().ends_with("+d"));
 }
