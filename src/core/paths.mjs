@@ -40,7 +40,15 @@ function resolveHome() {
 
 /** Existing JSONL directory convention: /Users/name/project → -Users-name-project. */
 export function transcriptProjectSlug(cwd) {
-    return cwd.replace(/\//g, '-');
+    // Backslashes and the drive colon in Windows paths (C:\Users\...) would
+    // otherwise produce an invalid/unreadable project directory segment on
+    // Windows — the writer's mkdir fails silently and /resume finds nothing.
+    // Normalize both separator styles so writer and reader always agree.
+    // POSIX slugs (/Users/...) are unchanged, so existing transcripts keep
+    // their directory names.
+    return String(cwd)
+        .replace(/[\\/]/g, '-')
+        .replace(/[<>:"|?*\u0000-\u001F]/g, '-');
 }
 
 /**

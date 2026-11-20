@@ -144,6 +144,7 @@ const UNIT_TESTS = [
     'test/test-repl-model-form.mjs',
     'test/test-usage-normalization.mjs',
     'test/test-checkpoints.mjs',
+    'test/test-windows-slug.mjs',
 ];
 
 // ── Integration tests ────────────────────────────────────────────────────────
