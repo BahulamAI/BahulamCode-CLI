@@ -204,6 +204,11 @@ button.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 #svgWrap{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:auto;min-width:0}
 svg{display:block;width:100%;height:auto}
 .edge{stroke:var(--border)}
+.cluster{pointer-events:all;cursor:pointer}
+.cluster:hover{stroke-opacity:0.7}
+.clusterLabel{font-size:11px;font-weight:600;pointer-events:all;cursor:pointer;text-anchor:middle;letter-spacing:0.3px}
+.clusterLabel:hover{text-decoration:underline}
+#hint{color:var(--dim);font-size:10px;margin-bottom:8px}
 .edge-unresolved{stroke:var(--red);stroke-dasharray:4 3}
 .edge-dim{opacity:0.15}
 .edge-lit{opacity:0.9}
@@ -235,6 +240,8 @@ a{color:var(--brand)}
   <label>status</label><select id="statusFilter"><option value="">all</option><option value="connected">connected</option><option value="isolated">isolated</option><option value="has-unresolved">has-unresolved</option></select>
   <label>edge</label><select id="kindFilter"><option value="">all</option></select>
   <label>edge st</label><select id="edgeStatusFilter"><option value="">all</option><option value="resolved">resolved</option><option value="unresolved">unresolved</option></select>
+  <label>group</label><select id="groupBy"><option value="dir" selected>directory</option><option value="type">language</option></select>
+  <button id="btnBack" style="display:none">« all clusters</button>
   <span class="sep"></span>
   <button id="btnConnected">only connected</button>
   <button id="btnFocus">focus 1-hop</button>
@@ -242,6 +249,7 @@ a{color:var(--brand)}
   <label>limit</label><select id="nodeLimit"><option>100</option><option>250</option><option selected>500</option><option>1000</option></select>
 </div>
 <div id="stats"></div>
+<div id="hint">drag node ⇢ move it · drag background ⇢ pan · scroll ⇢ zoom · click cluster ring ⇢ expand to that module · click node ⇢ inspect</div>
 <div class="layout">
   <div id="svgWrap"><svg id="graph" viewBox="0 0 1100 720" preserveAspectRatio="xMidYMid meet"></svg></div>
   <div id="side"><h2>Selection</h2><div class="empty">Click a node to inspect it.</div></div>
@@ -253,7 +261,8 @@ var W = 1100, H = 720;
 var PALETTE = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#39c5cf','#f778ba','#7ee787'];
 var state = { nodes: [], edges: [], repos: [], hash: null,
   search: '', type: '', status: '', kind: '', edgeStatus: '',
-  onlyConnected: false, focus: false, limit: 500, selected: null };
+  onlyConnected: false, focus: false, limit: 500, selected: null, groupBy: 'dir',
+  zoom: 1, panX: 0, panY: 0, moved: {}, clusterFilter: '' };
 
 function stableColor(kind){
   var h = 0, s = String(kind || 'file');
@@ -277,6 +286,7 @@ function applyFilters(){
     if (state.type && n.type !== state.type) return false;
     if (state.status && n.status !== state.status) return false;
     if (state.onlyConnected && n.status === 'isolated') return false;
+    if (state.clusterFilter && groupKey(n) !== state.clusterFilter) return false;
     if (q && (n.label.toLowerCase().indexOf(q) < 0) && (n.fullPath.toLowerCase().indexOf(q) < 0)) return false;
     return true;
   });
@@ -305,33 +315,61 @@ function applyFilters(){
   return { visible: visible, edges: edgeVisible };
 }
 
+function groupKey(n){
+  if (state.groupBy === 'type') return n.type || 'file';
+  var p = n.fullPath || n.id || '';
+  var i = p.indexOf('/');
+  return i === -1 ? '(root)' : p.slice(0, i);
+}
+
 function layout(visible){
   var groups = {};
   visible.forEach(function(n){
-    (groups[n.type] = groups[n.type] || []).push(n);
+    var k = groupKey(n);
+    (groups[k] = groups[k] || []).push(n);
   });
-  var types = Object.keys(groups).sort();
+  // Biggest clusters first so large modules get wide, well-separated arcs.
+  var keys = Object.keys(groups).sort(function(a, b){
+    return (groups[b].length - groups[a].length) || (a < b ? -1 : 1);
+  });
   var cx = W / 2, cy = H / 2;
   var baseR = Math.min(W, H) * 0.36;
   var id2pos = {};
-  types.forEach(function(t, gi){
-    var ga = (2 * Math.PI * gi) / types.length - Math.PI / 2;
+  var clusters = [];
+  keys.forEach(function(k, gi){
+    var ga = (2 * Math.PI * gi) / keys.length - Math.PI / 2;
     var gx = cx + Math.cos(ga) * baseR;
     var gy = cy + Math.sin(ga) * baseR;
-    groups[t].forEach(function(n, i){
+    var maxR = 0;
+    groups[k].forEach(function(n, i){
       var a = i * 2.399963;
-      var r = 16 * Math.sqrt(i + 1);
+      var r = 11 * Math.sqrt(i + 1);
+      if (r > maxR) maxR = r;
       id2pos[n.id] = { x: gx + Math.cos(a) * r, y: gy + Math.sin(a) * r };
     });
+    clusters.push({ key: k, x: gx, y: gy, r: maxR + 16, size: groups[k].length });
   });
-  return id2pos;
+  // user-dragged nodes keep their manual position
+  Object.keys(state.moved).forEach(function(id){
+    if (state.moved[id]) id2pos[id] = state.moved[id];
+  });
+  return { pos: id2pos, clusters: clusters };
 }
 
 function render(){
   var f = applyFilters();
-  var pos = layout(f.visible);
+  var ly = layout(f.visible);
+  var pos = ly.pos;
   var svg = document.getElementById('graph');
-  var html = '';
+  var html = '<g id="viewport" transform="translate(' + state.panX + ',' + state.panY + ') scale(' + state.zoom + ')">';
+  // cluster halos + labels first (show when the grouping yields real modules)
+  if (ly.clusters.length > 1 && ly.clusters.length <= 24) {
+    ly.clusters.forEach(function(c){
+      var col = stableColor(c.key);
+      html += '<circle class="cluster" data-key="' + esc(c.key) + '" cx="' + c.x.toFixed(1) + '" cy="' + c.y.toFixed(1) + '" r="' + c.r.toFixed(1) + '" fill="' + col + '" opacity="0.06" stroke="' + col + '" stroke-opacity="0.25" stroke-width="1" stroke-dasharray="4 3"></circle>';
+      html += '<text class="clusterLabel" data-key="' + esc(c.key) + '" x="' + c.x.toFixed(1) + '" y="' + (c.y - c.r).toFixed(1) + '" fill="' + col + '">' + esc(c.key) + ' <tspan opacity="0.6">' + c.size + '</tspan></text>';
+    });
+  }
   // edges first
   f.edges.forEach(function(e){
     var s = pos[e.source], t = pos[e.target];
@@ -348,7 +386,7 @@ function render(){
     var p = pos[n.id];
     if (!p) return;
     var r = n.id === state.selected ? 9 : 6;
-    var fill = state.selected && n.id === state.selected ? '#fff' : stableColor(n.type);
+    var fill = state.selected && n.id === state.selected ? '#fff' : stableColor(groupKey(n));
     var extra = n.ghost ? ' node-ghost' : '';
     var title = esc(n.fullPath) + ' · ' + esc(n.type) + ' · ' + esc(n.status);
     html += '<circle class="node' + extra + '" data-id="' + esc(n.id) + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + r + '" fill="' + fill + '" stroke="' + (n.ghost ? 'var(--red)' : 'var(--border)') + '" stroke-width="1.5" opacity="' + (n.ghost ? 0.85 : 1) + '"><title>' + title + '</title></circle>';
@@ -356,6 +394,7 @@ function render(){
       html += '<text x="' + (p.x + r + 4).toFixed(1) + '" y="' + (p.y + 3).toFixed(1) + '">' + esc(n.label) + '</text>';
     }
   });
+  html += '</g>';
   svg.innerHTML = html;
   var nCount = f.visible.length, eCount = f.edges.length;
   var unResolved = f.edges.filter(function(e){ return e.status === 'unresolved'; }).length;
@@ -411,6 +450,9 @@ document.getElementById('graph').addEventListener('click', function(ev){
 document.getElementById('nodeLimit').addEventListener('change', function(e){
   state.limit = Number(e.target.value); render();
 });
+document.getElementById('groupBy').addEventListener('change', function(e){
+  state.groupBy = e.target.value; render();
+});
 document.getElementById('btnConnected').addEventListener('click', function(){
   state.onlyConnected = !state.onlyConnected;
   this.classList.toggle('active', state.onlyConnected);
@@ -425,6 +467,110 @@ document.getElementById('repoSelect').addEventListener('change', function(e){
   var hash = e.target.value;
   if (hash) loadGraph(hash);
 });
+
+// ── manipulation: drag, pan, zoom, cluster expand ──
+(function(){
+  var svg = document.getElementById('graph');
+  var drag = null;        // { id, startX, startY, orig, moved } for node drag
+  var pan = null;         // { startX, startY, panX, panY } for background pan
+  var movedDuring = false;
+  var vb = { w: 1100, h: 720 };
+
+  function toSvgPoint(ev){
+    var rect = svg.getBoundingClientRect();
+    // svg viewBox 1100x720 scales to fit; keep it simple by working in viewBox coords
+    var sx = vb.w / rect.width, sy = vb.h / rect.height;
+    var x = (ev.clientX - rect.left) * sx, y = (ev.clientY - rect.top) * sy;
+    return { x: (x - state.panX) / state.zoom, y: (y - state.panY) / state.zoom };
+  }
+
+  svg.addEventListener('pointerdown', function(ev){
+    var circle = ev.target.closest('circle.node');
+    var cluster = ev.target.closest('.cluster, .clusterLabel');
+    movedDuring = false;
+    if (circle) {
+      var id = circle.getAttribute('data-id');
+      var p = toSvgPoint(ev);
+      drag = { id: id, startX: ev.clientX, startY: ev.clientY, orig: p };
+      svg.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+    } else if (cluster) {
+      // handled on click; nothing to drag
+    } else {
+      pan = { startX: ev.clientX, startY: ev.clientY, panX: state.panX, panY: state.panY };
+      svg.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+    }
+  });
+
+  svg.addEventListener('pointermove', function(ev){
+    if (drag) {
+      var dx = (ev.clientX - drag.startX) * (vb.w / svg.getBoundingClientRect().width) / state.zoom;
+      var dy = (ev.clientY - drag.startY) * (vb.h / svg.getBoundingClientRect().height) / state.zoom;
+      state.moved[drag.id] = { x: drag.orig.x + dx, y: drag.orig.y + dy };
+      movedDuring = true;
+      render();
+    } else if (pan) {
+      var sx = vb.w / svg.getBoundingClientRect().width, sy = vb.h / svg.getBoundingClientRect().height;
+      state.panX = pan.panX + (ev.clientX - pan.startX) * sx;
+      state.panY = pan.panY + (ev.clientY - pan.startY) * sy;
+      movedDuring = true;
+      render();
+    }
+  });
+
+  function endDrag(ev){
+    if (drag) drag = null;
+    if (pan) pan = null;
+  }
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  svg.addEventListener('wheel', function(ev){
+    ev.preventDefault();
+    var factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+    var old = state.zoom;
+    var rect = svg.getBoundingClientRect();
+    var sx = vb.w / rect.width, sy = vb.h / rect.height;
+    var cx = ev.clientX * sx, cy = ev.clientY * sy; // cursor in viewBox units
+    state.zoom = Math.max(0.2, Math.min(4, state.zoom * factor));
+    var k = state.zoom / old;
+    // keep the cursor-anchored point stable
+    state.panX = cx - (cx - state.panX) * k;
+    state.panY = cy - (cy - state.panY) * k;
+    render();
+  }, { passive: false });
+
+  svg.addEventListener('click', function(ev){
+    if (movedDuring) return; // drag/pan consumed this gesture
+    var cluster = ev.target.closest('.cluster, .clusterLabel');
+    if (cluster) {
+      var key = cluster.getAttribute('data-key');
+      if (key) {
+        state.clusterFilter = key;
+        state.zoom = 1.6; state.panX = 0; state.panY = 0;
+        document.getElementById('btnBack').style.display = '';
+        render();
+      }
+      return;
+    }
+    // plain background click: nothing (node click handled above)
+  });
+
+  document.getElementById('btnBack').addEventListener('click', function(){
+    state.clusterFilter = '';
+    state.zoom = 1; state.panX = 0; state.panY = 0;
+    this.style.display = 'none';
+    render();
+  });
+
+  // reset view on double-click background
+  svg.addEventListener('dblclick', function(ev){
+    if (ev.target.closest('circle.node') || ev.target.closest('.cluster, .clusterLabel')) return;
+    state.zoom = 1; state.panX = 0; state.panY = 0;
+    render();
+  });
+})();
 
 // ── data ──
 function loadGraph(hash){

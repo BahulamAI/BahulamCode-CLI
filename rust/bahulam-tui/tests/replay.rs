@@ -3625,9 +3625,21 @@ fn in_flight_summary_updates_the_same_row_in_both_views() {
     for inline in [false, true] {
         let mut model = Model::default();
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
-        for (seq, title, level) in [
-            (1, "Summarizing context…", "running"),
-            (2, "Context summarized", "info"),
+        for (seq, title, level, visible, ratio) in [
+            (
+                1,
+                "Summarizing context…",
+                "running",
+                "mid-turn · 8 older messages",
+                "138236 / 132194 estimated tokens",
+            ),
+            (
+                2,
+                "Context summarized",
+                "info",
+                "mid-turn · 8 older messages condensed · 2 retained",
+                "138236 / 132194 tokens",
+            ),
         ] {
             model
                 .apply(&event(
@@ -3636,6 +3648,7 @@ fn in_flight_summary_updates_the_same_row_in_both_views() {
                     "main",
                     json!({
                         "title":title, "level":level, "progress_key":"context-summary",
+                        "cause":format!("{visible} · {ratio}"),
                     }),
                 ))
                 .unwrap();
@@ -3669,6 +3682,9 @@ fn in_flight_summary_updates_the_same_row_in_both_views() {
                 .map(|c| c.symbol())
                 .collect();
             assert!(screen.contains(title));
+            assert!(screen.contains(visible));
+            assert!(!screen.contains("138236"));
+            assert!(!screen.contains("132194"));
             assert_eq!(model.cards.len(), 1);
             if seq == 2 {
                 assert!(!screen.contains("Summarizing context…"));

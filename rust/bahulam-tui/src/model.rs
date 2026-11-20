@@ -1745,7 +1745,13 @@ impl Model {
                 } else {
                     title
                 };
-                let cause = if is_stagnation {
+                let progress_kind = text(data, "progress_key");
+                let cause = if progress_kind == "context-summary" {
+                    cause
+                        .rsplit_once(" · ")
+                        .filter(|(_, suffix)| suffix.ends_with(" tokens") && suffix.contains(" / "))
+                        .map_or(cause.as_str(), |(summary, _)| summary)
+                } else if is_stagnation {
                     cause.strip_prefix("Stagnation: ").unwrap_or(&cause)
                 } else {
                     &cause
@@ -1756,7 +1762,6 @@ impl Model {
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
-                let progress_kind = text(data, "progress_key");
                 let progress_key = format!("{message_key}/{progress_kind}");
                 let index = if !progress_kind.is_empty() {
                     if let Some(index) = self.progress.get(&progress_key) {
