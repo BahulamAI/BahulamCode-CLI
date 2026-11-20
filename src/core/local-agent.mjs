@@ -576,6 +576,7 @@ export class LocalAgent {
                     data: {
                         summary: 'Done (local)',
                         changes: toolCount,
+                        turns: i + 1,
                         duration_s: duration,
                         usage: _buildLocalUsageEnvelope(usageTotals),
                     },
@@ -591,6 +592,7 @@ export class LocalAgent {
             data: {
                 summary: 'Aborted (max turns)',
                 changes: toolCount,
+                turns: this.maxTurns,
                 duration_s: (Date.now() - startTime) / 1000,
                 usage: _buildLocalUsageEnvelope(usageTotals),
             },

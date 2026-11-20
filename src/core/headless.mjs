@@ -367,6 +367,8 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
     let finalContent = '';
     let totalCost = 0;
     let rateLimit = null;
+    let turnCount = null;       // LocalAgent's actual agent-loop turn count (--local only);
+                                // distinct from tool-call count — a turn can run 0..N tools.
 
     // ── Telemetry collectors ──
     const toolCalls = [];       // { tool, call_id, duration_ms, success, internal, sub_agent }
@@ -633,6 +635,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                 if (Number.isFinite(data?.tool_calls)) backendToolCount = data.tool_calls;
                 if (Number.isFinite(data?.primary_tool_calls)) backendPrimaryToolCount = data.primary_tool_calls;
                 if (Number.isFinite(data?.sub_agent_tool_calls)) backendSubAgentToolCount = data.sub_agent_tool_calls;
+                if (Number.isFinite(data?.turns)) turnCount = data.turns;
                 // Capture token usage
                 if (data?.usage) {
                     usage = {
@@ -714,6 +717,7 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
         tools_primary: primaryToolTotal,
         tools_sub_agent: subAgentToolCount,
         tools_forwarded_sub_agent_events: subAgentForwardedToolCount,
+        turns: turnCount,
         tool_breakdown: toolBreakdown,
         tool_breakdown_primary: primaryToolBreakdown,
         tool_breakdown_sub_agent: subAgentToolBreakdown,
