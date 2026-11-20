@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bahulam Color Palette</title>
+<style>
+  :root{
+    --fg:#202331; --muted:#606472; --border:#DEDFE5; --border-subtle:#E9EAF0;
+    --bg:#FAF9F6; --surface:#F0F1F5; --panel:#FFFFFF;
+    --primary:#303BA0; --primary-soft:#ECEDFC; --hover:rgba(32,35,49,.04);
+    --success:#28684F; --success-bg:#EDF5F0;
+    --warn:#8A5B15; --warn-bg:#FFF2D9;
+    --error:#AD363F; --error-bg:#FFF0F1;
+    --accent:#70539B; --data:#266978; --literal:#875820;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased;padding:48px 24px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:26px;letter-spacing:-.03em;margin:0 0 4px}
+  h1 .dot{color:var(--primary)}
+  p.lede{margin:0 0 32px;color:var(--muted);max-width:640px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;margin:36px 0 14px}
+  h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;margin:24px 0 10px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
+  .swatch{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .swatch .chip{height:72px}
+  .swatch .meta{padding:9px 11px}
+  .swatch .name{font-size:12px;font-weight:600}
+  .swatch .tok{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px}
+  .swatch .use{font-size:11px;color:var(--muted);margin-top:4px;border-top:1px solid var(--border-subtle);padding-top:5px}
+  .swatch .use b{color:var(--fg);font-weight:600}
+  .section-note{font-size:12px;color:var(--muted);margin:-6px 0 0}
+  /* demo */
+  .demo{display:flex;flex-wrap:wrap;gap:14px;align-items:center;border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:18px;margin-top:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--muted);font:500 12px var(--sans);padding:0 12px;cursor:pointer}
+  .btn.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:500}
+  .badge.success{background:var(--success-bg);color:var(--success)}
+  .badge.warn{background:var(--warn-bg);color:var(--warn)}
+  .badge.error{background:var(--error-bg);color:var(--error)}
+  .code{font-family:var(--mono);font-size:12.5px;line-height:1.6;border-radius:8px;padding:14px 16px;margin-top:8px}
+  .code.dark{background:#202331;color:#E5E7EB}
+  .k{color:#D1B8EB}.s{color:#91CFD8}.l{color:#E7C494}.c{color:#C1C8D8}
+  .foot{margin-top:40px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--border);padding-top:14px}
+  .foot code{font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bahulam <span class="dot">●</span> Color Palette</h1>
+  <p class="lede">Representative palette harvested from this codebase — the light web workspace tokens
+  (<code>workspace.css</code> / <code>bahulam-plugin.css</code>, mirrored by <code>LIGHT_TOKENS</code> in <code>src/ui/palette.mjs</code>)
+  and the dark terminal tokens (<code>TOKENS</code>). "Ink, indigo, calm status colors."</p>
+
+  <!-- Light -->
+  <h2>Light — Web Workspace</h2>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#FFFFFF;border-bottom:1px solid var(--border-subtle)"></div><div class="meta"><div class="name">Panel</div><div class="tok">#FFFFFF · --ws-panel</div><div class="use">Cards, inputs, popovers</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FAF9F6"></div><div class="meta"><div class="name">Background</div><div class="tok">#FAF9F6 · --ws-bg</div><div class="use">Page / app canvas</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#F0F1F5"></div><div class="meta"><div class="name">Surface</div><div class="tok">#F0F1F5 · --ws-surface</div><div class="use">Menubar, hover fills</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#303BA0"></div><div class="meta"><div class="name">Primary</div><div class="tok">#303BA0 · --ws-primary</div><div class="use">Brand, buttons, focus</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#ECEDFC"></div><div class="meta"><div class="name">Primary Soft</div><div class="tok">#ECEDFC · --ws-primary-soft</div><div class="use">Selected rows, chip tints</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#70539B"></div><div class="meta"><div class="name">Accent</div><div class="tok">#70539B · brand.accent</div><div class="use">Secondary brand hue</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#266978"></div><div class="meta"><div class="name">Data</div><div class="tok">#266978 · brand.data</div><div class="use">Data viz, strings</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#28684F"></div><div class="meta"><div class="name">Success</div><div class="tok">#28684F · --ws-success</div><div class="use">OK states</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#8A5B15"></div><div class="meta"><div class="name">Warning</div><div class="tok">#8A5B15 · --ws-warn</div><div class="use">Cautions</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#AD363F"></div><div class="meta"><div class="name">Error</div><div class="tok">#AD363F · --ws-error</div><div class="use">Failures, destructive</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#202331"></div><div class="meta"><div class="name">Text Primary</div><div class="tok">#202331 · --ws-fg</div><div class="use">Body, headings</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#606472"></div><div class="meta"><div class="name">Text Muted</div><div class="tok">#606472 · --ws-muted / faint</div><div class="use">Labels, secondary copy</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#DEDFE5"></div><div class="meta"><div class="name">Border</div><div class="tok">#DEDFE5 · --ws-border</div><div class="use">Dividers, input edges</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#E9EAF0"></div><div class="meta"><div class="name">Border Subtle</div><div class="tok">#E9EAF0 · --ws-border-subtle</div><div class="use">Row separators</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#875820"></div><div class="meta"><div class="name">Literal</div><div class="tok">#875820 · syntax.literal</div><div class="use">Numbers, amber literals</div></div></div>
+  </div>
+
+  <h2>Light — Status Backgrounds</h2>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#EDF5F0"></div><div class="meta"><div class="name">Success BG</div><div class="tok">#EDF5F0 · --ws-success-bg</div><div class="use">Badges, tinted chips</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FFF2D9"></div><div class="meta"><div class="name">Warn BG</div><div class="tok">#FFF2D9 · --ws-warn-bg</div><div class="use">Warning surfaces</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FFF0F1"></div><div class="meta"><div class="name">Error BG</div><div class="tok">#FFF0F1 · --ws-error-bg</div><div class="use">Error surfaces</div></div></div>
+  </div>
+
+  <!-- Dark -->
+  <h2>Dark — Terminal / CLI (<code>TOKENS</code>)</h2>
+  <p class="section-note">Deep surfaces with soft pastel foregrounds — periwinkle brand, lavender keywords, teal strings, amber literals.</p>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#1C2633"></div><div class="meta"><div class="name">Input BG</div><div class="tok">rgb(28,38,51)</div><div class="use">Prompt input surface</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#2B3D54"></div><div class="meta"><div class="name">Selection</div><div class="tok">rgb(43,61,84)</div><div class="use">Selected text / rows</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#394552"></div><div class="meta"><div class="name">Border</div><div class="tok">rgb(57,69,82)</div><div class="use">Panel edges</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#BEC6FF"></div><div class="meta"><div class="name">Brand Primary</div><div class="tok">#BEC6FF · brand.primary</div><div class="use">Accent, links, brand</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#D1B8EB"></div><div class="meta"><div class="name">Brand Accent</div><div class="tok">#D1B8EB · brand.accent</div><div class="use">Keywords, purple</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#91CFD8"></div><div class="meta"><div class="name">Brand Data</div><div class="tok">#91CFD8 · brand.data</div><div class="use">Strings, teal</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#E7C494"></div><div class="meta"><div class="name">Literal</div><div class="tok">#E7C494 · syntax.literal</div><div class="use">Numbers, amber</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#C1C8D8"></div><div class="meta"><div class="name">Comment</div><div class="tok">#C1C8D8 · diffSyntax.comment</div><div class="use">Code comments</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#9AD6B8"></div><div class="meta"><div class="name">Success</div><div class="tok">#9AD6B8 · state.success</div><div class="use">Pass, added lines</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#F2CB89"></div><div class="meta"><div class="name">Warning</div><div class="tok">#F2CB89 · state.warn</div><div class="use">Cautions</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FFB0B6"></div><div class="meta"><div class="name">Danger</div><div class="tok">#FFB0B6 · state.danger</div><div class="use">Errors, removed lines</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#F0F1F8"></div><div class="meta"><div class="name">Text Primary</div><div class="tok">#F0F1F8 · text.primary</div><div class="use">Body text</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#B7BECE"></div><div class="meta"><div class="name">Text Muted</div><div class="tok">#B7BECE · text.muted/dim</div><div class="use">Secondary copy</div></div></div>
+  </div>
+
+  <h2>Dark — Diff Surfaces (<code>DIFF_BACKGROUNDS</code>)</h2>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#223D31"></div><div class="meta"><div class="name">Add Line</div><div class="tok">#223D31 · diff.addLine</div><div class="use">Added row bg</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#2B583E"></div><div class="meta"><div class="name">Add Word</div><div class="tok">#2B583E · diff.addWord</div><div class="use">Changed word bg</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#442730"></div><div class="meta"><div class="name">Remove Line</div><div class="tok">#442730 · diff.removeLine</div><div class="use">Removed row bg</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#682F3B"></div><div class="meta"><div class="name">Remove Word</div><div class="tok">#682F3B · diff.removeWord</div><div class="use">Deleted word bg</div></div></div>
+  </div>
+
+  <!-- In use -->
+  <h2>In Use</h2>
+  <div class="demo">
+    <button class="btn primary">Primary Action</button>
+    <button class="btn">Secondary</button>
+    <span class="badge success">✓ Success</span>
+    <span class="badge warn">⚠ Warning</span>
+    <span class="badge error">✕ Error</span>
+  </div>
+  <div class="code dark"><span class="k">import</span> { paint } <span class="k">from</span> <span class="s">'./palette.mjs'</span>;
+<span class="c">// calm syntax: lavender keywords, teal strings, amber literals</span>
+<span class="k">const</span> ok = <span class="l">true</span>;
+paint.<span class="k">brand</span>.<span class="s">primary</span>(<span class="s">'bahulam'</span>);</div>
+
+  <div class="foot">Sources: <code>src/ui/palette.mjs</code> (TOKENS / LIGHT_TOKENS / DIFF_BACKGROUNDS) ·
+  <code>src/local-service/workspace.css</code> &amp; <code>assets/bahulam-plugin/bahulam-plugin.css</code> (--ws-*).
+  Light web tokens and LIGHT_TOKENS intentionally mirror each other.</div>
+</div>
+</body>
+</html>

@@ -3430,6 +3430,127 @@ fn shell_approval_and_adjacent_reads_stay_readable_in_both_views() {
 }
 
 #[test]
+fn in_flight_summary_updates_the_same_row_in_both_views() {
+    use bahulam_tui::render::draw_with_view;
+    for inline in [false, true] {
+        let mut model = Model::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        for (seq, title, level) in [
+            (1, "Summarizing context…", "running"),
+            (2, "Context summarized", "info"),
+        ] {
+            model
+                .apply(&event(
+                    seq,
+                    "notice",
+                    "main",
+                    json!({
+                        "title":title, "level":level, "progress_key":"context-summary",
+                    }),
+                ))
+                .unwrap();
+            terminal
+                .draw(|f| {
+                    draw_with_view(
+                        f,
+                        &model,
+                        usize::MAX,
+                        true,
+                        "dark",
+                        "",
+                        0,
+                        &HashSet::new(),
+                        None,
+                        false,
+                        None,
+                        None,
+                        0,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(screen.contains(title));
+            assert_eq!(model.cards.len(), 1);
+            if seq == 2 {
+                assert!(!screen.contains("Summarizing context…"));
+            }
+        }
+    }
+}
+
+#[test]
+fn create_write_and_edit_preview_three_source_lines_with_syntax_colors() {
+    use bahulam_tui::render::draw_with_view;
+    let source = "const greeting = \"hello\";\n// comment\nreturn 42;\nhiddenFourthLine";
+    for name in ["create_file", "write_file", "edit_file"] {
+        let mut model = Model::default();
+        let args = json!({"path":"example.js", "content":source, "replace":source});
+        model
+            .apply(&event(
+                1,
+                "tool_requested",
+                "main",
+                json!({"tool_id":"id","name":name,"args":args}),
+            ))
+            .unwrap();
+        for inline in [false, true] {
+            let mut terminal = Terminal::new(TestBackend::new(110, 36)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_with_view(
+                        f,
+                        &model,
+                        usize::MAX,
+                        true,
+                        "dark",
+                        "",
+                        0,
+                        &HashSet::new(),
+                        None,
+                        false,
+                        None,
+                        None,
+                        0,
+                        None,
+                        0,
+                        inline,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<_> = buffer
+                .content
+                .chunks(buffer.area.width as usize)
+                .map(|cells| (cells.iter().map(|c| c.symbol()).collect::<String>(), cells))
+                .collect();
+            let (line, cells) = rows
+                .iter()
+                .find(|(line, _)| line.contains("const greeting"))
+                .unwrap();
+            assert!(rows.iter().any(|(line, _)| line.contains("// comment")));
+            assert!(rows.iter().any(|(line, _)| line.contains("return 42;")));
+            assert!(!rows
+                .iter()
+                .any(|(line, _)| line.contains("hiddenFourthLine")));
+            let color = |word: &str| cells[line[..line.find(word).unwrap()].chars().count()].fg;
+            if color("const") != ratatui::style::Color::Reset {
+                assert_ne!(color("const"), color("greeting"));
+                assert_ne!(color("hello"), color("greeting"));
+            }
+        }
+    }
+}
+
+#[test]
 fn write_result_and_following_diff_share_one_preview() {
     let mut model = Model::default();
     model.apply(&event(1, "tool_requested", "main", json!({"tool_id":"call","name":"write_file","args":{"path":"a","content":"a\nb\nc\nd"}}))).unwrap();

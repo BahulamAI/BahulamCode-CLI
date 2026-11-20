@@ -114,7 +114,7 @@ await test('local execution refuses late steering after its complete yield', asy
   agent.retriever.retrieve = () => [];
   agent._buildToolDefs = () => [];
   agent._buildSystemPrompt = () => 'fixture';
-  agent._reduceContext = async () => null;
+  agent._reduceContext = async function* () { return null; };
   agent._callLLM = async () => ({ content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn' });
   const stream = agent.execute('initial');
   for await (const event of stream) if (event.type === 'complete') {

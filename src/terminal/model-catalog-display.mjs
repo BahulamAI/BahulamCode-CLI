@@ -50,6 +50,34 @@ export function modelMatchesCatalogFilter(model, filter) {
   return modelDisplayCategory(model) === filter || modelCategory(model) === filter;
 }
 
+/** Free = no credit price on either token direction (null/0/absent counts). */
+export function isFreeModel(model) {
+  const input = Number(model?.input_cost_usd_per_m);
+  const output = Number(model?.output_cost_usd_per_m);
+  return (!Number.isFinite(input) || input <= 0) && (!Number.isFinite(output) || output <= 0);
+}
+
+/**
+ * Text filter for the model picker. Query tokens are AND-ed: every whitespace
+ * token must appear in the model haystack (id, label, provider + capability
+ * keywords: tools / reasoning / free / curated). Example: "deep free" matches
+ * a free deepseek model.
+ */
+export function modelMatchesTextFilter(model, query) {
+  const tokens = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const haystack = [
+    model?.id,
+    model?.label,
+    model?.provider,
+    model?.supports_tools ? 'tools' : '',
+    model?.supports_reasoning ? 'reasoning' : '',
+    isFreeModel(model) ? 'free' : '',
+    model?.harness_validated ? 'curated' : '',
+  ].filter(Boolean).join(' ').toLowerCase();
+  return tokens.every(token => haystack.includes(token));
+}
+
 export function modelCategoryLabel(category, { plural = false } = {}) {
   const labels = {
     text: 'text',

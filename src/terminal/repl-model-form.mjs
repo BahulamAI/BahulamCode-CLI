@@ -1,21 +1,27 @@
 /**
  * Interactive per-role model form for /model (PRD-076 W7).
  *
- * ↑↓ picks a role row, ←→ cycles through [backend default] + the available
- * platform catalog for that role, Enter applies to session overrides,
- * c resets every row to default, Esc cancels. Same raw-stdin overlay
- * pattern as the resume picker (repl-resume.mjs): pause readline, raw
- * mode on, redraw in place with cursor-up + erase-down, restore on exit.
+ * Searchable list picker: Tab / ←→ switches the active role tab, ↑↓ moves
+ * through the model list, typing filters incrementally (matches id, label,
+ * provider, and the keywords tools / reasoning / free / curated), Enter
+ * applies all role selections, Ctrl+R resets every role to backend default,
+ * Esc cancels. Same raw-stdin overlay pattern as the resume picker
+ * (repl-resume.mjs): pause readline, raw mode on, redraw in place with
+ * cursor-up + erase-down, restore on exit.
  */
 
-import { c, stripAnsi } from './ansi.mjs';
+import { emitKeypressEvents } from 'node:readline';
+import { PassThrough } from 'node:stream';
+import { c } from './ansi.mjs';
 import { fitAnsiLine, writeOverlayFrame, eraseOverlayFrame } from './repl-format.mjs';
 import {
   cacheProfileLabel,
   formatCategoryBadge,
+  isFreeModel,
   isImageGenerationModel,
   modelCategory,
   modelDisplayCategory,
+  modelMatchesTextFilter,
 } from './model-catalog-display.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
@@ -50,6 +56,17 @@ export function optionRowsForRole(catalog, row) {
   return available.filter(m => ['text', 'chat', 'multimodal'].includes(modelCategory(m)));
 }
 
+function capabilityPills(meta) {
+  const pills = [];
+  if (meta) {
+    if (isFreeModel(meta)) pills.push(c.cyan('free'));
+    if (meta.supports_tools) pills.push(c.green('tools'));
+    if (meta.supports_reasoning) pills.push(c.yellow('reasoning'));
+    if (meta.harness_validated) pills.push(c.dim('curated'));
+  }
+  return pills;
+}
+
 /**
  * @param {object} opts
  * @param {object|null} opts.rl        readline instance to pause/resume
@@ -59,62 +76,66 @@ export function optionRowsForRole(catalog, row) {
  * @param {string} [opts.unavailableNote] why the catalog is missing (shown in header)
  * @returns {Promise<{overrides: Record<string,string>}|null>} null = cancelled
  */
-export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, unavailableNote }) {
-  if (!process.stdin.isTTY) return null;
+export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, unavailableNote, input = process.stdin }) {
+  if (!input.isTTY) return null;
   if (rl) rl.pause();
 
   const catalogRows = (catalog || []).filter(m => m?.id);
   const usingFallback = catalogRows.length === 0;
   const byId = new Map(catalogRows.map(m => [m.id, m]));
 
-  // Per-row option list; a current override that isn't in the catalog list
-  // is appended so it stays visible and selectable.
-  const rows = roles.map(r => {
+  // Per-role option id list (DEFAULT_SENTINEL first, current override appended
+  // when it is not already in the catalog list so it stays visible).
+  const roleModels = new Map();
+  const selections = {};
+  for (const role of roles) {
     const optionIds = usingFallback
       ? [...new Set((fallbackIds || []).filter(Boolean))]
-      : optionRowsForRole(catalogRows, r).map(m => m.id);
-    let opts = [DEFAULT_SENTINEL, ...optionIds];
-    let idx = 0;
-    if (r.current) {
-      const found = opts.indexOf(r.current);
-      if (found >= 0) {
-        idx = found;
-      } else {
-        opts = [...opts, r.current];
-        idx = opts.length - 1;
+      : optionRowsForRole(catalogRows, role).map(m => m.id);
+    const opts = [DEFAULT_SENTINEL, ...optionIds];
+    if (role.current && !opts.includes(role.current)) opts.push(role.current);
+    roleModels.set(role.role, opts);
+    selections[role.role] = role.current || DEFAULT_SENTINEL;
+  }
+
+  const getFilteredList = (roleKey, filter) => {
+    const allIds = roleModels.get(roleKey) || [];
+    const current = selections[roleKey];
+    const out = filter.trim() ? [] : [{ id: DEFAULT_SENTINEL, meta: null, isCurrent: false }];
+    if (current && current !== DEFAULT_SENTINEL) {
+      const meta = byId.get(current);
+      if (!filter || modelMatchesTextFilter(meta || { id: current }, filter)) {
+        out.push({ id: current, meta: meta || null, isCurrent: true });
       }
     }
-    return { ...r, opts, idx };
-  });
+    for (const id of allIds) {
+      if (id === DEFAULT_SENTINEL || id === current) continue;
+      const meta = byId.get(id);
+      if (!filter || modelMatchesTextFilter(meta || { id }, filter)) {
+        out.push({ id, meta: meta || null, isCurrent: false });
+      }
+    }
+    return out;
+  };
 
   return await new Promise((resolve) => {
-    const wasRaw = process.stdin.isRaw;
+    const wasRaw = input.isRaw;
+    let roleIndex = 0;
     let cursor = 0;
+    let filter = '';
     let renderedLines = 0;
 
-    const valueLabel = (row) => {
-      const value = row.opts[row.idx];
-      if (value === DEFAULT_SENTINEL) {
-        return c.dim(row.defaultLabel ? `default · ${row.defaultLabel}` : 'backend default');
-      }
-      const meta = byId.get(value);
-      const badge = meta ? creditBadge(meta) : '';
-      const flag = meta && meta.harness_validated === false ? c.yellow(' (uncurated)') : '';
-      return `${c.brand(value)}${badge ? ` ${c.dim(badge)}` : ''}${flag}`;
+    const valueLabel = (id, meta) => {
+      if (id === DEFAULT_SENTINEL) return c.dim('backend default');
+      return c.brand(String(id || ''));
     };
 
-    const valueDescription = (row) => {
-      const value = row.opts[row.idx];
-      if (value === DEFAULT_SENTINEL) {
-        return row.description || 'backend default for this role';
-      }
-      const meta = byId.get(value);
-      if (!meta) {
-        return usingFallback ? 'backend configured model' : 'custom override outside curated catalog';
-      }
-      const label = String(meta.label || '').trim();
+    const valueDescription = (id, meta) => {
+      if (id === DEFAULT_SENTINEL) return 'backend default for this role';
+      if (!meta) return usingFallback ? 'backend configured model' : 'custom override outside curated catalog';
       const parts = [];
-      if (label && label !== value) parts.push(c.white(label));
+      const label = String(meta.label || '').trim();
+      if (label && label !== id) parts.push(c.white(label));
       if (meta.provider) parts.push(c.dim(String(meta.provider)));
       const category = modelDisplayCategory(meta);
       if (category) parts.push(formatCategoryBadge(category));
@@ -122,8 +143,6 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
       if (context) parts.push(c.dim(context));
       const output = formatTokenLimit(meta.max_output, 'out');
       if (output) parts.push(c.dim(output));
-      if (meta.supports_tools) parts.push(c.green('tools'));
-      if (meta.supports_reasoning) parts.push(c.yellow('reasoning'));
       const cache = cacheProfileLabel(meta.cache_profile);
       if (cache) parts.push(c.cyan(cache));
       return parts.join(c.dim(' · '));
@@ -131,67 +150,156 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
 
     const render = () => {
       const cols = Math.max(60, process.stderr.columns || 120);
-      const labelWidth = Math.min(
-        18,
-        Math.max(14, ...rows.map(row => stripAnsi(String(row.label || row.role)).length)),
-      );
+      const activeRole = roles[roleIndex];
+      const list = getFilteredList(activeRole.role, filter);
+      cursor = Math.max(0, Math.min(cursor, list.length - 1));
+
+      const maxRows = Math.max(5, (process.stderr.rows || 30) - 8);
+      const startRow = Math.max(0, Math.min(cursor, list.length - maxRows));
+      const visible = list.slice(startRow, startRow + maxRows);
+
       const lines = [];
-      lines.push(`  ${c.bold('Models')} ${c.dim('· session overrides · curated platform catalog')}`);
+      const filterSuffix = filter
+        ? `  ${c.dim(`[${filter}_`)}${c.dim(']')}`
+        : '  ' + c.dim('type to filter · free/curated/reasoning/tools/provider');
+      lines.push(`  ${c.bold('Models')} ${c.dim('· session overrides · curated platform catalog')}${filterSuffix}`);
       if (usingFallback) {
         const why = unavailableNote ? ` — ${unavailableNote}` : '';
         lines.push(`  ${c.yellow('!')} ${c.dim(`catalog unavailable${why}; showing this session's backend models`)}`);
       }
       lines.push('');
-      rows.forEach((row, i) => {
-        const marker = i === cursor ? c.brand('▸') : ' ';
-        const rawLabel = String(row.label || row.role).padEnd(labelWidth, ' ');
-        const label = i === cursor ? c.brand(rawLabel) : rawLabel;
-        const prefix = `  ${marker} ${label} ${c.dim('‹')} `;
-        const suffix = ` ${c.dim('›')}`;
-        const descText = valueDescription(row);
-        const descMaxCols = Math.max(0, Math.min(72, cols - stripAnsi(prefix + suffix).length - 24));
-        const desc = descText && descMaxCols > 12
-          ? `  ${fitAnsiLine(descText, descMaxCols)}`
-          : '';
-        const maxValueCols = Math.max(18, cols - stripAnsi(prefix + suffix + desc).length - 1);
-        lines.push(fitAnsiLine(`${prefix}${fitAnsiLine(valueLabel(row), maxValueCols)}${suffix}${desc}`, cols - 1));
+
+      // Role tabs.
+      const tabs = roles.map((role, i) => {
+        const label = String(role.label || role.role);
+        const current = selections[role.role] && selections[role.role] !== DEFAULT_SENTINEL;
+        const marker = i === roleIndex ? c.brand(`${label} ▸`) : c.dim(label);
+        const dot = current ? ` ${c.green('●')}` : '';
+        return marker + dot;
       });
+      lines.push(`  ${tabs.join(c.dim(' │ '))}`);
       lines.push('');
-      lines.push(fitAnsiLine(`  ${c.dim('↑↓ role · ←→ model · Enter apply · c defaults · Esc cancel')}`, cols - 1));
+
+      if (list.length === 0) {
+        lines.push(`  ${c.dim(filter ? `(no models match "${filter}")` : '(no models in catalog for this role)')}`);
+      } else {
+        for (const item of visible) {
+          const marker = item.id === (list[cursor]?.id) ? c.brand('▸') : ' ';
+          const label = valueLabel(item.id, item.meta);
+          const badge = item.meta ? creditBadge(item.meta) : '';
+          const pills = capabilityPills(item.meta);
+          const cur = item.isCurrent ? c.green(' (current)') : '';
+          const descPart = item.id !== DEFAULT_SENTINEL ? ` ${valueDescription(item.id, item.meta)}` : '';
+          const rightBits = [badge ? ` ${c.dim(badge)}` : '', ...pills.map(p => ` ${p}`)].join('');
+          const line = `  ${marker} ${label}${cur}${rightBits}${descPart ? c.dim(' — ') + descPart : ''}`;
+          lines.push(fitAnsiLine(line, cols - 1));
+        }
+        if (list.length > maxRows) {
+          lines.push(`  ${c.dim(`… ${list.length - maxRows} more (↑↓ scroll) · ${startRow + visible.length}/${list.length}`)}`);
+        }
+      }
+
+      lines.push('');
+      lines.push(fitAnsiLine(
+        c.dim('  ↑↓ highlight · type to filter · = select & advance · Tab/←→ role · Enter apply · Ctrl+R defaults · Esc cancel'),
+        cols - 1,
+      ));
       writeOverlayFrame(renderedLines, lines);
       renderedLines = lines.length;
     };
 
     const cleanup = (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdin.setRawMode(wasRaw || false);
+      input.unpipe(keys);
+      keys.removeListener('keypress', onKey);
+      keys.destroy();
+      input.setRawMode(wasRaw || false);
       eraseOverlayFrame(renderedLines);
       if (rl) rl.resume();
       resolve(value);
     };
 
-    const onData = (data) => {
-      const key = data.toString('utf8');
-      if (key === '\x1b' || key === '\x03' || key === 'q') { cleanup(null); return; }
+    const keys = new PassThrough();
+    emitKeypressEvents(keys);
+    const onKey = (_text, { sequence: key }) => {
+      if (key === '\x1b' || key === '\x03') { cleanup(null); return; }
       if (key === '\r' || key === '\n') {
         const overrides = {};
-        for (const row of rows) {
-          const value = row.opts[row.idx];
-          if (value && value !== DEFAULT_SENTINEL) overrides[row.role] = value;
+        for (const role of roles) {
+          const value = selections[role.role];
+          if (value && value !== DEFAULT_SENTINEL) overrides[role.role] = value;
         }
         cleanup({ overrides });
         return;
       }
-      if (key === 'c' || key === 'C') { rows.forEach(r => { r.idx = 0; }); render(); return; }
+      if (key === '\x12') {
+        for (const role of roles) selections[role.role] = DEFAULT_SENTINEL;
+        filter = '';
+        cursor = 0;
+        render();
+        return;
+      }
+      if (key === '=') {
+        // Commit the highlighted model to the active role; keep the form open.
+        const list = getFilteredList(roles[roleIndex].role, filter);
+        const picked = list[Math.min(cursor, list.length - 1)];
+        if (picked) {
+          selections[roles[roleIndex].role] = picked.id;
+          // Advance to the next role for fast multi-role setup.
+          roleIndex = (roleIndex + 1) % roles.length;
+          filter = '';
+          cursor = 0;
+        }
+        render();
+        return;
+      }
+      if (key === '\t') {
+        roleIndex = (roleIndex + 1) % roles.length;
+        cursor = 0;
+        filter = '';
+        render();
+        return;
+      }
       if (key === '\x1b[A') { cursor = Math.max(0, cursor - 1); render(); return; }
-      if (key === '\x1b[B') { cursor = Math.min(rows.length - 1, cursor + 1); render(); return; }
-      if (key === '\x1b[D') { const r = rows[cursor]; r.idx = (r.idx - 1 + r.opts.length) % r.opts.length; render(); return; }
-      if (key === '\x1b[C') { const r = rows[cursor]; r.idx = (r.idx + 1) % r.opts.length; render(); return; }
+      if (key === '\x1b[B') {
+        const list = getFilteredList(roles[roleIndex].role, filter);
+        cursor = Math.min(list.length - 1, cursor + 1);
+        render();
+        return;
+      }
+      if (key === '\x1b[D') {
+        roleIndex = (roleIndex - 1 + roles.length) % roles.length;
+        cursor = 0;
+        filter = '';
+        render();
+        return;
+      }
+      if (key === '\x1b[C') {
+        roleIndex = (roleIndex + 1) % roles.length;
+        cursor = 0;
+        filter = '';
+        render();
+        return;
+      }
+      if (key === '\x7f' || key === '\b') {
+        filter = filter.slice(0, -1);
+        cursor = 0;
+        render();
+        return;
+      }
+      // Printable ASCII → incremental filter. Enter key states already handled.
+      const printable = /^[\x20-\x7e]$/;
+      if (printable.test(key)) {
+        filter += key.toLowerCase();
+        cursor = 0;
+        render();
+        return;
+      }
     };
 
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', onData);
+    input.setRawMode(true);
+    input.resume();
+    keys.on('keypress', onKey);
+    input.pipe(keys);
     render();
   });
 }

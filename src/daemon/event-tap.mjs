@@ -151,7 +151,7 @@ const SSE_TO_V2 = Object.freeze({
   reconnect_failed: 'notice', stagnation_detected: 'notice', stagnation: 'notice',
   status: 'notice', phase_start: 'notice', phase_update: 'notice', phase_summary: 'notice',
   delegation: 'notice', sub_agent_tool: 'notice', sub_agent_tool_result: 'notice',
-  summarize: 'notice', change: 'notice', goal_created: 'notice',
+  summarize: 'notice', summarize_progress: 'notice', change: 'notice', goal_created: 'notice',
   followup_applied: 'notice', followup_held: 'notice', followup_save_failed: 'notice', user_intervention_queued: 'notice', user_intervention_accepted: 'notice', user_intervention_delivered: 'notice',
   cancelled: 'turn_ended', paused: 'notice', resumed: 'notice', pause_instruction: 'notice',
   approval_granted: 'approval_decided', approval_denied: 'approval_decided',
@@ -207,7 +207,7 @@ function compactToolPreview(name, args = {}) {
   }
   let label = 'content';
   let content;
-  if (tool === 'write_file') content = args.content;
+  if (tool === 'write_file' || tool === 'create_file') content = args.content;
   else if (tool === 'edit_file' || tool === 'multi_edit') {
     label = 'replacement';
     content = args.replace ?? args.new_string ?? args.newString;
@@ -325,6 +325,18 @@ function project(type, src, identity) {
         decision: src.decision || (identity.sourceType === 'approval_denied' ? 'deny' : identity.sourceType === 'approval_granted' ? 'allow' : undefined) };
     case 'notice': {
       const source = identity.sourceType;
+      if (source === 'summarize' || source === 'summarize_progress') {
+        const phase = String(src.phase || 'pre_turn').replaceAll('_', '-');
+        const notice = { level: 'info', source, progress_key: 'context-summary' };
+        if (source === 'summarize_progress') {
+          if (src.state === 'started') return { ...notice, level: 'running', title: 'Summarizing context…',
+            cause: `${phase} · ${src.collapsed_messages} older messages · ${src.before_tokens} / ${src.threshold} estimated tokens` };
+          return { ...notice, title: src.state === 'cancelled' ? 'Summary cancelled' : 'Summary skipped',
+            cause: 'Existing context retained.' };
+        }
+        return { ...notice, title: src.strategy === 'local_distillation' ? 'Context condensed locally' : 'Context summarized', cause:
+          `${phase} · ${src.collapsed_messages ?? '?'} older messages condensed · ${src.kept_recent ?? '?'} retained · ${src.before_tokens ?? '?'} / ${src.threshold ?? '?'} tokens` };
+      }
       const progress = ['status', 'phase_start', 'phase_update', 'phase_summary', 'sub_agent_tool', 'sub_agent_tool_result'];
       const title = source === 'delegation' ? `Delegation ${src.from || 'main'} → ${src.to || 'agent'}` :
         source.replaceAll('_', ' ');

@@ -98,6 +98,7 @@ import {
   modelDisplayCategory,
   modelMatchesCatalogFilter,
   normalizeCatalogCategory,
+  isFreeModel,
 } from './model-catalog-display.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
@@ -725,9 +726,29 @@ async function openModelForm(ctx) {
     if (role === 'image_generation') available = available.filter(row => isImageGenerationModel(row));
     else if (role === 'image_analysis') available = available.filter(row => !isImageGenerationModel(row));
     const currentOverride = session.modelOverrides?.[role];
+    // The Rust picker is a static list — no incremental text filter. Compensate
+    // with ordering (current first, curated before uncurated) and metadata
+    // badges so the flat list is still scannable (v1 limitation; the Node
+    // /model form has full search + provider/free/curated filtering).
+    const sorted = [...available].sort((a, b) => {
+      if (currentOverride && a.id === currentOverride) return -1;
+      if (currentOverride && b.id === currentOverride) return 1;
+      if (a.harness_validated && !b.harness_validated) return -1;
+      if (!a.harness_validated && b.harness_validated) return 1;
+      return 0;
+    });
+    const rustTuiModelLabel = (row) => {
+      const badges = [];
+      if (isFreeModel(row)) badges.push('free');
+      if (row.supports_tools) badges.push('tools');
+      if (row.supports_reasoning) badges.push('reasoning');
+      if (row.harness_validated) badges.push('curated');
+      const badgeStr = badges.length ? ` [${badges.join(', ')}]` : '';
+      return `${row.id} · ${row.provider || 'unknown'}${badgeStr}`;
+    };
     const options = [
       { value: '__default__', label: 'Backend default' },
-      ...available.map(row => ({ value: row.id, label: `${row.id}${row.provider ? ` · ${row.provider}` : ''}` })),
+      ...sorted.map(row => ({ value: row.id, label: rustTuiModelLabel(row) })),
       ...(currentOverride && !available.some(row => row.id === currentOverride)
         ? [{ value: currentOverride, label: `${currentOverride} · current custom override` }]
         : []),
@@ -1492,10 +1513,7 @@ function buildContextStrip() {
   const parts = [];
   const model = compactDockModel(activeDockModel());
   if (model) parts.push(c.dim(`model ${model}`));
-  // ctx: last turn's cumulative input tokens — approximates the CURRENT
-  // prompt size. Only shown once we've completed at least one turn (so
-  // the initial banner doesn't read '0 ctx'). This is the number the
-  // 160k summarize threshold compares against on the next turn.
+  // The most recent provider request, including cached input.
   if (session.lastTurnInputTokens > 0) {
     parts.push(c.dim(`ctx ${formatTokens(session.lastTurnInputTokens)}`));
   }
@@ -2320,18 +2338,12 @@ function renderEvent(event) {
     }
 
     case 'summarize': {
-      // Backend collapsed older history into a summary. Two phases:
-      //   pre_turn  — fires at the start of a new turn before hydration
-      //   mid_turn  — fires between iterations during a long autonomous run
-      // Both share the same env threshold (BAHULAM_SUMMARIZE_THRESHOLD,
-      // default 160k est tokens). One cache miss per fire; each fires at
-      // most once per turn.
       stopSpinner();
       flushContent();
       flushPendingHead();
       renderBlockBoundary('status', { compactSame: true });
       const phase = String(data?.phase || 'pre_turn');
-      const phaseTag = phase === 'mid_turn' ? 'mid-turn' : 'pre-turn';
+      const phaseTag = phase.replaceAll('_', '-');
       const collapsed = Number(data?.collapsed_messages || 0);
       const kept = Number(data?.kept_recent || 0);
       // PRD-213: backend now sends `before_tokens` (real when source is
@@ -3070,10 +3082,7 @@ function renderEvent(event) {
         const out = usage.total_output_tokens || usage.output_tokens || 0;
         session.inputTokens += inp;
         session.outputTokens += out;
-        // Remember THIS turn's cumulative input for the dock strip's ctx
-        // indicator — approximates how big the prompt currently is (vs
-        // session.inputTokens which sums every turn since launch).
-        session.lastTurnInputTokens = inp;
+        session.lastTurnInputTokens = usage.turns?.at(-1)?.input_tokens || usage.last_request_input_tokens || 0;
 
         // Model-aware cost calculation
         const costResult = calculateCost(usage);
@@ -6494,7 +6503,8 @@ export async function startTerminalRepl() {
     if (followupId) await jsonlWriter.persistFollowup({ id: followupId, instruction: input, status: 'started' });
 
     let assistantContent = '';
-    const agentTurnHistory = new AgentHistoryTurnBuilder();
+    let agentTurnHistory = new AgentHistoryTurnBuilder();
+    let localHistoryCheckpoint = false;
     let turnCompleted = false;
     let turnCancelled = false;
     let turnFailed = false;
@@ -7059,6 +7069,12 @@ export async function startTerminalRepl() {
         if (event.type === 'complete' || event.type === 'session_info') sendRustSessionState();
         focusExecutionInput();
 
+        if (event.type === 'summarize' && (runtimeMode === 'direct' || runtimeMode === 'local')) {
+          // LocalAgent has already replaced session.agentHistory through this boundary.
+          agentTurnHistory = new AgentHistoryTurnBuilder();
+          localHistoryCheckpoint = true;
+        }
+
         if (event.type === 'content_partial') {
           const text = event.data?.text || '';
           assistantContent += text;
@@ -7144,7 +7160,7 @@ export async function startTerminalRepl() {
     const structuredTurn = agentTurnHistory.finish();
     if (structuredTurn.length) {
       session.agentHistory.push(...structuredTurn);
-    } else if (assistantContent) {
+    } else if (assistantContent && !localHistoryCheckpoint) {
       session.agentHistory.push({ role: 'assistant', content: assistantContent });
     }
 

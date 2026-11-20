@@ -56,19 +56,31 @@ tapSseEvent(
   { type: 'complete', data: { summary: 'done', duration_ms: 1000 } },
   { sessionId, turnId: 't1' }
 );
-// Non-mapped event → skipped (status has no PRD-092 equivalent).
+// Both ordinary progress and context handoffs are notices in the Rust views.
 tapSseEvent({ type: 'status', data: { message: 'thinking...' } }, { sessionId });
 
+tapSseEvent({ type: 'summarize_progress', data: {
+  phase: 'mid_turn', state: 'started', before_tokens: 442572, threshold: 138000, collapsed_messages: 8,
+} }, { sessionId });
+tapSseEvent({ type: 'summarize', data: {
+  phase: 'mid_turn', collapsed_messages: 8, kept_recent: 2, before_tokens: 442572, threshold: 138000,
+} }, { sessionId });
+tapSseEvent({ type: 'unmapped_event', data: {} }, { sessionId });
 await closeActiveEventLog();
 
 const events = await readAllEvents({ sessionId });
-assert(events.length === 4, `4 events written (got ${events.length})`);
+assert(events.length === 7, `7 events written (got ${events.length})`);
 assert(events[0].type === 'tool_requested' && events[0].data.name === 'bash', 'tool_request → tool_requested with projected data');
 assert(events[0].data.tool_id === 'tc_1', 'tool_id projected from tool_call_id');
 assert(events[1].type === 'tool_finished' && events[1].data.summary === 'file1\nfile2', 'tool_result projection');
 assert(events[1].data.duration_ms === 42, 'duration_ms preserved');
 assert(events[2].type === 'approval_required' && events[2].data.apr_id === 'apr_1', 'approval_required passthrough');
 assert(events[3].type === 'turn_ended' && events[3].data.ok === true, 'complete → turn_ended');
+assert(events[4].type === 'notice' && events[4].data.source === 'status', 'status → progress notice');
+assert(events[5].data.title === 'Summarizing context…' && events[5].data.level === 'running'
+  && events[5].data.progress_key === events[6].data.progress_key, 'in-flight and completed summary share one notice');
+assert(events[6].data.title === 'Context summarized' && events[6].data.cause.includes('442572 / 138000'),
+  'context handoff displays the estimate and trigger');
 assert(events[0].turn_id === 't1', 'turn_id stamped from opts');
 assert(events[2].turn_id === 't1', 'approval inherits active turn when not provided');
 assert(events.every(e => e.v === 2 && e.agent_id && e.id), 'v2 identity on every event');

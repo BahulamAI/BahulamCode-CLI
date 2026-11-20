@@ -1691,7 +1691,7 @@ impl Model {
                     } else {
                         let index =
                             self.card(agent, &text(data, "title"), body, &text(data, "level"));
-                        self.progress.insert(progress_key, index);
+                        self.progress.insert(progress_key.clone(), index);
                         index
                     }
                 } else {
@@ -1701,6 +1701,9 @@ impl Model {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else {
                     self.cards[index].detail = Some(self.cards[index].body.clone());
+                }
+                if progress_kind == "context-summary" && text(data, "level") != "running" {
+                    self.progress.remove(&progress_key);
                 }
                 if let Some(retry) = data.get("retry") {
                     self.cards[index].metadata = format!("retry {}", safe_text_json(retry));
@@ -1896,6 +1899,16 @@ impl Model {
                         self.cards[*index].started_at = None;
                         self.cards[*index].tool_id.clear();
                     }
+                }
+                if let Some(index) = self
+                    .progress
+                    .remove(&format!("{message_key}/context-summary"))
+                {
+                    let card = &mut self.cards[index];
+                    card.title = "Summary interrupted".into();
+                    card.status = "incomplete".into();
+                    card.body = "Turn ended before summary completion was reported.".into();
+                    card.detail = None;
                 }
                 self.messages.remove(&message_key);
                 self.progress.retain(|key, _| !key.starts_with(&prefix));
@@ -2324,7 +2337,7 @@ fn tool_arguments_preview(name: &str, args: &Value) -> String {
         return "patch content redacted · may contain sensitive config".into();
     }
     let key = match name.to_ascii_lowercase().as_str() {
-        "write_file" => Some(("content", "content")),
+        "write_file" | "create_file" => Some(("content", "content")),
         "edit_file" | "multi_edit" => Some(("replacement", "replace")),
         "apply_patch" => Some(("patch", "patch")),
         _ => None,
@@ -2383,7 +2396,7 @@ fn tool_arguments_detail(name: &str, args: &Value) -> String {
         );
     }
     match name.to_ascii_lowercase().as_str() {
-        "write_file" => {
+        "write_file" | "create_file" => {
             let path = string_arg(args, &["file_path", "path"]).unwrap_or("file");
             let content = string_arg(args, &["content"]).unwrap_or("(no content)");
             format!("{}\n\n{}", safe_text(path), safe_text(content))

@@ -256,5 +256,23 @@ class Service_${i} { constructor() {} run() {} }
     cleanup(tmpDir);
 });
 
+await test('external edits, additions and renames reach ordinary lookups in a running and reopened CLI', async () => {
+    const { tmpDir, retriever } = await createIndexedProject();
+    try {
+        const importer = path.join(tmpDir, 'auth.js');
+        const target = path.join(tmpDir, 'helper.js');
+        fs.writeFileSync(importer, "import './helper.js';\nexport const changedSearchTerm = 1;");
+        assert.equal(retriever.getImports(importer)[0].status, 'unresolved');
+        fs.writeFileSync(target, 'export const newExternalSymbol = 1;');
+        assert.equal(retriever.retrieve('newExternalSymbol')[0].id, 'helper.js');
+        assert.equal(retriever.getImports(importer)[0].to, 'helper.js');
+        fs.renameSync(target, path.join(tmpDir, 'moved.js'));
+        const reopened = new ContextRetriever(tmpDir);
+        assert.equal(reopened.getImports(importer)[0].status, 'unresolved');
+        assert.equal(reopened.retrieve('newExternalSymbol')[0].id, 'moved.js');
+        assert.equal(reopened.refreshChangedFiles(), 0);
+    } finally { cleanup(tmpDir); }
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

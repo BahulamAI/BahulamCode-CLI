@@ -57,26 +57,25 @@ export function resolveContextBudget({
   const window = Number(contextLength || catalog?.context_length || 0);
   const output = Number(maxOutput || catalog?.max_output || 0);
   const explicit = Number(explicitThreshold || 0);
-  if (explicit > 0) {
-    return { ...policy, threshold: Math.max(20_000, Math.floor(explicit)), source: 'explicit' };
-  }
   if (!Number.isFinite(window) || window <= 0) {
-    return { ...policy, threshold: 160_000, source: 'fallback' };
+    return { ...policy, threshold: explicit > 0 ? Math.max(20_000, Math.floor(explicit)) : 160_000,
+      source: explicit > 0 ? 'explicit' : 'fallback' };
   }
   const reservedOutput = output > 0 ? output : Math.floor(window * 0.10);
   const safety = Math.max(1024, Math.floor(window * 0.03));
-  const usable = Math.max(20_000, window - reservedOutput - Math.max(0, fixedPromptTokens) - safety);
-  const workingSet = Math.max(20_000, Math.floor(usable * policy.workingSetRatio));
+  const usable = Math.max(1, window - reservedOutput - Math.max(0, fixedPromptTokens) - safety);
+  const workingSet = Math.max(1, Math.floor(usable * policy.workingSetRatio));
+  const modelTrigger = Math.max(1, Math.floor(workingSet * policy.triggerRatio));
   return {
     ...policy,
-    threshold: Math.max(20_000, Math.floor(workingSet * policy.triggerRatio)),
-    targetTokens: Math.max(10_000, Math.floor(workingSet * policy.targetRatio)),
+    threshold: explicit > 0 ? Math.min(modelTrigger, Math.floor(explicit)) : modelTrigger,
+    targetTokens: Math.max(1, Math.floor(workingSet * policy.targetRatio)),
     contextLength: window,
     reservedOutput,
     usableTokens: usable,
     workingSetTokens: workingSet,
     fixedPromptTokens: Math.max(0, fixedPromptTokens),
-    source: 'model_catalog',
+    source: explicit > 0 && explicit < modelTrigger ? 'explicit' : 'model_catalog',
   };
 }
 
@@ -184,13 +183,19 @@ export function distillMessages(messages = [], { preserve = 10, sigma = 1.5, max
   ].join('\n');
 }
 
+export function reductionBoundary(rows, preserve, tailBudget = Infinity) {
+  let start = Math.max(0, rows.length - Math.max(1, preserve));
+  let tokens = estimateMessagesTokens(rows.slice(start));
+  while (start < rows.length - 1 && tokens > tailBudget) {
+    tokens -= estimateMessagesTokens([rows[start++]]);
+  }
+  while (start > 0 && isToolResultOnly(rows[start])) start--;
+  return start;
+}
+
 export function collapseMessages(messages, summary, preserve = 10) {
   const rows = Array.isArray(messages) ? messages : [];
-  let start = Math.max(0, rows.length - Math.max(2, preserve));
-  // Never hand the next provider an orphaned tool_result. If the retention
-  // boundary lands on a result-only user message, include the preceding
-  // assistant tool-use message as well.
-  while (start > 0 && isToolResultOnly(rows[start])) start--;
+  const start = reductionBoundary(rows, preserve);
   const tail = rows.slice(start);
   return [
     { role: 'user', content: summary },
@@ -203,5 +208,5 @@ function isToolResultOnly(message) {
   return message?.role === 'user'
     && Array.isArray(message.content)
     && message.content.length > 0
-    && message.content.every(block => block?.type === 'tool_result');
+    && message.content.some(block => block?.type === 'tool_result');
 }

@@ -585,6 +585,7 @@ export class GraphIndexer {
   toJSON() {
     return {
       version: GRAPH_VERSION,
+      sourceStamps: this.sourceStamps,
       nodes: Object.fromEntries(this.nodes),
       edges: this.edges,
     };
@@ -594,6 +595,7 @@ export class GraphIndexer {
     const g = new GraphIndexer(projectDir);
     if (!data) return g;
     g.nodes = new Map(Object.entries(data.nodes || {}));
+    g.sourceStamps = data.sourceStamps;
     g.edges = Array.isArray(data.edges) ? data.edges : [];
     g._rebuildReverseIndex();
     return g;

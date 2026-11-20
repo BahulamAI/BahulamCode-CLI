@@ -189,5 +189,31 @@ await test('batches a multi-tool response without duplicating assistant history'
     );
 });
 
+await test('a short oversized history hands off a summary and intact recent tool batch', async () => {
+    const agent = new LocalAgent({ apiKey: 'test', toolExecutor: executor, model: 'deepseek-v4-flash-0731' });
+    const prompt = { role: 'user', content: 'Inspect the project' };
+    const call = { role: 'assistant', content: [{ type: 'tool_use', id: 'one', name: 'read_file', input: {} }] };
+    const result = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'one', content: 'x'.repeat(1_800_000) }] };
+    const latest = { role: 'user', content: 'Continue from the findings' };
+    agent._callLLM = async () => ({ content: [{ type: 'text', text: 'The file was inspected.' }] });
+    const events = agent._reduceContext([prompt, call, result, latest], { phase: 'mid_turn' });
+    const start = await events.next();
+    assert.equal(start.value.type, 'summarize_progress');
+    assert.equal(start.value.data.state, 'started');
+    const { value: reduction, done } = await events.next();
+    assert.ok(done);
+    assert.equal(reduction.event.phase, 'mid_turn');
+    assert.equal(reduction.event.kept_recent, 1);
+    assert.ok(reduction.messages[0].content.includes('The file was inspected.'));
+    assert.deepEqual(reduction.messages.at(-1), latest);
+    // A single pending tool batch remains indivisible.
+    assert.deepEqual(await agent._reduceContext([call, result]).next(), { done: true, value: null });
+    agent._callLLM = async () => { throw new Error('unavailable'); };
+    const skipped = agent._reduceContext([prompt, call, result, latest]);
+    assert.equal((await skipped.next()).value.data.state, 'started');
+    assert.equal((await skipped.next()).value.data.state, 'skipped');
+    assert.ok((await skipped.next()).done);
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

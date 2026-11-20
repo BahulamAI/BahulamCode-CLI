@@ -2647,15 +2647,17 @@ fn card_lines_with_preview(
     // Restore compact previews and access to every separately stored tool result.
     // Commands and conversation messages remain complete.
     let is_message = is_assistant || is_user;
+    let source_preview = !card.has_tool_output
+        && matches!(
+            card.tool_name.as_str(),
+            "create_file" | "write_file" | "edit_file" | "multi_edit"
+        )
+        && (body.starts_with("content · ") || body.starts_with("replacement · "));
     let limit = if !foldable {
         usize::MAX
     } else if card.title == "Diff" || card.has_edit_diff {
         3
-    } else if matches!(
-        card.tool_name.as_str(),
-        "write_file" | "edit_file" | "multi_edit"
-    ) && !card.has_tool_output
-    {
+    } else if source_preview {
         4 // argument label plus three source lines
     } else {
         match card.status.as_str() {
@@ -2736,11 +2738,27 @@ fn card_lines_with_preview(
             .collect()
     };
     let markdown_lines: Vec<&str> = body_lines.iter().map(String::as_str).collect();
-    let mut rendered_body = format_markdown(
-        &markdown_lines,
-        p,
-        card.title == "Diff" || card.has_edit_diff,
-    );
+    let is_diff = card.title == "Diff" || card.has_edit_diff;
+    let body_palette = if foldable && !is_expanded && !is_diff {
+        Palette { text: p.muted, ..p }
+    } else {
+        p
+    };
+    let mut rendered_body = if source_preview && !is_expanded && !is_diff {
+        let mut rows = body_lines.iter();
+        let label = rows.next().map(|line| {
+            Line::styled(
+                format!("   {}", safe_text(line)),
+                Style::default().fg(p.muted),
+            )
+        });
+        label
+            .into_iter()
+            .chain(rows.map(|line| Line::from(code_spans(&safe_text(line), p))))
+            .collect()
+    } else {
+        format_markdown(&markdown_lines, body_palette, is_diff)
+    };
     if is_assistant {
         for line in &mut rendered_body {
             line.spans.insert(0, Span::raw("    "));

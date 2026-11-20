@@ -20,6 +20,7 @@ import {
     DISTILLATION_MARKER,
     contextReductionConfig,
     collapseMessages,
+    reductionBoundary,
     estimateMessagesTokens,
     resolveContextBudget,
 } from './context-reduction.mjs';
@@ -352,9 +353,7 @@ export class LocalAgent {
             messages.push({ role: 'user', content: instruction });
         }
 
-        const applyReduction = async () => {
-            const reduction = await this._reduceContext(messages, { systemPrompt, tools });
-            if (!reduction) return null;
+        const applyReduction = (reduction) => {
             messages.splice(0, messages.length, ...reduction.messages);
             if (Array.isArray(priorHistory)) {
                 priorHistory.splice(0, priorHistory.length, ...reduction.messages);
@@ -366,14 +365,7 @@ export class LocalAgent {
                 usageTotals.cache_read_tokens += reduction.usage.cache_read_input_tokens || 0;
                 usageTotals.cache_creation_tokens += reduction.usage.cache_creation_input_tokens || 0;
             }
-            return reduction;
         };
-
-        // Check before the first call and again after every completed
-        // tool-call/result cycle. The latter prevents a long ReAct run from
-        // growing past the model budget before its next inference.
-        let reduction = await applyReduction();
-        if (reduction) yield { type: 'summarize', data: reduction.event };
 
         const stagnation = createStagnationTracker({
             enabled: this.stagnationDetection,
@@ -404,9 +396,15 @@ export class LocalAgent {
                 };
             }
 
-            if (i > 0) {
-                reduction = await applyReduction();
-                if (reduction) yield { type: 'summarize', data: reduction.event };
+            const phase = i === 0 ? 'pre_turn' : 'mid_turn';
+            const reduction = yield* this._reduceContext(messages, { systemPrompt, tools, phase });
+            if (reduction) {
+                applyReduction(reduction);
+                yield { type: 'summarize', data: reduction.event };
+            }
+            if (this._cancelled) {
+                yield { type: 'cancelled', data: { reason: 'User cancelled' } };
+                return;
             }
 
             let response;
@@ -432,6 +430,7 @@ export class LocalAgent {
 
             if (usage) {
                 this.promptCache.updateStats(usage);
+                usageTotals.lastRequestInput = usage.input_tokens;
                 usageTotals.input_tokens += usage.input_tokens || 0;
                 usageTotals.output_tokens += usage.output_tokens || 0;
                 usageTotals.cache_read_tokens += usage.cache_read_input_tokens || 0;
@@ -759,7 +758,7 @@ export class LocalAgent {
         return `npm-${this.sessionId || 'local'}-${Date.now()}-${this._requestSequence}`.slice(0, 256);
     }
 
-    async _reduceContext(messages, { systemPrompt = '', tools = [] } = {}) {
+    async *_reduceContext(messages, { systemPrompt = '', tools = [], phase = 'pre_turn' } = {}) {
         const config = contextReductionConfig(process.env, this.product);
         const fixedPromptTokens = estimateMessagesTokens([
             { role: 'system', content: systemPrompt },
@@ -773,23 +772,30 @@ export class LocalAgent {
         });
         const preserve = config.preserve || budget.preserve;
         const estimated = estimateMessagesTokens(messages);
-        if (!config.enabled || estimated <= budget.threshold || messages.length <= preserve + 2) {
+        if (!config.enabled || estimated <= budget.threshold) {
             return null;
         }
 
-        const source = messages.slice(0, -preserve);
+        const split = reductionBoundary(messages, preserve, budget.threshold / 2);
+        if (!split) return null;
+        const progress = { phase, before_tokens: estimated, threshold: budget.threshold, collapsed_messages: split };
+        yield { type: 'summarize_progress', data: { ...progress, state: 'started' } };
+        const source = messages.slice(0, split);
         let summary = null;
         let summaryUsage = null;
         let appliedStrategy = config.strategy;
         const prompt = config.strategy === 'distillation'
             ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Keep it structured and concise. Do not invent facts.'
             : 'You are the Bahulam context summarizer. Summarize the earlier conversation for another coding-agent turn. Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work. Do not invent facts. Return concise plain text only.';
-        const transcript = source.map(message => ({
-            role: message.role,
-            content: typeof message.content === 'string'
-                ? message.content
-                : JSON.stringify(message.content || ''),
-        }));
+        const transcript = source.map(message => {
+            const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content || '');
+            // Bound individual tool payloads in the summarizer request. Preserve
+            // the command/header and trailing diagnostics from long output.
+            const content = text.length > 8000
+                ? text.slice(0, 4000) + '\n[… omitted …]\n' + text.slice(-4000)
+                : text;
+            return { role: message.role, content };
+        });
         try {
             const response = await this._callLLM(
                 prompt,
@@ -809,18 +815,25 @@ export class LocalAgent {
             appliedStrategy = 'summarization_failed';
             if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
         }
-        if (!summary) return null;
+        if (!summary || this._cancelled) {
+            yield { type: 'summarize_progress', data: { ...progress, state: this._cancelled ? 'cancelled' : 'skipped' } };
+            return null;
+        }
         if (!summary.startsWith(SUMMARY_MARKER) && !summary.startsWith(DISTILLATION_MARKER)) {
             summary = `${config.strategy === 'distillation' ? DISTILLATION_MARKER : SUMMARY_MARKER}\n${summary}`;
         }
-        const reduced = collapseMessages(messages, summary, preserve);
+        const reduced = collapseMessages(messages, summary, messages.length - split);
+        if (estimateMessagesTokens(reduced) >= estimated) {
+            yield { type: 'summarize_progress', data: { ...progress, state: 'skipped' } };
+            return null;
+        }
         return {
             messages: reduced,
             event: {
-                phase: 'pre_turn',
+                phase,
                 strategy: appliedStrategy,
                 collapsed_messages: source.length,
-                kept_recent: preserve,
+                kept_recent: messages.length - split,
                 before_tokens: estimated,
                 threshold: budget.threshold,
                 budget_source: budget.source,
@@ -896,6 +909,7 @@ export class LocalAgent {
 function _buildLocalUsageEnvelope(model, totals) {
     return {
         total_input_tokens: totals.input_tokens,
+        last_request_input_tokens: totals.lastRequestInput,
         total_output_tokens: totals.output_tokens,
         models: [{
             model,
