@@ -5,7 +5,8 @@
  * helper, a tiny test runner, passed/failed counters.
  */
 
-import { GraphIndexer } from '../src/context/graph-indexer.mjs';
+import { ContextRetriever } from '../src/context/retriever.mjs';
+import { GraphIndexer, MAX_GRAPH_SOURCE_BYTES } from '../src/context/graph-indexer.mjs';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -239,6 +240,56 @@ await test('getImporters/getImports/resolvePath basics', async () => {
     assert.deepStrictEqual(idx.getImporters('b.js').map(e => e.from), ['a.js']);
     assert.deepStrictEqual(idx.getImports('a.js').map(e => e.to), ['b.js']);
     cleanup(dir);
+});
+
+await test('retriever indexes large source references up to the byte limit and upgrades saved graphs', async () => {
+    const tail = "\nimport { x } from './leaf.js';";
+    const atLimit = '//' + 'a'.repeat(MAX_GRAPH_SOURCE_BYTES - tail.length - 2) + tail;
+    const dir = await createProject({
+        'app.js': "import { x } from './large.ts';",
+        'large.ts': atLimit,
+        'leaf.js': 'export const x = 1;',
+        'query.sql': 'SELECT * FROM reports',
+    });
+    const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'graph-cache-'));
+    const open = () => {
+        const retriever = new ContextRetriever(dir);
+        retriever.indexDir = cache;
+        return retriever;
+    };
+    try {
+        let retriever = open();
+        await retriever.buildIndex();
+        const large = path.join(dir, 'large.ts');
+        const importer = path.join(dir, 'app.js');
+        const leaf = path.join(dir, 'leaf.js');
+        assert.deepStrictEqual(retriever.tracePath(importer, leaf).map(edge => edge.to), ['large.ts', 'leaf.js']);
+        assert.strictEqual(retriever.getImports(path.join(dir, 'query.sql'))[0].to, 'reports');
+        assert.ok(![...retriever.chunkTexts.keys()].some(id => id.startsWith('large.ts')));
+        fs.writeFileSync(large, atLimit + 'é');
+        retriever.updateFile(large);
+        assert.strictEqual(retriever.getImports(importer)[0].status, 'resolved');
+        assert.deepStrictEqual(retriever.getImports(large), []);
+        assert.strictEqual(retriever.graphIndexer.nodes.get('large.ts').referencesSkipped, 'size_limit');
+        retriever = open();
+        assert.ok(retriever.loadIndex());
+        assert.strictEqual(retriever.graphIndexer.nodes.get('large.ts').referencesSkipped, 'size_limit');
+        fs.writeFileSync(large, atLimit);
+        retriever.updateFile(large);
+        assert.strictEqual(retriever.tracePath(importer, leaf).length, 2);
+
+        // Simulate the cached graph produced by the old 100 KB discovery rule.
+        const bm25 = fs.readFileSync(path.join(cache, 'bm25.json'));
+        fs.writeFileSync(path.join(cache, 'graph.json'), JSON.stringify({version: 1, nodes: {}, edges: []}));
+        retriever = open();
+        assert.ok(retriever.loadIndex());
+        assert.strictEqual(retriever.tracePath(importer, leaf).length, 2);
+        assert.ok(GraphIndexer.load(cache, dir).nodes.has('large.ts'));
+        assert.deepStrictEqual(fs.readFileSync(path.join(cache, 'bm25.json')), bm25);
+    } finally {
+        cleanup(dir);
+        cleanup(cache);
+    }
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

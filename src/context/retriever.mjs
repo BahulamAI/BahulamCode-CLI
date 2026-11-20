@@ -5,7 +5,7 @@
 
 import { BM25Index } from './bm25.mjs';
 import { SymbolIndexer } from './symbol-indexer.mjs';
-import { GraphIndexer } from './graph-indexer.mjs';
+import { GraphIndexer, isGraphSource } from './graph-indexer.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { indexDir as getIndexDir } from '../core/paths.mjs';
@@ -29,7 +29,7 @@ export class ContextRetriever {
 
     /** Build or rebuild the search index (BM25 chunks + symbol index). */
     async buildIndex() {
-        const files = this._scanFiles(this.projectDir);
+        const { files, graphFiles } = this._scanFiles();
         const documents = [];
 
         // Symbol indexer for AST-based search
@@ -70,7 +70,7 @@ export class ContextRetriever {
 
         // Cross-language reference graph (additive; graph.json beside bm25.json).
         this.graphIndexer = new GraphIndexer(this.projectDir);
-        await this.graphIndexer.buildGraph(files);
+        await this.graphIndexer.buildGraph(graphFiles);
         this.graphIndexer.persist(this.indexDir);
 
         return { fileCount: files.length, chunkCount: documents.length, symbolCount: this.symbolIndexer.symbolCount, edgeCount: this.graphIndexer.edges.length };
@@ -111,12 +111,12 @@ export class ContextRetriever {
 
         // Re-chunk if file still exists (delete = just remove)
         const newChunks = [];
-        if (fs.existsSync(absPath)) {
-            try {
-                const content = fs.readFileSync(absPath, 'utf-8');
-                newChunks.push(...this._chunkFile(content, relPath));
-            } catch { /* skip unreadable */ }
-        }
+        try {
+            const stat = fs.statSync(absPath, { throwIfNoEntry: false });
+            if (stat?.isFile() && stat.size <= MAX_FILE_SIZE) {
+                newChunks.push(...this._chunkFile(fs.readFileSync(absPath, 'utf-8'), relPath));
+            }
+        } catch { /* skip unreadable */ }
 
         // Rebuild index from remaining + new chunks
         // This is fast (~5-20ms) because BM25 build is O(n) on token count
@@ -140,9 +140,10 @@ export class ContextRetriever {
         // importers when their target changed/vanished.
         if (!this.graphIndexer) this.graphIndexer = GraphIndexer.load(this.indexDir, this.projectDir);
         if (this.graphIndexer) {
-            const changed = fs.existsSync(absPath);
-            const content = changed ? (() => { try { return fs.readFileSync(absPath, 'utf-8'); } catch { return null; } })() : null;
-            this.graphIndexer.updateFile(relPath, { content, isConfig: ['.json', '.toml', '.yaml', '.yml'].includes(path.extname(absPath).toLowerCase()) });
+            this.graphIndexer.updateFile(relPath, {
+                fromDisk: true,
+                isConfig: ['.json', '.toml', '.yaml', '.yml'].includes(path.extname(absPath).toLowerCase()),
+            });
             this.graphIndexer.persist(this.indexDir);
         }
 
@@ -291,8 +292,13 @@ export class ContextRetriever {
                 const symData = JSON.parse(fs.readFileSync(symbolsPath, 'utf-8'));
                 this.symbolIndexer = SymbolIndexer.fromJSON(symData);
             }
-            // Cross-language reference graph (optional; absent on old indexes).
+            // Upgrade only graph coverage when loading an index built with the old size limit.
             this.graphIndexer = GraphIndexer.load(this.indexDir, this.projectDir);
+            if (!this.graphIndexer) {
+                this.graphIndexer = new GraphIndexer(this.projectDir);
+                this.graphIndexer.indexFiles(this._scanFiles().graphFiles);
+                this.graphIndexer.persist(this.indexDir);
+            }
             return true;
         } catch {
             return false;
@@ -351,30 +357,25 @@ export class ContextRetriever {
     }
 
     /** Scan project files respecting .gitignore-like patterns. */
-    _scanFiles(dir, depth = 0) {
-        if (depth > 15) return [];
-        const results = [];
+    _scanFiles(dir = this.projectDir, depth = 0, result = { files: [], graphFiles: [] }) {
+        if (depth > 15) return result;
         let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return result; }
 
         for (const entry of entries) {
-            if (entry.name.startsWith('.') && IGNORED_DIRS.has(entry.name)) continue;
             if (IGNORED_DIRS.has(entry.name)) continue;
-
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                results.push(...this._scanFiles(fullPath, depth + 1));
+                this._scanFiles(fullPath, depth + 1, result);
             } else if (entry.isFile()) {
-                const ext = path.extname(entry.name);
-                if (!CODE_EXTS.has(ext)) continue;
+                if (isGraphSource(entry.name)) result.graphFiles.push(fullPath);
+                if (!CODE_EXTS.has(path.extname(entry.name).toLowerCase())) continue;
                 try {
-                    const stat = fs.statSync(fullPath);
-                    if (stat.size > MAX_FILE_SIZE) continue;
-                } catch { continue; }
-                results.push(fullPath);
+                    if (fs.statSync(fullPath).size <= MAX_FILE_SIZE) result.files.push(fullPath);
+                } catch { /* file changed during discovery */ }
             }
         }
-        return results;
+        return result;
     }
 
     /**
