@@ -72,7 +72,8 @@ import { BahulamAuth } from '../auth/bahulam-auth.mjs';
 import { ApprovalManager } from '../core/approval.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { resolveBackendUrl, resolveGatewayUrl } from '../core/backend-url.mjs';
-import { formatMessageWindow, lowWindowStatus, messagesRemaining } from '../core/rate-limit-display.mjs';
+import { contextStatusRows, fetchMessageWindows } from './session-status.mjs';
+import { formatMessageWindow, lowWindowStatus, messageWindowRows, messagesRemaining } from '../core/rate-limit-display.mjs';
 import { formatAgentErrorGuidance } from '../core/error-guidance.mjs';
 import { BUILTIN_AGENTS, runAgentDefinition } from './agents.mjs';
 import { SkillInstaller } from '../skills/installer.mjs';
@@ -2337,7 +2338,13 @@ function renderEvent(event) {
       break;
     }
 
+    case 'summarize_progress': {
+      session.summaryProgress = data?.state || null;
+      break;
+    }
     case 'summarize': {
+      session.summaryProgress = null;
+      session.lastContextSummary = data;
       stopSpinner();
       flushContent();
       flushPendingHead();
@@ -3082,7 +3089,7 @@ function renderEvent(event) {
         const out = usage.total_output_tokens || usage.output_tokens || 0;
         session.inputTokens += inp;
         session.outputTokens += out;
-        session.lastTurnInputTokens = usage.turns?.at(-1)?.input_tokens || usage.last_request_input_tokens || 0;
+        session.lastTurnInputTokens = usage.last_request_input_tokens || usage.turns?.at(-1)?.input_tokens || 0;
 
         // Model-aware cost calculation
         const costResult = calculateCost(usage);
@@ -3942,28 +3949,14 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
         : '';
       process.stderr.write(`  ${c.dim('Tools')}        ${session.totalToolCalls} total${toolSplit}, ${session.toolCalls + session.subAgentToolCalls} last turn${lastTurnSplit}\n`);
       process.stderr.write(`  ${c.dim('Duration')}     ${formatElapsed(session.startTime)}\n`);
-      if (session.isByok) {
-        process.stderr.write(`  ${c.dim('Billing')}      ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
-      } else {
-        // Server-authoritative remaining balance; fall back to the per-session
-        // charged tally when balance hasn't been pushed yet.
-        if (session.subscriptionTier) {
-          process.stderr.write(`  ${c.dim('Plan')}         ${c.brand(session.subscriptionTier.toUpperCase())}\n`);
-        }
-        const messageWindow = formatMessageWindow(session.rateLimit);
-        if (messageWindow) {
-          process.stderr.write(`  ${c.dim('Messages')}     ${messageWindow}\n`);
-        }
-        if (typeof session.creditsTotal === 'number') {
-          const limit = session.creditsLimit ? ` ${c.dim('/ ' + formatCredits(session.creditsLimit))}` : '';
-          const used = session.creditsCharged ? ` ${c.dim(`(${formatCredits(session.creditsCharged)} used this session)`)}` : '';
-          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsTotal)}${limit}${used}\n`);
-        } else if (session.creditsCharged) {
-          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsCharged)} ${c.dim('(used this session)')}\n`);
-        }
-      }
       process.stderr.write(`  ${c.dim('CWD')}          ${safeCwd()}\n`);
-
+      const statusRows = rows => {
+        for (const [label, value] of rows) {
+          process.stderr.write(`  ${c.dim(label.padEnd(18))} ${value}\n`);
+        }
+      };
+      process.stderr.write(`\n  ${c.bold('Context and summarization')}\n`);
+      statusRows(contextStatusRows(session, ctx.runtimeMode));
       // Cache — PRD-071 §1.2. Only surface when we have data; a fresh session
       // shows nothing rather than a misleading "0%".
       const cache = computeCacheTotals();
@@ -3971,6 +3964,33 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
         const readLabel = formatTokens(cache.read);
         const writeLabel = formatTokens(cache.write);
         process.stderr.write(`  ${c.dim('Cache')}        ${cache.hitRate}% hit ${c.dim('·')} ${readLabel} read ${c.dim('·')} ${writeLabel} write\n`);
+      }
+
+      process.stderr.write(`\n  ${c.bold('Plan and message usage')}\n`);
+      const fresh = await fetchMessageWindows(creds);
+      const latest = ctx.auth.loadCredentials();
+      const sameAccount = creds.token === latest.token && creds.backendUrl === latest.backendUrl;
+      const quota = sameAccount ? (fresh || session.rateLimit) : null;
+      if (sameAccount && fresh && !session.isByok) session.rateLimit = fresh;
+      const tier = quota?.tier || session.subscriptionTier;
+      if (tier) statusRows([['Plan', tier.toUpperCase()]]);
+      const windows = messageWindowRows(quota?.byok ? null : quota);
+      if (windows.length) {
+        if (!fresh) statusRows([['Usage source', 'Last reported by backend']]);
+        statusRows(windows);
+      } else {
+        statusRows([['Message windows', 'Usage unavailable']]);
+      }
+      if (session.isByok) {
+        statusRows([['Billing', 'BYOK · provider-billed · platform message caps bypassed']]);
+      } else {
+        if (typeof session.creditsTotal === 'number') {
+          const limit = session.creditsLimit ? ` ${c.dim('/ ' + formatCredits(session.creditsLimit))}` : '';
+          const used = session.creditsCharged ? ` ${c.dim(`(${formatCredits(session.creditsCharged)} used this session)`)}` : '';
+          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsTotal)}${limit}${used}\n`);
+        } else if (session.creditsCharged) {
+          process.stderr.write(`  ${c.dim('Credits')}      ${formatCredits(session.creditsCharged)} ${c.dim('(used this session)')}\n`);
+        }
       }
 
       // Permissions
@@ -4910,6 +4930,9 @@ export async function startTerminalRepl() {
       inputTokens: 0,
       outputTokens: 0,
       lastTurnInputTokens: 0,
+      lastContextSummary: null,
+      summaryProgress: null,
+      resumeSummaryCount: 0,
       toolCalls: 0,
       subAgentToolCalls: 0,
       totalToolCalls: 0,
@@ -5110,6 +5133,13 @@ export async function startTerminalRepl() {
 
     onProgress('preparing replay', 92);
     session.rustUsageBaseline = rustUsageBaseline(session, detail.meta);
+    session.summaryProgress = null;
+    const replayEvents = detail.replayEvents || [];
+    session.lastContextSummary = replayEvents.findLast(item => item.event?.type === 'summarize')?.event.data || null;
+    session.resumeSummaryCount = Math.max(Number(detail.meta?.resumeSummary?.sourceMessageCount) || 0,
+      historyMode === 'full' ? 0 : Number(richHistory.summaryCoveredMessageCount) || 0);
+    const lastUsage = replayEvents.findLast(item => item.event?.type === 'complete')?.event.data?.usage;
+    session.lastTurnInputTokens = lastUsage?.last_request_input_tokens || lastUsage?.turns?.at(-1)?.input_tokens || 0;
     session.history = displayHistory;
     session.agentHistory = agentHistory;
     session.rustSnapshotHistoryLength = displayHistory.length;

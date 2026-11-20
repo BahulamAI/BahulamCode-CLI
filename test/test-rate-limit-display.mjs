@@ -8,6 +8,7 @@ import {
     formatRetryAfter,
     lowWindowStatus,
     messagesRemaining,
+    messageWindowRows,
     normalizeRateLimit,
     rateLimitErrorMessage,
     resetLabel,
@@ -102,6 +103,22 @@ test('formatMessageWindow reports unlimited for BYOK', () => {
         byok: true,
         msgs_per_window: 50,
     }), 'PRO · unlimited messages');
+});
+
+test('status separates uncapped five-hour usage from longer plan limits', () => {
+    const quota = { msgs_per_window: -1, windows: {
+        rolling_5h: { used: 15, limit: -1 }, weekly: { used: 19, limit: 20 }, monthly: { used: 39, limit: 200 },
+    }};
+    assert.deepEqual(messageWindowRows(quota), [
+        ['Rolling 5 hours', '15 used · no cap'], ['Rolling 7 days', '19 / 20 used'], ['Rolling 30 days', '39 / 200 used'],
+    ]);
+    assert.match(formatMessageWindow(quota), /Rolling 7 days 19 \/ 20/);
+    assert.doesNotMatch(formatMessageWindow(quota), /unlimited messages/);
+    assert.equal(lowWindowStatus(quota), 'low');
+    quota.windows.weekly.used = 20;
+    assert.equal(lowWindowStatus(quota), 'exhausted');
+    assert.deepEqual(messageWindowRows({ msgs_per_window: 50, msgs_used_in_window: 4 }), [['Rolling 5 hours', '4 / 50 used']]);
+    assert.deepEqual(messageWindowRows(null), []);
 });
 
 test('lowWindowStatus returns ok, low, and exhausted', () => {

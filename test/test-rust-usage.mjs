@@ -41,3 +41,35 @@ test('resume replaces display totals; repeated snapshots do not add usage', () =
   assert.equal(rustSessionUsage(session).input_tokens, 0);
   assert.equal(rustSessionUsage(session).context_used_pct, 0);
 });
+
+test('status distinguishes last request, session totals and the last completed reduction', async () => {
+  const { contextStatusRows } = await import('../src/terminal/session-status.mjs');
+  const rows = Object.fromEntries(contextStatusRows({
+    model: 'model', modelLimits: { coder: { model: 'model', context_length: 200000, max_output: 8000 } },
+    inputTokens: 442572, lastTurnInputTokens: 30000, outputTokens: 1500,
+    lastContextSummary: { strategy: 'distillation', threshold: 24000, collapsed_messages: 14, kept_recent: 4 },
+    resumeSummaryCount: 8,
+  }, 'remote'));
+  assert.match(rows['Model window'], /200.0k/);
+  assert.match(rows['Local history'], /≈0 tokens/);
+  assert.match(rows['Last request'], /30.0k/);
+  assert.match(rows['Session total'], /442.6k input/);
+  assert.match(rows['Summary trigger'], /history tokens/);
+  assert.match(rows['Last reduction'], /14 messages condensed · 4 recent kept · trigger 24.0k/);
+  assert.match(rows['Resume checkpoint'], /8 messages/);
+});
+
+test('status reads the account snapshot without a message and handles old or offline backends', async () => {
+  const { fetchMessageWindows } = await import('../src/terminal/session-status.mjs');
+  const creds = { backendUrl: 'https://example.invalid', token: 'fixture' };
+  const response = { windows: { rolling_5h: { used: 12, limit: -1 } } };
+  const result = await fetchMessageWindows(creds, async (url, options) => {
+    assert.equal(url, creds.backendUrl + '/api/cli/message-windows');
+    assert.equal(options.headers['X-Product'], 'bahulam');
+    assert.equal(options.headers.Authorization, 'Bearer fixture');
+    return { ok: true, json: async () => response };
+  });
+  assert.deepEqual(result, response);
+  assert.equal(await fetchMessageWindows(creds, async () => ({ ok: false })), null);
+  assert.equal(await fetchMessageWindows(creds, async () => { throw Error('offline'); }), null);
+});

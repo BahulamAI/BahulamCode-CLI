@@ -48,11 +48,33 @@ export function resetLabel(rateLimit, now = Date.now()) {
     return formatRetryAfter(Math.max(0, (resetMs - now) / 1000));
 }
 
+export function messageWindowRows(rateLimit, { includeReset = true } = {}) {
+    const rl = normalizeRateLimit(rateLimit);
+    if (!rl || rl.usage_available === false) return [];
+    const rows = [];
+    for (const [key, label] of [['rolling_5h', 'Rolling 5 hours'], ['weekly', 'Rolling 7 days'], ['monthly', 'Rolling 30 days']]) {
+        let window = rl.windows?.[key];
+        if (!window && key === 'rolling_5h' && rl.msgs_per_window != null) {
+            window = { used: rl.msgs_used_in_window, limit: rl.msgs_per_window, reset_at: rl.window_reset_at };
+        }
+        if (!window || window.used == null || window.limit == null) continue;
+        const reset = includeReset && window.limit >= 0 && resetLabel({ window_reset_at: window.reset_at });
+        const value = window.limit === -1
+            ? window.used + ' used · no cap'
+            : window.used + ' / ' + window.limit + ' used' + (reset ? ' · rolls over in ' + reset : '');
+        rows.push([label, value]);
+    }
+    return rows;
+}
+
 export function formatMessageWindow(rateLimit, { includeReset = true } = {}) {
     const rl = normalizeRateLimit(rateLimit);
     if (!rl) return null;
 
     const tier = rl.tier ? String(rl.tier).toUpperCase() : null;
+    if (!rl.byok && !rl.unlimited && rl.msgs_per_window === -1 && rl.windows) {
+        return [tier, ...messageWindowRows(rl, { includeReset }).map(([label, value]) => label + ' ' + value)].filter(Boolean).join(' · ');
+    }
     if (rl.byok || rl.unlimited || rl.msgs_per_window === -1) {
         return [tier, 'unlimited messages'].filter(Boolean).join(' · ');
     }
@@ -74,7 +96,12 @@ export function formatMessageWindow(rateLimit, { includeReset = true } = {}) {
 
 export function lowWindowStatus(rateLimit) {
     const rl = normalizeRateLimit(rateLimit);
-    if (!rl || rl.byok || rl.unlimited || rl.msgs_per_window === -1) return 'ok';
+    if (!rl || rl.byok || rl.unlimited) return 'ok';
+    if (rl.msgs_per_window === -1) {
+        const capped = Object.values(rl.windows || {}).filter(w => w && Number.isFinite(w.limit) && w.limit >= 0);
+        if (capped.some(w => w.used >= w.limit)) return 'exhausted';
+        return capped.some(w => w.limit - w.used <= Math.max(5, Math.floor(w.limit * 0.2))) ? 'low' : 'ok';
+    }
     const remaining = messagesRemaining(rl);
     if (typeof remaining !== 'number' || typeof rl.msgs_per_window !== 'number') return 'ok';
     if (remaining <= 0) return 'exhausted';
