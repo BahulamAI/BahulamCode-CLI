@@ -2199,13 +2199,13 @@ function ctxRustPermissionMode() {
   if (manager.approveAll) return 'auto';
   return 'ask';
 }
-function sendRustSessionState() {
+function sendRustSessionState({ includeUsage = true } = {}) {
   if (!_rustTuiActive || !_rustTuiHost) return;
   const sessionId = session.id || _rustTuiEnsureSessionId?.();
   if (!sessionId) return;
   if (!session.id) session.id = sessionId;
   _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'session_state', session_id: sessionId,
-    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', model_mode: session.modelMode || '', model_route: session.routePreference || (session.isByok ? 'byok' : 'platform'), git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), usage: rustSessionUsage(session), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
+    agent_id: 'main', data: { cwd: safeCwd(), model: session.model || '', model_mode: session.modelMode || '', model_route: session.routePreference || (session.isByok ? 'byok' : 'platform'), git_branch: _probeGitBranch(safeCwd()) || '', permission_mode: ctxRustPermissionMode(), ...(includeUsage ? {usage: rustSessionUsage(session)} : {}), active_background_jobs: backgroundTasks.list().filter(job => job.status === 'running').length } });
 }
 
 function renderEvent(event) {
@@ -3648,7 +3648,7 @@ function makeSessionSubstrate(ctx) {
   })();
 }
 
-async function handleCommand(input, ctx) {
+async function handleCommand(input, ctx, writeAuto = text => process.stderr.write(text)) {
   const { cmd, rest, aliasTarget } = normalizeCommandInput(input);
   if (aliasTarget) {
     process.stderr.write(`  ${c.dim(`Legacy alias: use ${aliasTarget}`)}\n`);
@@ -4355,30 +4355,30 @@ async function handleCommand(input, ctx) {
       if (sub === 'off') {
         ctx.approval.approveAll = false;
         ctx.approval.autoApprove = false;
-        process.stderr.write(`  ${c.green('✓')} ${c.dim('Auto mode off — approvals prompt again.')}\n`);
+        writeAuto(`  ${c.green('✓')} ${c.dim('Auto mode off — approvals prompt again.')}\n`);
         return;
       }
       if (sub === 'full' || sub === 'dangerous' || sub === 'yolo') {
         ctx.approval.autoApprove = true;
         ctx.approval.approveAll = true;
-        process.stderr.write(`  ${c.yellow('⚠')} ${c.bold('Auto FULL')} ${c.dim('— EVERY tool call auto-approves this session.')}\n`);
-        process.stderr.write(`    ${c.dim('Includes dangerous shell (rm/force-push/substitution) and protected files.')}\n`);
-        process.stderr.write(`    ${c.dim('Hard safety blocks are still enforced by the CLI safety layer.')}\n`);
-        process.stderr.write(`    ${c.dim('Disable with /auto off · this is the runtime equivalent of --dangerously-skip-permissions.')}\n`);
+        writeAuto(`  ${c.yellow('⚠')} ${c.bold('Auto FULL')} ${c.dim('— EVERY tool call auto-approves this session.')}\n`);
+        writeAuto(`    ${c.dim('Includes dangerous shell (rm/force-push/substitution) and protected files.')}\n`);
+        writeAuto(`    ${c.dim('Hard safety blocks are still enforced by the CLI safety layer.')}\n`);
+        writeAuto(`    ${c.dim('Disable with /auto off · this is the runtime equivalent of --dangerously-skip-permissions.')}\n`);
         return;
       }
       if (sub === '' || sub === 'on') {
         ctx.approval.autoApprove = false;   // clear any prior /auto full
         ctx.approval.approveAll = true;
-        process.stderr.write(`  ${c.green('✓')} ${c.bold('Auto mode on')} ${c.dim('— routine tool calls auto-approve this session.')}\n`);
-        process.stderr.write(`    ${c.dim('Still prompts: dangerous shell (rm/force-push/substitution), protected files.')}\n`);
-        process.stderr.write(`    ${c.dim('Hard safety blocks stay enforced. Disable with /auto off · inspect with /approvals.')}\n`);
-        process.stderr.write(`    ${c.dim('Need full autopilot mid-run? /auto full — same effect as --dangerously-skip-permissions.')}\n`);
+        writeAuto(`  ${c.green('✓')} ${c.bold('Auto mode on')} ${c.dim('— routine tool calls auto-approve this session.')}\n`);
+        writeAuto(`    ${c.dim('Still prompts: dangerous shell (rm/force-push/substitution), protected files.')}\n`);
+        writeAuto(`    ${c.dim('Hard safety blocks stay enforced. Disable with /auto off · inspect with /approvals.')}\n`);
+        writeAuto(`    ${c.dim('Need full autopilot mid-run? /auto full — same effect as --dangerously-skip-permissions.')}\n`);
         return;
       }
       // status / anything else → show current mode
-      process.stderr.write(`  ${c.dim('Approval mode:')} ${ctx.approval.getModeLabel()}\n`);
-      process.stderr.write(`  ${c.dim('Usage: /auto [on|off|full|status]')}\n`);
+      writeAuto(`  ${c.dim('Approval mode:')} ${ctx.approval.getModeLabel()}\n`);
+      writeAuto(`  ${c.dim('Usage: /auto [on|off|full|status]')}\n`);
       return;
     }
 
@@ -5781,6 +5781,33 @@ export async function startTerminalRepl() {
   });
   let submitActiveFollowup = null;
   _submitExternalPrompt = instruction => queueOrRunLine(instruction);
+  function emitRustCommandResult(input, result, ok) {
+    const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
+    const preview = previewLines.slice(0, 8).join('\n').slice(0, 1200) +
+      (previewLines.length > 8 || result.length > 1200 ? '\n… open details for full output' : '');
+    // Before the first turn there is no session id yet and the tap would
+    // drop the frame, leaving /help with no visible result.
+    jsonlWriter.ensureSessionId();
+    if (!session.id) session.id = jsonlWriter.sessionId;
+    tapSseEvent({
+      type: 'command_result',
+      data: { name: input.split(/\s+/).slice(0, 2).join(' '), result: preview || '(no output)', output: result || '(no output)', ok, added_to_context: false },
+    }, { sessionId: session.id });
+  }
+  async function submitRustInstruction(instruction) {
+    const command = instruction.startsWith('/') ? normalizeCommandInput(instruction) : null;
+    if (submitActiveFollowup && command?.cmd === '/auto') {
+      session.inputHistory.push(instruction);
+      let output = '';
+      await handleCommand(instruction, ctx, text => { output += text; });
+      sendRustSessionState({ includeUsage: false });
+      emitRustCommandResult(instruction, output.trim(), true);
+    } else if (submitActiveFollowup && !instruction.startsWith('/')) {
+      await submitActiveFollowup(instruction);
+    } else {
+      _submitExternalPrompt?.(instruction);
+    }
+  }
   function restoreNodeDock() {
     if (mountInputDock({ preserveScrollback: true })) {
       if (_dockTickTimer) clearInterval(_dockTickTimer);
@@ -5854,8 +5881,7 @@ export async function startTerminalRepl() {
             case 'prompt': {
               const instruction = String(data.text || '').trim();
               if (instruction) {
-                if (submitActiveFollowup && !instruction.startsWith('/')) await submitActiveFollowup(instruction);
-                else _submitExternalPrompt?.(instruction);
+                await submitRustInstruction(instruction);
               }
               break;
             }
@@ -5866,7 +5892,7 @@ export async function startTerminalRepl() {
                 throw new Error('run_slash requires a slash command name and single-line arguments');
               }
               if (typeof _submitExternalPrompt !== 'function') throw new Error('terminal input is not ready');
-              _submitExternalPrompt([name, ...args].filter(Boolean).join(' '));
+              await submitRustInstruction([name, ...args].filter(Boolean).join(' '));
               break;
             }
             case 'switch_model': {
@@ -5965,7 +5991,7 @@ export async function startTerminalRepl() {
                   }
                 }
                 if (detail == null) {
-                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.hunks ?? payload.args ?? payload.cause ?? payload.summary ?? payload;
+                  const value = payload.output ?? payload.result ?? payload.text ?? payload.report ?? payload.unified ?? payload.hunks ?? payload.args ?? payload.cause ?? payload.summary ?? payload;
                   detail = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
                 }
                 const bytes = Buffer.from(detail, 'utf8');
@@ -6236,20 +6262,10 @@ export async function startTerminalRepl() {
         } else if (command === '/resume') {
           await sendRustTranscriptSnapshot(session.historyMode || 'current');
         } else if (['/auto', '/approvals', '/plan'].includes(command) || (command === '/model' && !['status', 'list', 'catalog', 'refresh'].includes(commandArg))) {
-          sendRustSessionState();
+          sendRustSessionState({ includeUsage: command !== '/auto' });
         }
         if (command === '/resume' && ok && session.history !== historyBeforeCommand) return;
-        const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
-        const preview = previewLines.slice(0, 8).join('\n').slice(0, 1200) +
-          (previewLines.length > 8 || result.length > 1200 ? '\n… open details for full output' : '');
-        // Before the first turn there is no session id yet and the tap would
-        // drop the frame, leaving /help with no visible result.
-        jsonlWriter.ensureSessionId();
-        if (!session.id) session.id = jsonlWriter.sessionId;
-        tapSseEvent({
-          type: 'command_result',
-          data: { name: input.split(/\s+/).slice(0, 2).join(' '), result: preview || '(no output)', output: result || '(no output)', ok, added_to_context: false },
-        }, { sessionId: session.id });
+        emitRustCommandResult(input, result, ok);
         return;
       }
       await handleCommand(input, ctx);

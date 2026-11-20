@@ -1067,6 +1067,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // a new draft. Questions, approvals and separate details still own input.
             let starts_input = match &event {
                 Event::Paste(_) => true,
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('v')
+                        && key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    true
+                }
                 Event::Key(key) => {
                     key.kind == KeyEventKind::Press
                         && matches!(key.code, KeyCode::Char(_))
@@ -1077,7 +1084,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => false,
             };
             if stdio
-                && focus_panel == 1
+                && focus_panel != 0
                 && history_search.is_none()
                 && editable(&model, 0, detail_card)
                 && starts_input
@@ -1088,9 +1095,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Keep streaming data in the model while a native selection is on
             // screen. Any other key returns to live controls before processing it.
             if selecting_text
-                && matches!(&event, Event::Key(key)
+                && (matches!(&event, Event::Paste(_))
+                    || matches!(&event, Event::Key(key)
                 if key.kind == KeyEventKind::Press && !(key.code == KeyCode::Char('m')
-                    && key.modifiers.contains(KeyModifiers::ALT)))
+                    && key.modifiers.contains(KeyModifiers::ALT))))
             {
                 selecting_text = false;
                 mouse_enabled = capabilities.mouse_capture;

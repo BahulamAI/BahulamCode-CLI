@@ -177,3 +177,21 @@ test('local and gateway requests carry scoped context and normal user follow-ups
   assert.equal(events.filter(e => e.type === 'user_intervention_delivered').length, 1);
   assert.equal(messages.some(m => m.content.includes(projectPrompt)), false);
 });
+
+test('recorded edits preview three changed lines and retain the complete result', () => {
+  const diff = {path:'sample.rs', unified:'--- a/sample.rs\n+++ b/sample.rs\n@@ -1,2 +1,4 @@\n context\n-old\n+first\n+second\n+third'};
+  const frames = capture('edit-preview', [
+    e('tool_done', {call_id:'one', tool:'edit_file', output:'saved', file_diff:diff}),
+    e('file_diff', {...diff, call_id:'one'}),
+    e('tool_done', {call_id:'failed', success:false, output:'write refused', file_diff:diff}),
+    e('file_diff', {...diff, path:'.env', hunks:[{text:'sensitive source'}]}),
+    e('tool_done', {call_id:'large', output:'saved', file_diff:{...diff, unified:diff.unified + '\n+' + 'x'.repeat(5000)}}),
+  ]);
+  assert.equal(frames[0].data.preview, '-old\n+first\n+second');
+  assert.equal(frames[0].data.output, 'saved\n\n' + diff.unified);
+  assert.equal(frames[1].data.preview, frames[0].data.preview);
+  assert.equal(frames[2].data.preview, 'write refused');
+  assert.doesNotMatch(JSON.stringify(frames[3].data), /sensitive source|first/);
+  assert.ok(frames[4].payload_ref);
+  assert.equal(frames[4].data.preview, frames[0].data.preview);
+});

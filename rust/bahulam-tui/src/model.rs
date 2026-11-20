@@ -6,6 +6,7 @@ use std::{collections::HashMap, time::Instant};
 pub struct Card {
     pub final_reply: bool,
     pub has_tool_output: bool,
+    pub has_edit_diff: bool,
     pub archived: Option<crate::transcript_archive::Record>,
     pub preview: Option<crate::rich_preview::Preview>,
     pub agent: String,
@@ -113,8 +114,10 @@ impl Agent {
             .get("tokens")
             .or_else(|| data.get("usage"))
             .unwrap_or(data);
-        let count = usage
-            .as_u64()
+        let count = data
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| usage.as_u64())
             .or_else(|| usage.get("total").and_then(Value::as_u64))
             .or_else(|| usage.get("total_tokens").and_then(Value::as_u64))
             .or_else(|| {
@@ -464,6 +467,7 @@ impl Model {
         self.cards.push(Card {
             final_reply: false,
             has_tool_output: false,
+            has_edit_diff: false,
             archived: None,
             preview: None,
             agent: agent.into(),
@@ -1347,6 +1351,8 @@ impl Model {
                         .filter(|value| !value.is_null())
                         .or_else(|| data.get("result").filter(|value| !value.is_null()));
                     let card = &mut self.cards[index];
+                    card.has_edit_diff =
+                        data.get("has_edit_diff").and_then(Value::as_bool) == Some(true);
                     if output.is_some() || event.payload_ref.is_some() || !summary.is_empty() {
                         card.begin_tool_output();
                         if !summary.is_empty() {
@@ -1539,27 +1545,51 @@ impl Model {
                     .collect();
             }
             "diff" => {
+                let call_id = text(data, "call_id");
+                if !call_id.is_empty()
+                    && data.get("count").and_then(Value::as_u64).unwrap_or(1) == 1
+                {
+                    let call_key = format!("{origin}/{turn}/{agent}/{call_id}");
+                    if self
+                        .tools
+                        .get(&call_key)
+                        .is_some_and(|i| self.cards[*i].has_edit_diff)
+                    {
+                        return Ok(());
+                    }
+                }
                 let path = text(data, "path");
-                let body = data
-                    .get("hunks")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|hunk| {
-                        hunk.get("text")
-                            .and_then(Value::as_str)
-                            .or_else(|| hunk.get("content").and_then(Value::as_str))
-                            .map(safe_text)
-                            .unwrap_or_else(|| safe_text(&hunk.to_string()))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let index = self.card(agent, "Diff", body, "done");
-                self.cards[index].primary = path;
-                if !self.cards[index].body.is_empty() {
-                    self.cards[index].detail = Some(self.cards[index].body.clone());
-                } else if let Some(reference) = &event.payload_ref {
-                    self.cards[index].payload_ref = Some(reference.clone());
+                let mut detail = text(data, "unified");
+                if detail.is_empty() {
+                    detail = data
+                        .get("hunks")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|h| string_arg(h, &["text", "content"]))
+                        .map(safe_text)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                }
+                let mut preview = text(data, "preview");
+                if preview.is_empty() {
+                    preview = detail
+                        .lines()
+                        .filter(|line| {
+                            line.starts_with(['+', '-'])
+                                && !line.starts_with("--- ")
+                                && !line.starts_with("+++ ")
+                        })
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                }
+                let index = self.card(agent, "Diff", preview, "done");
+                let card = &mut self.cards[index];
+                card.primary = path;
+                card.payload_ref = event.payload_ref.clone();
+                if !detail.is_empty() {
+                    card.detail = Some(detail);
                 }
             }
             "usage_update" | "tokens_used" => {
@@ -2337,7 +2367,7 @@ fn tool_arguments_preview(name: &str, args: &Value) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let sample = lines
         .iter()
-        .take(2)
+        .take(3)
         .map(|line| middle_preview(line, 72))
         .collect::<Vec<_>>()
         .join("\n");

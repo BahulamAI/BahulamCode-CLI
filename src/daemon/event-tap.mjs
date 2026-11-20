@@ -19,6 +19,7 @@
 
 import { displayPayloadStore } from './display-payload-store.mjs';
 import { createEventLog } from '../core/event-log.mjs';
+import { rustDiffDisplay, rustToolEditDisplay } from './rust-edit-preview.mjs';
 import { createHash } from 'node:crypto';
 import { toLegacyEvent } from '../protocol/compat.mjs';
 import { sanitizeDisplayValue } from '../core/display-sanitize.mjs';
@@ -224,10 +225,9 @@ function compactToolPreview(name, args = {}) {
     return '';
   }
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
-  const sample = lines.slice(0, 2).map(line => line.length > 72 ? `${line.slice(0, 69)}…` : line);
+  const sample = lines.slice(0, 3).map(line => line.length > 72 ? `${line.slice(0, 69)}…` : line);
   const preview = `${label} · ${lines.length} lines\n${sample.join('\n')}`;
-  const bytes = Buffer.from(preview, 'utf8');
-  return bytes.length <= 240 ? preview : `${bytes.subarray(0, 237).toString('utf8')}…`;
+  return preview;
 }
 
 function compactToolPrimary(args = {}) {
@@ -240,7 +240,7 @@ function compactToolPrimary(args = {}) {
 
 function normalizedUsage(src = {}) {
   src ||= {};
-  const usage = src.tokens ?? src.usage ?? src;
+  const usage = typeof src === 'number' ? src : typeof src.tokens === 'number' ? src.tokens : {...src, ...src.usage, ...src.tokens};
   const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
   const input = numeric(usage.input_tokens ?? usage.total_input_tokens ?? usage.prompt_tokens ?? usage.input ?? usage.prompt);
   const output = numeric(usage.output_tokens ?? usage.total_output_tokens ?? usage.completion_tokens ?? usage.output ?? usage.completion);
@@ -275,7 +275,7 @@ function project(type, src, identity) {
         preview: typeof src.output === 'string' ? toolOutputPreview(src.output, ok) :
           (src.summary ? truncateUtf8(asText(src.summary), 2400) :
             (src.error ? truncateUtf8(asText(src.error), 2400, !ok) : undefined)),
-        output: src.output ?? asText(src.error), diff_stats: src.diff_stats, output_ref: src.output_ref };
+        output: src.output ?? asText(src.error), diff_stats: src.diff_stats, output_ref: src.output_ref, ...rustToolEditDisplay(src) };
     }
     case 'text_delta':
     case 'thinking_delta':
@@ -295,7 +295,7 @@ function project(type, src, identity) {
         task: src.task || src.query || '', model: src.model };
     case 'agent_finished': {
       const ok = !src.error && src.ok !== false && src.success !== false && src.status !== 'failed';
-      const report = asText(src.report || src.summary || src.output) || '';
+      const report = asText(src.report || src.summary || src.result_summary || src.output) || '';
       const error = asText(src.error);
       return { agent_id: identity.agentId, ok,
         report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
@@ -313,6 +313,8 @@ function project(type, src, identity) {
         context_used_pct: usage.context_used_pct,
         per_agent: Object.fromEntries(Object.entries(usage.per_agent || {}).map(([id, value]) => [id, normalizedUsage(value)])) };
     }
+    case 'diff':
+      return { ...src, ...rustDiffDisplay(src) };
     case 'test_result':
       return { ...src, ok: !src.error && src.ok !== false && src.success !== false && !(Number(src.failed) > 0) };
     case 'approval_required':

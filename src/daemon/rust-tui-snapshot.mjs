@@ -1,3 +1,4 @@
+import { rustDiffDisplay, rustToolEditDisplay } from './rust-edit-preview.mjs';
 import { modelContextWindowInfo } from '../core/resume-mode.mjs';
 import { mergeResumeReplayItems } from '../terminal/repl-format.mjs';
 // Preserve the accepted resume replay, then include messages added in either view.
@@ -53,6 +54,11 @@ export function rustResumeItems(users, replay, history) {
       if (item.kind === 'user' || item.kind === 'history') return [{ kind: 'message', role: item.message.role || 'assistant', content: item.message.content ?? '' }];
       const event = item.event.event;
       if (event?.type === 'attachments') return rustAttachmentArtifacts(event.data).map(artifact => ({kind:'event',event:{...event,...artifact}}));
+      if (event?.type === 'file_diff') return [{kind:'event', event:{...event, type:'diff', data:{call_id:event.data?.call_id, count:event.data?.count, ...rustDiffDisplay(event.data || {})}}}];
+      if (['tool_done', 'tool_result', 'tool_finished'].includes(event?.type)) {
+        const edit = rustToolEditDisplay(event.data || {});
+        if (edit.has_edit_diff) return [{kind:'event', event:{...event, data:{...event.data, ...edit}}}];
+      }
       return [{ kind: 'event', event }];
     }));
   }
