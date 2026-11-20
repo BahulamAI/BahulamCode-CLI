@@ -1,3 +1,5 @@
+import { findShippedModel } from '../config/model-catalog.mjs';
+
 /**
  * Model Pricing — per-model cost calculation.
  *
@@ -37,7 +39,7 @@ const STATIC_PRICING = {
     'us.anthropic.claude-haiku-4-5-20251001-v1:0':  { input: 0.80, output: 4, cache_read: 0.08, cache_write: 1.0 },
 };
 
-const DEFAULT_PRICING = { input: 3, output: 15 };
+const DEFAULT_PRICING = { input: 0.14, output: 0.28, cache_read: 0.014, cache_write: 0 };
 
 // ── Live OpenRouter Pricing Cache ────────────────────────────
 
@@ -79,7 +81,10 @@ export async function fetchOpenRouterPricing() {
                 const input = parseFloat(p.prompt || '0') * 1_000_000;   // convert to per-MTok
                 const output = parseFloat(p.completion || '0') * 1_000_000;
 
-                pricing.set(id, { input, output });
+                const rates = { input, output };
+                if (p.input_cache_read != null) rates.cache_read = Number(p.input_cache_read) * 1_000_000;
+                if (p.input_cache_write != null) rates.cache_write = Number(p.input_cache_write) * 1_000_000;
+                pricing.set(id, rates);
             }
 
             _openRouterPricing = pricing;
@@ -123,19 +128,29 @@ function normalizeModelId(model) {
     return id;
 }
 
+export function isSubscriptionIncluded(model) {
+    const row = findShippedModel(model);
+    return Boolean(row && row.id === model && ['text', 'multimodal', 'chat'].includes(row.category)
+        && row.input_cost_usd_per_m === 0 && row.output_cost_usd_per_m === 0);
+}
+
 /**
  * Look up pricing for a model ID.
  *
  * Search order:
  * 1. OpenRouter live pricing (exact match)
  * 2. Static table (exact → normalized → provider-stripped)
- * 3. Default fallback ($3/$15 Sonnet)
+ * 3. Default fallback (DeepSeek Flash, matching backend estimates)
  *
  * @param {string} model
  * @returns {{ input: number, output: number, cache_read?: number, cache_write?: number }}
  */
 export function lookupPricing(model) {
     if (!model) return DEFAULT_PRICING;
+
+    if (isSubscriptionIncluded(model)) {
+        return { input: 0, output: 0 };
+    }
 
     // 1. OpenRouter live cache (exact match — OpenRouter IDs are canonical)
     if (_openRouterPricing) {
@@ -217,11 +232,15 @@ export function calculateCost(usage) {
     if (usage.models && usage.models.length > 0) {
         const breakdown = usage.models.map(m => {
             const pricing = lookupPricing(m.model);
-            const inputCost = (m.input_tokens || 0) * pricing.input / 1_000_000;
+            const input = m.input_tokens || 0;
+            const reads = m.cache_read_tokens || 0;
+            const writes = m.cache_creation_tokens || 0;
+            const uncached = reads > input ? input : Math.max(0, input - reads - writes);
+            const inputCost = uncached * pricing.input / 1_000_000;
             const outputCost = (m.output_tokens || 0) * pricing.output / 1_000_000;
-            const cacheReadCost = (m.cache_read_tokens || 0) * (pricing.cache_read || pricing.input) / 1_000_000;
-            const cacheWriteCost = (m.cache_creation_tokens || 0) * (pricing.cache_write || pricing.input) / 1_000_000;
-            const cost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+            const cacheReadCost = reads * (pricing.cache_read ?? pricing.input * 0.10) / 1_000_000;
+            const cacheWriteCost = writes * (pricing.cache_write ?? pricing.input * 1.25) / 1_000_000;
+            const cost = Number.isFinite(m.cost) ? m.cost : inputCost + outputCost + cacheReadCost + cacheWriteCost;
 
             const usedLivePricing = _openRouterPricing?.has(m.model) || false;
             const usedStaticPricing = STATIC_PRICING[m.model] || STATIC_PRICING[normalizeModelId(m.model)];
@@ -283,13 +302,15 @@ export function formatCostValue(cost) {
 
 /**
  * Convert provider cost to Bahulam credits.
- * 100 credits = $1 of retail model usage, 2x multiplier.
+ * 100 credits = $1 of retail model usage. Coding adds 10% to inference cost.
  * @param {number} costUsd
  * @returns {number}
  */
-export function costToCredits(costUsd) {
+export const CODING_MULTIPLIER = 1.10;
+
+export function costToCredits(costUsd, multiplier = CODING_MULTIPLIER) {
     if (costUsd <= 0) return 0;
-    return Math.max(1, Math.ceil(costUsd * 2.0 * 100));
+    return Number((costUsd * multiplier * 100).toFixed(4));
 }
 
 /**
@@ -298,6 +319,7 @@ export function costToCredits(costUsd) {
  * @returns {string}
  */
 export function formatCredits(credits) {
+    credits = Number(Number(credits).toFixed(4));
     if (credits === 0) return '0 cr';
     if (credits >= 1000) return `${(credits / 1000).toFixed(1)}k cr`;
     return `${credits} cr`;

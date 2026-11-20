@@ -1,7 +1,8 @@
 import assert from 'node:assert';
 import { PassThrough } from 'node:stream';
 import { optionRowsForRole, pickModelOverridesForm } from '../src/terminal/repl-model-form.mjs';
-import { isFreeModel, modelMatchesTextFilter } from '../src/terminal/model-catalog-display.mjs';
+import { calculateCost, costToCredits } from '../src/core/pricing.mjs';
+import { isFreeModel, modelMatchesTextFilter, modelCreditBadge } from '../src/terminal/model-catalog-display.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -66,10 +67,22 @@ test('image generation options still stay in the image generation group', () => 
 
 // ── Filter predicates for the searchable picker ───────────────────────────
 
-test('isFreeModel true when both costs missing/zero', () => {
+test('model picker distinguishes subscription coverage from missing or zero provider prices', () => {
+  assert.strictEqual(modelCreditBadge({ id: 'openrouter/free' }), 'Included · paid subscription');
+  assert.strictEqual(modelCreditBadge({ id: 'missing' }), '');
+  assert.strictEqual(modelCreditBadge({ id: 'other', input_cost_usd_per_m: 0, output_cost_usd_per_m: 0 }), 'Provider free');
+  assert.strictEqual(modelCreditBadge({ id: 'other', coding_billing: {
+    included_with_subscription: false, input_credits_per_m: 22, output_credits_per_m: 66,
+  } }), '22 cr/M in · 66 cr/M out');
+  assert.strictEqual(costToCredits(.001), .11);
+  assert.strictEqual(costToCredits(1), 110);
+  assert.strictEqual(calculateCost({ models: [{ model: 'gpt-4.1', input_tokens: 1000, cost: 0 }] }).total, 0);
+});
+
+test('isFreeModel true when both prices are explicitly zero', () => {
   assert.strictEqual(isFreeModel({ input_cost_usd_per_m: 0, output_cost_usd_per_m: 0 }), true);
-  assert.strictEqual(isFreeModel({ input_cost_usd_per_m: null, output_cost_usd_per_m: null }), true);
-  assert.strictEqual(isFreeModel({}), true);
+  assert.strictEqual(isFreeModel({ input_cost_usd_per_m: null, output_cost_usd_per_m: null }), false);
+  assert.strictEqual(isFreeModel({}), false);
 });
 
 test('isFreeModel false when either cost present', () => {
@@ -124,7 +137,7 @@ try {
   process.stderr.write = chunk => { output += String(chunk); return true; };
   const picked = pickModelOverridesForm({
     input, roles: [{ role: 'coder' }, { role: 'planner' }],
-    catalog: [{ id: 'qwen/coder', category: 'text', harness_validated: true }],
+    catalog: [{ id: 'qwen/coder', category: 'text', harness_validated: true, input_cost_usd_per_m: 0, output_cost_usd_per_m: 0 }],
   });
   input.write('no-match');
   input.write('\x12qwen curated free=\r');

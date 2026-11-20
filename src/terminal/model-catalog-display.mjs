@@ -1,3 +1,4 @@
+import { costToCredits, isSubscriptionIncluded } from '../core/pricing.mjs';
 import { c } from './ansi.mjs';
 
 export const MODEL_CATEGORY_ORDER = [
@@ -50,11 +51,11 @@ export function modelMatchesCatalogFilter(model, filter) {
   return modelDisplayCategory(model) === filter || modelCategory(model) === filter;
 }
 
-/** Free = no credit price on either token direction (null/0/absent counts). */
+/** Both provider prices must be explicitly zero. */
 export function isFreeModel(model) {
-  const input = Number(model?.input_cost_usd_per_m);
-  const output = Number(model?.output_cost_usd_per_m);
-  return (!Number.isFinite(input) || input <= 0) && (!Number.isFinite(output) || output <= 0);
+  return [model?.input_cost_usd_per_m, model?.output_cost_usd_per_m].every(
+    price => (typeof price === 'number' || (typeof price === 'string' && price.trim() !== '')) && Number(price) === 0,
+  );
 }
 
 /**
@@ -136,4 +137,21 @@ export function cacheProfileLabel(value) {
     // Fall through to the generic cache hint.
   }
   return 'cache';
+}
+
+export function modelCreditBadge(model, byok = false) {
+  if (byok) return isFreeModel(model) ? 'Provider free' : '';
+  const billing = model?.coding_billing;
+  if (billing?.included_with_subscription ?? isSubscriptionIncluded(model?.id)) {
+    return 'Included · paid subscription';
+  }
+  if (isFreeModel(model)) return 'Provider free';
+  const multiplier = ['text', 'multimodal'].includes(modelCategory(model)) ? undefined : 2;
+  const rates = ['input', 'output'].map(direction => {
+    if (billing) return billing[direction + '_credits_per_m'];
+    const price = model?.[direction + '_cost_usd_per_m'];
+    return price != null && Number.isFinite(Number(price)) ? costToCredits(Number(price), multiplier) : null;
+  });
+  return rates.map((rate, i) => rate == null ? '' : rate + ' cr/M ' + ['in', 'out'][i])
+    .filter(Boolean).join(' · ');
 }

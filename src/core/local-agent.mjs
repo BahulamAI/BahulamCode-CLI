@@ -325,7 +325,23 @@ export class LocalAgent {
         this._cancelled = false;
         const startTime = Date.now();
         let toolCount = 0;
-        const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
+        const usageTotals = { input_tokens: 0, output_tokens: 0, byModel: new Map() };
+        const addUsage = (model, usage) => {
+            this.promptCache.updateStats(usage);
+            const row = usageTotals.byModel.get(model) || {
+                model, role: model === this.model ? 'local' : 'summarizer',
+                input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost: 0,
+            };
+            row.input_tokens += usage.input_tokens || 0;
+            row.output_tokens += usage.output_tokens || 0;
+            row.cache_read_tokens += usage.cache_read_input_tokens || 0;
+            row.cache_creation_tokens += usage.cache_creation_input_tokens || 0;
+            if (Number.isFinite(usage.cost) && Number.isFinite(row.cost)) row.cost += usage.cost;
+            else delete row.cost;
+            usageTotals.byModel.set(model, row);
+            usageTotals.input_tokens += usage.input_tokens || 0;
+            usageTotals.output_tokens += usage.output_tokens || 0;
+        };
 
         yield { type: 'status', data: { message: `Local mode: ${this.model}` } };
 
@@ -359,11 +375,7 @@ export class LocalAgent {
                 priorHistory.splice(0, priorHistory.length, ...reduction.messages);
             }
             if (reduction.usage) {
-                this.promptCache.updateStats(reduction.usage);
-                usageTotals.input_tokens += reduction.usage.input_tokens || 0;
-                usageTotals.output_tokens += reduction.usage.output_tokens || 0;
-                usageTotals.cache_read_tokens += reduction.usage.cache_read_input_tokens || 0;
-                usageTotals.cache_creation_tokens += reduction.usage.cache_creation_input_tokens || 0;
+                addUsage(this.summarizerModel || this.model, reduction.usage);
             }
         };
 
@@ -429,12 +441,8 @@ export class LocalAgent {
             const { content, stopReason, usage } = response;
 
             if (usage) {
-                this.promptCache.updateStats(usage);
                 usageTotals.lastRequestInput = usage.input_tokens;
-                usageTotals.input_tokens += usage.input_tokens || 0;
-                usageTotals.output_tokens += usage.output_tokens || 0;
-                usageTotals.cache_read_tokens += usage.cache_read_input_tokens || 0;
-                usageTotals.cache_creation_tokens += usage.cache_creation_input_tokens || 0;
+                addUsage(this.model, usage);
             }
 
             // Process content blocks
@@ -540,7 +548,7 @@ export class LocalAgent {
                         summary: 'Done (local)',
                         changes: toolCount,
                         duration_s: duration,
-                        usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+                        usage: _buildLocalUsageEnvelope(usageTotals),
                     },
                 };
                 return;
@@ -555,7 +563,7 @@ export class LocalAgent {
                 summary: 'Aborted (max turns)',
                 changes: toolCount,
                 duration_s: (Date.now() - startTime) / 1000,
-                usage: _buildLocalUsageEnvelope(this.model, usageTotals),
+                usage: _buildLocalUsageEnvelope(usageTotals),
             },
         };
     }
@@ -597,6 +605,7 @@ export class LocalAgent {
             Accept: 'application/json',
             'X-Product': this.product,
             'X-Bahulam-Request-ID': this._nextRequestId(),
+            'X-Bahulam-Op-Class': 'coding',
         };
         if (this.sessionId) headers['X-Bahulam-Session-ID'] = this.sessionId;
         if (this.executionId) headers['X-Bahulam-Execution-ID'] = this.executionId;
@@ -902,22 +911,15 @@ export class LocalAgent {
     }
 }
 
-// Shape the accumulated per-turn totals into the same envelope the remote
-// SSE `complete` event uses, so repl.mjs:837 can consume both modes with the
-// same code path. `models[0].role = 'local'` distinguishes single-agent
-// local mode from remote's Coder/Explorer/Planner breakdown.
-function _buildLocalUsageEnvelope(model, totals) {
+// Match the remote completion event and preserve separate model costs for summarization.
+function _buildLocalUsageEnvelope(totals) {
+    const models = [...totals.byModel.values()];
     return {
         total_input_tokens: totals.input_tokens,
         last_request_input_tokens: totals.lastRequestInput,
         total_output_tokens: totals.output_tokens,
-        models: [{
-            model,
-            role: 'local',
-            input_tokens: totals.input_tokens,
-            output_tokens: totals.output_tokens,
-            cache_read_tokens: totals.cache_read_tokens,
-            cache_creation_tokens: totals.cache_creation_tokens,
-        }],
+        models,
+        ...(models.length && models.every(row => Number.isFinite(row.cost))
+            ? { total_cost: models.reduce((sum, row) => sum + row.cost, 0) } : {}),
     };
 }

@@ -127,6 +127,7 @@ export const session = {
   creditsIncluded: null,         // remaining included credits this period
   creditsPurchased: null,        // remaining purchased credits
   creditsLimit: null,            // per-period included credits limit
+  estimatedCredits: 0,
   creditsCharged: 0,             // session-cumulative server-reported charges
   creditsLowWarned: false,       // emit the low-balance hint only once per turn
   rateLimit: null,               // rolling message-window state from backend

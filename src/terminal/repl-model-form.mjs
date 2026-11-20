@@ -17,7 +17,7 @@ import { fitAnsiLine, writeOverlayFrame, eraseOverlayFrame } from './repl-format
 import {
   cacheProfileLabel,
   formatCategoryBadge,
-  isFreeModel,
+  modelCreditBadge,
   isImageGenerationModel,
   modelCategory,
   modelDisplayCategory,
@@ -25,13 +25,6 @@ import {
 } from './model-catalog-display.mjs';
 
 const DEFAULT_SENTINEL = '__default__';
-
-function creditBadge(row) {
-  const usd = Number(row?.input_cost_usd_per_m);
-  if (!Number.isFinite(usd) || usd <= 0) return '';
-  const credits = usd * 200; // credits = provider cost × 2 × 100/USD
-  return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M`;
-}
 
 function formatTokenLimit(value, label) {
   const n = Number(value);
@@ -59,7 +52,6 @@ export function optionRowsForRole(catalog, row) {
 function capabilityPills(meta) {
   const pills = [];
   if (meta) {
-    if (isFreeModel(meta)) pills.push(c.cyan('free'));
     if (meta.supports_tools) pills.push(c.green('tools'));
     if (meta.supports_reasoning) pills.push(c.yellow('reasoning'));
     if (meta.harness_validated) pills.push(c.dim('curated'));
@@ -76,7 +68,7 @@ function capabilityPills(meta) {
  * @param {string} [opts.unavailableNote] why the catalog is missing (shown in header)
  * @returns {Promise<{overrides: Record<string,string>}|null>} null = cancelled
  */
-export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, unavailableNote, input = process.stdin }) {
+export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, unavailableNote, byok = false, input = process.stdin }) {
   if (!input.isTTY) return null;
   if (rl) rl.pause();
 
@@ -186,7 +178,7 @@ export async function pickModelOverridesForm({ rl, roles, catalog, fallbackIds, 
         for (const item of visible) {
           const marker = item.id === (list[cursor]?.id) ? c.brand('▸') : ' ';
           const label = valueLabel(item.id, item.meta);
-          const badge = item.meta ? creditBadge(item.meta) : '';
+          const badge = item.meta ? modelCreditBadge(item.meta, byok) : '';
           const pills = capabilityPills(item.meta);
           const cur = item.isCurrent ? c.green(' (current)') : '';
           const descPart = item.id !== DEFAULT_SENTINEL ? ` ${valueDescription(item.id, item.meta)}` : '';

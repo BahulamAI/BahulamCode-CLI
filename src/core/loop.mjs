@@ -127,6 +127,8 @@ async function _callGateway({ session, messages }) {
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
+            'X-Product': 'bahulam',
+            'X-Bahulam-Op-Class': 'coding',
             'X-Bahulam-User-Id': process.env.BAHULAM_USER_ID || 'cli-user',
             'X-Bahulam-Tier': process.env.BAHULAM_TIER || 'free',
         },

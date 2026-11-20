@@ -30,7 +30,7 @@ let _cache = null;
 // here so downstream consumers can treat both sources identically.
 function normalizeSnapshotRow(row) {
   const id = row.value || row.id;
-  if (!id) return null;
+  if (!id || row.active === false) return null;
   const category = row.category || row.modelCategory || row.model_category || 'text';
   return {
     id,

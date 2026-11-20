@@ -19,6 +19,7 @@ export function normalizeUsage(usage) {
     const promptDetails = usage.prompt_tokens_details || {};
 
     return {
+        ...(Number.isFinite(usage.cost) && usage.cost >= 0 ? { cost: usage.cost } : {}),
         input_tokens: input,
         output_tokens: output,
         cache_read_input_tokens: usage.cache_read_input_tokens

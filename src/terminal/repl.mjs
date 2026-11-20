@@ -23,7 +23,7 @@ import { glyph, sectionHeading, inputHints } from '../ui/chrome.mjs';
 import { execSync as _execSync } from 'node:child_process';
 import { Writable as _WritableStream } from 'node:stream';
 import { c, progressBar, spinner, inPlace, renderMarkdown, renderDiff, formatElapsed, formatCost, stripAnsi } from './ansi.mjs';
-import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits } from '../core/pricing.mjs';
+import { calculateCost, formatCostValue, formatTokens, costToCredits, formatCredits, isSubscriptionIncluded } from '../core/pricing.mjs';
 import { BahulamStreamClient, EVENT_TYPES } from '../core/stream-client.mjs';
 import { LocalAgent, toOpenAIMessage } from '../core/local-agent.mjs';
 import { AgentHistoryTurnBuilder } from '../core/agent-history.mjs';
@@ -99,7 +99,7 @@ import {
   modelDisplayCategory,
   modelMatchesCatalogFilter,
   normalizeCatalogCategory,
-  isFreeModel,
+  modelCreditBadge,
 } from './model-catalog-display.mjs';
 import { loadEffectivePolicy, formatPolicySourceRows } from '../core/policy-resolver.mjs';
 import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
@@ -550,16 +550,9 @@ function persistSessionModelState(ctx) {
   }
 }
 
-function modelCreditBadge(model) {
-  const usd = Number(model?.input_cost_usd_per_m);
-  if (!Number.isFinite(usd) || usd <= 0) return '';
-  const credits = usd * 200; // credits = provider cost × 2 × 100/USD
-  return `~${credits < 10 ? credits.toFixed(1) : String(Math.round(credits))} cr/M in`;
-}
-
 function printModelCatalogRows(rows) {
   for (const m of rows) {
-    const badge = modelCreditBadge(m);
+    const badge = modelCreditBadge(m, isByokModelRoute());
     const category = formatCategoryBadge(modelDisplayCategory(m));
     const price = badge ? c.dim(badge.padEnd(16)) : ''.padEnd(16);
     process.stderr.write(`  ${c.brand(String(m.id || '').padEnd(38))} ${price} ${category}\n`);
@@ -740,7 +733,8 @@ async function openModelForm(ctx) {
     });
     const rustTuiModelLabel = (row) => {
       const badges = [];
-      if (isFreeModel(row)) badges.push('free');
+      const price = modelCreditBadge(row, isByokModelRoute());
+      if (price) badges.push(price);
       if (row.supports_tools) badges.push('tools');
       if (row.supports_reasoning) badges.push('reasoning');
       if (row.harness_validated) badges.push('curated');
@@ -792,6 +786,7 @@ async function openModelForm(ctx) {
     rl: ctx?._rl || null,
     roles,
     catalog: catalog || [],
+    byok: isByokModelRoute(),
     fallbackIds,
     unavailableNote: catalog ? null : (_modelCatalogError || 'backend unreachable'),
   });
@@ -3093,6 +3088,10 @@ function renderEvent(event) {
 
         // Model-aware cost calculation
         const costResult = calculateCost(usage);
+        if (!session.isByok && typeof usage.credits_charged !== 'number') {
+          const billable = costResult.breakdown.filter(row => !isSubscriptionIncluded(row.model));
+          session.estimatedCredits += costToCredits(billable.reduce((sum, row) => sum + row.cost, 0));
+        }
         turnCost = costResult.total;
         session.totalCost += costResult.total;
         session.costAccurate = costResult.accurate;
@@ -4096,7 +4095,7 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
       if (session.isByok) {
         process.stderr.write(`  ${c.gray('Billing:')}   ${c.green('BYOK')} ${c.dim('(provider-billed)')}\n`);
       } else {
-        process.stderr.write(`  ${c.gray('Credits:')}   ${formatCredits(costToCredits(session.totalCost))}${session.costAccurate ? '' : c.dim(' (est)')}\n`);
+        process.stderr.write(`  ${c.gray('Credits:')}   ${formatCredits(session.creditsCharged + session.estimatedCredits)}${!session.estimatedCredits ? '' : c.dim(' (est)')}\n`);
       }
       process.stderr.write(`  ${c.gray('Elapsed:')}  ${formatElapsed(session.startTime)}\n\n`);
       return;
@@ -4108,10 +4107,10 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
         return;
       }
       // Prefer server-authoritative numbers when available.
-      const used = session.creditsCharged || 0;
+      const used = session.creditsCharged + session.estimatedCredits;
       const usedLabel = formatCredits(used);
-      process.stderr.write(`\n  ${c.bold('Session Credits')}  ${c.brand(usedLabel)}`);
-      if (used > 0 && !session.creditsCharged) process.stderr.write(`  ${c.yellow('(estimated)')}`);
+      process.stderr.write(`\n  ${c.bold(session.estimatedCredits ? 'Session credits (estimated)' : 'Session credits')}  ${c.brand(usedLabel)}`);
+      process.stderr.write(`\n  ${c.dim('Paid inference')}  1.10× provider cost · 10% markup`);
       process.stderr.write('\n');
       if (session.subscriptionTier && typeof session.creditsTotal === 'number') {
         const remaining = formatCredits(session.creditsTotal);
@@ -4133,7 +4132,7 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
           const modelLabel = b.model === 'unknown' ? c.yellow('unknown model') : b.model;
           const roleTag = b.role && b.role !== 'unknown' ? ` ${c.dim(`(${b.role})`)}` : '';
           const cacheTokens = (b.cache_read_tokens || 0) + (b.cache_creation_tokens || 0);
-          const costStr = b.free ? c.green('free') : formatCredits(costToCredits(b.cost));
+          const costStr = isSubscriptionIncluded(b.model) ? c.green('included') : b.free ? '0 cr' : formatCredits(costToCredits(b.cost));
 
           process.stderr.write(
             `  ${(modelLabel + roleTag).padEnd(36)}` +
@@ -4148,11 +4147,11 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
       }
 
       process.stderr.write(
-        `  ${c.bold('Total'.padEnd(36))}` +
+        `  ${c.bold('Session total'.padEnd(36))}` +
         `${formatTokens(session.inputTokens).padStart(10)}` +
         `${formatTokens(session.outputTokens).padStart(10)}` +
         `${''.padStart(10)}` +
-        `${formatCredits(costToCredits(session.totalCost)).padStart(10)}\n`
+        `${usedLabel.padStart(10)}\n`
       );
       process.stderr.write(`  ${c.dim(`Turns: ${session.turns}  Duration: ${formatElapsed(session.startTime)}`)}\n\n`);
       return;
@@ -4974,6 +4973,7 @@ export async function startTerminalRepl() {
       creditsPurchased: preserved.creditsPurchased,
       creditsLimit: preserved.creditsLimit,
       creditsCharged: 0,
+      estimatedCredits: 0,
       creditsLowWarned: false,
       rateLimit: preserved.rateLimit,
       msgsLowWarned: false,
