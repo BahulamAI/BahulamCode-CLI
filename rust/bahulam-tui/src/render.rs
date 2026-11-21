@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 struct Palette {
     accent: Color,
     text: Color,
+    assistant_text: Color,
     heading: Color,
     emphasis: Color,
     bullet_emphasis: Color,
@@ -32,6 +33,7 @@ struct Palette {
     info: Color,
     details: Color,
     tool: Color,
+    tool_argument: Color,
     error: Color,
     success: Color,
     warning: Color,
@@ -113,6 +115,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         return Palette {
             accent: Color::Reset,
             text: Color::Reset,
+            assistant_text: Color::Reset,
             heading: Color::Reset,
             emphasis: Color::Reset,
             bullet_emphasis: Color::Reset,
@@ -125,6 +128,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             info: Color::Reset,
             details: Color::Reset,
             tool: Color::Reset,
+            tool_argument: Color::Reset,
             error: Color::Reset,
             success: Color::Reset,
             warning: Color::Reset,
@@ -137,6 +141,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "light" => Palette {
             accent: Color::Rgb(49, 91, 154),
             text: Color::Rgb(32, 42, 56),
+            assistant_text: Color::Rgb(32, 42, 56),
             heading: Color::Rgb(0, 105, 180),
             emphasis: Color::Rgb(0, 128, 0),
             bullet_emphasis: Color::Rgb(175, 85, 0),
@@ -149,6 +154,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             info: Color::Rgb(49, 91, 154),
             details: Color::Rgb(92, 101, 114),
             tool: Color::Rgb(48, 59, 160),
+            tool_argument: Color::Rgb(89, 89, 89),
             error: Color::Rgb(173, 54, 63),
             success: Color::Rgb(35, 114, 76),
             warning: Color::Rgb(132, 82, 0),
@@ -165,6 +171,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "high-contrast" => Palette {
             accent: Color::Cyan,
             text: Color::White,
+            assistant_text: Color::White,
             heading: Color::LightBlue,
             emphasis: Color::LightGreen,
             bullet_emphasis: Color::LightYellow,
@@ -177,6 +184,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             info: Color::LightBlue,
             details: Color::Gray,
             tool: Color::LightBlue,
+            tool_argument: Color::Gray,
             error: Color::Red,
             success: Color::Green,
             warning: Color::Yellow,
@@ -193,6 +201,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         "ansi" => Palette {
             accent: Color::Cyan,
             text: Color::Reset,
+            assistant_text: Color::Reset,
             heading: Color::LightBlue,
             emphasis: Color::LightGreen,
             bullet_emphasis: Color::LightYellow,
@@ -205,6 +214,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             info: Color::LightBlue,
             details: Color::Gray,
             tool: Color::LightBlue,
+            tool_argument: Color::DarkGray,
             error: Color::Red,
             success: Color::Green,
             warning: Color::Yellow,
@@ -221,6 +231,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         _ => Palette {
             accent: Color::Rgb(120, 166, 232),
             text: Color::Rgb(215, 222, 232),
+            assistant_text: Color::Rgb(255, 255, 255),
             heading: Color::Rgb(0, 191, 255),
             emphasis: Color::Rgb(50, 205, 50),
             bullet_emphasis: Color::Rgb(255, 159, 28),
@@ -233,6 +244,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
             info: Color::Rgb(128, 216, 255),
             details: Color::Rgb(206, 214, 224),
             tool: Color::Rgb(148, 175, 255),
+            tool_argument: Color::Rgb(142, 142, 142),
             error: Color::Rgb(255, 133, 151),
             success: Color::Rgb(112, 255, 173),
             warning: Color::Rgb(255, 221, 128),
@@ -290,6 +302,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
     for color in [
         &mut p.accent,
         &mut p.text,
+        &mut p.assistant_text,
         &mut p.heading,
         &mut p.emphasis,
         &mut p.bullet_emphasis,
@@ -302,6 +315,7 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
         &mut p.info,
         &mut p.details,
         &mut p.tool,
+        &mut p.tool_argument,
         &mut p.error,
         &mut p.success,
         &mut p.warning,
@@ -315,6 +329,15 @@ fn resolved_palette(theme: &str, level: &str, tokens: &serde_json::Value) -> Pal
     }
     if level == "ansi16" {
         p.input_bg = Color::Reset;
+        p.tool_argument = if theme == "high-contrast" {
+            Color::Gray
+        } else {
+            Color::DarkGray
+        };
+        p.assistant_text = Color::White;
+    }
+    if matches!(theme, "light" | "ansi") {
+        p.assistant_text = p.text;
     }
     p
 }
@@ -419,6 +442,7 @@ mod palette_tests {
                 for color in [
                     p.accent,
                     p.text,
+                    p.assistant_text,
                     p.heading,
                     p.emphasis,
                     p.bullet_emphasis,
@@ -431,6 +455,7 @@ mod palette_tests {
                     p.info,
                     p.details,
                     p.tool,
+                    p.tool_argument,
                     p.error,
                     p.success,
                     p.warning,
@@ -2137,7 +2162,10 @@ fn grouped_lines(
                 format!("{} ×{}  ", cards[0].tool_name, cards.len()),
                 Style::default().fg(p.tool),
             ),
-            Span::styled(format!("{labels}{more}"), Style::default().fg(p.text)),
+            Span::styled(
+                format!("{labels}{more}"),
+                Style::default().fg(p.tool_argument),
+            ),
         ]),
         Line::styled(
             "   ＋ Show details · Click / Enter",
@@ -2616,8 +2644,13 @@ fn card_lines_with_preview(
             ));
         }
     }
+    let argument_color = if card.tool_name.is_empty() {
+        p.muted
+    } else {
+        p.tool_argument
+    };
     if !primary.is_empty() {
-        heading.push(Span::styled(primary, Style::default().fg(p.muted)));
+        heading.push(Span::styled(primary, Style::default().fg(argument_color)));
     }
     heading.push(Span::raw(" ".repeat(gap)));
     if !metadata.is_empty() {
@@ -2770,8 +2803,16 @@ fn card_lines_with_preview(
     };
     let markdown_lines: Vec<&str> = body_lines.iter().map(String::as_str).collect();
     let is_diff = card.title == "Diff" || card.has_edit_diff;
-    let body_palette = if foldable && !is_expanded && !is_diff {
-        Palette { text: p.muted, ..p }
+    let body_palette = if is_assistant {
+        Palette {
+            text: p.assistant_text,
+            ..p
+        }
+    } else if foldable && !is_expanded && !is_diff {
+        Palette {
+            text: argument_color,
+            ..p
+        }
     } else {
         p
     };
@@ -2785,7 +2826,7 @@ fn card_lines_with_preview(
         let label = rows.next().map(|line| {
             Line::styled(
                 format!("   {}", safe_text(line)),
-                Style::default().fg(p.muted),
+                Style::default().fg(p.tool_argument),
             )
         });
         label
