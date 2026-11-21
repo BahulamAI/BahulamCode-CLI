@@ -1,6 +1,6 @@
 [package]
 name = "bahulam-tui"
-version = "0.2.6-beta.3"
+version = "0.2.6"
 edition = "2021"
 rust-version = "1.95"
 publish = false
