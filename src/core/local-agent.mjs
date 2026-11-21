@@ -889,8 +889,23 @@ export class LocalAgent {
 
     _buildToolDefs() {
         if (!this.extraToolSchemas.length) return TOOL_SCHEMAS;
+        // Dedupe extras against the core schemas AND against each other —
+        // not just against the core 16. With enough plugins registered
+        // (this isn't rare: research/azure/browser/render/document-authoring
+        // plugins all ship their own tool sets), two different plugins can
+        // easily register the same name (e.g. two document-authoring
+        // plugins both defining create_document/get_document/ingest_pdf).
+        // Providers mostly tolerate a duplicate name silently; Claude does
+        // not — it rejects the whole request with "tools: Tool names must
+        // be unique", which only ever showed up for Claude models and
+        // looked like a provider-specific quirk until traced to this.
         const names = new Set(TOOL_SCHEMAS.map(t => t.name));
-        const extras = this.extraToolSchemas.filter(t => t?.name && !names.has(t.name));
+        const extras = [];
+        for (const t of this.extraToolSchemas) {
+            if (!t?.name || names.has(t.name)) continue;
+            names.add(t.name);
+            extras.push(t);
+        }
         return extras.length ? [...TOOL_SCHEMAS, ...extras] : TOOL_SCHEMAS;
     }
 
