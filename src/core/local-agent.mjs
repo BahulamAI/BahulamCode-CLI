@@ -25,6 +25,7 @@ import {
     estimateMessagesTokens,
     resolveContextBudget,
 } from './context-reduction.mjs';
+import { providerErrorMessage, gatewayFailure, completionFailure } from './provider-error.mjs';
 import { normalizeUsage } from './usage-normalization.mjs';
 import { fetchWithRetry, RequestError, requestErrorData } from './request-retry.mjs';
 
@@ -460,7 +461,7 @@ export class LocalAgent {
                     type: 'error',
                     data: {
                         ...errorData,
-                        message: `LLM API error: ${errorData.message}`,
+                        message: errorData.message,
                         fatal: true,
                     },
                 };
@@ -576,6 +577,7 @@ export class LocalAgent {
                     data: {
                         summary: 'Done (local)',
                         changes: toolCount,
+                        turns: i + 1,
                         duration_s: duration,
                         usage: _buildLocalUsageEnvelope(usageTotals),
                     },
@@ -591,6 +593,7 @@ export class LocalAgent {
             data: {
                 summary: 'Aborted (max turns)',
                 changes: toolCount,
+                turns: this.maxTurns,
                 duration_s: (Date.now() - startTime) / 1000,
                 usage: _buildLocalUsageEnvelope(usageTotals),
             },
@@ -655,14 +658,17 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`, {
+            const failure = gatewayFailure(resp.status, text);
+            throw new RequestError(failure.message, {
                 status: resp.status,
-                code: resp.status === 401 || resp.status === 403 ? 'gateway_authentication_error' : `gateway_http_${resp.status}`,
+                code: failure.code,
                 retryable: false,
             });
         }
 
         const data = await resp.json();
+        const failure = completionFailure(data);
+        if (failure) throw new RequestError(failure.message, { status: failure.status });
         const message = data.choices?.[0]?.message || {};
         const content = [];
         if (message.content) content.push({ type: 'text', text: message.content });
@@ -710,7 +716,7 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`Claude API ${resp.status}: ${text.slice(0, 200)}`, {
+            throw new RequestError(providerErrorMessage(resp.status, text), {
                 status: resp.status,
                 code: `anthropic_http_${resp.status}`,
                 retryable: false,
@@ -769,13 +775,15 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`, {
+            throw new RequestError(providerErrorMessage(resp.status, text), {
                 status: resp.status,
                 code: `openrouter_http_${resp.status}`,
                 retryable: false,
             });
         }
         const data = await resp.json();
+        const failure = completionFailure(data);
+        if (failure) throw new RequestError(failure.message, { status: failure.status });
         const choice = data.choices?.[0];
         const content = [];
         if (choice?.message?.content) content.push({ type: 'text', text: choice.message.content });
@@ -887,8 +895,23 @@ export class LocalAgent {
 
     _buildToolDefs() {
         if (!this.extraToolSchemas.length) return TOOL_SCHEMAS;
+        // Dedupe extras against the core schemas AND against each other —
+        // not just against the core 16. With enough plugins registered
+        // (this isn't rare: research/azure/browser/render/document-authoring
+        // plugins all ship their own tool sets), two different plugins can
+        // easily register the same name (e.g. two document-authoring
+        // plugins both defining create_document/get_document/ingest_pdf).
+        // Providers mostly tolerate a duplicate name silently; Claude does
+        // not — it rejects the whole request with "tools: Tool names must
+        // be unique", which only ever showed up for Claude models and
+        // looked like a provider-specific quirk until traced to this.
         const names = new Set(TOOL_SCHEMAS.map(t => t.name));
-        const extras = this.extraToolSchemas.filter(t => t?.name && !names.has(t.name));
+        const extras = [];
+        for (const t of this.extraToolSchemas) {
+            if (!t?.name || names.has(t.name)) continue;
+            names.add(t.name);
+            extras.push(t);
+        }
         return extras.length ? [...TOOL_SCHEMAS, ...extras] : TOOL_SCHEMAS;
     }
 

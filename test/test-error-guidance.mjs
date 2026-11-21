@@ -145,5 +145,15 @@ test('message window guidance explains wait or upgrade decision', () => {
   assert.ok(guidance.lines.some((line) => line.includes('bahulam.ai/pricing')));
 });
 
+test('legacy provider-budget diagnostics replay as one actionable message', () => {
+  const report = formatAgentErrorGuidance({
+    message: 'Error code: 402 - You requested up to 900 tokens, but can only afford 800. Private management link',
+  });
+  assert.match(report.title, /900 output tokens/);
+  assert.match(report.title, /covers 800/);
+  assert.doesNotMatch(JSON.stringify(report), /Private management link/);
+  assert.deepStrictEqual(report.lines, []);
+});
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

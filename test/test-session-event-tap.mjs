@@ -65,11 +65,15 @@ tapSseEvent({ type: 'summarize_progress', data: {
 tapSseEvent({ type: 'summarize', data: {
   phase: 'mid_turn', collapsed_messages: 8, kept_recent: 2, before_tokens: 442572, threshold: 138000,
 } }, { sessionId });
+tapSseEvent({ type: 'error', data: { message: 'Error code: 402 - You requested up to 919225 tokens, but can only afford 846169. Visit https://openrouter.ai/workspaces/example/keys/private-key-id' } }, { sessionId });
 tapSseEvent({ type: 'unmapped_event', data: {} }, { sessionId });
 await closeActiveEventLog();
 
 const events = await readAllEvents({ sessionId });
-assert(events.length === 7, `7 events written (got ${events.length})`);
+assert(events.length === 8, `8 events written (got ${events.length})`);
+const failure = events.at(-1).data;
+assert(failure.title === 'Error' && /919225.*846169/.test(failure.cause), 'Rust error notice keeps the explanation in its body');
+assert(!JSON.stringify(failure).includes('private-key-id'), 'event log omits the provider key URL');
 assert(events[0].type === 'tool_requested' && events[0].data.name === 'bash', 'tool_request → tool_requested with projected data');
 assert(events[0].data.tool_id === 'tc_1', 'tool_id projected from tool_call_id');
 assert(events[1].type === 'tool_finished' && events[1].data.summary === 'file1\nfile2', 'tool_result projection');

@@ -1,4 +1,5 @@
 import { normalizeBillingBrandCopy } from './rate-limit-display.mjs';
+import { isProviderDiagnostic, safeProviderEvent } from './provider-error.mjs';
 
 function compact(value) {
   return String(value || '').trim();
@@ -216,6 +217,7 @@ export function normalizeGatewayProvider(data = {}) {
 }
 
 export function formatAgentErrorGuidance(data = {}) {
+  if (isProviderDiagnostic(data.message || data.error || data)) data = safeProviderEvent(data);
   const message = normalizeBillingBrandCopy(compact(data.message || data.error || 'Agent execution failed.'));
   const code = compact(data.code);
   const phase = compact(data.phase);
@@ -226,6 +228,10 @@ export function formatAgentErrorGuidance(data = {}) {
   const retryLabel = retryAfter ? formatRetryAfterLabel(retryAfter) : '';
   const retryable = data.retryable === true;
   const pricingUrl = normalizeBillingBrandCopy(compact(data.pricing_url));
+
+  if ((data.http_status === 402 || data.status === 402) && !['credit_balance_exhausted', 'credits_exhausted'].includes(code)) {
+    return { title: message, lines: [], meta: buildMeta({ code, phase, provider: providerMeta, taskId }) };
+  }
 
   if (isBedrockMissingCredentials(data)) {
     return {
@@ -241,7 +247,7 @@ export function formatAgentErrorGuidance(data = {}) {
 
   const lines = [];
   const providerGuidance = PROVIDER_GUIDANCE[provider];
-  if (code === 'credit_balance_exhausted') {
+  if (code === 'credit_balance_exhausted' || code === 'credits_exhausted') {
     lines.push('Add credits or upgrade your plan to continue using platform-hosted models.');
     lines.push('If you have your own provider key, switch to BYOK in Settings to keep working without Bahulam credit charges.');
     if (pricingUrl) lines.push(`Open ${pricingUrl} to top up or compare plans.`);

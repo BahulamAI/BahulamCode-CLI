@@ -38,3 +38,19 @@ try {
 }
 
 console.log('test-request-retry.mjs: passed');
+
+const { safeProviderEvent, providerErrorMessage, gatewayFailure, completionFailure } = await import('../src/core/provider-error.mjs');
+const { formatAgentErrorGuidance } = await import('../src/core/error-guidance.mjs');
+const privateUrl = 'https://openrouter.ai/workspaces/example/keys/private-key-id';
+const legacy = `Error code: 402 - You requested up to 919225 tokens, but can only afford 846169. Visit ${privateUrl}`;
+const sanitized = safeProviderEvent({ error: legacy, message: legacy, details: { raw: privateUrl }, fatal: true });
+assert.equal(sanitized.http_status, 402);
+assert.match(sanitized.message, /919225.*846169/);
+assert.equal(sanitized.fatal, true);
+assert.ok(!JSON.stringify(sanitized).includes('private-key-id'));
+assert.equal(providerErrorMessage(402, legacy), sanitized.message);
+assert.deepEqual(formatAgentErrorGuidance(sanitized).lines, []);
+assert.equal(gatewayFailure(402, '{"detail":{"code":"credits_exhausted"}}').code, 'credits_exhausted');
+assert.ok(!providerErrorMessage(400, '<html>private</html>').includes('private'));
+assert.deepEqual(completionFailure({ choices: [{ error: { code: 402, message: legacy } }] }),
+    { status: 402, message: sanitized.message });

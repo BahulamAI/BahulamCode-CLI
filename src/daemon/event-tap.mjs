@@ -17,6 +17,7 @@
  *     the socket server, not the SSE stream).
  */
 
+import { safeProviderEvent } from '../core/provider-error.mjs';
 import { displayPayloadStore } from './display-payload-store.mjs';
 import { createEventLog } from '../core/event-log.mjs';
 import { rustDiffDisplay, rustToolEditDisplay } from './rust-edit-preview.mjs';
@@ -342,16 +343,20 @@ function project(type, src, identity) {
         return { ...notice, title: src.strategy === 'local_distillation' ? 'Context condensed locally' : 'Context summarized', cause:
           `${phase} · ${src.collapsed_messages ?? '?'} older messages condensed · ${src.kept_recent ?? '?'} retained · ${src.before_tokens ?? '?'} / ${src.threshold ?? '?'} tokens` };
       }
+      if (source === 'error') {
+        const failure = safeProviderEvent(src);
+        return { level: 'error', title: 'Error', cause: asText(failure.message || failure.error), source };
+      }
       const progress = ['status', 'phase_start', 'phase_update', 'phase_summary', 'sub_agent_tool', 'sub_agent_tool_result'];
       const title = source === 'delegation' ? `Delegation ${src.from || 'main'} → ${src.to || 'agent'}` :
         source.replaceAll('_', ' ');
       const description = asText(src.message ?? src.summary ?? src.reason ?? src.error ?? src.output ??
         src.phase ?? src.stage_name ?? src.path ?? src.goal ?? src.instruction ?? src.text ?? src.tool ?? src.name);
-      return { level: source === 'error' || source === 'reconnect_failed' || src.success === false || src.error ? 'error' : 'info',
-        title: ['error', 'reconnecting', 'reconnected', 'reconnect_failed', 'stagnation_detected', 'stagnation'].includes(source)
+      return { level: source === 'reconnect_failed' || src.success === false || src.error ? 'error' : 'info',
+        title: ['reconnecting', 'reconnected', 'reconnect_failed', 'stagnation_detected', 'stagnation'].includes(source)
           ? asText(src.message || src.error) || title : title,
         cause: asText(src.cause) || description,
-        next_step: src.next_step || (source === 'error' || source === 'reconnect_failed'
+        next_step: src.next_step || (source === 'reconnect_failed'
           ? 'Use /resume to continue or inspect the session log.' : undefined),
         retry: src.retry, source,
         progress_key: progress.includes(source) && src.success !== false && !src.error ? (source.startsWith('phase_') ? 'phase' : source.startsWith('sub_agent_tool') ? 'agent-tool' : source) : undefined,
