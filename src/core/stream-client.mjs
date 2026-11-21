@@ -13,6 +13,7 @@ import { llmToolResultContent, sendCallback, sendSkippedCallback, sendApprovalDe
 import { ApprovalManager } from './approval.mjs';
 import { upsertFacts } from './memory-disk.mjs';
 import { normalizeBillingBrandCopy, quotaErrorDetail, rateLimitErrorMessage } from './rate-limit-display.mjs';
+import { safeProviderEvent, gatewayFailure } from './provider-error.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 
 export const EVENT_TYPES = Object.freeze({
@@ -530,7 +531,9 @@ export class BahulamStreamClient {
         }
         if (!response.ok) {
             const text = await response.text().catch(() => 'Unknown error');
-            yield { type: EVENT_TYPES.ERROR, data: { message: `Backend error ${response.status}: ${text}`, request_id: responseRequestId, fatal: true } };
+            const failure = response.status === 402 ? gatewayFailure(402, text)
+                : { message: `Backend request failed (HTTP ${response.status}).` };
+            yield { type: EVENT_TYPES.ERROR, data: { ...failure, http_status: response.status, request_id: responseRequestId, fatal: true } };
             return;
         }
 
@@ -613,6 +616,7 @@ export class BahulamStreamClient {
     }
 
     async *_handleStreamEvent({ event, data, id = null, retry = null }) {
+        if (event === EVENT_TYPES.ERROR) data = safeProviderEvent(data);
         const rendered = { type: event, data, event_id: id, retry };
 
         // Capture session_id from backend (first turn creates it, subsequent turns reuse)

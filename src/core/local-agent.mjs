@@ -25,6 +25,7 @@ import {
     estimateMessagesTokens,
     resolveContextBudget,
 } from './context-reduction.mjs';
+import { providerErrorMessage, gatewayFailure, completionFailure } from './provider-error.mjs';
 import { normalizeUsage } from './usage-normalization.mjs';
 import { fetchWithRetry, RequestError, requestErrorData } from './request-retry.mjs';
 
@@ -460,7 +461,7 @@ export class LocalAgent {
                     type: 'error',
                     data: {
                         ...errorData,
-                        message: `LLM API error: ${errorData.message}`,
+                        message: errorData.message,
                         fatal: true,
                     },
                 };
@@ -657,14 +658,17 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`Bahulam Gateway ${resp.status}: ${text.slice(0, 300)}`, {
+            const failure = gatewayFailure(resp.status, text);
+            throw new RequestError(failure.message, {
                 status: resp.status,
-                code: resp.status === 401 || resp.status === 403 ? 'gateway_authentication_error' : `gateway_http_${resp.status}`,
+                code: failure.code,
                 retryable: false,
             });
         }
 
         const data = await resp.json();
+        const failure = completionFailure(data);
+        if (failure) throw new RequestError(failure.message, { status: failure.status });
         const message = data.choices?.[0]?.message || {};
         const content = [];
         if (message.content) content.push({ type: 'text', text: message.content });
@@ -712,7 +716,7 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`Claude API ${resp.status}: ${text.slice(0, 200)}`, {
+            throw new RequestError(providerErrorMessage(resp.status, text), {
                 status: resp.status,
                 code: `anthropic_http_${resp.status}`,
                 retryable: false,
@@ -771,13 +775,15 @@ export class LocalAgent {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
-            throw new RequestError(`OpenRouter API ${resp.status}: ${text.slice(0, 200)}`, {
+            throw new RequestError(providerErrorMessage(resp.status, text), {
                 status: resp.status,
                 code: `openrouter_http_${resp.status}`,
                 retryable: false,
             });
         }
         const data = await resp.json();
+        const failure = completionFailure(data);
+        if (failure) throw new RequestError(failure.message, { status: failure.status });
         const choice = data.choices?.[0];
         const content = [];
         if (choice?.message?.content) content.push({ type: 'text', text: choice.message.content });
