@@ -11,10 +11,15 @@ npm test          # 33 unit tests, no auth required, ~30s
 
 Node 18 or later. No external services or API keys needed to run unit tests.
 
-## Branch naming
+## Branches and pull requests
 
-- Bug fixes: `fix/{short-description}` — e.g. `fix/noop-edit-success`, `fix/resume-hydration-formatting`
-- Features: `{number}_{short-description}` — e.g. `217_cli_disk_memory`, `222_ui_fixes`
+Start each change from the latest `main` and open a pull request back to `main`.
+
+| Change | Example branch |
+| --- | --- |
+| Bug fix | `fix/resume-history` |
+| Feature | `feature/session-search` |
+| Documentation | `docs/cli-quickstart` |
 
 ## Code style
 
