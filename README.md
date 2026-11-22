@@ -1,259 +1,76 @@
-# @bahulam/code
+# Bahulam Code
 
-**Bahulam Code** is Bahulam's AI coding agent for terminal-first software work.
-It inspects a repo, plans changes, runs tools, asks for human approval, resumes
-prior sessions, and keeps local project context in `~/.bahulam/`.
+Bahulam Code is a terminal coding agent that works in your repository. Ask it to trace a code path, fix a failing test, or plan a change across packages. Follow its file reads, review its edits as diffs, and see which checks it ran. The full-screen Rust terminal keeps the plan pinned below the conversation and shows which tool each sub-agent is using in a side panel.
 
-- 65.6% SWE-bench Verified
-- CLI-first, reliability-first
-- Sub-agents, skills, workflows, and MCP support
-- Bring your own model (40+ supported)
+[Getting started](https://docs.bahulam.ai/getting-started) · [Command reference](https://docs.bahulam.ai/code/commands) · [npm package](https://www.npmjs.com/package/@bahulam/code) · [Benchmark results](https://github.com/BahulamAI/bahulam-benchmarks)
 
-## Rust terminal
+## Install and sign in
 
-Run `npx --yes @bahulam/code@latest` in an interactive terminal. The package
-ships Rust runtimes for macOS (Apple silicon and Intel), Linux with glibc
-(ARM64 and x64), and Windows x64. It starts in Rust inline view when the
-packaged runtime runs on your system.
-Use `/tui fullscreen` for the full-screen view or `/tui default` to return
-to Node in the same session. Set `BAHULAM_TUI=node` to start in Node.
-Other platforms and Linux installations with incompatible system libraries
-automatically start in Node.
+You need Node.js 18 or newer and npm. From the repository you want to work in, run:
 
-## Appearance
-
-The terminal and local workspace follow Bahulam's paper, ink, and indigo visual
-language. The browser workspace stays light; terminal colors adapt to the
-advertised background (`COLORFGBG`) and support truecolor, 256-color, basic ANSI, and
-plain output.
-
-Set `BAHULAM_THEME=light` or `BAHULAM_THEME=dark` if your terminal does not advertise its
-background. Unadvertised backgrounds default to dark. `NO_COLOR=1` disables color;
-`BAHULAM_PLAIN=1` also uses the ASCII startup banner. No terminal background is changed.
-
-The compact input dock grows for multiline input. During approval, it stays in
-review mode until you decide; use **PgUp/PgDn** for long command details, arrow
-keys to select, **Enter** to confirm, or **Esc** to cancel. Very small windows use
-the transcript fallback. Approval scopes and keyboard shortcuts are unchanged.
-
-For terminal visual checks, run `npm run test:design:terminal` with optional
-Playwright and xterm installations. `PLAYWRIGHT_MODULE` and `XTERM_MODULE` can point
-to existing installations; `BROWSER_EXECUTABLE` selects a browser. The test checks
-light/dark docks, streaming, paging, and resize without connecting to a backend.
-
-### Instructions, skills, and follow-ups
-
-Use `AGENTS.md` for directory-specific rules. Bahulam reads global instructions from
-`~/.bahulam/AGENTS.md` (or `$BAHULAM_HOME/AGENTS.md`), then ancestor files down to
-the launch directory. The closest directory has precedence. Use `/status context`
-to inspect the files collected for the turn.
-
-Place portable skills in `.agents/skills/<name>/SKILL.md` in a repository, or in
-`~/.agents/skills/<name>/SKILL.md` for your account. Each file starts with YAML
-frontmatter containing its name and description. Bahulam advertises the catalog
-to the agent and provides instructions and referenced files on demand. Use
-`/skills list` and `/skills view <name>` to inspect the resolved bundle.
-
-While a turn is running, type a correction and press Enter. Bahulam saves it and
-tries to deliver it at the next agent boundary. On ordinary completion, an
-undelivered correction runs as a new turn. After interruption, review `/history`
-for held follow-ups.
-
-### Local-first startup and resume
-
-Startup mounts one transcript writer before printing the banner. Earlier shell
-output stays in scrollback; connection checks run after the input prompt is ready.
-Project paths restore without filesystem fingerprint scans, runtime probes or
-search-index builds. The first search/overview initializes its index, and
-concurrent requests share a single build.
-
-Fresh starts show the original ASCII logo, infinity motif, abundance tagline and
-version, with a narrow-terminal fallback. Successful `--resume` starts skip the
-intro and new-session hints, showing a resume summary and two recent messages; in-session
-resume previews six, without reducing the selected agent history mode. `/history` shows more. Summary/tail modes reuse local checkpoints
-and local recaps; `/compact` remains the explicit backend-summary operation.
-Direct `/resume <id>` filters sessions before parsing their metadata.
-
-`npm run test:design:startup` checks populated terminals, narrow layouts, Unicode,
-late output and draft preservation with the browser environment described above.
-
-Sign-in is shared across terminals using the same `BAHULAM_HOME` (default
-`~/.bahulam`), regardless of project directory. Open sessions check shared
-credentials every two seconds, refreshing the profile only when credentials
-change; `/whoami` explicitly verifies the account. Settings saves reread shared
-config so an older session cannot restore its cached token after login/logout
-elsewhere. An explicit `B0_TOKEN` overrides the saved login; a different
-`BAHULAM_HOME` intentionally uses a separate credential store. Keep the backend
-environment consistent between terminals as well.
-
-Follow-ups typed while the agent is running are saved locally before sending.
-An accepted instruction is shown as waiting for delivery; only a delivery
-acknowledgement marks it delivered. After normal completion, undelivered
-instructions run as separate turns in submission order. They remain separate
-user messages, not text appended to a tool result. `/resume` recovers safely
-queued work. After cancellation, disconnection, or uncertain delivery, review
-`/history` before resubmitting; the CLI does not automatically retry that work.
-
-### Change and command cards
-
-Quiet dividers separate user messages, assistant replies, and tool activity.
-Consecutive tools stay grouped, streamed text does not gain a divider per chunk,
-and the assistant label repeats when a reply resumes after tools or other output.
-Set `BAHULAM_BLOCK_SEPARATOR=space` for whitespace only, `dotted` for dotted rules,
-or `off` to disable separators; the default is `subtle`.
-Body text stays neutral, with teal code/strings, lavender keywords/links, and
-soft amber numbers and verification labels. Green remains for successful outcomes
-and additions. Light themes use deeper versions of these accents for contrast.
-`npm run test:design:transcript` checks streaming section boundaries and accent
-colors in real terminals, with and without the fixed input dock.
-
-Live file changes, expanded details, and Markdown diffs share old/new line-number
-gutters, subtle theme-aware green/red row backgrounds, and stronger shading on
-changed words. Code keeps its syntax palette on top of those backgrounds:
-lavender keywords, teal strings, amber literals, and neutral identifiers.
-Truecolor and 256-color terminals use shaded rows; basic 16-color terminals
-retain syntax colors and green/red markers, and plain/`NO_COLOR` output keeps `+`/`-` markers.
-Light/dark appearance follows `BAHULAM_THEME` and the terminal's advertised theme.
-Dark 256-color terminals use neutral shading with green/red markers because that
-palette cannot reproduce the muted truecolor surfaces. Long lines wrap without
-clipping; F2 or `/last` displays all available diff and command content.
-A source-side truncation is labelled rather than presented as a complete diff.
-
-Command cards separate the invocation, working directory, exit status, duration,
-and stdout/stderr. Plugin, MCP, workflow, and agent labels appear when the event
-supplies that metadata. Work summaries list changed files and reported test totals;
-missing totals are not treated as passed tests.
-
-Expanded edit/write cards include a shell-quoted `bahulam workspace open` command.
-It opens that file in a **new local workspace**, not a resumed Cloud IDE session.
-No browser is launched automatically and approval policy is unchanged.
-
-Run `npm run test:design:cards` for optional light/dark, 40/80/120-column xterm
-checks, using the same browser/module environment variables described above.
-
-## About the name
-
-**Bahulam** (बहुलम्) is Sanskrit for *abundance*. The name reflects a
-philosophy: tokens are not rationed, model choice is not gated, and
-intelligence is not metered per feature. The restrictions most agents
-ship with are design decisions — ones we chose not to make.
-
-## Install
-
-```bash
-npm install -g @bahulam/code@latest
+```sh
+npm install --global @bahulam/code@latest
+bahulam login
+bahulam
 ```
 
-Run without global install:
+`bahulam login` opens your browser to sign in to Bahulam for managed model access. To try the CLI without a global install, run `npx --yes @bahulam/code@latest login` once, then `npx --yes @bahulam/code@latest`. The `bahulam-code` command is an alias for `bahulam`.
 
-```bash
-npx @bahulam/code@latest
-```
+Check the installed version with `bahulam --version`. To choose a specific release, inspect the published tags with `npm view @bahulam/code dist-tags` and install the exact version you want, for example `npm install --global @bahulam/code@0.2.6`.
 
-## Start the CLI
+## Try a first task
 
-After install, sign in and launch:
-
-```bash
-bahulam-code login       # one-time: sign in through the browser
-bahulam-code             # start the interactive REPL
-```
-
-Or run a single instruction and exit:
-
-```bash
-bahulam-code "fix the failing auth test"
-```
-
-## Common Commands
+Start with a question you can verify against your own code. For example, in a checkout service:
 
 ```text
-bahulam-code                    Start interactive REPL
-bahulam-code "instruction"      Run a single instruction and exit
-bahulam-code login              Sign in through the browser
-bahulam-code configure          Open settings in your browser
-bahulam-code config --show      Display local configuration
-bahulam-code resume             Resume a paused or previous session
-bahulam-code --version          Show installed version
-bahulam-code --help             Full command reference
+Trace how an empty cart reaches order creation. Show me the relevant files and tests.
 ```
 
-Inside the REPL, type `/help` for slash commands (models, cache, approvals,
-skills, workflows, session tools).
+Once you have the explanation, continue in the same session:
 
-## Plugin settings and views
-
-Plugins can declare settings under `config.config.fields` with `name`, `type`,
-`default`, `required`, and optional `credential` metadata. Supported types are
-`string`, `integer`, `number`, `boolean`, `password`, and `select` (with `options`).
-Password fields are always treated as credentials.
-
-The authenticated local workspace API exposes `GET /api/plugin-config/<name>`
-for field metadata, masked values, and missing required fields. Save settings
-with `POST` and a `{ "values": { ... } }` body. Blank or masked credential values
-preserve the saved secret; explicit `null` clears it. Plugin-scoped sessions
-cannot access another plugin's configuration.
-
-Trusted local tool handlers read settings with `state.getConfig(name)` or
-`state.getAllConfig()`. Settings persist locally in the plugin's state database;
-they are not encrypted at rest, so protect the local account and filesystem.
-Credentials are excluded from automatic state summaries and masked in settings
-responses. Tool authors must not return secrets in tool results or logs.
-
-Plugins declare authored HTML panels through `config.views`. Panels read plugin
-state and call tools through the local workspace API. A view can opt into
-`permissions: [downloads, external-links, dialogs]`; the host maps only these
-recognized values to iframe sandbox permissions. Grant the capabilities your
-view needs and treat installed local plugin code as trusted.
-
-Inspect a plugin's declared capabilities with:
-
-```bash
-bahulam plugin inspect <name> --json
+```text
+Reject empty carts before creating an order. Add a regression test and run the checkout tests.
 ```
 
-The capability graph includes skills, connectors, outcome-runtime metadata, and
-policy declarations. These declarations describe intent; enforcement and hosted
-availability require the corresponding host implementation.
+When a tool needs approval, review the command or file change and choose whether to allow it. Expand a tool result with **Show details** to inspect its output. To ask a single question from the shell, run `bahulam "Where are the checkout tests?"`.
 
-### Migrating from 0.1.28
+| In the session | What it does |
+| --- | --- |
+| `/explore <question>` | Send a read-only sub-agent to investigate the codebase. |
+| `/tui fullscreen` | Follow the conversation, pinned plan, and agent activity together. |
+| `/tui inline` | Return to the inline Rust terminal in the same session. |
+| `/diff` | Review unstaged changes to tracked files. |
+| `/resume` | Choose a saved session for the current project. |
+| `/status` | Inspect the current session and model usage. |
+| `/help` | Browse the available slash commands. |
 
-Version 0.2.0 removes the CLI Workplane document/widget runtime, including
-`config.workplane`, generated `<plugin_name>_workplane_update` tools, and the
-`state.upsertWorkplaneWidgets()` / `state.removeWorkplaneWidgets()` helpers.
-Use plugin-owned state, domain tools, and `config.views` for the local panel.
-Previously saved plugin data is not deleted; this release does not migrate old
-Workplane widgets into a new rendering system. The `outcome_runtime.workplane`
-capability declaration remains descriptive metadata.
+## Models and providers
 
-### Browser voice input
+The Bahulam model catalog includes the following model families. The IDs below are examples from the bundled catalog. In a session, use `/model refresh` to fetch the current platform catalog, `/model list text` to list text models, and `/model` to choose models by role. Availability depends on your account and route.
 
-The browser workspace offers voice capture when the browser supports speech
-recognition. Captured speech becomes an editable draft; submit it to start the
-agent turn. Availability depends on browser support and microphone permission.
+| Provider | Model family | Example catalog ID |
+| --- | --- | --- |
+| <img src="https://github.com/anthropics.png?size=48" width="22" height="22" alt=""> Anthropic | Claude | `anthropic/claude-sonnet-4-6` |
+| <img src="https://github.com/openai.png?size=48" width="22" height="22" alt=""> OpenAI | GPT | `openai/gpt-4.1` |
+| <img src="https://github.com/google-deepmind.png?size=48" width="22" height="22" alt=""> Google DeepMind | Gemini | `google/gemini-2.5-pro` |
+| <img src="https://github.com/deepseek-ai.png?size=48" width="22" height="22" alt=""> DeepSeek | DeepSeek | `deepseek/deepseek-v4-flash` |
+| <img src="https://github.com/QwenLM.png?size=48" width="22" height="22" alt=""> Qwen | Qwen Coder | `qwen/qwen3-coder` |
+| <img src="https://github.com/mistralai.png?size=48" width="22" height="22" alt=""> Mistral AI | Codestral | `mistralai/codestral-2508` |
 
-## 0.1.7 Highlights
+The catalog also includes Kimi, Llama, Grok, GLM, and Nemotron. To select a coding model by ID, enter, for example, `/model deepseek/deepseek-v4-flash`. For a direct, single-instruction run with your own credentials, `bahulam --direct -p "Explain the checkout flow"` accepts `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` from your environment. [Model selection guide](https://docs.bahulam.ai/code/models)
 
-- Published as `@bahulam/code`.
-- Local browser workspaces through `bahulam workspace open`.
-- Image analysis and image generation tools for agent workflows.
-- Shared project-aware lint resolver for TS/TSX, JS/JSX, MDX, Python, Go, and Rust.
-- Full shell output is preserved for the agent while terminal cards stay compact.
+## Terminal and project setup
 
-## Development
+- **Supported platforms.** The package includes the Rust terminal for macOS (Apple silicon and Intel), Linux with glibc (ARM64 and x64), and Windows x64. Interactive sessions start in Rust inline view when the native runtime is available. The Node terminal is the fallback. Switch to it with `/tui default`.
+- **Project instructions.** Put build commands and repository conventions in `AGENTS.md`. Use `/status context` to see which instruction files were loaded.
+- **Skills and tools.** Add a reusable skill at `.agents/skills/<name>/SKILL.md`, and inspect it with `/skills list`. Connect external tools through MCP. [Skills guide](https://docs.bahulam.ai/code/skills) · [MCP configuration](https://docs.bahulam.ai/code/mcp)
+- **Local workspace.** Run `bahulam workspace open .` to inspect local files in a browser. The CLI keeps session history and configuration under `~/.bahulam/` by default.
 
-```bash
-npm test
-npm pack --dry-run
-```
+## Documentation and development
 
-See [RELEASE.md](./RELEASE.md) for the merge, PR, and npm publish checklist.
+- [Getting started](https://docs.bahulam.ai/getting-started) · [All commands](https://docs.bahulam.ai/code/commands) · [Troubleshooting](https://docs.bahulam.ai/troubleshooting)
+- [Agents and sub-agents](https://docs.bahulam.ai/code/agents) · [Tool approvals](https://docs.bahulam.ai/code/approvals)
+- [Terminal appearance, session behavior, and plugin settings](./docs/terminal-and-plugins.md)
+- [Release and packaging guide](./RELEASE.md) · [Apache 2.0 license](./LICENSE)
 
-## Links
-
-- Website: https://bahulam.ai
-- Repository: https://github.com/BahulamAI/BahulamCode-CLI
-
-## License
-
-Apache-2.0
+To work on the CLI from a source checkout, run `npm ci` and `npm test`. For Rust terminal changes, also run `npm run test:tui`.
