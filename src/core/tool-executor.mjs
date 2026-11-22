@@ -8,6 +8,7 @@
  * Tools are mapped across file, search, shell, validation, and Git operations.
  */
 
+import { owningProject, projectPathLabel } from './project-path.mjs';
 import { createToolRegistry } from '../tools/registry.mjs';
 import { detectCommandType, filterOutput } from './output-filter.mjs';
 import { isSensitiveConfigPath, validatePath, validateDelete, validateShellCommand, validateWrite } from './safety.mjs';
@@ -158,6 +159,26 @@ export function createToolExecutor({
         const project = projectRegistry.projectForPath(filePath);
         if (!project) throw new Error(`No registered project contains path: ${filePath}`);
         return project.resource.root;
+    }
+
+    function resultPath(filePath, projectId) {
+        return projectPathLabel(filePath, projectRegistry.resources(), projectId);
+    }
+
+    // Ripgrep emits a filename before every match and context line (including single-file searches).
+    function listingOutput(output, directory, projectId) {
+        const owner = owningProject(directory, projectRegistry.resources(), projectId);
+        if (!owner) return output;
+        const root = owner.root.endsWith(path.sep) ? owner.root : owner.root + path.sep;
+        return output.split('\n').map(line => line.startsWith(root) ? line.slice(root.length) : line).join('\n');
+    }
+
+    async function exactMatches(pattern, directory, args, context, maxCount, headLimit) {
+        const output = await occRegistry.call('search_code', {
+            pattern, path: directory, glob: args.include, output_mode: 'content',
+            context, max_count: maxCount, max_filesize: '500K', head_limit: headLimit,
+        });
+        return output === 'No matches found.' ? '' : listingOutput(String(output), directory, args.project_id);
     }
 
     async function commandCwd(args = {}, { readOnly = false } = {}) {
@@ -396,7 +417,7 @@ export function createToolExecutor({
             return {
                 filePath,
                 size: stat.size,
-                mtimeMs: Math.round(stat.mtimeMs),
+                mtimeMs: stat.mtimeMs,
             };
         } catch {
             return { filePath, missing: true };
@@ -411,27 +432,12 @@ export function createToolExecutor({
         }));
     }
 
-    function compactCachedResult(kind, cached) {
-        const result = clonePlain(cached.result);
-        const output = String(result.output || result.content || result.message || '').trim();
-        const excerpt = output.length > 1200 ? `${output.slice(0, 1200)}\n[... cached output truncated ...]` : output;
-        result.output = `[Bahulam Code reused prior ${kind} result; source unchanged.]${excerpt ? `\n\n${excerpt}` : ''}`;
-        if (typeof result.content === 'string') {
-            result.content = result.content.length > 1200
-                ? `${result.content.slice(0, 1200)}\n[... cached content truncated ...]`
-                : result.content;
-        }
-        result._cache_reused = true;
-        result._cache_source_call = cached.callId;
-        return result;
-    }
-
     async function withReadOnlyCache(kind, args, fingerprint, compute) {
         const key = cacheKey(kind, args, fingerprint);
         const cached = readOnlyResultCache.get(key);
-        if (cached) return compactCachedResult(kind, cached);
+        if (cached) return { ...clonePlain(cached.result), _cache_reused: true, _cache_source_call: cached.callId };
         const result = await compute();
-        if (result?.success !== false) {
+        if (result?.success !== false && !(kind === 'read_file' && result.output?.length > 200_000)) {
             readOnlyResultCache.set(key, {
                 result: clonePlain(result),
                 callId: `${kind}-${readOnlyResultCache.size + 1}`,
@@ -440,12 +446,12 @@ export function createToolExecutor({
         return result;
     }
 
-    function buildResultFileDiff(filePath, before, after) {
+    function buildResultFileDiff(filePath, before, after, projectId) {
         const diff = buildFileDiff({
             filePath,
             before,
             after,
-            cwd: projectRootFor(filePath),
+            cwd: owningProject(filePath, projectRegistry.resources(), projectId)?.root || projectRootFor(filePath),
         });
         if (!isSensitiveConfigPath(filePath)) return diff;
         return {
@@ -458,9 +464,9 @@ export function createToolExecutor({
         };
     }
 
-    function attachFileDiff(result, filePath, before, after) {
+    function attachFileDiff(result, filePath, before, after, projectId) {
         try {
-            const diff = buildResultFileDiff(filePath, before, after);
+            const diff = buildResultFileDiff(filePath, before, after, projectId);
             result.file_diff = diff;
             result.diff = diff.unified;
             result.lines_added = diff.lines_added;
@@ -580,7 +586,7 @@ export function createToolExecutor({
         return '';
     }
 
-    function buildDirectoryTree(rootPath, { maxDepth = 2, maxEntries = 200 } = {}) {
+    function buildDirectoryTree(rootPath, { maxDepth = 2, maxEntries = 200, projectId } = {}) {
         const ignored = new Set(['.git', 'node_modules', '.next', '.turbo', 'dist', 'build', 'coverage']);
         const rootName = path.basename(rootPath) || rootPath;
         const lines = [`${rootName}/`];
@@ -617,11 +623,11 @@ export function createToolExecutor({
                 entriesSeen++;
 
                 if (entry.isDirectory()) {
-                    directories.push(fullPath);
+                    directories.push(resultPath(fullPath, projectId));
                     lines.push(`${prefix}${connector}${entry.name}/`);
                     walk(fullPath, depth + 1, `${prefix}${isLast ? '    ' : '|   '}`);
                 } else {
-                    files.push(fullPath);
+                    files.push(resultPath(fullPath, projectId));
                     lines.push(`${prefix}${connector}${entry.name}`);
                 }
             }
@@ -1508,18 +1514,15 @@ export function createToolExecutor({
             };
         },
 
-        // 2. read_file → Read (with smart truncation for large files)
+        // 2. read_file → numbered source lines
         read_file: async (args) => {
             const filePath = await resolvePath(args.file_path || args.path, args, { allowExternalFileRead: true });
-            const hasLineRange = args.start_line || args.end_line || args.offset || args.limit;
-            const offset = args.start_line ? args.start_line - 1 : args.offset;
-            const limit = (args.start_line && args.end_line)
-                ? (args.end_line - args.start_line + 1)
-                : args.limit;
+            const start = args.start_line ?? args.offset;
+            const end = args.end_line ?? (args.limit != null ? (start ?? 1) + args.limit - 1 : undefined);
 
             return await withReadOnlyCache(
                 'read_file',
-                { filePath, offset, limit },
+                { filePath, start, end, projectId: args.project_id },
                 fileFingerprint(filePath),
                 async () => {
 
@@ -1530,52 +1533,25 @@ export function createToolExecutor({
                         ? '\n\nNOTE: You read a top-level overview file. Use search_code(query) to find actual implementations before drawing conclusions. READMEs and package.json do NOT show what features exist in the codebase.'
                         : '';
 
-                    // If no line range specified, auto-truncate and return AST summary
-                    if (!hasLineRange) {
-                        try {
-                            const content = fs.readFileSync(filePath, 'utf-8');
-                            const lines = content.split('\n').length;
-
-                            if (lines > 50) {
-                                // File >50 lines: return AST summary with line numbers
-                                // Model must use start_line/end_line to read specific sections
-                                const analysis = analyzeCode(filePath);
-                                const firstLines = content.split('\n').slice(0, 20).join('\n');
-                                return {
-                                    success: true,
-                                    output: `${analysis.summary}\n\n` +
-                                            `## First 20 lines\n${firstLines}${nudge}`,
-                                    _tool: 'read_file',
-                                    _truncated: true,
-                                    _total_lines: lines,
-                                };
-                            }
-                            // Small file (<50 lines): return full content
-                        } catch { /* let Read handle the error */ }
-                    }
-
                     const result = await occRegistry.call('read_file', {
                         file_path: filePath,
-                        offset,
-                        limit,
+                        start_line: start,
+                        end_line: end,
                     });
-                    const output = typeof result === 'string' ? result : String(result);
-                    const content = output.replace(/^\s*\d+[→\t]/gm, '');
+                    const output = isError(result) ? result.replace(filePath, () => resultPath(filePath, args.project_id)) : String(result);
+                    const continuation = output.match(/\n\n\[File has (\d+) lines total\. Showing lines [^\n]+\]$/);
+                    const page = continuation ? output.slice(0, continuation.index) : output;
+                    const content = page.replace(/^ *\d+[→\t]/gm, '');
                     const actNudge = solutionNudge(filePath);
-                    // Set _total_lines so the tool-card display doesn't have
-                    // to compute line counts from the display-side `output`
-                    // (which contains nudges + line-number prefixes that
-                    // throw off the count and can render as "0 lines" when
-                    // downstream fallbacks miss the payload). Uses the
-                    // same split-by-newline convention as the >50-line
-                    // truncation branch above so both paths agree.
                     return {
                         success: !isError(output),
                         content,
-                        output: output + nudge + actNudge,
+                        relative_path: resultPath(filePath, args.project_id),
+                        output: `${resultPath(filePath, args.project_id)}\n${output}${nudge}${actNudge}`,
                         _tool: 'read_file',
                         _output_type: 'file_content',
-                        _total_lines: content ? content.split('\n').length : 0,
+                        _truncated: Boolean(continuation),
+                        _total_lines: continuation ? Number(continuation[1]) : (content ? content.split('\n').length : 0),
                     };
                 },
             );
@@ -1584,8 +1560,8 @@ export function createToolExecutor({
         // 3. write_file → Write + auto-lint + safety check
         write_file: async (args) => {
             const rawPath = args.file_path || args.path;
-            if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
-                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'write_file' };
+            if (typeof rawPath !== 'string' || !rawPath.trim()) {
+                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then supply a file path.`, _tool: 'write_file' };
             }
             const filePath = await resolvePath(rawPath, args, { allowMissing: true });
             const existedBefore = fs.existsSync(filePath);
@@ -1609,8 +1585,9 @@ export function createToolExecutor({
                 content: args.content,
             });
             const wrapped = wrapResult(result, 'write_file');
+            wrapped.output = wrapped.output.replace(filePath, () => resultPath(filePath, args.project_id));
             const after = readTextIfExists(filePath);
-            attachFileDiff(wrapped, filePath, before, after);
+            attachFileDiff(wrapped, filePath, before, after, args.project_id);
             updateProjectIndex(filePath, {
                 contentChanged: before !== after,
                 structureChanged: !existedBefore && fs.existsSync(filePath),
@@ -1647,7 +1624,7 @@ export function createToolExecutor({
                     errors.push('Missing path in file entry');
                     continue;
                 }
-                const filePath = await resolvePath(rawPath, file, { allowMissing: true });
+                const filePath = await resolvePath(rawPath, { project_id: file.project_id ?? args.project_id }, { allowMissing: true });
                 const content = file.content || '';
 
                 const writeCheck = validateWrite(filePath, content, projectRootFor(filePath));
@@ -1672,12 +1649,12 @@ export function createToolExecutor({
 
                     await occRegistry.call('write_file', { file_path: filePath, content });
                     const after = readTextIfExists(filePath);
-                    diffs.push(buildResultFileDiff(filePath, before, after));
+                    diffs.push(buildResultFileDiff(filePath, before, after, file.project_id ?? args.project_id));
                     updateProjectIndex(filePath, {
                         contentChanged: before !== after,
                         structureChanged: !existedBefore && fs.existsSync(filePath),
                     });
-                    results.push(rawPath);
+                    results.push(resultPath(filePath, file.project_id ?? args.project_id));
                 } catch (err) {
                     errors.push(`${rawPath}: ${err.message}`);
                 }
@@ -1717,8 +1694,8 @@ export function createToolExecutor({
             const searchText = args.search ?? args.old_string ?? args.oldString;
             const replaceText = args.replace ?? args.new_string ?? args.newString;
             const replaceAll = args.replace_all === true || args.replaceAll === true;
-            if (!rawPath || rawPath === 'file' || rawPath.length < 3) {
-                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then use an absolute path.`, _tool: 'edit_file' };
+            if (typeof rawPath !== 'string' || !rawPath.trim()) {
+                return { success: false, output: `Error: Invalid file path "${rawPath || ''}". Register the project, then supply a file path.`, _tool: 'edit_file' };
             }
             if (typeof searchText !== 'string' || searchText.length === 0) {
                 return { success: false, output: 'Error: edit_file requires a non-empty search string.', _tool: 'edit_file' };
@@ -1770,9 +1747,10 @@ export function createToolExecutor({
             }
 
             const wrapped = wrapResult(result, 'edit_file');
+            wrapped.output = wrapped.output.replace(filePath, () => resultPath(filePath, args.project_id));
             const after = readTextIfExists(filePath);
             if (wrapped.success !== false && before === after) {
-                const relativePath = path.relative(projectRootFor(filePath), filePath) || path.basename(filePath);
+                const relativePath = resultPath(filePath, args.project_id);
                 // File content is unchanged — the desired state is already in place.
                 // Return success so the agent doesn't treat this as a failure and
                 // loop into repeated read_file calls trying to diagnose why it failed.
@@ -1789,7 +1767,7 @@ export function createToolExecutor({
                     lines_removed: 0,
                 };
             }
-            attachFileDiff(wrapped, filePath, before, after);
+            attachFileDiff(wrapped, filePath, before, after, args.project_id);
             updateProjectIndex(filePath, { contentChanged: before !== after, structureChanged: false });
             _hasEdited = true;
 
@@ -1815,6 +1793,7 @@ export function createToolExecutor({
                 {
                     pattern: args.pattern || '**/*',
                     path: searchPath,
+                    projectId: args.project_id,
                     format: args.format || (args.tree === true ? 'tree' : 'glob'),
                     max_depth: args.max_depth ?? args.maxDepth ?? null,
                 },
@@ -1825,7 +1804,7 @@ export function createToolExecutor({
                         const maxDepth = Number.isFinite(requestedDepth)
                             ? Math.max(1, Math.min(6, Math.trunc(requestedDepth)))
                             : 2;
-                        const tree = buildDirectoryTree(searchPath, { maxDepth });
+                        const tree = buildDirectoryTree(searchPath, { maxDepth, projectId: args.project_id });
                         return {
                             success: true,
                             output: tree.output,
@@ -1842,11 +1821,11 @@ export function createToolExecutor({
                         path: searchPath,
                     });
                     const output = typeof result === 'string' ? result : String(result);
-                    const files = output.split('\n').filter(Boolean);
+                    const files = output.split('\n').filter(Boolean).map(file => resultPath(file, args.project_id));
                     return {
                         success: true,
                         files,
-                        output,
+                        output: files.join('\n'),
                         _tool: 'list_files',
                     };
                 },
@@ -1886,13 +1865,8 @@ export function createToolExecutor({
             const parts = [];
 
             // Layer 1: ripgrep — exact text matches with context
-            try {
-                const cmd = `rg -n -C 1 --max-count 5 --max-filesize 500K -e ${JSON.stringify(query)} ${JSON.stringify(searchPath)} 2>/dev/null | head -60`;
-                const rgOutput = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
-                if (rgOutput) {
-                    parts.push(`## Exact matches (rg)\n${rgOutput}`);
-                }
-            } catch { /* rg not found or no results */ }
+            const exact = await exactMatches(query, searchPath, args, 1, 5, 60);
+            if (exact) parts.push(`## Exact matches (rg)\n${exact}`);
 
             // Layer 2: Symbol search — AST-extracted functions/classes with signatures
             if (project?.retriever) {
@@ -1928,7 +1902,7 @@ export function createToolExecutor({
             const firstWord = query.split(/\s+/)[0];
             return {
                 success: true,
-                output: `No results for "${query}" in ${searchPath}.\n` +
+                output: `No results for "${query}" in ${resultPath(searchPath, args.project_id)}.\n` +
                     `Try: shell(grep -rn "${firstWord}" . --include="*.py" | head -20)`,
                 _tool: 'search_code',
                 _method: 'none',
@@ -1944,14 +1918,14 @@ export function createToolExecutor({
             if (query.includes('*') || query.includes('?')) {
                 return await withReadOnlyCache(
                     'search_files',
-                    { query, path: searchPath, mode: 'glob' },
+                    { query, path: searchPath, projectId: args.project_id, mode: 'glob' },
                     { structureGeneration: _structureCacheGeneration },
                     async () => {
                         const result = await occRegistry.call('list_files', {
                             pattern: query,
                             path: searchPath,
                         });
-                        const output = typeof result === 'string' ? result : String(result);
+                        const output = listingOutput(String(result), searchPath, args.project_id);
                         return {
                             success: true,
                             files: output.split('\n').filter(Boolean),
@@ -1965,7 +1939,7 @@ export function createToolExecutor({
             // For text patterns: grep with context lines (like grep -n -C 3)
             return await withReadOnlyCache(
                 'search_files',
-                { query, path: searchPath, mode: 'grep' },
+                { query, path: searchPath, projectId: args.project_id, mode: 'grep' },
                 { searchGeneration: _searchCacheGeneration },
                 async () => {
                     const result = await occRegistry.call('search_code', {
@@ -1976,7 +1950,7 @@ export function createToolExecutor({
                         '-C': 3,
                         head_limit: 50,
                     });
-                    const output = typeof result === 'string' ? result : String(result);
+                    const output = listingOutput(String(result), searchPath, args.project_id);
                     return {
                         success: true,
                         files: output.split('\n').filter(Boolean),
@@ -1993,26 +1967,19 @@ export function createToolExecutor({
             if (!pattern) return { success: false, output: 'pattern required', _tool: 'grep' };
 
             const searchPath = await resolvePath(args.path || null, args);
-            const includeFlag = args.include ? `--glob "${args.include}"` : '';
-
-            try {
-                const cmd = `rg -n -C 2 --max-count 10 --max-filesize 500K ${includeFlag} -e ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -80`;
-                const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: searchPath }).trim();
-                if (output) {
-                    return { success: true, output, _tool: 'grep' };
-                }
-            } catch { /* no results or rg not found */ }
+            const output = await exactMatches(pattern, searchPath, args, 2, 10, 80);
+            if (output) return { success: true, output, _tool: 'grep' };
 
             return {
                 success: true,
-                output: `No matches for "${pattern}" in ${searchPath}`,
+                output: `No matches for "${pattern}" in ${resultPath(searchPath, args.project_id)}`,
                 _tool: 'grep',
             };
         },
 
         // ── Bahulam-specific tools (no OCC bridge) ──────────────
 
-        // 8. read_files → batch Read (with AST truncation for large files)
+        // 8. read_files → batch Read
         read_files: async (args) => {
             const rawItems = args.items || args.files || args.file_paths || args.paths || [];
             const items = (Array.isArray(rawItems) ? rawItems : [])
@@ -2028,7 +1995,7 @@ export function createToolExecutor({
                         file_path: p,
                     });
                     results.push({
-                        path: p,
+                        path: result.relative_path || p,
                         success: result.success !== false,
                         content: result.content,
                         output: result.output,
@@ -2045,7 +2012,8 @@ export function createToolExecutor({
                 files: results,
                 output: results.map(item => {
                     const status = item.success === false ? 'ERROR' : item.cached ? 'CACHED' : 'OK';
-                    return `## ${item.path} [${status}]\n${item.output || item.content || item.error || ''}`;
+                    const body = item.output?.startsWith(item.path + '\n') ? item.output.slice(item.path.length + 1) : item.output;
+                    return `## ${item.path} [${status}]\n${body || item.content || item.error || ''}`;
                 }).join('\n\n'),
                 _tool: 'read_files',
             };
@@ -2073,7 +2041,7 @@ export function createToolExecutor({
                 const existedBefore = fs.existsSync(filePath);
                 fs.unlinkSync(filePath);
                 updateProjectIndex(filePath, { contentChanged: existedBefore, structureChanged: existedBefore });
-                return { success: true, message: `Deleted ${args.path}`, _tool: 'delete_file' };
+                return { success: true, message: `Deleted ${resultPath(filePath, args.project_id)}`, _tool: 'delete_file' };
             } catch (err) {
                 return { success: false, output: `Error: ${err.message}`, _tool: 'delete_file' };
             }
@@ -2287,7 +2255,7 @@ export function createToolExecutor({
             if (stat.isDirectory()) {
                 return {
                     success: false,
-                    output: `Error: analyze_code expects a file, but got directory: ${filePath}. Use list_files/search_code first, then pass a specific source file.`,
+                    output: `Error: analyze_code expects a file, but got directory: ${resultPath(filePath, args.project_id)}. Use list_files/search_code first, then pass a specific source file.`,
                     structure: {},
                     _tool: 'analyze_code',
                 };

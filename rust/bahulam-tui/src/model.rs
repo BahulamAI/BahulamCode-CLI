@@ -12,6 +12,7 @@ pub struct Card {
     pub agent: String,
     pub title: String,
     pub primary: String,
+    pub display_path: Option<String>,
     pub metadata: String,
     pub body: String,
     pub status: String,
@@ -193,6 +194,7 @@ pub struct Model {
     pub active_background_jobs: usize,
     pub status: String,
     pub composer_hint: String,
+    pub turn_recap: Option<String>,
     pub copy_confirmed: bool,
     pub selecting_text: bool,
     queued_prompts: usize,
@@ -483,6 +485,7 @@ impl Model {
             agent: agent.into(),
             title: title.into(),
             primary: String::new(),
+            display_path: None,
             metadata: String::new(),
             body,
             status: status.into(),
@@ -715,6 +718,7 @@ impl Model {
                 self.agents_open = false;
                 self.agent_reports.clear();
                 self.turn_starts.clear();
+                self.turn_recap = None;
                 self.plan.clear();
                 self.tools.clear();
                 self.active_tools.clear();
@@ -1143,6 +1147,7 @@ impl Model {
                     .insert(message_key.clone(), self.cards.len());
                 if agent == "main" {
                     self.status = "working".into();
+                    self.turn_recap = None;
                 }
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == agent) {
                     main.status = "working".into();
@@ -1327,8 +1332,23 @@ impl Model {
                 } else {
                     String::new()
                 };
+                let display_path = data["display_path"].as_str().map(safe_text).or_else(|| {
+                    let file = args_value["path"]
+                        .as_str()
+                        .or(args_value["file_path"].as_str())?;
+                    if self.cwd.is_empty() {
+                        return None;
+                    }
+                    let relative = std::path::Path::new(file).strip_prefix(&self.cwd).ok()?;
+                    Some(if relative.as_os_str().is_empty() {
+                        ".".into()
+                    } else {
+                        safe_text(&relative.to_string_lossy())
+                    })
+                });
                 let index = self.card(agent, &name, body, "requested");
                 self.cards[index].primary = primary;
+                self.cards[index].display_path = display_path;
                 self.cards[index].tool_id = if self.replaying_history {
                     String::new()
                 } else {
@@ -1401,9 +1421,11 @@ impl Model {
                         .filter(|value| !value.is_null())
                         .or_else(|| data.get("result").filter(|value| !value.is_null()));
                     let card = &mut self.cards[index];
-                    card.has_edit_diff =
-                        data.get("has_edit_diff").and_then(Value::as_bool) == Some(true);
                     if output.is_some() || event.payload_ref.is_some() || !summary.is_empty() {
+                        // A status-only acknowledgement can follow the local result.
+                        // The preview format belongs to the event supplying its content.
+                        card.has_edit_diff =
+                            data.get("has_edit_diff").and_then(Value::as_bool) == Some(true);
                         card.begin_tool_output();
                         if !summary.is_empty() {
                             card.body = summary;
@@ -1448,7 +1470,9 @@ impl Model {
                             metadata.push(format!("+{added} −{removed}"));
                         }
                     }
-                    self.cards[index].metadata = metadata.join(" · ");
+                    if !metadata.is_empty() {
+                        self.cards[index].metadata = metadata.join(" · ");
+                    }
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
                         if row.current_tool_id == tool_id {
                             let next = self
@@ -1780,7 +1804,7 @@ impl Model {
                 } else {
                     self.card(agent, &title, body, &text(data, "level"))
                 };
-                if event.payload_ref.is_some() && self.cards[index].body.is_empty() {
+                if event.payload_ref.is_some() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else {
                     self.cards[index].detail = Some(self.cards[index].body.clone());
@@ -2018,26 +2042,16 @@ impl Model {
                         }
                     }
                 }
-                let summary = turn_summary(&self.cards[start..], agent, &text(data, "summary"));
-                // Short successful answers need no extra completion card.
-                if summary.is_none()
-                    && outcome == "complete"
-                    && text(data, "summary").is_empty()
-                    && event.payload_ref.is_none()
-                {
+                if agent == "main" {
+                    self.turn_recap = turn_recap(&self.cards[start..], agent, outcome, &self.cwd);
+                }
+                let summary = text(data, "summary");
+                if outcome == "complete" && summary.is_empty() && event.payload_ref.is_none() {
                     return Ok(());
                 }
-                if summary.is_some() && event.payload_ref.is_some() {
-                    let result = self.card(agent, "Assistant", text(data, "summary"), outcome);
-                    self.cards[result].payload_ref = event.payload_ref.clone();
-                }
-                let index = self.card(
-                    agent,
-                    "Turn",
-                    summary.unwrap_or_else(|| text(data, "summary")),
-                    outcome,
-                );
-                if event.payload_ref.is_some() && self.cards[index].body.is_empty() {
+                // Keep a producer-supplied response or failure reason in history.
+                let index = self.card(agent, "Turn", summary, outcome);
+                if event.payload_ref.is_some() {
                     self.cards[index].payload_ref = event.payload_ref.clone();
                 } else if data.get("summary").is_some() {
                     self.cards[index].detail = Some(self.cards[index].body.clone());
@@ -2210,79 +2224,59 @@ fn is_iteration_status(value: &str) -> bool {
         .is_some_and(|number| !number.is_empty() && number.bytes().all(|ch| ch.is_ascii_digit()))
 }
 
-// Saved resume progress is transient UI, never part of the recovered conversation.
-fn turn_summary(cards: &[Card], agent: &str, supplied: &str) -> Option<String> {
-    let cards: Vec<_> = cards.iter().filter(|card| card.agent == agent).collect();
-    let tools: Vec<_> = cards.iter().filter(|c| !c.tool_name.is_empty()).collect();
+fn turn_recap(cards: &[Card], agent: &str, outcome: &str, cwd: &str) -> Option<String> {
     let mut files = std::collections::BTreeSet::new();
     let mut edits = 0;
-    for card in &cards {
-        if card.status == "done"
-            && matches!(
-                card.tool_name.as_str(),
-                "write_file"
-                    | "edit_file"
-                    | "multi_edit"
-                    | "apply_patch"
-                    | "write_project"
-                    | "delete_file"
-            )
-        {
-            edits += 1;
-            if matches!(
-                card.tool_name.as_str(),
-                "write_file" | "edit_file" | "multi_edit" | "delete_file"
-            ) && !card.primary.is_empty()
-            {
-                files.insert(card.primary.as_str());
+    let mut tools = 0;
+    let mut checks = 0;
+    let mut unresolved = 0;
+    for card in cards.iter().filter(|card| card.agent == agent) {
+        if !card.tool_name.is_empty() {
+            tools += 1;
+            if matches!(card.status.as_str(), "failed" | "incomplete" | "cancelled") {
+                unresolved += 1;
             }
         }
-        if card.title == "Diff" && !card.primary.is_empty() {
-            files.insert(card.primary.as_str());
+        if card.title == "Check" {
+            checks += 1;
+        }
+        let single_file_edit = matches!(
+            card.tool_name.as_str(),
+            "create_file" | "write_file" | "edit_file" | "multi_edit" | "delete_file"
+        );
+        let edited = card.status == "done"
+            && (single_file_edit
+                || matches!(card.tool_name.as_str(), "apply_patch" | "write_project"));
+        if edited {
+            edits += 1;
+        }
+        if (card.title == "Diff" || (edited && single_file_edit))
+            && !card.primary.is_empty()
+            && card.primary != "see details"
+        {
+            files.insert(std::path::Path::new(cwd).join(&card.primary));
         }
     }
-    if tools.len() <= 5 && edits == 0 && files.is_empty() {
+    if tools <= 5 && edits == 0 && files.is_empty() {
         return None;
     }
-    let mut lines = Vec::new();
-    if !supplied.is_empty() {
-        lines.push(supplied.to_owned());
-    }
+    let count = |n, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    let mut parts = vec![format!("Turn {outcome}")];
     if !files.is_empty() {
-        lines.push(format!(
-            "Changed  {}",
-            files.into_iter().collect::<Vec<_>>().join(", ")
-        ));
+        parts.push(format!("{} changed", count(files.len(), "file")));
     } else if edits > 0 {
-        lines.push(format!(
-            "Changes  {edits} successful edit operations · file list unavailable"
-        ));
+        parts.push(count(edits, "edit"));
     }
-    lines.push(format!("Tools    {} calls", tools.len()));
-    let checks: Vec<_> = cards.iter().filter(|c| c.title == "Check").collect();
-    if checks.is_empty() {
-        lines.push("Checks   No check results reported".into());
+    if tools > 0 {
+        parts.push(count(tools, "tool call"));
     }
-    for check in checks {
-        lines.push(format!(
-            "Checks   {} · {}",
-            check.status,
-            check.materialized().body
-        ));
+    if checks > 0 {
+        parts.push(count(checks, "check"));
     }
-    let failed = tools
-        .iter()
-        .filter(|c| matches!(c.status.as_str(), "failed" | "incomplete" | "cancelled"))
-        .count();
-    if failed > 0 {
-        lines.push(format!(
-            "Not done {failed} tool calls failed, were cancelled or have no final result"
-        ));
+    if unresolved > 0 {
+        parts.push(format!("{unresolved} unsuccessful"));
     }
-    if edits > 0 {
-        lines.push("Next     /diff to review changes".into());
-    }
-    Some(lines.join("\n"))
+    Some(parts.join(" · "))
 }
 
 fn command_output(name: &str, output: &str) -> String {

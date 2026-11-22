@@ -479,7 +479,7 @@ mod palette_tests {
 }
 
 struct ViewLayout {
-    rows: [Rect; 6],
+    rows: [Rect; 7],
     columns: [Rect; 2],
     compact: bool,
 }
@@ -746,6 +746,7 @@ fn view_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
             } else {
                 6
             }),
+            Constraint::Length(u16::from(model.turn_recap.is_some())),
             Constraint::Length(prompt_height),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -779,6 +780,7 @@ fn inline_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
         Constraint::Length(0),
         Constraint::Min(3),
         Constraint::Length(agent_strip_height(area, model)),
+        Constraint::Length(u16::from(model.turn_recap.is_some())),
         Constraint::Length(prompt_height),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -973,7 +975,7 @@ pub fn prompt_cursor_at(
     } else {
         view_layout(area, input, model)
     };
-    let bounds = layout.rows[3];
+    let bounds = layout.rows[4];
     if !bounds.contains(position) {
         return None;
     }
@@ -1013,13 +1015,13 @@ pub fn mouse_panel_at_view(
     } else {
         view_layout(area, input, model)
     };
-    if layout.rows[3].contains(position) {
+    if layout.rows[4].contains(position) {
         return Some(MousePanel::Composer);
     }
     if layout.compact && show_agent_strip(model) && layout.rows[2].contains(position) {
         return Some(MousePanel::Agents);
     }
-    if inline && position.y < layout.rows[3].y {
+    if inline && layout.columns[0].contains(position) {
         return Some(MousePanel::Transcript);
     }
     let inset = Margin {
@@ -1315,7 +1317,16 @@ pub fn draw_with_view(
         );
     }
 
-    let input_width = rows[3]
+    if let Some(recap) = &model.turn_recap {
+        frame.render_widget(
+            Paragraph::new(recap.as_str())
+                .style(Style::default().fg(p.muted))
+                .block(Block::default().padding(Padding::horizontal(1))),
+            rows[3],
+        );
+    }
+
+    let input_width = rows[4]
         .width
         .saturating_sub(if inline { 2 } else { 4 })
         .max(1) as usize;
@@ -1339,13 +1350,13 @@ pub fn draw_with_view(
                     .map(|value| safe_text(value))
                     .collect::<Vec<_>>()
                     .join(" · "),
-                    rows[3].width.saturating_sub(6) as usize,
+                    rows[4].width.saturating_sub(6) as usize,
                 ),
                 Style::default().fg(p.text),
             ),
         ]);
         let mut lines = vec![header];
-        let capacity = rows[3].height.saturating_sub(2) as usize;
+        let capacity = rows[4].height.saturating_sub(2) as usize;
         let width = input_width.saturating_sub(2).max(1);
         let show_reason = !approval.reason.is_empty() && capacity >= 4;
         let preview_rows = capacity.saturating_sub(2 + usize::from(show_reason)).min(3);
@@ -1423,7 +1434,7 @@ pub fn draw_with_view(
                 .collect()
         }
     };
-    let prompt_inner_height = rows[3].height.saturating_sub(2).max(1);
+    let prompt_inner_height = rows[4].height.saturating_sub(2).max(1);
     let suggestion_rows = prompt.len().saturating_sub(input_layout.lines.len()) as u16;
     let prompt_visible_rows = prompt_inner_height.saturating_sub(suggestion_rows).max(1);
     let (cursor_row, cursor_column) = input_layout.cursor(cursor);
@@ -1465,7 +1476,7 @@ pub fn draw_with_view(
                         " Prompt "
                     }),
             ),
-        rows[3],
+        rows[4],
     );
     if interactive
         && focus_panel == 0
@@ -1476,16 +1487,16 @@ pub fn draw_with_view(
         let row_offset = cursor_row.saturating_sub(prompt_scroll) as u16;
         let col_offset = cursor_column % input_width;
         frame.set_cursor_position(Position::new(
-            rows[3]
+            rows[4]
                 .x
                 .saturating_add(if inline { 1 } else { 2 })
                 .saturating_add(col_offset.min(u16::MAX as usize) as u16)
-                .min(rows[3].right().saturating_sub(1)),
-            rows[3]
+                .min(rows[4].right().saturating_sub(1)),
+            rows[4]
                 .y
                 .saturating_add(1)
                 .saturating_add(row_offset)
-                .min(rows[3].bottom().saturating_sub(1)),
+                .min(rows[4].bottom().saturating_sub(1)),
         ));
     }
 
@@ -1601,7 +1612,7 @@ pub fn draw_with_view(
             Span::styled("● ", Style::default().fg(p.info)),
             Span::styled(status_parts.join(" · "), Style::default().fg(p.muted)),
         ])),
-        rows[4],
+        rows[5],
     );
     frame.render_widget(
         Paragraph::new(format!("  {shortcuts}")).style(
@@ -1611,10 +1622,10 @@ pub fn draw_with_view(
                 Style::default().fg(p.muted).add_modifier(Modifier::DIM)
             },
         ),
-        rows[5],
+        rows[6],
     );
     if interactive && focus_panel == 0 && detail_card.is_none() {
-        render_slash_menu(frame, model, input, rows[3], p);
+        render_slash_menu(frame, model, input, rows[4], p);
     }
     if let Some(interaction) = &model.interaction {
         let width = area.width.saturating_sub(2).clamp(1, 88);
@@ -2138,7 +2149,7 @@ fn grouped_lines(
                 .and_then(|relative| relative.to_str())
                 .filter(|label| !label.is_empty())
                 .unwrap_or(&card.primary);
-            safe_text(label)
+            safe_text(card.display_path.as_deref().unwrap_or(label))
         })
         .collect::<Vec<_>>()
         .join(" | ");
@@ -2606,7 +2617,7 @@ fn card_lines_with_preview(
     };
     let fixed_width = heading_width + metadata_width;
     let primary = middle_ellipsis(
-        &safe_text(&card.primary),
+        &safe_text(card.display_path.as_deref().unwrap_or(&card.primary)),
         width.saturating_sub(fixed_width + 2),
     );
     let metadata = if metadata_text.is_empty() {
@@ -2759,6 +2770,26 @@ fn card_lines_with_preview(
             .collect()
     } else {
         body.lines().take(show).collect()
+    };
+    let read_lines;
+    let selected_lines = if matches!(
+        card.tool_name.as_str(),
+        "read_file" | "read_files" | "read_batch"
+    ) {
+        read_lines = selected_lines
+            .iter()
+            .map(|line| match line.split_once('\t') {
+                Some((number, source))
+                    if !number.is_empty() && number.bytes().all(|c| c.is_ascii_digit()) =>
+                {
+                    format!("{number}  {source}")
+                }
+                _ => (*line).to_owned(),
+            })
+            .collect::<Vec<_>>();
+        read_lines.iter().map(String::as_str).collect()
+    } else {
+        selected_lines
     };
     let body_lines: Vec<String> = if !foldable || is_expanded {
         // Message lines get a 4-column speaker gutter plus the 3-column
@@ -3545,6 +3576,7 @@ mod row_measurement_tests {
                 agent: "main".into(),
                 title: "Assistant".into(),
                 primary: String::new(),
+                display_path: None,
                 metadata: String::new(),
                 body: format!("{marker}**{content}**`code`"),
                 status: "done".into(),
@@ -3630,6 +3662,7 @@ mod row_measurement_tests {
             agent: "main".into(),
             title: "shell".into(),
             primary: String::new(),
+            display_path: None,
             metadata: String::new(),
             body: "short".into(),
             status: "streaming".into(),
@@ -3676,6 +3709,7 @@ mod row_measurement_tests {
             agent: "main".into(),
             title: "Prompt".into(),
             primary: String::new(),
+            display_path: None,
             metadata: String::new(),
             body: "bounded-cache-fixture".into(),
             status: "done".into(),

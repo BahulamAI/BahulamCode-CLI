@@ -4,6 +4,7 @@
  * Yields events matching the same format as BahulamStreamClient.
  */
 
+import { attachHandoff, codingHandoff } from './coding-handoff.mjs';
 import { QueryCodeGraphTool } from '../tools/query-code-graph.mjs';
 import { ContextRetriever } from '../context/retriever.mjs';
 import { createStagnationTracker, stagnationMessage } from './stagnation.mjs';
@@ -19,6 +20,8 @@ import { DEFAULT_REASONING_MODEL } from '../config/model-defaults.mjs';
 import {
     SUMMARY_MARKER,
     DISTILLATION_MARKER,
+    distillMessages,
+    contextProduct,
     contextReductionConfig,
     collapseMessages,
     reductionBoundary,
@@ -101,6 +104,18 @@ export function toOpenAIMessage(message) {
     return { role: message.role, content: message.content };
 }
 
+// Used only for older history submitted to the summarizer. Live results stay intact.
+function summaryExcerpt(text) {
+    if (text.length <= 8000) return text;
+    const middle = text.slice(3000, -3000);
+    const signals = [];
+    for (const match of middle.matchAll(/^.*\b(?:error|failed|exception|panic|assertionerror|warning)\b.*$/gim)) {
+        signals.push(match[0].slice(0, 300));
+        if (signals.length === 6) break;
+    }
+    return [text.slice(0, 3000), '[… excerpt of older history …]', ...signals, text.slice(-3000)].join('\n');
+}
+
 /** Tool schemas for the LLM — proper parameter definitions. */
 const TOOL_SCHEMAS = [
     {
@@ -121,6 +136,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 file_path: { type: 'string', description: 'Path to the file (relative to project root)' },
                 offset: { type: 'number', description: 'Start line number (1-based, optional)' },
                 limit: { type: 'number', description: 'Number of lines to read (optional)' },
@@ -134,6 +150,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 file_path: { type: 'string', description: 'Path to the file (relative to project root)' },
                 content: { type: 'string', description: 'The full file content to write' },
             },
@@ -146,6 +163,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 file_path: { type: 'string', description: 'Path to the file' },
                 search: { type: 'string', description: 'Exact string to find in the file' },
                 replace: { type: 'string', description: 'Replacement string' },
@@ -160,6 +178,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 pattern: { type: 'string', description: 'Glob pattern (e.g., "src/**/*.ts", "*.json")' },
                 path: { type: 'string', description: 'Directory to search in (default: project root)' },
                 format: { type: 'string', enum: ['files', 'tree'], description: 'Output format. "files" returns file paths; "tree" returns folders and files.' },
@@ -183,6 +202,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 pattern: { type: 'string', description: 'Regex pattern to search for' },
                 path: { type: 'string', description: 'Directory or file to search in (default: project root)' },
                 include: { type: 'string', description: 'File glob filter (e.g., "*.ts")' },
@@ -196,6 +216,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 query: { type: 'string', description: 'Filename pattern to search for' },
                 path: { type: 'string', description: 'Directory to search in (default: project root)' },
             },
@@ -208,6 +229,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 file_paths: {
                     type: 'array',
                     items: { type: 'string' },
@@ -223,6 +245,7 @@ const TOOL_SCHEMAS = [
         input_schema: {
             type: 'object',
             properties: {
+                project_id: { type: 'string', description: 'Registered project for relative paths' },
                 file_path: { type: 'string', description: 'Path to the file to delete' },
             },
             required: ['file_path'],
@@ -440,6 +463,10 @@ export class LocalAgent {
 
             const phase = i === 0 ? 'pre_turn' : 'mid_turn';
             const reduction = yield* this._reduceContext(messages, { systemPrompt, tools, phase });
+            if (reduction?.error) {
+                yield { type: 'error', data: { message: reduction.error } };
+                return;
+            }
             if (reduction) {
                 applyReduction(reduction);
                 yield { type: 'summarize', data: reduction.event };
@@ -550,6 +577,7 @@ export class LocalAgent {
                     toolResults.push({
                         tool_use_id: id,
                         content: result.output || JSON.stringify(result),
+                        ...(result.success === false ? { is_error: true } : {}),
                     });
                 }
             }
@@ -818,29 +846,39 @@ export class LocalAgent {
         });
         const preserve = config.preserve || budget.preserve;
         const estimated = estimateMessagesTokens(messages);
-        if (!config.enabled || estimated <= budget.threshold) {
+        if (!config.enabled || !budget.threshold || estimated <= budget.threshold) {
             return null;
         }
 
         const split = reductionBoundary(messages, preserve, budget.threshold / 2);
-        if (!split) return null;
+        const capacity = contextProduct(this.product) === 'ide' ? budget.usableTokens : null;
+        const capacityError = {error: 'The task and retained evidence exceed this model’s available context. Your transcript is preserved. Resume with a larger-context model or start a narrower task.'};
+        if (!split) return capacity && estimated > capacity ? capacityError : null;
         const progress = { phase, before_tokens: estimated, threshold: budget.threshold, collapsed_messages: split };
+        const handoff = contextProduct(this.product) === 'ide' ? codingHandoff(messages, split) : null;
+        if (handoff && (!capacity || estimated <= capacity)) {
+            const floor = collapseMessages(messages, attachHandoff('', handoff.state), messages.length - split);
+            floor.splice(2, 0, ...handoff.protectedRows);
+            const minimum = estimateMessagesTokens(floor);
+            if (minimum >= budget.threshold && estimated - minimum <= 1200) return null;
+        }
         yield { type: 'summarize_progress', data: { ...progress, state: 'started' } };
-        const source = messages.slice(0, split);
+        const source = handoff?.older ?? messages.slice(0, split);
         let summary = null;
         let summaryUsage = null;
         let appliedStrategy = config.strategy;
         const prompt = config.strategy === 'distillation'
-            ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Keep it structured and concise. Do not invent facts.'
+            ? 'You are the Bahulam coding-context distiller. Summarize the middle of the earlier conversation while preserving exact active ingredients: user intent, decisions, file paths, edits, commands, test results, errors, constraints, and unfinished work. Include the recorded rationale for decisions, alternatives ruled out, the action in progress and the next concrete step. Keep it concise. Do not invent facts.'
             : 'You are the Bahulam context summarizer. Summarize the earlier conversation for another coding-agent turn. Preserve user intent, decisions, files changed, commands/results, errors, constraints, and unfinished work. Do not invent facts. Return concise plain text only.';
         const transcript = source.map(message => {
-            const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content || '');
-            // Bound individual tool payloads in the summarizer request. Preserve
-            // the command/header and trailing diagnostics from long output.
-            const content = text.length > 8000
-                ? text.slice(0, 4000) + '\n[… omitted …]\n' + text.slice(-4000)
-                : text;
-            return { role: message.role, content };
+            const content = Array.isArray(message.content) ? message.content.map(block => {
+                if (block.type === 'tool_result') {
+                    const body = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+                    return `[Tool result ${block.tool_use_id}]\n${summaryExcerpt(body)}`;
+                }
+                return block.type === 'text' ? block.text : JSON.stringify(block);
+            }).join('\n') : String(message.content || '');
+            return { role: message.role, content: summaryExcerpt(content) };
         });
         try {
             const response = await this._callLLM(
@@ -861,6 +899,10 @@ export class LocalAgent {
             appliedStrategy = 'summarization_failed';
             if (this.verbose) process.stderr.write(`[context] summarization skipped: ${error.message}\n`);
         }
+        if (!summary && !this._cancelled && capacity && estimated > capacity) {
+            summary = distillMessages(source);
+            appliedStrategy = 'local_distillation';
+        }
         if (!summary || this._cancelled) {
             yield { type: 'summarize_progress', data: { ...progress, state: this._cancelled ? 'cancelled' : 'skipped' } };
             return null;
@@ -868,8 +910,12 @@ export class LocalAgent {
         if (!summary.startsWith(SUMMARY_MARKER) && !summary.startsWith(DISTILLATION_MARKER)) {
             summary = `${config.strategy === 'distillation' ? DISTILLATION_MARKER : SUMMARY_MARKER}\n${summary}`;
         }
-        const reduced = collapseMessages(messages, summary, messages.length - split);
-        if (estimateMessagesTokens(reduced) >= estimated) {
+        const checkpoint = handoff ? attachHandoff(summary, handoff.state) : summary;
+        const reduced = collapseMessages(messages, checkpoint, messages.length - split);
+        if (handoff) reduced.splice(2, 0, ...handoff.protectedRows);
+        const after = estimateMessagesTokens(reduced);
+        if (capacity && after > capacity) return capacityError;
+        if (after >= estimated) {
             yield { type: 'summarize_progress', data: { ...progress, state: 'skipped' } };
             return null;
         }
@@ -924,6 +970,7 @@ export class LocalAgent {
             'You are Bahulam Code, Bahulam\'s AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
             'Use search_code for discovery. For a known file, use query_code_graph with its registered project_id to inspect imports, find importers, resolve a module specifier or trace a dependency path. Cite the source file and line of resolved edges.',
+            'Use project-relative paths for file and search tools. Pass project_id when multiple roots are registered.',
             'Use tools to accomplish the user\'s request. Be concise and direct.',
             'Shell command substitution (backticks, $()) is allowed but requires user approval — use it when it is the natural expression; otherwise prefer plain commands.',
         ];
@@ -941,7 +988,7 @@ export class LocalAgent {
             }
             parts.push('== END CONTEXT ==');
             parts.push('');
-            parts.push('Use the above context to understand the codebase. Read full files with read_file when you need more detail.');
+            parts.push('Use the above context to understand the codebase. Use read_file for exact source.');
         }
 
         return parts.join('\n');

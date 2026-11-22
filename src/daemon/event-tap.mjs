@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { projectToolArgs, toolPathArgument } from '../core/project-path.mjs';
 /**
  * Event tap — bridges SSE events from the agent loop to the relay.
  *
@@ -262,8 +264,17 @@ function project(type, src, identity) {
     case 'tool_requested': {
       const name = src.tool || src.name || 'unknown';
       const args = src.args || src.tool_input || src.input || {};
-      return { name, tool_id: toolId,
-        args, primary: compactToolPrimary(name, args), preview: compactToolPreview(name, args), cwd: src.cwd,
+      const projects = identity.projects.length ? identity.projects : [{ root: src.cwd || process.cwd() }];
+      const labels = projectToolArgs(name, args, projects);
+      const paths = labels.file_paths || labels.paths || labels.files || labels.items;
+      const file = toolPathArgument(name, args);
+      const displayPath = ['read_files', 'read_batch', 'write_project'].includes(name) && Array.isArray(paths)
+        ? paths.map(item => typeof item === 'string' ? item : item?.file_path || item?.path).filter(Boolean).join(' | ')
+        : toolPathArgument(name, labels);
+      const root = projects.find(project => project.project_id === args.project_id)?.root || (projects.length === 1 ? projects[0].root : src.cwd);
+      const primary = typeof file === 'string' ? (root && !path.isAbsolute(file) ? path.resolve(root, file) : file) : compactToolPrimary(name, args);
+      return { name, tool_id: toolId, display_path: displayPath,
+        args, primary, preview: compactToolPreview(name, labels), cwd: src.cwd,
         risk_tier: src.risk_tier, reason: src.reason };
     }
     case 'tool_started':
@@ -273,12 +284,14 @@ function project(type, src, identity) {
     case 'tool_finished': {
       const ok = !src.error && !src.is_error && src.ok !== false && src.success !== false &&
         !(src.exit_code != null && Number(src.exit_code) !== 0);
+      const outputPreview = src.relative_path && typeof src.output === 'string' && src.output.startsWith(src.relative_path + '\n')
+        ? src.output.slice(src.relative_path.length + 1) : src.output;
       return { tool_id: toolId, ok,
         exit_code: src.exit_code, duration_ms: src.duration_ms ?? src.durationMs,
         summary: typeof src.output === 'string' ? src.output.slice(0, 220) :
           (src.summary ? asText(src.summary).slice(0, 220) :
             (src.output == null ? asText(src.error)?.slice(0, 220) : JSON.stringify(src.output).slice(0, 220))),
-        preview: typeof src.output === 'string' ? toolOutputPreview(src.output, ok) :
+        preview: typeof src.output === 'string' ? toolOutputPreview(outputPreview, ok) :
           (src.summary ? truncateUtf8(asText(src.summary), 2400) :
             (src.error ? truncateUtf8(asText(src.error), 2400, !ok) : undefined)),
         output: src.output ?? asText(src.error), diff_stats: src.diff_stats, output_ref: src.output_ref, ...rustToolEditDisplay(src) };
@@ -336,12 +349,12 @@ function project(type, src, identity) {
         const notice = { level: 'info', source, progress_key: 'context-summary' };
         if (source === 'summarize_progress') {
           if (src.state === 'started') return { ...notice, level: 'running', title: 'Summarizing context…',
-            cause: `${phase} · ${src.collapsed_messages} older messages · ${src.before_tokens} / ${src.threshold} estimated tokens` };
+            cause: `${phase} · ${src.collapsed_messages} older messages` };
           return { ...notice, title: src.state === 'cancelled' ? 'Summary cancelled' : 'Summary skipped',
             cause: 'Existing context retained.' };
         }
         return { ...notice, title: src.strategy === 'local_distillation' ? 'Context condensed locally' : 'Context summarized', cause:
-          `${phase} · ${src.collapsed_messages ?? '?'} older messages condensed · ${src.kept_recent ?? '?'} retained · ${src.before_tokens ?? '?'} / ${src.threshold ?? '?'} tokens` };
+          `${phase} · ${src.collapsed_messages ?? '?'} older messages condensed · ${src.kept_recent ?? '?'} retained` };
       }
       if (source === 'error') {
         const failure = safeProviderEvent(src);
@@ -373,7 +386,7 @@ function project(type, src, identity) {
 }
 
 /** Read-only SSE tap. Events persist when enabled and otherwise stay transient for live clients. */
-export function tapSseEvent(event, { sessionId, turnId } = {}) {
+export function tapSseEvent(event, { sessionId, turnId, projects = [] } = {}) {
   const persist = _enabled();
   const hasLiveClient = _broadcasters.some(subscriber => subscriber.live);
   if ((!persist && !hasLiveClient) || !event?.type || !sessionId) return;
@@ -402,7 +415,7 @@ export function tapSseEvent(event, { sessionId, turnId } = {}) {
       _wireState.agentTurns.set(agentId, eventTurnId);
     }
     if (type === 'turn_ended' && agentId !== 'main') type = 'agent_status';
-    let data = sanitizeDisplayValue(project(type, src, { agentId, nextSeq, sourceType: event.type }));
+    let data = sanitizeDisplayValue(project(type, src, { agentId, nextSeq, projects, sourceType: event.type }));
     let wireEvent;
     if (log) {
       wireEvent = log.appendEvent(type, data, {

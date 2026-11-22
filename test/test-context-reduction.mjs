@@ -40,9 +40,10 @@ const flashBudget = resolveContextBudget({
   fixedPromptTokens: 30_000,
 });
 assert.ok(flashBudget.contextLength > 1_000_000);
-assert.ok(flashBudget.threshold < 231_642,
-  `optimization trigger ${flashBudget.threshold} should precede a 231k-token turn`);
-assert.ok(flashBudget.threshold < flashBudget.usableTokens);
+assert.equal(flashBudget.threshold, 180_000);
+assert.equal(resolveContextBudget({product: 'ide', model: 'unlisted'}).threshold, 180_000);
+assert.equal(resolveContextBudget({product: 'ide', contextLength: 1_000_000, explicitThreshold: 160_000}).threshold, 160_000);
+assert.equal(budget.threshold, budget.usableTokens);
 
 const system = cacheableSystem('stable system prompt');
 const tools = cacheableTools([{ type: 'function', function: { name: 'read_file' } }]);

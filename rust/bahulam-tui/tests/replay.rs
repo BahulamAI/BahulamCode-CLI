@@ -1418,6 +1418,67 @@ fn resume_command_keeps_full_history_but_not_saved_spinner_frames() {
 }
 
 #[test]
+fn relative_read_path_and_numbered_source_in_both_views() {
+    use bahulam_tui::render::draw_with_view;
+    let mut model = Model::default();
+    let target = "/other/registered/project/src/routes/router.tsx";
+    let label = "src/routes/router.tsx";
+    model
+        .apply(&event(
+            1,
+            "tool_requested",
+            "main",
+            json!({"name":"read_file",
+        "tool_id":"read", "primary":target, "display_path":label}),
+        ))
+        .unwrap();
+    model
+        .apply(&event(
+            2,
+            "tool_finished",
+            "main",
+            json!({"tool_id":"read",
+        "ok":true, "preview":"1\timport route", "output":"src/routes/router.tsx\n1\timport route"}),
+        ))
+        .unwrap();
+    assert_eq!(model.cards[0].primary, target);
+    for inline in [false, true] {
+        let mut term = Terminal::new(TestBackend::new(110, 36)).unwrap();
+        term.draw(|f| {
+            draw_with_view(
+                f,
+                &model,
+                0,
+                true,
+                "dark",
+                "",
+                0,
+                &HashSet::new(),
+                None,
+                true,
+                None,
+                None,
+                0,
+                None,
+                0,
+                inline,
+            )
+        })
+        .unwrap();
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains(label), "{screen}");
+        assert!(screen.contains("1  import route"), "{screen}");
+        assert!(!screen.contains("/other/registered"));
+    }
+}
+
+#[test]
 fn checks_and_thinking_render_and_expand_in_both_rust_views() {
     use bahulam_tui::render::draw_with_view;
     for inline in [true, false] {
@@ -2937,6 +2998,7 @@ fn turn_summary_is_gated_and_uses_observed_results_without_hiding_answers() {
         (5, false, false, false),
         (6, false, false, true),
         (1, true, false, true),
+        (10, true, false, true),
         (1, true, true, false),
     ] {
         let mut model = Model::default();
@@ -2961,18 +3023,64 @@ fn turn_summary_is_gated_and_uses_observed_results_without_hiding_answers() {
             json!({"text":"Full final answer stays here"}),
         );
         send("turn_ended", json!({"ok":true}));
-        let summary = model.cards.iter().find(|c| c.title == "Turn");
-        assert_eq!(summary.is_some(), expected);
-        if let Some(summary) = summary {
-            assert!(summary.body.contains("No check results reported"));
-            assert_eq!(summary.body.contains("Changed"), edit);
-            assert!(!summary.is_foldable());
+        assert!(!model.cards.iter().any(|c| c.title == "Turn"));
+        assert_eq!(model.turn_recap.is_some(), expected);
+        if let Some(recap) = &model.turn_recap {
+            let changes = if edit { "1 file changed · " } else { "" };
+            let calls = if count == 1 {
+                "tool call"
+            } else {
+                "tool calls"
+            };
+            assert_eq!(recap, &format!("Turn complete · {changes}{count} {calls}"));
+            for inline in [true, false] {
+                let mut terminal = Terminal::new(TestBackend::new(110, 32)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        bahulam_tui::render::draw_with_view(
+                            frame,
+                            &model,
+                            usize::MAX,
+                            true,
+                            "dark",
+                            "",
+                            0,
+                            &HashSet::new(),
+                            None,
+                            true,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let rows: Vec<String> = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(110)
+                    .map(|cells| cells.iter().map(|cell| cell.symbol()).collect())
+                    .collect();
+                let composer = rows
+                    .iter()
+                    .position(|row| row.contains(" Message "))
+                    .unwrap();
+                assert_eq!(rows[composer - 1].trim(), recap);
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row.contains("Turn complete"))
+                        .count(),
+                    1
+                );
+            }
         }
         assert!(model
             .cards
             .iter()
             .any(|c| c.body == "Full final answer stays here"));
-        let before = model.cards.len();
         model
             .apply(&event(
                 seq + 1,
@@ -2981,10 +3089,11 @@ fn turn_summary_is_gated_and_uses_observed_results_without_hiding_answers() {
                 json!({"text":"Short follow-up"}),
             ))
             .unwrap();
+        assert!(model.turn_recap.is_none());
         model
             .apply(&event(seq + 2, "turn_ended", "main", json!({"ok":true})))
             .unwrap();
-        assert!(!model.cards[before..].iter().any(|c| c.title == "Turn"));
+        assert!(model.turn_recap.is_none());
     }
 }
 
@@ -3372,20 +3481,12 @@ fn turn_summary_does_not_count_interleaved_child_tools() {
     model
         .apply(&event(20, "turn_ended", "main", json!({"ok":true})))
         .unwrap();
-    assert!(!model
-        .cards
-        .iter()
-        .any(|card| card.agent == "main" && card.title == "Turn"));
+    assert!(model.turn_recap.is_none());
     model
         .apply(&event(21, "turn_ended", "child", json!({"ok":true})))
         .unwrap();
-    let summary = model
-        .cards
-        .iter()
-        .find(|card| card.agent == "child" && card.title == "Turn")
-        .unwrap();
-    assert!(summary.body.contains("6 calls"));
-    assert!(summary.body.contains("child-only.rs"));
+    assert!(model.turn_recap.is_none());
+    assert!(!model.cards.iter().any(|card| card.title == "Turn"));
 }
 
 #[test]
@@ -3772,4 +3873,89 @@ fn write_result_and_following_diff_share_one_preview() {
     assert_eq!(model.cards.len(), 1);
     assert_eq!(model.cards[0].body, "+a\n+b\n+c");
     assert!(model.cards[0].detail.as_ref().unwrap().ends_with("+d"));
+}
+
+#[test]
+fn edit_preview_stays_in_place_after_completion_acknowledgement() {
+    for name in ["write_file", "edit_file", "create_file"] {
+        for inline in [true, false] {
+            let mut model = Model::default();
+            let mut terminal = Terminal::new(TestBackend::new(110, 36)).unwrap();
+            let mut card_rows = |model: &Model| {
+                terminal
+                    .draw(|frame| {
+                        bahulam_tui::render::draw_with_view(
+                            frame,
+                            model,
+                            usize::MAX,
+                            true,
+                            "dark",
+                            "",
+                            0,
+                            &HashSet::new(),
+                            None,
+                            false,
+                            None,
+                            None,
+                            0,
+                            None,
+                            0,
+                            inline,
+                        )
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                buffer
+                    .content
+                    .chunks(buffer.area.width as usize)
+                    .enumerate()
+                    .filter_map(|(y, cells)| {
+                        let line: String = cells.iter().map(|cell| cell.symbol()).collect();
+                        (line.contains(name)
+                            || line.contains("source_line")
+                            || line.contains("Show details"))
+                        .then(|| (y, cells.to_vec()))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let preview = "-source_line_old\n+source_line_new\n+source_line_third";
+            let output = format!("{preview}\n+source_line_fourth");
+            model
+                .apply(&event(
+                    1,
+                    "tool_requested",
+                    "main",
+                    json!({"tool_id":"call","name":name,"args":{"path":"a.js"}}),
+                ))
+                .unwrap();
+            model
+                .apply(&event(2, "tool_started", "main", json!({"tool_id":"call"})))
+                .unwrap();
+            model.apply(&event(3, "tool_finished", "main", json!({"tool_id":"call","ok":true,"duration_ms":200,"has_edit_diff":true,"preview":preview,"output":output}))).unwrap();
+            let before = card_rows(&model);
+            assert_eq!(before.len(), 5, "{name}, inline={inline}");
+            model
+                .apply(&event(
+                    4,
+                    "diff",
+                    "main",
+                    json!({"call_id":"call","count":1,"path":"a.js","preview":preview}),
+                ))
+                .unwrap();
+            model
+                .apply(&event(
+                    5,
+                    "tool_finished",
+                    "main",
+                    json!({"tool_id":"call","ok":true}),
+                ))
+                .unwrap();
+            assert_eq!(model.cards.len(), 1);
+            assert_eq!(model.cards[0].detail.as_deref(), Some(output.as_str()));
+            assert!(
+                before == card_rows(&model),
+                "{name} card changed after acknowledgement, inline={inline}"
+            );
+        }
+    }
 }

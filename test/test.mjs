@@ -950,12 +950,12 @@ const readBin = await registry.call('Read', { file_path: binFile });
 assertIncludes(readBin, 'binary', 'Read detects binary');
 fs.unlinkSync(binFile);
 
-// Read: default 2000 line limit
+// Read: unqualified reads include lines beyond the former default cap
 const bigFile = path.join(os.tmpdir(), 'occ-test-big-' + Date.now());
 const bigContent = Array.from({length: 3000}, (_, i) => `line ${i}`).join('\n');
 fs.writeFileSync(bigFile, bigContent);
 const readBig = await registry.call('Read', { file_path: bigFile });
-assertIncludes(readBig, 'lines total', 'Read enforces 2000 line limit');
+assertIncludes(readBig, '3000\tline 2999', 'Read reaches the final line by default');
 fs.unlinkSync(bigFile);
 
 // Read: empty file

@@ -83,8 +83,9 @@ assert(events[3].type === 'turn_ended' && events[3].data.ok === true, 'complete 
 assert(events[4].type === 'notice' && events[4].data.source === 'status', 'status → progress notice');
 assert(events[5].data.title === 'Summarizing context…' && events[5].data.level === 'running'
   && events[5].data.progress_key === events[6].data.progress_key, 'in-flight and completed summary share one notice');
-assert(events[6].data.title === 'Context summarized' && events[6].data.cause.includes('442572 / 138000'),
-  'context handoff displays the estimate and trigger');
+assert(events[5].data.cause === 'mid-turn · 8 older messages' && events[6].data.title === 'Context summarized'
+  && events[6].data.cause === 'mid-turn · 8 older messages condensed · 2 retained',
+  'live and completed summary notices omit the token ratio');
 assert(events[0].turn_id === 't1', 'turn_id stamped from opts');
 assert(events[2].turn_id === 't1', 'approval inherits active turn when not provided');
 assert(events.every(e => e.v === 2 && e.agent_id && e.id), 'v2 identity on every event');
@@ -97,6 +98,17 @@ const events2 = await readAllEvents({ sessionId: sessionId2 });
 assert(events2.length === 1 && events2[0].type === 'session_started', 'new session id → new log');
 assert(events2[0].data.cwd === '/x', 'session_started projection');
 
+const root = path.join(tmp, 'other project');
+const file = path.join(root, 'src', 'router.tsx');
+const relative = path.relative(root, file);
+const scope = { sessionId: sessionId2, projects: [{ root, project_id: 'other' }] };
+tapSseEvent({ type: 'tool_request', data: { tool: 'read_file', cwd: path.dirname(file),
+  args: { path: file, project_id: 'other' } } }, scope);
+tapSseEvent({ type: 'tool_result', data: { relative_path: relative, output: relative + '\n1\timport route' } }, scope);
+await closeActiveEventLog();
+const [requested, finished] = (await readAllEvents(scope)).slice(-2);
+assert(requested.data.display_path === relative && requested.data.primary === file, 'project path in card, complete file target for opening');
+assert(finished.data.preview === '1\timport route' && finished.data.output.startsWith(relative + '\n'), 'read preview skips duplicate filename and retains numbered source');
 const handoff = { context: 'Two tracks ongoing.\nReview release notes.', findings: ['x'.repeat(5000)] };
 tapSseEvent({ type: 'tool_request', data: { tool: 'plan', args: { handoff, task: 'Plan the release' } } }, { sessionId: sessionId2 });
 await closeActiveEventLog();

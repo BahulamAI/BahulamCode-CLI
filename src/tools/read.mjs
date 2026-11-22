@@ -4,15 +4,13 @@
  * Features:
  * - pages parameter for PDF files
  * - Binary file detection
- * - Default 2000 line limit
+ * - Complete text by default, or an explicitly requested range
  * - Line number prefix (cat -n format)
  * - Graceful file not found handling
  * - Tracks read files for Edit/Write verification
  */
 import fs from 'fs';
 import path from 'path';
-
-const DEFAULT_LIMIT = 2000;
 
 // Track which files have been read (used by Edit and Write tools)
 const readFiles = new Set();
@@ -97,24 +95,16 @@ export const ReadTool = {
             }
 
             // start_line/end_line: 1-indexed, inclusive
-            const hasStart = input.start_line != null;
-            const hasEnd = input.end_line != null;
-            const startIdx = hasStart ? Math.max(0, Number(input.start_line) - 1) : 0;
-            let endIdx;
-            if (hasEnd) {
-                endIdx = Math.min(Number(input.end_line), lines.length); // inclusive → exclusive bound
-            } else if (hasStart) {
-                endIdx = lines.length;
-            } else {
-                endIdx = Math.min(DEFAULT_LIMIT, lines.length);
-            }
+            const startIdx = Math.max(0, Number(input.start_line ?? input.offset ?? 1) - 1);
+            const endIdx = Math.min(lines.length, Number(input.end_line ??
+                (input.limit != null ? startIdx + Number(input.limit) : lines.length)));
 
             const output = lines
                 .slice(startIdx, endIdx)
                 .map((l, i) => `${startIdx + i + 1}\t${l}`)
                 .join('\n');
 
-            if (endIdx < lines.length) {
+            if (startIdx > 0 || endIdx < lines.length) {
                 return output + `\n\n[File has ${lines.length} lines total. Showing lines ${startIdx + 1}-${endIdx}. Use read_file with start_line/end_line for more.]`;
             }
 

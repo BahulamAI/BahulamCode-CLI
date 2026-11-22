@@ -4,6 +4,7 @@
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
 import assert from 'node:assert';
+import fs from 'node:fs';
 
 let passed = 0;
 let failed = 0;
@@ -21,12 +22,9 @@ function test(name, fn) {
 console.log('\n\x1b[1me2e-tool-roundtrip.mjs\x1b[0m\n');
 
 const executor = createToolExecutor();
+await executor.registerProjectRoots([process.cwd()]);
 
 // Test: read_file reads real file and returns content.
-// Two envelope shapes: a ranged read returns the raw `content` field,
-// while a default read of a >50-line file returns an AST summary in
-// `output` (with `_truncated: true`) and no `content`. Cover both so a
-// future change to either branch is caught.
 await test('read_file returns content for a ranged read', async () => {
     const result = await executor.execute('read_file', { path: 'package.json', start_line: 1, end_line: 12 });
     assert.strictEqual(result.success, true);
@@ -34,11 +32,12 @@ await test('read_file returns content for a ranged read', async () => {
     assert.strictEqual(result._tool, 'read_file');
 });
 
-await test('read_file summarizes a large file by default', async () => {
+await test('read_file returns the full package manifest by default', async () => {
     const result = await executor.execute('read_file', { path: 'package.json' });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes('@bahulam/code'));
-    assert.strictEqual(result._truncated, true);
+    assert.strictEqual(result.content, fs.readFileSync('package.json', 'utf8'));
+    assert.strictEqual(result._truncated, false);
     assert.strictEqual(result._tool, 'read_file');
 });
 
