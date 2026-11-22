@@ -123,6 +123,7 @@ import {
   resolveAttachmentPath,
   writeClipboardImageToTemp,
 } from '../core/attachments.mjs';
+import { projectToolArgs } from '../core/project-path.mjs';
 import { toolDisplayLabel, toolDisplaySummary } from './tool-display.mjs';
 import { exploreCategory, exploreCollapseEnabled, isExploreTool } from './repl-explore.mjs';
 import { session, orbitRef, sessionMgrRef, runtime } from './repl-state.mjs';
@@ -2190,12 +2191,18 @@ function formatRustFallbackTranscript(events = []) {
     switch (event?.type) {
       case 'turn_started': block('You ›', data.text, c.brand, 2); break;
       case 'message_end': block(event.agent_id === 'main' ? 'Bahulam ›' : `${event.agent_id || 'Agent'} ›`, data.text, c.white, 4); break;
-      case 'tool_requested': block(`Tool · ${clean(data.name) || 'command'}`, [data.primary, data.preview].filter(Boolean).join('\n'), c.cyan, 3); break;
+      case 'tool_requested': block(`Tool · ${clean(data.name) || 'command'}`, [data.display_path || data.primary, data.preview].filter(Boolean).join('\n'), c.cyan, 3); break;
       case 'tool_finished': block(data.ok === false ? 'Tool result · failed' : 'Tool result', data.preview || data.summary, data.ok === false ? c.red : c.gray, 3); break;
       case 'agent_spawned': block(`Subagent · ${clean(data.type) || 'agent'}`, data.task, c.magenta || c.brand, 2); break;
       case 'agent_finished': block(data.ok === false ? 'Subagent · failed' : 'Subagent · complete', data.report, data.ok === false ? c.red : c.gray, 2); break;
       case 'turn_ended': block(data.ok === false ? 'Turn · failed' : 'Turn · complete', data.summary, data.ok === false ? c.red : c.gray, 2); break;
-      case 'notice': block(data.title || 'Notice', [data.cause, data.next_step].filter(Boolean).join('\n'), data.level === 'error' ? c.red : c.yellow, 2); break;
+      case 'notice': {
+        const cause = data.progress_key === 'context-summary'
+          ? String(data.cause || '').replace(/ · [\d,?]+ \/ [\d,?]+ (?:estimated )?tokens$/, '')
+          : data.cause;
+        block(data.title || 'Notice', [cause, data.next_step].filter(Boolean).join('\n'), data.level === 'error' ? c.red : c.yellow, 2);
+        break;
+      }
       case 'command_result': block(`Command · ${clean(data.name) || 'result'}`, data.result, data.ok === false ? c.red : c.gray, 3); break;
       default: break;
     }
@@ -2348,19 +2355,9 @@ function renderEvent(event) {
       const phaseTag = phase.replaceAll('_', '-');
       const collapsed = Number(data?.collapsed_messages || 0);
       const kept = Number(data?.kept_recent || 0);
-      // PRD-213: backend now sends `before_tokens` (real when source is
-      // `ground_truth`, chars/4 estimate when `estimator_fallback`) plus
-      // the resolved threshold. Keep the legacy `before_est_tokens` fall-
-      // back so an older backend that hasn't rolled out yet still renders.
-      const before = Number(data?.before_tokens || data?.before_est_tokens || 0);
-      const threshold = Number(data?.threshold || 160_000);
-      const source = String(data?.source || 'estimator');
-      const tokenLabel = source === 'ground_truth' ? 'real' : 'est';
-      const beforeK = before ? ` · ${Math.round(before / 1000)}k/${Math.round(threshold / 1000)}k ${tokenLabel} tokens` : '';
-      const sourceTag = source === 'ground_truth' ? '' : ` [${source}]`;
       const keptPart = kept ? ` · kept last ${kept}` : '';
       const preview = String(data?.summary_preview || '').trim();
-      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}${beforeK}${sourceTag}`)}\n`);
+      process.stderr.write(`  ${c.brand('✎')} ${c.dim(`context summarized (${phaseTag}) · ${collapsed} older message${collapsed === 1 ? '' : 's'} collapsed${keptPart}`)}\n`);
       if (preview) {
         process.stderr.write(`    ${c.dim('› ' + preview)}\n`);
       }
@@ -7053,12 +7050,14 @@ export async function startTerminalRepl() {
         // when BAHULAM_DAEMON_EVENTLOG=1, mirror each SSE frame that maps
         // to a first-class type into ~/.bahulam/sessions/<id>/events.jsonl.
         // No-op otherwise; zero effect on the render path either way.
-        tapSseEvent(event, { sessionId: session.id });
+        const toolRequest = event.type === 'tool_call' || event.type === 'tool_request';
+        const projects = toolRequest ? toolExecutor.getProjectResources() : [];
+        tapSseEvent(event, { sessionId: session.id, projects });
         // Local execution begins as soon as the request is rendered; mark the
         // card running so the client can show elapsed time and the agent's
         // current tool. Attribution fields ride along so it lands on the same
         // row as the request; arguments do not need to travel twice.
-        if (event.type === 'tool_call' || event.type === 'tool_request') {
+        if (toolRequest) {
           const { args: _args, tool_input: _ti, input: _in, ...started } = event.data || {};
           tapSseEvent({ type: 'tool_started', data: started }, { sessionId: session.id });
         }
@@ -7070,7 +7069,10 @@ export async function startTerminalRepl() {
           );
         }
         if (isInputDockMounted()) moveToContent();
-        renderEvent(event);
+        const args = event.data?.args;
+        renderEvent(toolRequest && args ? { ...event, data: {
+          ...event.data, args: projectToolArgs(event.data.tool, args, projects),
+        } } : event);
         if (event.type === 'complete' || event.type === 'session_info') sendRustSessionState();
         focusExecutionInput();
 

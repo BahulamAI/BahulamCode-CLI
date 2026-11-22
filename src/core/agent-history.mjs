@@ -6,8 +6,6 @@
  * followed by user tool_result blocks, appended in the order they happened.
  */
 
-const DEFAULT_MAX_TOOL_RESULT_CHARS = 200_000;
-
 function asString(value) {
     if (value == null) return '';
     if (typeof value === 'string') return value;
@@ -35,11 +33,11 @@ function mergeTextBlock(blocks, text) {
 }
 
 export class AgentHistoryTurnBuilder {
-    constructor({ maxToolResultChars = DEFAULT_MAX_TOOL_RESULT_CHARS } = {}) {
+    constructor({ maxToolResultChars = 0 } = {}) {
         this.maxToolResultChars = maxToolResultChars;
         this.messages = [];
         this.assistantBlocks = [];
-        this.toolUseIds = new Set();
+        this.toolUseIds = new Map();
         this.toolResultIds = new Set();
         this.pendingUserMessages = [];
     }
@@ -59,7 +57,7 @@ export class AgentHistoryTurnBuilder {
             name,
             input: data.args || data.input || {},
         });
-        this.toolUseIds.add(id);
+        this.toolUseIds.set(id, name);
         return true;
     }
 
@@ -77,16 +75,18 @@ export class AgentHistoryTurnBuilder {
                 name,
                 input: data.args || data.input || {},
             });
-            this.toolUseIds.add(id);
+            this.toolUseIds.set(id, name);
         }
 
+        const output = data.llm_content ?? data.output ?? data.result ?? data.message ?? '';
+        const fileRead = ['read_file', 'read_files', 'read_batch'].includes(this.toolUseIds.get(id));
         this.flushAssistant();
         this.messages.push({
             role: 'user',
             content: [{
                 type: 'tool_result',
                 tool_use_id: id,
-            content: maybeTruncate(data.llm_content ?? data.output ?? data.result ?? data.message ?? '', this.maxToolResultChars),
+                content: fileRead ? asString(output) : maybeTruncate(output, this.maxToolResultChars),
                 ...(data.success === false || data.is_error ? { is_error: true } : {}),
             }],
         });
@@ -101,7 +101,7 @@ export class AgentHistoryTurnBuilder {
     }
 
     flushUserMessages() {
-        if ([...this.toolUseIds].some(id => !this.toolResultIds.has(id))) return;
+        if ([...this.toolUseIds.keys()].some(id => !this.toolResultIds.has(id))) return;
         if (!this.pendingUserMessages.length) return;
         this.flushAssistant();
         this.messages.push(...this.pendingUserMessages.splice(0));

@@ -17,7 +17,7 @@ const PRODUCT_POLICIES = Object.freeze({
   // models do not grow to their full capacity before we protect cache reuse
   // and attention quality.
   chat: Object.freeze({ triggerRatio: 0.72, targetRatio: 0.48, workingSetRatio: 0.18, preserve: 12, prune: 'aggressive' }),
-  ide: Object.freeze({ triggerRatio: 0.78, targetRatio: 0.52, workingSetRatio: 0.20, preserve: 10, prune: 'conservative' }),
+  ide: Object.freeze({ triggerRatio: 1, targetRatio: 0.52, workingSetRatio: 1, preserve: 10, prune: 'conservative' }),
   workspace: Object.freeze({ triggerRatio: 0.70, targetRatio: 0.45, workingSetRatio: 0.16, preserve: 14, prune: 'protected' }),
 });
 
@@ -42,9 +42,7 @@ export function toolPruningPolicy(product = 'ide') {
     ],
     eligible: profile === 'chat'
       ? ['read_file', 'search_code', 'search_files', 'list_files', 'shell']
-      : profile === 'workspace'
-        ? ['read_file', 'search_code', 'search_files', 'list_files']
-        : ['read_file', 'search_code', 'search_files', 'list_files', 'shell'],
+      : profile === 'workspace' ? ['read_file', 'search_code', 'search_files', 'list_files'] : [],
   };
 }
 
@@ -57,9 +55,11 @@ export function resolveContextBudget({
   const window = Number(contextLength || catalog?.context_length || 0);
   const output = Number(maxOutput || catalog?.max_output || 0);
   const explicit = Number(explicitThreshold || 0);
+  const defaultLimit = contextProduct(product) === 'ide' ? 180_000 : Infinity;
+  const limit = Math.min(defaultLimit, explicit > 0 ? Math.floor(explicit) : Infinity);
   if (!Number.isFinite(window) || window <= 0) {
-    return { ...policy, threshold: explicit > 0 ? Math.max(20_000, Math.floor(explicit)) : 160_000,
-      source: explicit > 0 ? 'explicit' : 'fallback' };
+    return { ...policy, threshold: Number.isFinite(limit) ? limit : 160_000,
+      source: explicit > 0 && explicit === limit ? 'explicit' : defaultLimit === limit && Number.isFinite(limit) ? 'coding_budget' : 'fallback' };
   }
   const reservedOutput = output > 0 ? output : Math.floor(window * 0.10);
   const safety = Math.max(1024, Math.floor(window * 0.03));
@@ -68,14 +68,14 @@ export function resolveContextBudget({
   const modelTrigger = Math.max(1, Math.floor(workingSet * policy.triggerRatio));
   return {
     ...policy,
-    threshold: explicit > 0 ? Math.min(modelTrigger, Math.floor(explicit)) : modelTrigger,
+    threshold: Math.min(limit, modelTrigger),
     targetTokens: Math.max(1, Math.floor(workingSet * policy.targetRatio)),
     contextLength: window,
     reservedOutput,
     usableTokens: usable,
     workingSetTokens: workingSet,
     fixedPromptTokens: Math.max(0, fixedPromptTokens),
-    source: explicit > 0 && explicit < modelTrigger ? 'explicit' : 'model_catalog',
+    source: modelTrigger <= limit ? 'model_catalog' : explicit === limit ? 'explicit' : 'coding_budget',
   };
 }
 
@@ -103,7 +103,7 @@ export function contextReductionConfig(env = process.env, product = 'ide') {
     strategy: ['summary', 'summarize', 'summarization'].includes(strategyRaw)
       ? 'summarization'
       : 'distillation',
-    threshold: Number.isFinite(threshold) && threshold > 0 ? Math.max(20_000, threshold) : null,
+    threshold: Number.isFinite(threshold) && threshold > 0 ? Math.max(contextProduct(product) === 'ide' ? 1 : 20_000, threshold) : null,
     preserve: Number.isFinite(preserve) && preserve > 0 ? Math.max(2, preserve) : null,
     sigma: Number.isFinite(sigma) ? Math.max(0.5, Math.min(4, sigma)) : 1.5,
   };

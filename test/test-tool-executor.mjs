@@ -3,6 +3,7 @@
  */
 
 import { createToolExecutor } from '../src/core/tool-executor.mjs';
+import { llmToolResultContent } from '../src/core/callback-client.mjs';
 import { createToolRegistry } from '../src/tools/registry.mjs';
 import { ProjectRegistry } from '../src/tools/project-overview.mjs';
 import { PluginRegistry } from '../src/plugins/registry.mjs';
@@ -543,10 +544,8 @@ await test('read_file reads package.json', async () => {
     assert.strictEqual(result.success, true);
     // Package is dual-published under @bahulamai/code and @bahulam/code;
     // publish flow swaps the `name` field in-place. Accept either scope so
-    // a mid-publish package.json doesn't break the test suite. read_file
-    // returns `content` for small files and `output` (AST summary + first
-    // 20 lines) for files >50 lines — accept either field.
-    const body = result.content ?? result.output ?? '';
+    // a mid-publish package.json remains valid for this check.
+    const body = result.content;
     assert.ok(
         body.includes('@bahulamai/code') || body.includes('@bahulam/code'),
         'package.json name should be @bahulamai/code or @bahulam/code',
@@ -564,7 +563,8 @@ await test('read_file reuses unchanged repeated reads and read_batch reads line 
         assert.strictEqual(first.success, true);
         assert.strictEqual(second.success, true);
         assert.strictEqual(second._cache_reused, true);
-        assert.ok(second.output.includes('reused prior read_file result'));
+        assert.strictEqual(second.output, first.output);
+        assert.strictEqual(second.content, 'one\ntwo\nthree');
 
         const batch = await cacheExecutor.execute('read_batch', {
             items: [
@@ -576,6 +576,65 @@ await test('read_file reuses unchanged repeated reads and read_batch reads line 
         assert.strictEqual(batch._tool, 'read_batch');
         assert.strictEqual(batch.files.length, 2);
         assert.ok(batch.output.includes('sample.txt'));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('search paths round-trip through read, write and replay in the selected project', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-relative-')));
+    try {
+        const roots = ['first', 'second'].map(name => path.join(root, name));
+        const label = path.join('src', 'router.tsx');
+        const source = `const marker = "${roots[1]}/literal";`;
+        for (const dir of roots) {
+            fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+            fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+            fs.writeFileSync(path.join(dir, label), dir === roots[1] ? source : 'other project');
+        }
+        const scoped = createExecutorWithoutAutoRegister({ deferProjectIndex: true });
+        const [, second] = await scoped.registerProjectRoots(roots);
+        const project_id = second.resource.project_id;
+        const run = (name, args) => scoped.execute(name, { project_id, ...args });
+        const full = path.join(roots[1], label);
+        for (const name of ['grep', 'search_code', 'search_files']) {
+            const result = await run(name, { path: full, pattern: 'marker' });
+            assert.ok(result.output.includes(`${label}:1:${source}`), name + ': ' + result.output);
+            assert.ok(!result.output.includes(full));
+        }
+        const list = await run('list_files', { path: 'src', pattern: '*.tsx' });
+        assert.deepEqual(list.files, [label]);
+        const read = await run('read_file', { file_path: list.files[0] });
+        assert.equal(read.content, source);
+        assert.equal(JSON.parse(llmToolResultContent('read_file', read)).output, label + '\n1\t' + source);
+        const batch = await run('read_files', { file_paths: [full] });
+        assert.equal(batch.files[0].path, label);
+        assert.ok(!batch.output.includes(full));
+        const edit = await run('edit_file', { path: label, search: 'marker', replace: 'found' });
+        assert.ok(edit.success && !edit.output.includes(full), edit.output);
+        assert.equal(edit.file_diff.relative_path, label);
+        const write = await run('write_file', { path: 'x', content: 'new' });
+        assert.equal(write.output, 'File written: x');
+        assert.equal(fs.readFileSync(path.join(roots[0], label), 'utf8'), 'other project');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+await test('read_file returns complete source beyond 2000 lines, including on a cache hit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-source-pages-'));
+    try {
+        const file = path.join(root, 'long.txt');
+        const lines = Array.from({ length: 2013 }, (_, i) => `line ${i + 1}: original text`);
+        fs.writeFileSync(file, lines.join('\n'));
+        const reader = createToolExecutor();
+        const read = args => reader.execute('read_file', { path: file, ...args });
+        const page = await read({});
+        assert.strictEqual(page.content, lines.join('\n'));
+        assert.strictEqual(page._truncated, false);
+        assert.strictEqual((await read({})).output, page.output);
+        assert.strictEqual((await read({ offset: 2001, limit: 13 })).content, lines.slice(2000).join('\n'));
+        assert.strictEqual((await read({ start_line: 1000, end_line: 1001 })).content, lines.slice(999, 1001).join('\n'));
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

@@ -34,6 +34,7 @@ export function contextStatusRows(session, runtimeMode) {
     ['Last request', session.lastTurnInputTokens > 0 ? formatTokens(session.lastTurnInputTokens) + ' input tokens' : 'No usage reported'],
     ['Session total', formatTokens(usage.input_tokens) + ' input · ' + formatTokens(usage.output_tokens) + ' output'],
     ['Summary trigger', localPolicy && !config.enabled ? 'Disabled for this runtime'
+      : budget.threshold == null ? 'Awaiting model context limit'
       : '≈' + formatTokens(budget.threshold) + (budget.source === 'fallback' ? ' tokens (fallback estimate)' : ' history tokens (before prompt overhead)')],
   ];
   if (session.summaryProgress) rows.push(['Latest attempt', session.summaryProgress]);

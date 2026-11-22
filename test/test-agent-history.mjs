@@ -133,6 +133,15 @@ await test('truncates only oversized tool results', async () => {
     assert.ok(result.includes('truncated this tool result'));
 });
 
+await test('preserves complete file reads across the continuity cap', async () => {
+    for (const tool of ['read_file', 'read_batch', 'read_files']) {
+        const turn = new AgentHistoryTurnBuilder({ maxToolResultChars: 5 });
+        turn.addToolUse({ call_id: 'read', tool, args: {} });
+        turn.addToolResult({ call_id: 'read', output: 'src/test.js\n1\tcomplete' });
+        assert.strictEqual(turn.finish()[1].content[0].content, 'src/test.js\n1\tcomplete');
+    }
+});
+
 await test('prefers backend llm_content over display output', async () => {
     const turn = new AgentHistoryTurnBuilder();
     turn.addToolUse({ call_id: 'call-1', tool: 'read_file', args: {} });

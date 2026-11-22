@@ -518,7 +518,7 @@ export class ProjectRegistry {
                 resource: existing.resource,
                 output:
                     `Project already registered as project_id=${id}. ` +
-                    `Use project_id=${id} with search_code and use absolute paths for file tools.`,
+                    `Use paths relative to this root for file and search tools. Pass project_id=${id} to select this project.`,
             };
         }
 

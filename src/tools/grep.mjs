@@ -48,11 +48,13 @@ export const GrepTool = {
 
             // Pass regex and paths as process arguments. Joining these into a
             // shell command would turn regex operators such as | into pipelines.
-            const args = [];
+            const args = ['-H'];
+            if (input.max_count) args.push('-m', String(input.max_count));
             const useRg = hasRipgrep();
             const command = useRg ? 'rg' : 'grep';
 
             if (useRg) {
+                if (input.max_filesize) args.push('--max-filesize', input.max_filesize);
                 if (input['-i']) args.push('-i');
                 if (input.multiline) args.push('-U', '--multiline-dotall');
 
@@ -107,7 +109,7 @@ export const GrepTool = {
                 return 'No matches found.';
             }
 
-            const output = (result.stdout || '').trim();
+            const output = (result.stdout || '').replace(/\r?\n$/, '');
             if (!output) return 'No matches found.';
             if (limit <= 0) return output;
             return output.split('\n').slice(0, limit).join('\n');
