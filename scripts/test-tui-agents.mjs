@@ -38,6 +38,7 @@ setInterval(()=>{
  if(action==='finish') for(const n of [4,2,5,1,3]) {
   const id='worker'+n;
   send('tool_finished',id,{tool_id:'shared',ok:n!==4,output:'result '+n});
+  if(n===2)send('artifact_created',id,{title:'Report.md',path:'Report.md'});
   send('agent_finished',id,{ok:n!==4,report:Array.from({length:8},(_,i)=>'REPORT-'+n+'-'+i).join('\\n'),error:n===4?'Fixture failure':'',tokens:{total:n*2000},elapsed_ms:4000});
  }
  if(action==='resume')send('transcript_snapshot','main',{replace:true,mode:'full',items:history.map(event=>({kind:'event',event}))},false);
@@ -82,6 +83,9 @@ def resize(rows,cols):
 try:
  wait(lambda:'Worker 5' in screen.text() and 'Running read_file' in screen.text())
  assert 'PRIVATE-' not in screen.text(),screen.text()
+ send(b'\x1ba');send(b'\x1b');wait(lambda:'Worker 5' not in screen.text())
+ send(b'\x1ba');wait(lambda:'Worker 5' in screen.text())
+ send(b'\x1ba');wait(lambda:'Worker 5' not in screen.text())
  send(b'\x1ba')
  send(b'\x1b[200~draft\x1b[201~');wait(lambda:'draft' in screen.text())
  send(b'\t\x1b[H');wait(lambda:'MAIN-000' in screen.text())
@@ -111,7 +115,8 @@ try:
  send(b'\x1b')
  control('resume');wait(lambda:'Transcript loaded' in screen.text() or 'REPORT-3-7' in screen.text())
  pump(.3);assert 'Permission needed' not in screen.text(),'Historical approval became actionable'
- send(b'\x1ba');wait(lambda:'saved done' in screen.text() and 'saved failed' in screen.text())
+ send(b'\x1ba');wait(lambda:'saved completed' in screen.text() and 'saved failed' in screen.text())
+ wait(lambda:'Artifact: Report.md' in screen.text())
  click('Worker 2');wait(lambda:'REPORT-2-7' in screen.text())
  assert 'REPORT-3-' not in screen.text()
  send(b'\x1b');send(b'after resume\r');wait(lambda:open(file+'.prompt').read()=='after resume')

@@ -490,6 +490,7 @@ pub fn has_subagents(model: &Model) -> bool {
 
 fn show_agent_strip(model: &Model) -> bool {
     has_subagents(model)
+        && !model.agents_hidden
         && (model.agents_open
             || model
                 .agents
@@ -534,6 +535,18 @@ fn agent_display_name(agent: &crate::model::Agent) -> &str {
 }
 
 fn agent_activity(agent: &crate::model::Agent) -> String {
+    if matches!(
+        agent.status.as_str(),
+        "done" | "completed" | "complete" | "failed" | "cancelled" | "unconfirmed"
+    ) {
+        if !agent.artifact.is_empty() {
+            return format!("Artifact: {}", agent.artifact);
+        }
+        if !agent.written_file.is_empty() {
+            return format!("Wrote {}", agent.written_file);
+        }
+        return String::new();
+    }
     if !agent.current_tool.is_empty() {
         format!("Running {}", agent.current_tool)
     } else if !agent.last_tool.is_empty() {
@@ -619,10 +632,15 @@ fn draw_agents(
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
+        let status = match agent.status.as_str() {
+            "done" | "complete" => "completed",
+            "unconfirmed" => "completion unconfirmed",
+            other => other,
+        };
         let status = if agent.historical {
-            format!("saved {}", agent.status)
+            format!("saved {status}")
         } else {
-            agent.status.clone()
+            status.into()
         };
         let identity = format!(
             "{tree}{} {}",
@@ -630,11 +648,11 @@ fn draw_agents(
             middle_ellipsis(agent_display_name(agent), if compact { 16 } else { 10 })
         );
         let activity = agent_activity(agent);
-        let suffix = format!(
-            "  {status}{}{}",
-            if stats.is_empty() { "" } else { " · " },
-            stats
-        );
+        let suffix = if stats.is_empty() {
+            format!("  {status}")
+        } else {
+            format!("  {stats} · {status}")
+        };
         let style = Style::default().fg(agent_identity_color(&agent.id, p)).bg(
             if active && focused == index {
                 p.selection
@@ -656,7 +674,7 @@ fn draw_agents(
                     .bg(style.bg.unwrap_or(Color::Reset)),
             ),
         ];
-        if compact {
+        if compact && !activity.is_empty() {
             let room = (inner.width as usize).saturating_sub(
                 UnicodeWidthStr::width(identity.as_str())
                     + UnicodeWidthStr::width(suffix.as_str())
@@ -708,7 +726,11 @@ fn draw_agents(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(if active { p.accent } else { p.border }))
-                .title(" Agents · Alt+A "),
+                .title(if active {
+                    " Agents · Esc hide "
+                } else {
+                    " Agents · Alt+A "
+                }),
         ),
         area,
     );
@@ -752,7 +774,7 @@ fn view_layout(area: Rect, input: &str, model: &Model) -> ViewLayout {
             Constraint::Length(1),
         ])
         .areas(area);
-    let columns = if compact {
+    let columns = if compact || model.agents_hidden {
         [rows[1], Rect::default()]
     } else {
         Layout::default()
@@ -1220,13 +1242,18 @@ pub fn draw_with_view(
             .iter()
             .find(|row| row.id == agent)
             .map(|row| {
+                let activity = agent_activity(row);
                 format!(
                     "{}{} · {}",
                     agent_display_name(row),
                     row.tokens
                         .map(|tokens| format!(" · {} tok", format_token_count(tokens)))
                         .unwrap_or_default(),
-                    agent_activity(row)
+                    if activity.is_empty() {
+                        &row.status
+                    } else {
+                        &activity
+                    }
                 )
             })
             .unwrap_or_else(|| "Sub-agent".into());
@@ -1821,7 +1848,8 @@ fn agent_state(status: &str, p: Palette) -> (&'static str, Color) {
     match status {
         "working" | "running" => ("◐", p.info),
         "failed" => ("✗", p.danger),
-        "done" | "complete" => ("✓", p.success),
+        "done" | "complete" | "completed" => ("✓", p.success),
+        "unconfirmed" => ("?", p.warning),
         _ => ("○", p.muted),
     }
 }
@@ -2791,7 +2819,18 @@ fn card_lines_with_preview(
     } else {
         selected_lines
     };
-    let body_lines: Vec<String> = if !foldable || is_expanded {
+    let is_help = card
+        .title
+        .split_whitespace()
+        .take(2)
+        .eq(["Command", "/help"]);
+    let body_lines: Vec<String> = if is_help {
+        // Wrap the styled spans below, so a narrow terminal cannot split a shortcut's markup.
+        selected_lines
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect()
+    } else if !foldable || is_expanded {
         // Message lines get a 4-column speaker gutter plus the 3-column
         // markdown indent; wrap to what remains so the paragraph widget
         // never re-wraps and pushes the newest line out of the viewport.

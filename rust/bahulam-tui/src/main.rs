@@ -1600,16 +1600,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Esc if focus_panel != 0 => {
+                        let hiding_agents = focus_panel == 2;
                         focus_panel = 0;
                         if let Ok(mut state) = model.lock() {
                             state.agents_open = false;
+                            if hiding_agents {
+                                state.agents_hidden = true;
+                            }
                         }
                     }
                     KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
                         if let Ok(mut state) = model.lock() {
                             if bahulam_tui::render::has_subagents(&state) {
-                                state.agents_open = true;
-                                focus_panel = 2;
+                                state.agents_hidden = focus_panel == 2;
+                                state.agents_open = !state.agents_hidden;
+                                focus_panel = if state.agents_open { 2 } else { 0 };
                             }
                         }
                     }
@@ -1639,6 +1644,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             (focus_panel + 1) % if inline_mode && !has_agents { 2 } else { 3 };
                         if focus_panel == 2 {
                             if let Ok(mut state) = model.lock() {
+                                state.agents_hidden = false;
                                 state.agents_open = true;
                             }
                         }
@@ -2268,6 +2274,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     follow = true;
                                     focus_panel = 1;
                                     if let Ok(mut state) = model.lock() {
+                                        state.agents_hidden = false;
                                         state.agents_open = true;
                                     }
                                 }

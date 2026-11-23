@@ -235,6 +235,7 @@ import {
 import { createRequire } from 'node:module';
 const __require = createRequire(import.meta.url);
 const VERSION = __require('../../package.json').version;
+export { VERSION as cliVersion };
 
 // ── Safe CWD ──
 // If the working directory gets deleted (by a rogue tool call),
@@ -270,11 +271,21 @@ const VERSION = __require('../../package.json').version;
 // catalog in ui/slash-commands.mjs. See imports at the top of this file.
 
 
+// Rust receives sanitized command text. Its Markdown renderer applies the active theme.
+function helpHeading(title) {
+  return _rustTuiActive ? '## ' + title : c.bold(title);
+}
+
+function helpCommand(name, width) {
+  if (!_rustTuiActive) return c.brand(name.padEnd(width));
+  return `\`${name}\`${' '.repeat(Math.max(0, width - name.length))}`;
+}
+
 function renderHelp(topic = '') {
   const key = String(topic || '').trim().toLowerCase();
   if (!key) {
-    process.stderr.write(`\n  ${c.bold('Bahulam Code Commands')}\n`);
-    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    process.stderr.write(`\n  ${helpHeading(`Bahulam Code Commands · v${VERSION}`)}\n`);
+    if (!_rustTuiActive) process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
     const top = [
       ['/help', 'Grouped command help'],
       ['/status', 'Session snapshot'],
@@ -285,25 +296,38 @@ function renderHelp(topic = '') {
       ['/why', 'Explain last reasoning'],
     ];
     for (const [name, desc] of top) {
-      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}\n`);
+      process.stderr.write(`  ${helpCommand(name, 14)} ${desc}\n`);
     }
-    process.stderr.write(`\n  ${c.bold('Categories')}\n`);
+    process.stderr.write(`\n  ${helpHeading('Categories')}\n`);
     for (const group of HELP_GROUPS) {
-      process.stderr.write(`  ${c.brand(('/help ' + group.key).padEnd(20))} ${c.dim(group.summary)}\n`);
+      process.stderr.write(`  ${helpCommand('/help ' + group.key, 20)} ${c.dim(group.summary)}\n`);
     }
-    process.stderr.write(`\n  ${c.dim('Use /help all for legacy command aliases.')}\n`);
+    process.stderr.write(`\n  ${c.dim(_rustTuiActive ? '`/help all` lists commands and aliases · `/help keys` lists keyboard shortcuts' : 'Use /help all for legacy command aliases.')}\n`);
     renderKeyboardHelp();
     return;
   }
 
   if (key === 'all' || key === 'commands') {
-    process.stderr.write(`\n  ${c.bold('All Commands')}\n`);
-    process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
-    for (const [name, desc] of Object.entries(COMMANDS)) {
+    process.stderr.write(`\n  ${helpHeading('All Commands')}\n`);
+    if (!_rustTuiActive) process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+    const entries = Object.entries(COMMANDS);
+    if (_rustTuiActive) {
+      for (const [name, desc] of entries.filter(([name]) => !LEGACY_COMMAND_HINTS[name])) {
+        process.stderr.write(`  ${helpCommand(name, 14)} ${desc}\n`);
+      }
+      process.stderr.write(`\n  ${helpHeading('Legacy aliases')}\n`);
+    }
+    for (const [name, desc] of entries) {
+      if (_rustTuiActive && !LEGACY_COMMAND_HINTS[name]) continue;
       const alias = LEGACY_COMMAND_HINTS[name] ? c.dim(`  alias for ${LEGACY_COMMAND_HINTS[name]}`) : '';
-      process.stderr.write(`  ${c.brand(name.padEnd(14))} ${desc}${alias}\n`);
+      process.stderr.write(`  ${helpCommand(name, 14)} ${desc}${alias}\n`);
     }
     process.stderr.write('\n');
+    return;
+  }
+
+  if (_rustTuiActive && key === 'keys') {
+    renderKeyboardHelp();
     return;
   }
 
@@ -313,16 +337,32 @@ function renderHelp(topic = '') {
     return;
   }
 
-  process.stderr.write(`\n  ${c.bold(group.title)} ${c.dim(group.summary)}\n`);
-  process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
+  process.stderr.write(`\n  ${helpHeading(group.title)}${_rustTuiActive ? '\n  ' : ' '}${c.dim(group.summary)}\n`);
+  if (!_rustTuiActive) process.stderr.write(`  ${c.gray('─'.repeat(52))}\n`);
   for (const [name, desc] of group.commands) {
-    process.stderr.write(`  ${c.brand(name.padEnd(30))} ${desc}\n`);
+    process.stderr.write(`  ${helpCommand(name, 30)} ${desc}\n`);
   }
+  if (_rustTuiActive && group.key === 'agents') renderAgentPanelHelp();
   process.stderr.write('\n');
 }
 
+function renderAgentPanelHelp() {
+  process.stderr.write(`\n  ${helpHeading('Agents panel')}\n`);
+  process.stderr.write('  **Alt+A**          Open or focus the panel. Press again to hide it.\n');
+  process.stderr.write('  **↑/↓ then Enter** Inspect a worker. You can also click its row.\n');
+  process.stderr.write('  **Esc**            From worker details, return to the conversation. From the focused panel, hide it.\n');
+  process.stderr.write('  Hiding the panel keeps workers running. With the message input focused and overlays closed, Esc interrupts the whole turn.\n');
+}
+
 function renderKeyboardHelp() {
-  process.stderr.write(`\n  ${c.bold('Keyboard')}\n`);
+  process.stderr.write(`\n  ${helpHeading('Keyboard')}\n`);
+  if (_rustTuiActive) {
+    process.stderr.write('  **Enter** sends · **Ctrl+J** adds a line · **Ctrl+R** searches prompt history\n');
+    process.stderr.write('  **Tab** cycles focus · **Enter** on a tool toggles details · **Esc** closes details\n');
+    process.stderr.write('  **Ctrl+C twice** quits the CLI\n');
+    renderAgentPanelHelp();
+    return;
+  }
   process.stderr.write(`  ${c.gray('Ctrl+C')}  exit   ${c.gray('↑↓')}  history   ${c.gray('Tab')}  autocomplete\n`);
   process.stderr.write(`  ${c.gray('F2')}      expand last tool   ${c.gray('Space')}  pause/resume   ${c.gray('Esc')}  interrupt\n\n`);
 }
@@ -1383,6 +1423,9 @@ const MODEL_COMMAND_COMPLETIONS = [
 ];
 
 function slashCompletionDescription(command) {
+  if (command === '/help keys') return 'Rust terminal keyboard shortcuts';
+  if (command === '/help all') return 'List commands and aliases';
+  if (command.startsWith('/help ')) return HELP_GROUPS.find(group => group.key === command.slice(6))?.summary || '';
   const modelHint = MODEL_COMMAND_COMPLETIONS.find(item => item.command === command);
   if (modelHint) return modelHint.description;
   const helpHint = HELP_GROUPS.flatMap(group => group.commands).find(([name]) => name === command);
@@ -3917,6 +3960,10 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
       process.stderr.write(`\n  ${c.bold('Session')}\n`);
       process.stderr.write(`  ${c.dim('─'.repeat(44))}\n`);
       process.stderr.write(`  ${c.dim('ID')}           ${session.id || c.dim('(not assigned yet)')}\n`);
+      process.stderr.write(`  ${c.dim('CLI version')}  v${VERSION}\n`);
+      if (ctx.rustTuiCapabilities?.clientVersion) {
+        process.stderr.write(`  ${c.dim('Rust TUI')}     v${ctx.rustTuiCapabilities.clientVersion}\n`);
+      }
       process.stderr.write(`  ${c.dim('User')}         ${session.user?.github_username || '—'}\n`);
       process.stderr.write(`  ${c.dim('Model')}        ${session.model || 'backend default'}\n`);
       const modelOverrides = sessionModelOverrideEntries();
@@ -5884,7 +5931,10 @@ export async function startTerminalRepl() {
           const data = command?.data || {};
           switch (command?.type) {
             case 'hello':
-              if (data.client === 'bahulam-tui' && typeof data.capabilities?.report === 'string') ctx.rustTuiCapabilities = data.capabilities;
+              if (data.client === 'bahulam-tui' && typeof data.capabilities?.report === 'string') {
+                ctx.rustTuiCapabilities = { ...data.capabilities,
+                  clientVersion: typeof data.version === 'string' && /^[\w.+-]{1,80}$/.test(data.version) ? data.version : null };
+              }
               break;
             case 'prompt': {
               const instruction = String(data.text || '').trim();
@@ -6104,6 +6154,8 @@ export async function startTerminalRepl() {
         '/tui fullscreen',
         '/tui full screen',
         ...commandCompletions('/'),
+        ...commandCompletions('/help '),
+        '/help keys',
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
       ])].sort();
       _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
