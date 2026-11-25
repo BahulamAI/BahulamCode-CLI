@@ -13,6 +13,7 @@ import { McpCredentialStore, resolveMcpConfig, redactMcpConfig, safeMcpUrl, mcpE
 import { promptMcpKey } from '../src/mcp/credential-prompt.mjs';
 import { directCommandSpec, splitCommandWords, runDirectCommand } from '../src/terminal/direct-command.mjs';
 import { isSensitiveConfigPath } from '../src/core/safety.mjs';
+import { loadMcpServers } from '../src/mcp/loader.mjs';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-mcp-auth-'));
 const originalHome = process.env.BAHULAM_HOME;
@@ -236,4 +237,26 @@ test('CLI JSON output redacts stored credentials and test does not execute tools
     const listed = await cli(['list', '--json']); assert.equal(listed.code, 0); assert.ok(!listed.output.includes('masked-key'));
     const before = toolCalls;
     const tested = await cli(['test', 'demo']); assert.equal(tested.code, 0, tested.output); assert.equal(toolCalls, before);
+    assert.match(tested.output, /1 tools available\.\n  list_items\n/);
+    const detail = await cli(['test', 'demo', '--json']);
+    assert.equal(detail.code, 0, detail.output);
+    const parsed = JSON.parse(detail.output);
+    assert.equal(parsed.tool_count, 1);
+    assert.deepEqual(parsed.tools, [{ name: 'list_items', description: 'fixture', inputSchema: { type: 'object' } }]);
+    assert.equal(toolCalls, before, 'inspecting schemas must not execute tools');
+    assert.ok(!detail.output.includes('masked-key'));
+});
+
+test('startup discovery passes descriptions and input schemas to runtime registration', async () => {
+    const registered = [];
+    const loaded = await loadMcpServers({ registerMcpTool: (...args) => registered.push(args) }, {
+        mcpServers: { demo: { url: config.url, headers: { Authorization: 'Bearer masked-key' } } },
+    });
+    try {
+        assert.equal(loaded.errors.length, 0);
+        assert.equal(registered.length, 1);
+        assert.deepEqual(registered[0].slice(0, 3), ['settings', 'demo', 'list_items']);
+        assert.deepEqual(registered[0][4], { type: 'object' });
+        assert.equal(registered[0][5], 'fixture');
+    } finally { await loaded.disconnectAll(); }
 });

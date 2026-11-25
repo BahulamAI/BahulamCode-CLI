@@ -59,11 +59,13 @@ The terminal temporarily hands input and output to the command. Press Enter afte
 
 The agent can call the read-only `bahulam_cli_info` tool (`mcp`, `input`, `version`, or `all`) for the instructions belonging to the installed package. Both local and remote agent routes advertise it. It never reads credentials; backend account/provider questions still use `bahulam_info`.
 
+At session startup, MCP discovery supplies tool names, descriptions and input schemas to the agent loop. Remote and local model requests use provider-compatible aliases; execution maps those aliases back to the original MCP server/tool. Credentials stay in the local MCP client. Sub-agent allowlists and approval checks continue to use the canonical `server.tool` names. `mcp test` inspects a separate connection; it does not hot-reload a running agent session.
+
 - Portable registrations remain in `~/.claude/settings.json` for compatibility with the existing settings loader.
 - OAuth tokens, dynamic client registration and prompted API keys are stored separately under `${BAHULAM_HOME:-~/.bahulam}/mcp-credentials/`, keyed by the full resolved server URL.
 - These files are **not encrypted**. On POSIX, the directory is mode `0700` and credential files are `0600`; Windows relies on the user's profile ACL. Keep this directory out of shared folders and backups intended for distribution.
 - `mcp list --json` and registration output redact configured headers, environment values, arguments and credential-bearing URL paths/query values. Environment references remain visible. Remote error bodies and server stderr are withheld because they may echo credentials.
-- `mcp test` initializes the connection and lists tools; it never executes a tool.
+- `mcp test <name>` initializes the connection and prints the count and each tool name; it never executes a tool. `mcp test <name> --json` returns `tool_count` and a `tools` array containing each tool's `name`, `description`, and `inputSchema`.
 - `mcp logout <name>` deletes local credentials. It does not revoke the provider-side grant or invalidate another process's already-running connection. Reconnect active sessions; use the provider's account controls to revoke access remotely.
 - `mcp remove <name>` removes registration only. Run `logout` before removal if you also want to delete credentials; registrations using the same URL share the credential record.
 

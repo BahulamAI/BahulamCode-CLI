@@ -48,7 +48,7 @@ export async function loadMcpServers(toolExecutor, settings, options = {}) {
             const tools = await client.listTools();
             for (const tool of tools) {
                 if (toolExecutor.registerMcpTool) {
-                    toolExecutor.registerMcpTool(plugin, name, tool.name, client, tool.inputSchema || {});
+                    toolExecutor.registerMcpTool(plugin, name, tool.name, client, tool.inputSchema || {}, tool.description || '');
                 }
             }
             clients.push({ name, plugin, client });

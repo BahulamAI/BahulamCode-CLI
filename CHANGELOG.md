@@ -2,16 +2,19 @@
 
 All notable changes to `@bahulam/code` will be documented in this file.
 
-## [0.2.7-beta.2] - 2026-11-25
+## [0.2.7] - 2026-11-25
 
 - Add MCP browser OAuth with PKCE, private credential storage and automatic token refresh for HTTP/SSE servers.
 - Add masked API-key prompts and environment references; redact credentials from configuration output and errors.
 - Run direct `!` commands from Node and Rust views with exclusive terminal input and return-to-view handling.
 - Expose versioned CLI instructions through the read-only `bahulam_cli_info` tool in local and remote agent routes.
 - Add `$skill-name` invocation and completion, preserve file-edit diff preview styling, and hide repetitive continuing-status notices.
+- Pass discovered MCP tool descriptions and argument schemas to local and remote agent loops, with provider-compatible names and preserved approval/sub-agent scopes.
+- Show tool names in `mcp test`; expose descriptions and input schemas with `--json`.
+- Use a light-blue accent for Rust question and picker popups.
 - Update the catalog refresh script for the renamed backend repository.
 
-Browser/provider acceptance and Windows interactive acceptance remain beta testing items. Credentials are private local files, not encrypted keychain entries.
+Credentials are private local files, not encrypted keychain entries. Automated validation covers OAuth fixtures and POSIX terminal handoff; native builds do not substitute for every provider/terminal acceptance check.
 
 ## [0.2.0] - 2026-10-24
 

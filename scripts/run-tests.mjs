@@ -138,6 +138,7 @@ const UNIT_TESTS = [
     'test/test-context-reduction.mjs',
     'test/test-mcp.mjs',
     'test/test-mcp-auth.mjs',
+    'test/test-mcp-agent-discovery.mjs',
     'test/test-cli-info.mjs',
     'test/test-followup-promote.mjs',
     'test/test-followup-queue.mjs',

@@ -642,6 +642,17 @@ export function createToolExecutor({
     // Plugin tools are registered here alongside the built-in toolMap.
     // They are dispatched with lower priority (built-in tools win on name collision).
     const pluginToolMap = new Map(); // name → async handler function
+    const mcpToolAliases = new Map(); // provider-safe model name → server.tool
+
+    function listMcpToolSchemas() {
+        return [...pluginToolMap.entries()].filter(([, fn]) => fn?._mcp).map(([name, fn]) => ({
+            name: fn._mcp.modelName,
+            canonical_name: name,
+            description: fn._mcp.description || `Call ${name} on MCP server ${fn._mcp.serverName}.`,
+            input_schema: fn._mcp.schema,
+            plugin_name: fn._mcp.pluginName,
+        }));
+    }
 
     function registerPluginTool(name, handler, metadata = {}) {
         if (pluginToolMap.has(name)) {
@@ -740,9 +751,13 @@ export function createToolExecutor({
      * Handler receives the same options shape as JS plugin tools so
      * `state`, `signal`, `pluginName` all work uniformly.
      */
-    function registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema = {}) {
+    function registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema = {}, description = '') {
         const qualified = `${serverName}.${toolName}`;
-        if (toolMap[qualified] || pluginToolMap.has(qualified)) {
+        // Dots are valid internal names but rejected by provider/backend tool
+        // schemas. Keep a stable bounded alias and resolve it only at execution.
+        const digest = crypto.createHash('sha256').update(qualified).digest('hex').slice(0, 12);
+        const modelName = `mcp_${qualified.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 47)}_${digest}`;
+        if (toolMap[qualified] || pluginToolMap.has(qualified) || toolMap[modelName] || pluginToolMap.has(modelName) || mcpToolAliases.has(modelName)) {
             if (process.env.DEBUG) {
                 console.warn(`MCP tool "${qualified}" from plugin "${pluginName}" collides with an existing tool — skipping.`);
             }
@@ -782,7 +797,9 @@ export function createToolExecutor({
         mcpHandler._pluginTool = { pluginName, source: 'mcp', serverName, toolName };
         pluginToolMap.set(qualified, mcpHandler);
         // Track schema for tool-listing surfaces (also help /tools discovery).
-        pluginToolMap.get(qualified)._mcp = { pluginName, serverName, toolName, schema: toolSchema };
+        pluginToolMap.get(qualified)._mcp = { pluginName, serverName, toolName, modelName, description,
+            schema: toolSchema || { type: 'object', properties: {} } };
+        mcpToolAliases.set(modelName, qualified);
         return true;
     }
 
@@ -979,6 +996,7 @@ export function createToolExecutor({
     }
 
     async function executeToolWithHooks(name, args, options = {}) {
+        name = mcpToolAliases.get(name) || name;
         const handler = toolMap[name] || pluginToolMap.get(name);
         if (!handler) {
             return { success: false, output: `Unknown tool: ${name}`, _tool: name };
@@ -2814,9 +2832,13 @@ export function createToolExecutor({
          * Called by the workspace lifecycle after spawning per-plugin
          * MCP clients. Returns true on success, false on name collision.
          */
-        registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema) {
-            return registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema);
+        registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema, description) {
+            return registerMcpTool(pluginName, serverName, toolName, mcpClient, toolSchema, description);
         },
+
+        listMcpToolSchemas,
+        canonicalToolName(name) { return mcpToolAliases.get(name) || name; },
+        modelToolName(name) { return pluginToolMap.get(name)?._mcp?.modelName || name; },
 
         /**
          * Unregister every MCP tool sourced from one server, called on
@@ -2828,6 +2850,7 @@ export function createToolExecutor({
             for (const [key, fn] of pluginToolMap) {
                 const meta = fn?._mcp;
                 if (meta && meta.pluginName === pluginName && meta.serverName === serverName) {
+                    mcpToolAliases.delete(meta.modelName);
                     pluginToolMap.delete(key);
                     removed++;
                 }
@@ -2894,7 +2917,7 @@ export function createToolExecutor({
                 description: tool.description || '',
                 input_schema: tool.input_schema || { type: 'object', properties: {} },
                 plugin_name: tool._plugin_name || tool.plugin_name || null,
-            })).filter(tool => tool.name && tool.name !== CLI_INFO_SCHEMA.name)];
+            })).filter(tool => tool.name && tool.name !== CLI_INFO_SCHEMA.name), ...listMcpToolSchemas()];
         },
 
         getAgentContext() {

@@ -196,11 +196,13 @@ export class BahulamStreamClient {
 
     _getPluginToolMap() {
         const tools = new Map();
-        if (!this.pluginRegistry) return tools;
-        for (const tool of this.pluginRegistry.listTools?.() || []) {
+        for (const tool of this.pluginRegistry?.listTools?.() || []) {
             const name = String(tool.name || '').trim();
             if (!name || tools.has(name)) continue;
             tools.set(name, tool);
+        }
+        for (const tool of this.toolExecutor?.listMcpToolSchemas?.() || []) {
+            tools.set(tool.canonical_name, { ...tool, model_name: tool.name });
         }
         return tools;
     }
@@ -212,7 +214,6 @@ export class BahulamStreamClient {
      * a plugin agent stay in client_agent_tools and are not duplicated.
      */
     _getUnclaimedPluginToolSchemas(context = {}, clientAgents = []) {
-        if (!this.pluginRegistry) return [];
         const pluginTools = this._getPluginToolMap();
         if (!pluginTools.size) return [];
 
@@ -221,7 +222,7 @@ export class BahulamStreamClient {
         // need to be exposed as direct client_tools.
         const clientAgentSlugs = new Set(this._getPluginAgentSchemas().map(a => a.slug));
         const agentToolNames = new Set();
-        for (const agent of (this.pluginRegistry.listAgents?.() || [])) {
+        for (const agent of (this.pluginRegistry?.listAgents?.() || [])) {
             const slug = agent.slug || agent.name || '';
             if (!clientAgentSlugs.has(slug)) continue;
             for (const t of (agent.tools || [])) {
@@ -237,7 +238,7 @@ export class BahulamStreamClient {
         for (const [name, tool] of pluginTools) {
             if (agentToolNames.has(name)) continue; // already in client_agent_tools
             schemas.push({
-                name,
+                name: tool.model_name || name,
                 description: tool.description || '',
                 input_schema: tool.input_schema || { type: 'object', properties: {} },
                 source_scope: 'plugin',
@@ -254,7 +255,8 @@ export class BahulamStreamClient {
             const slug = String(agent.slug || agent.command || agent.name || '').trim();
             const tools = Array.isArray(agent.tools) ? agent.tools : [];
             for (const toolName of tools) {
-                const name = String(toolName || '').trim();
+                const rawName = String(toolName || '').trim();
+                const name = this.toolExecutor?.canonicalToolName?.(rawName) || rawName;
                 if (!name || !pluginTools.has(name)) continue;
                 if (!refs.has(name)) refs.set(name, new Set());
                 if (slug) refs.get(name).add(slug);
@@ -283,7 +285,7 @@ export class BahulamStreamClient {
         return [...refs.entries()].map(([name, allowedAgents]) => {
             const tool = pluginTools.get(name) || {};
             return {
-                name,
+                name: tool.model_name || name,
                 description: tool.description || '',
                 input_schema: tool.input_schema || { type: 'object', properties: {} },
                 source_scope: 'plugin',
@@ -315,7 +317,7 @@ export class BahulamStreamClient {
                 name: a.name || a.slug || '',
                 role: a.role || 'specialist',
                 description: a.description || '',
-                tools: Array.isArray(a.tools) ? a.tools : [],
+                tools: Array.isArray(a.tools) ? a.tools.map(name => this.toolExecutor?.modelToolName?.(name) || name) : [],
                 system_prompt: a.system_prompt || a.systemPrompt || a.prompt || '',
                 model: a.model || null,
                 models: a.models || null,
@@ -925,7 +927,7 @@ export class BahulamStreamClient {
     async _handleToolRequest(data) {
         const { call_id, request_id, tool, args } = data;
         const callId = call_id || request_id;
-        const toolName = tool;
+        const toolName = this.toolExecutor?.canonicalToolName?.(tool) || tool;
         const isInternal = Boolean(data?.internal || data?.sub_agent);
         const subAgentRunId = data?.run_id || data?.sub_agent_run_id || null;
 
@@ -1024,7 +1026,8 @@ export class BahulamStreamClient {
      * @returns {Object|null} optional status event to yield
      */
     async _handleApprovalRequired(data) {
-        const { tool_id, tool, args, risk, reason } = data;
+        const { tool_id, tool: modelTool, args, risk, reason } = data;
+        const tool = this.toolExecutor?.canonicalToolName?.(modelTool) || modelTool;
 
         if (this.verbose) {
             process.stderr.write(`\x1b[2m[hitl] Approval needed: ${tool} (${risk})\x1b[0m\n`);

@@ -1690,7 +1690,7 @@ pub fn draw_with_view(
                 Paragraph::new(lines).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(p.accent))
+                        .border_style(Style::default().fg(p.info))
                         .title(" Your answer "),
                 ),
                 popup,
@@ -1747,7 +1747,7 @@ pub fn draw_with_view(
                         }
                     ),
                     if index == interaction.selected {
-                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                        Style::default().fg(p.info).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(p.text)
                     },
@@ -1772,7 +1772,7 @@ pub fn draw_with_view(
             Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(p.accent))
+                    .border_style(Style::default().fg(p.info))
                     .title(" Choose "),
             ),
             popup,

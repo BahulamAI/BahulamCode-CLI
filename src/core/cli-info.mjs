@@ -23,7 +23,7 @@ export function cliInfo(topic = 'all') {
         oauth: ['bahulam mcp add <name> --url <server-url> --oauth', 'bahulam mcp login <name>', 'bahulam mcp test <name>'],
         api_key: 'bahulam mcp add <name> --url <server-url> --api-key',
         env_header: "bahulam mcp add <name> --url <server-url> --header 'Authorization: Bearer ${MCP_API_KEY}'",
-        management: ['bahulam mcp list --json', 'bahulam mcp logout <name>', 'bahulam mcp remove <name>'],
+        management: ['bahulam mcp list --json', 'bahulam mcp test <name> --json', 'bahulam mcp logout <name>', 'bahulam mcp remove <name>'],
         guidance: [
             'Confirm the provider supports OAuth and use its documented OAuth endpoint. A public URL alone does not authenticate.',
             'Login opens the local browser using PKCE and a loopback callback. Runtime startup never opens a browser; it reuses and refreshes saved tokens.',
@@ -31,7 +31,7 @@ export function cliInfo(topic = 'all') {
             'API keys must be entered by the user in the masked prompt or supplied through an environment variable. Never request a key in chat or embed it in a URL.',
             'The default API-key header is Authorization: Bearer. Override with --api-key-header and --api-key-prefix if the provider requires another scheme.',
             'Credentials are local private files, not an encrypted keychain. Configuration output and provider errors are redacted.',
-            'Test initializes and discovers tools without invoking them. Restart the session to register newly added tools with the agent.',
+            'mcp test <name> connects and prints tool names without invoking them. Add --json for the tool count, names, descriptions and input schemas; no custom discovery script is needed. Restart the session to register newly added tools with the agent.',
             'Logout removes local credentials, not the provider-side grant. Run logout before remove if credentials should also be deleted.',
         ],
     };

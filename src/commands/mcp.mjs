@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { McpCredentialStore, resolveMcpConfig, redactMcpConfig, safeMcpUrl, mcpError, safeMcpError } from '../mcp/credentials.mjs';
 import { loginMcp, requireSecureUrl } from '../mcp/oauth.mjs';
 import { promptMcpKey } from '../mcp/credential-prompt.mjs';
+import { stripTerminalControls } from '../core/display-sanitize.mjs';
 
 const settingsFilePath = () => path.join(os.homedir(), '.claude', 'settings.json');
 function readSettings() {
@@ -64,7 +65,7 @@ export async function handleMcpCommand(argv) {
 
 async function runMcpCommand(args) {
     if (args.help || !args.action) {
-        process.stdout.write(`Bahulam MCP servers\n\n  add <name> --command <cmd> [--args ...] [--env NAME=value]\n  add <name> --url <url> [--transport http|sse] [--oauth | --api-key]\n  add <name> --url <url> --header 'Authorization: Bearer \${API_KEY}'\n  login <name> [--api-key]       Browser OAuth login or masked API-key entry\n  logout <name>                Delete locally saved credentials\n  list [--json]                Show registrations (secrets redacted)\n  test <name>                  Connect and discover tools; never execute tools\n  remove <name>                Unregister the server\n\nOAuth options: --client-id <id> --scope <scope> --callback-port <port>\nAPI-key options: --api-key-header <name> --api-key-prefix <prefix>\nRun these inside Bahulam with !bahulam mcp ...\n`);
+        process.stdout.write(`Bahulam MCP servers\n\n  add <name> --command <cmd> [--args ...] [--env NAME=value]\n  add <name> --url <url> [--transport http|sse] [--oauth | --api-key]\n  add <name> --url <url> --header 'Authorization: Bearer \${API_KEY}'\n  login <name> [--api-key]       Browser OAuth login or masked API-key entry\n  logout <name>                Delete locally saved credentials\n  list [--json]                Show registrations (secrets redacted)\n  test <name> [--json]         List tool names; JSON includes descriptions and schemas\n  remove <name>                Unregister the server\n\nOAuth options: --client-id <id> --scope <scope> --callback-port <port>\nAPI-key options: --api-key-header <name> --api-key-prefix <prefix>\nRun these inside Bahulam with !bahulam mcp ...\n`);
         return;
     }
     const settings = readSettings();
@@ -135,7 +136,21 @@ async function runMcpCommand(args) {
     if (args.action === 'test') {
         const { McpClient } = await import('../mcp/client.mjs');
         const client = new McpClient(config);
-        try { await client.connect(); const tools = await client.listTools(); success(`Connected to ${args.name}; ${tools.length} tools available.`); }
+        try {
+            await client.connect();
+            const tools = await client.listTools();
+            const message = `Connected to ${args.name}; ${tools.length} tools available.`;
+            if (args.json) {
+                process.stdout.write(JSON.stringify({ ok: true, name: args.name, message, tool_count: tools.length,
+                    tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+                }) + '\n');
+            } else {
+                success(message);
+                for (const tool of tools) {
+                    process.stdout.write(`  ${stripTerminalControls(tool.name).replace(/[\n\t]/g, ' ')}\n`);
+                }
+            }
+        }
         finally { await client.disconnect().catch(() => {}); }
         return;
     }

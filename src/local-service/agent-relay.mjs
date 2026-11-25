@@ -875,7 +875,7 @@ export class LocalAgentRelay {
         const tools = await client.listTools();
         let registered = 0;
         for (const t of tools) {
-          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema)) {
+          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema, t.description)) {
             registered++;
           }
         }

@@ -516,7 +516,8 @@ export class LocalAgent {
                 } else if (block.type === 'tool_use') {
                     hasToolUse = true;
                     toolCount++;
-                    const { id, name, input } = block;
+                    const { id, name: modelToolName, input } = block;
+                    const name = this.toolExecutor?.canonicalToolName?.(modelToolName) || modelToolName;
 
                     const stagnationResult = stagnation.record(name, input);
                     if (stagnationResult.detected) {
@@ -958,7 +959,8 @@ export class LocalAgent {
         for (const t of this.extraToolSchemas) {
             if (!t?.name || names.has(t.name)) continue;
             names.add(t.name);
-            extras.push(t);
+            extras.push({ name: t.name, description: t.description || '',
+                input_schema: t.input_schema || { type: 'object', properties: {} } });
         }
         return extras.length ? [...TOOL_SCHEMAS, ...extras] : TOOL_SCHEMAS;
     }

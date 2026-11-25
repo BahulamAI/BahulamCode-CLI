@@ -60,7 +60,7 @@ export async function* runNode(node, agent, instruction, ctx, options = {}) {
     (Array.isArray(effectiveAgent.tools) ? effectiveAgent.tools : []).map(String),
   );
   const extraToolSchemas = (ctx.toolExecutor?.listPluginToolSchemas?.() || [])
-    .filter(schema => declaredTools.has(schema.name));
+    .filter(schema => declaredTools.has(schema.canonical_name || schema.name));
 
   const localAgent = new LocalAgent({
     apiKey: useGateway ? null : apiKey,

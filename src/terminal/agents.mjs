@@ -141,8 +141,10 @@ export function createScopedToolExecutor(baseExecutor, agent, { projectRoot = nu
 
   return {
     ...baseExecutor,
+    listMcpToolSchemas: () => (baseExecutor.listMcpToolSchemas?.() || [])
+      .filter(tool => allowed.has(canonicalToolName(tool.canonical_name || tool.name))),
     execute: async (toolName, args = {}, options = {}) => {
-      const canonical = canonicalToolName(toolName);
+      const canonical = canonicalToolName(baseExecutor.canonicalToolName?.(toolName) || toolName);
       if (!allowed.has(canonical)) {
         return {
           success: false,
