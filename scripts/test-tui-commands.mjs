@@ -92,18 +92,18 @@ try:
   elif stage==4 and b'mode:newsession' in screen and b'0in' in screen and b'0out' in screen:
    assert b'SAVED_REPLY_FROM_DISK' not in screen, '/new left the old reply on screen'
    keys=b'/help\r'
-  elif stage==5 and (b'Command/help' in screen or b'/helpworktree' in screen): keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
+  elif stage==5 and (b'Command/help' in screen or b'/helpall' in screen): keys=b'/tui doctor\r' if diagnostics else b'/model status\r'
   elif stage==6 and diagnostics and b'Mousecaptureinactive' in screen:
    assert b'Imagerenderer' in screen or b'Bracketedpaste' in screen
    keys=b'/clear\r'
   elif stage==6 and (b'Command/modelstatus' in screen or b'Sessionoverrides' in screen): keys=b'/clear\r'
-  elif stage==7 and b'mode:cleared' in screen:
-   assert b'Command/help' not in screen and b'Command/modelstatus' not in screen, '/clear left old command cards'
+  elif stage==7 and b'mode:cleared' in screen and time.time()-stage_at > 0.2:
+   assert b'Command/help' not in screen and b'Command/modelstatus' not in screen, '/clear left old command cards: '+terminal_screen.text()
    keys=b'/resume\r'
   elif stage==8 and b'Chooseasavedtranscript.' in screen: keys=b'\x1b'
   elif stage==9 and b'Cancelled.' in screen: keys=b'/resume command-fixture\r'
   elif stage==10 and b'SAVED_REPLY_FROM_DISK' in screen: keys=b'/help\r'
-  elif stage==11 and (b'Command/help' in screen or b'/helpworktree' in screen):
+  elif stage==11 and (b'Command/help' in screen or b'/helpall' in screen):
    keys=(b'/tui\r' if bare_tui else b'/tui default\r') if return_default else b'/resume\r'
   elif return_default and stage==12 and b'Default terminal view' in recent:
    assert b'\x1b[?1049l' in stage_output, 'Renderer did not release alternate screen'
