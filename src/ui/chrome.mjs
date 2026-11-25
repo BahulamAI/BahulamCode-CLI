@@ -86,8 +86,8 @@ export function dockHeading(label, context, columns, { approval = false } = {}) 
 
 export function inputHints({ running = false, columns = term().columns } = {}) {
   const hints = running
-    ? ['Enter send', 'Esc cancel', 'Ctrl+P pause', 'F2 details']
-    : ['Enter send', '/ commands', 'Tab complete', '@clipboard image', 'F2 details'];
+    ? ['Enter send', '$ skills', 'Esc cancel', 'Ctrl+P pause', 'F2 details']
+    : ['Enter send', '/ commands', '$ skills', 'Tab complete', '@clipboard image', 'F2 details'];
   const separator = glyph(' · ', ' / ');
   let result = '';
   for (const hint of hints) {

@@ -6,7 +6,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { startTerminalRepl } from './repl.mjs';
+import { cliVersion, startTerminalRepl } from './repl.mjs';
 import {
   runDashboardCommand,
   runSessionsCommand,
@@ -341,16 +341,13 @@ async function main() {
   }
 
   if (subcommand === 'version' || subcommand === '--version' || subcommand === '-v') {
-    const { createRequire } = await import('node:module');
-    const require = createRequire(import.meta.url);
-    const { version } = require('../../package.json');
-    process.stdout.write(`Bahulam Code v${version}\n`);
+    process.stdout.write(`Bahulam Code v${cliVersion}\n`);
     return;
   }
 
   if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
     process.stderr.write(`
-  \x1b[1m\x1b[36mBahulam Code\x1b[0m — Bahulam's coding agent — bahulam.ai
+  \x1b[1m\x1b[36mBahulam Code v${cliVersion}\x1b[0m — Bahulam's coding agent — bahulam.ai
 
   \x1b[1mUsage:\x1b[0m
     bahulam                        Start interactive REPL
@@ -374,6 +371,8 @@ async function main() {
     bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
     bahulam mcp add <name> ...     Register an MCP server
     bahulam mcp list               List registered MCP servers
+    bahulam mcp login <name>      Browser sign-in for a registered MCP server
+    bahulam mcp logout <name>     Delete locally stored MCP credentials
     bahulam mcp test <name>        Test an MCP server connection
     bahulam version                Show version
 

@@ -14,25 +14,7 @@
  */
 
 import { McpClient } from './client.mjs';
-
-/**
- * Recursively expand ${VAR} patterns in a config object using process.env.
- * Matches the behavior in agent-relay.mjs _expandEnvInMcpConfig.
- * @param {*} value
- * @returns {*}
- */
-function expandEnv(value) {
-    if (typeof value === 'string') {
-        return value.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] ?? '');
-    }
-    if (Array.isArray(value)) return value.map(expandEnv);
-    if (value && typeof value === 'object') {
-        return Object.fromEntries(
-            Object.entries(value).map(([k, v]) => [k, expandEnv(v)]),
-        );
-    }
-    return value;
-}
+import { mcpError } from './credentials.mjs';
 
 /**
  * Load and connect MCP servers from settings, registering their tools
@@ -53,30 +35,20 @@ export async function loadMcpServers(toolExecutor, settings, options = {}) {
         entries.push({ name: entry.name, config: entry.config, plugin: entry.plugin });
     }
     const clients = [];
+    const errors = [];
 
     for (const { name, config, plugin } of entries) {
         if (!config || typeof config !== 'object') continue;
         if (!config.command && !config.url) continue;
 
+        let client;
         try {
-            // Merge the config's env block into process.env BEFORE expanding
-            // ${VAR} patterns in args/env. This matches the Claude Desktop
-            // convention: the env block sets vars for the spawned process
-            // AND for ${VAR} expansion in the same config.
-            if (config.env && typeof config.env === 'object') {
-                for (const [k, v] of Object.entries(config.env)) {
-                    if (typeof v === 'string' && !process.env[k]) {
-                        process.env[k] = v;
-                    }
-                }
-            }
-            const expanded = expandEnv(config);
-            const client = new McpClient(expanded);
+            client = new McpClient(config);
             await client.connect();
             const tools = await client.listTools();
             for (const tool of tools) {
                 if (toolExecutor.registerMcpTool) {
-                    toolExecutor.registerMcpTool(plugin, name, tool.name, client, tool.inputSchema || {});
+                    toolExecutor.registerMcpTool(plugin, name, tool.name, client, tool.inputSchema || {}, tool.description || '');
                 }
             }
             clients.push({ name, plugin, client });
@@ -84,15 +56,18 @@ export async function loadMcpServers(toolExecutor, settings, options = {}) {
                 process.stderr.write(`[mcp:settings] ${name}: ${tools.length} tools registered\n`);
             }
         } catch (err) {
+            try { await client?.disconnect(); } catch {}
+            errors.push({ name, plugin, message: mcpError(err) });
             // One server failure must never block the session.
             if (process.env.MCP_DEBUG) {
-                process.stderr.write(`[mcp:settings] ${name} failed: ${err.message}\n`);
+                process.stderr.write(`[mcp:settings] ${name} failed: ${mcpError(err)}\n`);
             }
         }
     }
 
     return {
         clients,
+        errors,
         async disconnectAll() {
             for (const { name, plugin, client } of clients) {
                 try { toolExecutor?.unregisterMcpServer?.(plugin, name); } catch {}

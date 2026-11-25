@@ -1,3 +1,4 @@
+import { CLI_INFO_SCHEMA, CLI_INFO_PROMPT } from './cli-info.mjs';
 /**
  * Local Agent — CLI-side orchestration for --local mode.
  * Model calls use the shared Bahulam Gateway; tools and the ReAct loop stay local.
@@ -118,6 +119,7 @@ function summaryExcerpt(text) {
 
 /** Tool schemas for the LLM — proper parameter definitions. */
 const TOOL_SCHEMAS = [
+    CLI_INFO_SCHEMA,
     {
         name: 'shell',
         description: 'Run one non-interactive shell command and return stdout/stderr. Command substitution (backticks, $()) is allowed but triggers a user-approval prompt; prefer plain commands when equivalent.',
@@ -514,7 +516,8 @@ export class LocalAgent {
                 } else if (block.type === 'tool_use') {
                     hasToolUse = true;
                     toolCount++;
-                    const { id, name, input } = block;
+                    const { id, name: modelToolName, input } = block;
+                    const name = this.toolExecutor?.canonicalToolName?.(modelToolName) || modelToolName;
 
                     const stagnationResult = stagnation.record(name, input);
                     if (stagnationResult.detected) {
@@ -956,17 +959,19 @@ export class LocalAgent {
         for (const t of this.extraToolSchemas) {
             if (!t?.name || names.has(t.name)) continue;
             names.add(t.name);
-            extras.push(t);
+            extras.push({ name: t.name, description: t.description || '',
+                input_schema: t.input_schema || { type: 'object', properties: {} } });
         }
         return extras.length ? [...TOOL_SCHEMAS, ...extras] : TOOL_SCHEMAS;
     }
 
     _buildSystemPrompt(context, retrievedContext = null) {
         if (this.systemPromptOverride) {
-            return [this.systemPromptOverride, context.project_context?.prompt_block].filter(Boolean).join('\n\n');
+            return [this.systemPromptOverride, CLI_INFO_PROMPT, context.project_context?.prompt_block].filter(Boolean).join('\n\n');
         }
 
         const parts = [
+            CLI_INFO_PROMPT,
             'You are Bahulam Code, Bahulam\'s AI coding agent running in local mode.',
             'You have access to tools for reading, writing, and executing code.',
             'Use search_code for discovery. For a known file, use query_code_graph with its registered project_id to inspect imports, find importers, resolve a module specifier or trace a dependency path. Cite the source file and line of resolved edges.',

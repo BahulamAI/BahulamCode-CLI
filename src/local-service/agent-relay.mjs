@@ -1,3 +1,4 @@
+import { mcpError } from '../mcp/credentials.mjs';
 /**
  * Browser-local agent relay.
  *
@@ -66,28 +67,6 @@ function pluginScanDirsFromSession(session = {}) {
     if (plugin && typeof plugin === 'object') addPluginParent(plugin);
   }
   return [...new Set(dirs.filter(Boolean))];
-}
-
-/**
- * ${VAR} expansion for MCP server configs — args, env values, headers.
- * Matches how the existing ~/.bahulam/config.json mcpServers block is
- * handled so a plugin author with a working Claude Desktop MCP config
- * gets the same env-var behavior after drop-in.
- */
-function _expandEnvInMcpConfig(config) {
-  const sub = (v) => typeof v === 'string'
-    ? v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => process.env[name] ?? '')
-    : v;
-  const walk = (v) => {
-    if (Array.isArray(v)) return v.map(walk);
-    if (v && typeof v === 'object') {
-      const out = {};
-      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
-      return out;
-    }
-    return sub(v);
-  };
-  return walk(config);
 }
 
 export class LocalAgentRelay {
@@ -888,14 +867,15 @@ export class LocalAgentRelay {
     // its tools drop out, everything else keeps running.
     this._mcpClients = [];   // {plugin, name, client} — for teardown on close()
     for (const entry of pluginRegistry.listMcpServers?.() || []) {
+      let client;
       try {
         const { McpClient } = await import('../mcp/client.mjs');
-        const client = new McpClient(_expandEnvInMcpConfig(entry.config));
+        client = new McpClient(entry.config);
         await client.connect();
         const tools = await client.listTools();
         let registered = 0;
         for (const t of tools) {
-          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema)) {
+          if (toolExecutor.registerMcpTool?.(entry.plugin, entry.name, t.name, client, t.inputSchema, t.description)) {
             registered++;
           }
         }
@@ -906,11 +886,12 @@ export class LocalAgentRelay {
           tools: registered,
         });
       } catch (err) {
+        try { await client?.disconnect(); } catch {}
         // Never fatal: the plugin's JS tools + views still work.
         this.emit('plugin_mcp_failed', {
           plugin: entry.plugin,
           server: entry.name,
-          error: String(err.message || err),
+          error: mcpError(err),
         });
       }
     }

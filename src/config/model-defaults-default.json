@@ -1,6 +1,6 @@
 {
   "schema": "bahulam.model_defaults.v1",
-  "source": "codekepler-backend/app/services/model_defaults.py",
+  "source": "Bahulam-backend/app/services/model_defaults.py",
   "defaults": {
     "reasoning": "deepseek/deepseek-v4-flash",
     "fast": "deepseek/deepseek-v4-flash",

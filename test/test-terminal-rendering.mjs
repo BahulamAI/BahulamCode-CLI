@@ -511,14 +511,14 @@ test('REPL prompt keeps a small bottom cushion', () => {
   assert.ok(replSource.includes('clearSlashHint();'));
   assert.ok(replSource.includes('Modern Node readline strips ANSI escapes'));
   assert.ok(!replSource.includes("'\\x01$&\\x02'"));
-  assert.ok(replSource.includes('function slashCommandSuggestions(line, limit = 5)'));
+  assert.match(replSource, /function slashCommandSuggestions\(line, limit = 5[,)]/);
   assert.ok(replSource.includes("command: '/model refresh'"));
   assert.ok(replSource.includes("command: '/model status'"));
   assert.ok(replSource.includes("const partial = text.startsWith('/model ') ? text"));
   assert.ok(replSource.includes("function renderSlashHintNow(line = '', { preserveSelection = false } = {})"));
   assert.ok(replSource.includes("function renderSlashHint(line = '', opts = {})"));
   assert.ok(replSource.includes("readline.emitKeypressEvents(process.stdin, rl);"));
-  assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows))'));
+  assert.ok(replSource.includes('slashCommandSuggestions(line, Math.min(5, rows), skills)'));
   assert.ok(replSource.includes('function acceptSlashHint()'));
   assert.ok(replSource.includes('function moveSlashHintSelection(delta)'));
   assert.ok(replSource.includes('function selectedSlashCommandFor(line)'));

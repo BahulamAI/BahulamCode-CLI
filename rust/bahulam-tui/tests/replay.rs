@@ -3959,3 +3959,101 @@ fn edit_preview_stays_in_place_after_completion_acknowledgement() {
         }
     }
 }
+
+#[test]
+fn role_only_tools_follow_one_worker_on_screen_and_on_resume() {
+    let events = [
+        event(1, "agent_spawned", "run-42", json!({"type":"explore"})),
+        event(
+            2,
+            "tool_requested",
+            "explore",
+            json!({"tool_id":"r","name":"read_file"}),
+        ),
+        event(3, "tool_started", "explore", json!({"tool_id":"r"})),
+        event(
+            4,
+            "tool_finished",
+            "explore",
+            json!({"tool_id":"r","ok":true}),
+        ),
+        event(
+            5,
+            "artifact_created",
+            "run-42",
+            json!({"title":"Analysis report","path":"report.md"}),
+        ),
+        event(
+            6,
+            "agent_finished",
+            "run-42",
+            json!({"ok":true,"elapsed_ms":23000}),
+        ),
+        event(
+            7,
+            "tool_finished",
+            "explore",
+            json!({"tool_id":"r","ok":true}),
+        ),
+        event(8, "turn_ended", "main", json!({"ok":true})),
+    ];
+    for replay in [false, true] {
+        let mut model = Model::default();
+        if replay {
+            let items: Vec<_> = events
+                .iter()
+                .map(|e| json!({"kind":"event","event":e}))
+                .collect();
+            model
+                .apply(&event(
+                    1,
+                    "transcript_snapshot",
+                    "main",
+                    json!({"replace":true,"items":items}),
+                ))
+                .unwrap();
+        } else {
+            for e in &events {
+                model.apply(e).unwrap();
+            }
+        }
+        assert_eq!(model.agents.len(), 2);
+        let worker = model.agents.iter().find(|a| a.id == "run-42").unwrap();
+        assert_eq!(worker.last_tool, "read_file");
+        assert_eq!(worker.status, "done");
+        assert_eq!(worker.artifact, "Analysis report");
+        assert_eq!(worker.elapsed(), Some(23000.0));
+        assert!(worker.started_at.is_none());
+        assert!(model
+            .cards
+            .iter()
+            .any(|c| c.agent == "run-42" && c.tool_name == "read_file"));
+    }
+}
+
+#[test]
+fn ambiguous_role_only_tool_stops_displaying_a_timer_when_the_parent_ends() {
+    let mut model = Model::default();
+    for e in [
+        event(1, "agent_spawned", "run-a", json!({"type":"explore"})),
+        event(2, "agent_spawned", "run-b", json!({"type":"explore"})),
+        event(
+            3,
+            "tool_requested",
+            "explore",
+            json!({"tool_id":"unknown","name":"read_file"}),
+        ),
+        event(4, "turn_ended", "main", json!({"ok":true})),
+    ] {
+        model.apply(&e).unwrap();
+    }
+    let unattributed = model.agents.iter().find(|a| a.id == "explore").unwrap();
+    assert_eq!(unattributed.status, "unconfirmed");
+    assert!(!unattributed.active());
+    assert!(unattributed.started_at.is_none());
+    assert!(model
+        .agents
+        .iter()
+        .filter(|a| a.id.starts_with("run-"))
+        .all(|a| a.last_tool.is_empty()));
+}

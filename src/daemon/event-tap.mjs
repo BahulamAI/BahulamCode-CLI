@@ -320,9 +320,16 @@ function project(type, src, identity) {
         report: [report, error && !ok ? `Error: ${error}` : ''].filter(Boolean).join('\n\n'),
         tokens: typeof src.tokens === 'number' ? {total:src.tokens} : (src.tokens ?? normalizedUsage(src)), ...normalizedUsage(src), elapsed_ms: src.elapsed_ms ?? src.duration_ms, error };
     }
-    case 'agent_status':
-      return { agent_id: identity.agentId, status: src.status || src.message || (identity.sourceType === 'complete' ? 'done' : identity.sourceType === 'cancelled' ? 'cancelled' : 'working'),
+    case 'agent_status': {
+      let status = src.status || src.message || 'working';
+      if (['complete', 'cancelled', 'turn_ended'].includes(identity.sourceType)) {
+        if (identity.sourceType === 'cancelled' || src.outcome === 'cancelled' || src.status === 'cancelled') status = 'cancelled';
+        else if (src.ok === false || src.success === false || src.error || src.status === 'failed') status = 'failed';
+        else status = 'done';
+      }
+      return { agent_id: identity.agentId, status,
         current_tool_id: src.current_tool_id, tokens: typeof src.tokens === 'number' ? {total:src.tokens} : (src.tokens ?? normalizedUsage(src)), ...normalizedUsage(src), elapsed_ms: src.elapsed_ms };
+    }
     case 'plan_updated':
       return { items: src.items || src.steps || src.plan?.items || [] };
     case 'usage_update': {

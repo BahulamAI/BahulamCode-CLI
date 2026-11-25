@@ -52,6 +52,7 @@ export const COMMANDS = {
   '/subagents':   'Alias of /agents (list/create/edit/sync sub-agents)',
   '/skills':      'List / install / view / remove skills (SKILL.md bundles)',
   '/plugins':     'List / install / info / update / remove plugins (tools + agents + views)',
+  '/mcp':         'Manage MCP servers: add, login, logout, list, test',
   '/plugin':      'Alias of /plugins',
   '/run':         'Run a sub-agent or synced workflow',
   '/explore':     'Code explorer agent',
@@ -70,6 +71,17 @@ export const COMMANDS = {
 // Grouped view for the `/help` interactive display. Each entry is
 // [command-with-args, description] so subcommands appear inline.
 export const HELP_GROUPS = [
+  {
+    key: 'mcp', title: 'MCP and direct commands', summary: 'server registration and authentication',
+    commands: [
+      ['/mcp list', 'List registered servers with secrets redacted'],
+      ['/mcp add <name> --url <url> --oauth', 'Register a browser-authenticated MCP server'],
+      ['/mcp login <name>', 'Open browser sign-in; reuse and refresh saved tokens'],
+      ['/mcp logout <name>', 'Delete local MCP credentials'],
+      ['/mcp test <name>', 'Connect and discover tools without executing them'],
+      ['/mcp add <name> --url <url> --api-key', 'Masked API-key prompt; also works with !bahulam mcp …'],
+    ],
+  },
   {
     key: 'plan',
     title: 'Plan',

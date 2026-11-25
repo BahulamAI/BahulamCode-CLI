@@ -924,7 +924,7 @@ await test('execute injects plugin tools only as agent-scoped schemas', async ()
     server.close();
 
     assert.ok(events.some(e => e.type === 'complete'));
-    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_tools.map(tool => tool.name), ['bahulam_cli_info']);
     assert.deepStrictEqual(received.client_agent_tools, [{
         name: 'docker_analyze',
         description: 'Analyze Docker containers',
@@ -993,7 +993,7 @@ await test('execute scopes plugin tool schemas to custom agents that reference t
     server.close();
 
     assert.ok(events.some(e => e.type === 'complete'));
-    assert.strictEqual(received.client_tools, undefined);
+    assert.deepStrictEqual(received.client_tools.map(tool => tool.name), ['bahulam_cli_info']);
     assert.deepStrictEqual(received.client_agent_tools, [{
         name: 'opt_chain',
         description: 'Fetch option chain',

@@ -1,3 +1,5 @@
+import { safeMcpUrl } from '../mcp/credentials.mjs';
+import { splitCommandWords } from '../terminal/direct-command.mjs';
 /**
  * Slash Commands — all 39 commands from Claude Code.
  *
@@ -345,18 +347,19 @@ export const COMMANDS = {
     },
 
     '/mcp': {
-        description: 'Manage MCP servers (add, remove, list, test, status)',
+        description: 'Manage MCP servers (add, login, logout, remove, list, test, status)',
         async handler(args, state) {
             const sub = (args || '').trim().split(/\s+/)[0]?.toLowerCase();
 
             // No subcommand → show status (default)
-            if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test'].includes(sub)) {
+            if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test', 'login', 'logout'].includes(sub)) {
                 if (!state._mcpClients || state._mcpClients.length === 0) {
                     return 'No MCP servers connected. Use: /mcp add <name> --command <cmd> | --url <url>';
                 }
                 const lines = state._mcpClients.map((c, i) => {
                     const name = c.name || c.config?.command || 'unknown';
-                    const endpoint = c.config?.url || c.config?.command || 'unknown';
+                    const config = c.client?.config || c.config || {};
+                    const endpoint = config.url ? safeMcpUrl(config.url) : config.command || 'unknown';
                     return `  ${i + 1}. ${name} (${endpoint}) — ${c.connected ? 'connected' : 'disconnected'}`;
                 });
                 return `MCP servers:\n${lines.join('\n')}`;
@@ -365,16 +368,16 @@ export const COMMANDS = {
             // Dispatch to the CLI handler — same code path as `bahulam mcp`
             try {
                 const { handleMcpCommand } = await import('../commands/mcp.mjs');
-                const mcpArgs = (args || '').trim().split(/\s+/);
+                const mcpArgs = splitCommandWords((args || '').trim());
+                if (sub === 'login' || mcpArgs.includes('--api-key')) return 'Run !bahulam mcp ' + sub + ' <name> in the terminal for interactive authentication.';
                 // Capture stdout/stderr from the handler
                 const origWrite = process.stdout.write.bind(process.stdout);
                 const origErrWrite = process.stderr.write.bind(process.stderr);
                 let captured = '';
                 process.stderr.write = (chunk) => { captured += chunk; return true; };
                 process.stdout.write = (chunk) => { captured += chunk; return true; };
-                await handleMcpCommand(mcpArgs);
-                process.stderr.write = origErrWrite;
-                process.stdout.write = origWrite;
+                try { await handleMcpCommand(mcpArgs); }
+                finally { process.stderr.write = origErrWrite; process.stdout.write = origWrite; }
                 return captured.trim() || 'Done.';
             } catch (err) {
                 return `MCP command failed: ${err.message}`;

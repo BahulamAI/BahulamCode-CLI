@@ -86,6 +86,10 @@ pub struct Agent {
     pub label: String,
     pub task: String,
     pub historical: bool,
+    turn_id: Option<String>,
+    spawned: bool,
+    pub artifact: String,
+    pub written_file: String,
     pub status: String,
     pub current_tool: String,
     pub elapsed_ms: Option<f64>,
@@ -100,7 +104,14 @@ impl Agent {
         !self.historical
             && !matches!(
                 self.status.as_str(),
-                "idle" | "done" | "complete" | "failed" | "cancelled" | "historical"
+                "idle"
+                    | "done"
+                    | "complete"
+                    | "completed"
+                    | "failed"
+                    | "cancelled"
+                    | "unconfirmed"
+                    | "historical"
             )
     }
     pub fn elapsed(&self) -> Option<f64> {
@@ -181,6 +192,7 @@ pub struct Model {
     pub cards: Vec<Card>,
     pub agents: Vec<Agent>,
     pub agents_open: bool,
+    pub agents_hidden: bool,
     pub plan: Vec<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -621,8 +633,7 @@ impl Model {
             .map(|(_, i)| *i)
             .min()
     }
-    fn affected_card(&self, event: &EventEnvelope) -> usize {
-        let agent = event.agent_id.as_deref().unwrap_or("main");
+    fn affected_card(&self, event: &EventEnvelope, agent: &str) -> usize {
         let turn = event.turn_id.as_deref().unwrap_or("legacy");
         let origin = if self.replaying_history {
             "history"
@@ -668,9 +679,64 @@ impl Model {
             _ => 0,
         }
     }
+    // Some callback producers identify tool events by worker role. Persisted
+    // sessions use the same form, so resolve at the shared live/replay boundary.
+    fn worker_tool_owner(&self, event: &EventEnvelope) -> Option<&str> {
+        let role = event.agent_id.as_deref()?;
+        if role == "main"
+            || !matches!(
+                event.r#type.as_str(),
+                "tool_requested"
+                    | "tool_call"
+                    | "tool_started"
+                    | "tool_result"
+                    | "tool_finished"
+                    | "tool_output_delta"
+                    | "diff"
+            )
+        {
+            return None;
+        }
+        let turn = event.turn_id.as_deref()?;
+        if self.agents.iter().any(|row| row.id == role && row.spawned) {
+            return None;
+        }
+        let origin = if self.replaying_history {
+            "history"
+        } else {
+            "live"
+        };
+        let call = event.data["tool_id"]
+            .as_str()
+            .or_else(|| event.data["call_id"].as_str())?;
+        let owners = self.agents.iter().filter(|row| {
+            row.turn_id.as_deref() == Some(turn)
+                && row.historical == self.replaying_history
+                && row.parent.as_deref().unwrap_or("main")
+                    == event.parent_agent_id.as_deref().unwrap_or("main")
+                && (row.label == role || row.id == role)
+        });
+        let mut matching_call = owners.clone().filter(|row| {
+            self.tools
+                .contains_key(&format!("{origin}/{turn}/{}/{call}", row.id))
+        });
+        if let Some(row) = matching_call.next() {
+            return (matching_call.next().is_none() && row.id != role).then_some(row.id.as_str());
+        }
+        let mut running = owners
+            .filter(|row| row.spawned && matches!(row.status.as_str(), "working" | "running"));
+        let row = running.next()?;
+        running.next().is_none().then_some(row.id.as_str())
+    }
     pub fn apply(&mut self, event: &EventEnvelope) -> Result<(), String> {
-        let affected = self.affected_card(event);
-        let result = self.apply_event(event);
+        let owner = self.worker_tool_owner(event).map(str::to_owned);
+        let agent = owner
+            .as_deref()
+            .or(event.agent_id.as_deref())
+            .or_else(|| event.data["subagent_id"].as_str())
+            .unwrap_or("main");
+        let affected = self.affected_card(event, agent);
+        let result = self.apply_event(event, agent);
         self.touch_view_from(affected);
         self.retention_events = self.retention_events.wrapping_add(1);
         let large_event = event.data.as_object().is_some_and(|data| {
@@ -690,7 +756,7 @@ impl Model {
         }
         result
     }
-    fn apply_event(&mut self, event: &EventEnvelope) -> Result<(), String> {
+    fn apply_event(&mut self, event: &EventEnvelope, agent: &str) -> Result<(), String> {
         if self.replaying_history
             && matches!(
                 event.r#type.as_str(),
@@ -716,6 +782,7 @@ impl Model {
                 self.archive = None;
                 self.agents.clear();
                 self.agents_open = false;
+                self.agents_hidden = false;
                 self.agent_reports.clear();
                 self.turn_starts.clear();
                 self.turn_recap = None;
@@ -1055,11 +1122,6 @@ impl Model {
             return Ok(());
         }
         let data = &event.data;
-        let agent = event
-            .agent_id
-            .as_deref()
-            .or_else(|| data.get("subagent_id").and_then(Value::as_str))
-            .unwrap_or("main");
         let turn = event.turn_id.as_deref().unwrap_or("legacy");
         if !self.agents.iter().any(|a| a.id == agent) {
             self.agents.push(Agent {
@@ -1070,6 +1132,7 @@ impl Model {
                 current_tool: String::new(),
                 elapsed_ms: None,
                 historical: self.replaying_history,
+                turn_id: event.turn_id.clone(),
                 ..Agent::default()
             });
         }
@@ -1150,6 +1213,9 @@ impl Model {
                     self.turn_recap = None;
                 }
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == agent) {
+                    main.turn_id.clone_from(&event.turn_id);
+                    main.artifact.clear();
+                    main.written_file.clear();
                     main.status = "working".into();
                     main.started_at = (!self.replaying_history).then(Instant::now);
                 }
@@ -1422,12 +1488,18 @@ impl Model {
                         .or_else(|| data.get("result").filter(|value| !value.is_null()));
                     let card = &mut self.cards[index];
                     if output.is_some() || event.payload_ref.is_some() || !summary.is_empty() {
-                        // A status-only acknowledgement can follow the local result.
-                        // The preview format belongs to the event supplying its content.
-                        card.has_edit_diff =
-                            data.get("has_edit_diff").and_then(Value::as_bool) == Some(true);
+                        // A status-only acknowledgement can follow the local result. Keep
+                        // its diff preview and styling when that later event omits this field.
+                        let edit_diff_update = data.get("has_edit_diff").and_then(Value::as_bool);
+                        if let Some(has_edit_diff) = edit_diff_update {
+                            card.has_edit_diff = has_edit_diff;
+                        }
+                        let preserve_edit_preview =
+                            card.has_edit_diff && edit_diff_update != Some(false);
                         card.begin_tool_output();
-                        if !summary.is_empty() {
+                        if !summary.is_empty()
+                            && (!preserve_edit_preview || edit_diff_update == Some(true))
+                        {
                             card.body = summary;
                         }
                         if card.payload_ref != event.payload_ref {
@@ -1474,6 +1546,15 @@ impl Model {
                         self.cards[index].metadata = metadata.join(" · ");
                     }
                     if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                        let card = &self.cards[index];
+                        if card.status == "done"
+                            && matches!(card.tool_name.as_str(), "write_file" | "create_file")
+                            && !card.primary.is_empty()
+                            && card.primary != "see details"
+                        {
+                            row.written_file
+                                .clone_from(card.display_path.as_ref().unwrap_or(&card.primary));
+                        }
                         if row.current_tool_id == tool_id {
                             let next = self
                                 .active_tools
@@ -1500,6 +1581,10 @@ impl Model {
                 }
                 row.update_usage(data);
                 if kind == "agent_spawned" || kind == "sub_agent_start" {
+                    row.spawned = true;
+                    row.turn_id.clone_from(&event.turn_id);
+                    row.artifact.clear();
+                    row.written_file.clear();
                     let label = text(data, "type");
                     if !label.is_empty() {
                         row.label = label;
@@ -1703,6 +1788,9 @@ impl Model {
                     "error",
                 );
             }
+            "notice"
+                if text(data, "source") == "status"
+                    && text(data, "cause").starts_with("Continuing... (") => {}
             "notice" if text(data, "source") == "followup_applied" => {
                 self.finish_message_segment(&message_key);
                 self.finish_thinking_segment(&message_key);
@@ -1961,6 +2049,19 @@ impl Model {
                 };
                 if agent == "main" {
                     self.status = outcome.into();
+                    // A role-only tool row has no independent worker lifecycle.
+                    for row in self.agents.iter_mut().filter(|row| {
+                        row.id != "main"
+                            && !row.spawned
+                            && row.turn_id == event.turn_id
+                            && row.historical == self.replaying_history
+                            && matches!(row.status.as_str(), "working" | "running")
+                    }) {
+                        row.stop_clock();
+                        row.current_tool.clear();
+                        row.current_tool_id.clear();
+                        row.status = "unconfirmed".into();
+                    }
                 }
                 if let Some(main) = self.agents.iter_mut().find(|row| row.id == agent) {
                     main.status = outcome.into();
@@ -2076,6 +2177,15 @@ impl Model {
                 let kind = text(data, "kind");
                 let mime = text(data, "mime");
                 let path = text(data, "path");
+                if !title.starts_with("Attached ") {
+                    if let Some(row) = self.agents.iter_mut().find(|row| row.id == agent) {
+                        row.artifact = if title == "Artifact" && !path.is_empty() {
+                            path.clone()
+                        } else {
+                            title.to_owned()
+                        };
+                    }
+                }
                 let format = artifact_format(&mime, &path, &kind);
                 let pages = data.get("pages").and_then(Value::as_u64);
                 let bytes = data.get("bytes").and_then(Value::as_u64);

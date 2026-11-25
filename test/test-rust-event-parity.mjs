@@ -99,6 +99,17 @@ test('live display subscribers cannot mutate canonical tool arguments', () => {
   assert.equal(source.data.args.nested.command, 'original');
 });
 
+test('child turn endings project terminal outcomes even with a progress message', () => {
+  const frames = capture('child-turn-outcomes', [
+    e('turn_ended', { run_id: 'a', ok: true, message: 'Finished the report' }),
+    e('complete', { run_id: 'b', success: false }),
+    e('cancelled', { run_id: 'c', message: 'Interrupted by user' }),
+  ]);
+  assert.deepEqual(frames.map(f => [f.type, f.data.status]), [
+    ['agent_status', 'done'], ['agent_status', 'failed'], ['agent_status', 'cancelled'],
+  ]);
+});
+
 test('background agent tools retain their turn after the main turn completes', () => {
   const frames = capture('background-parity', [
     e('turn_started'), e('sub_agent_start', { run_id: 'background' }),
