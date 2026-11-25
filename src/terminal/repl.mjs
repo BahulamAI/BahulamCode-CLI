@@ -86,6 +86,8 @@ import { registerJobCompletionDispatch } from '../orchestration/completion-trigg
 import { PluginRegistry } from '../plugins/registry.mjs';
 import { loadSettings } from '../config/settings.mjs';
 import { loadMcpServers } from '../mcp/loader.mjs';
+import { safeMcpUrl } from '../mcp/credentials.mjs';
+import { splitCommandWords, runDirectCommand, isDirectTerminalCommand } from './direct-command.mjs';
 import { SessionManager } from '../core/session-manager.mjs';
 import { parseArgs } from '../config/cli-args.mjs';
 import { pickModelOverridesForm } from './repl-model-form.mjs';
@@ -298,6 +300,9 @@ function renderHelp(topic = '') {
     for (const [name, desc] of top) {
       process.stderr.write(`  ${helpCommand(name, 14)} ${desc}\n`);
     }
+    process.stderr.write(`\n  ${helpHeading('Input Prefixes')}\n`);
+    process.stderr.write(`  ${helpCommand('$skill-name', 14)} Invoke an installed skill; add task text after the skill name\n`);
+    process.stderr.write(`  ${helpCommand('@file', 14)} Attach supported image and document files\n`);
     process.stderr.write(`\n  ${helpHeading('Categories')}\n`);
     for (const group of HELP_GROUPS) {
       process.stderr.write(`  ${helpCommand('/help ' + group.key, 20)} ${c.dim(group.summary)}\n`);
@@ -1456,8 +1461,19 @@ function commandCompletions(line) {
   return all.filter(cmd => cmd.startsWith(text));
 }
 
-function slashCommandSuggestions(line, limit = 5) {
+function slashCommandSuggestions(line, limit = 5, skills = []) {
   const text = String(line || '').trimStart();
+  if (text.startsWith('$')) {
+    if (/\s/.test(text)) return [];
+    const partial = text.split(/\s+/, 1)[0].slice(1).toLowerCase();
+    return skills
+      .filter(skill => String(skill.name || '').toLowerCase().startsWith(partial))
+      .slice(0, limit)
+      .map(skill => ({
+        command: `$${skill.name}`,
+        description: skill.description || 'Invoke this skill',
+      }));
+  }
   if (!text.startsWith('/')) return [];
   const partial = text.startsWith('/model ') ? text : (text.split(/\s+/)[0] || '/');
   return commandCompletions(partial)
@@ -1467,6 +1483,31 @@ function slashCommandSuggestions(line, limit = 5) {
       command: cmd,
       description: slashCompletionDescription(cmd),
     }));
+}
+
+function parseSkillShortcut(input, skills = []) {
+  const match = String(input || '').trim().match(/^\$([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const name = match[1];
+  const skill = skills.find(item => String(item.name || '').toLowerCase() === name.toLowerCase());
+  if (!skill) {
+    const available = skills.map(item => item.name).filter(Boolean).sort();
+    const similar = available.filter(item => item.toLowerCase().includes(name.toLowerCase())).slice(0, 5);
+    const choices = similar.length ? similar : available.slice(0, 8);
+    throw new Error(`Unknown skill: ${name}. ${choices.length ? `Available: ${choices.join(', ')}` : 'Install or add a skill, then use /skills list.'}`);
+  }
+  const task = (match[2] || '').trim() || 'Apply this skill to the current task.';
+  return {
+    name: skill.name,
+    task,
+    directive: `Explicit skill invocation: use the \`${skill.name}\` skill. Read and follow its SKILL.md with the skill_view tool before acting.`,
+  };
+}
+
+function expandSkillShortcut(input, executor) {
+  const skills = executor?.listSkills?.() || [];
+  const invocation = parseSkillShortcut(input, skills);
+  return invocation ? `${invocation.directive}\n\nTask: ${invocation.task}` : null;
 }
 
 // ── Banner ──
@@ -4728,9 +4769,11 @@ async function handleCommand(input, ctx, writeAuto = text => process.stderr.writ
  */
 async function handleMcpSlashCommand(rest, ctx) {
   const sub = String(rest || '').trim().split(/\s+/)[0]?.toLowerCase();
-  if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test'].includes(sub)) {
+  if (!sub || !['add', 'remove', 'rm', 'list', 'ls', 'test', 'login', 'logout'].includes(sub)) {
     // No subcommand → show connected server status from session state
     const mcpClients = ctx?.toolExecutor?._mcpClients || [];
+    const mcpErrors = ctx?.toolExecutor?._mcpErrors || [];
+    for (const error of mcpErrors) process.stderr.write(`  ${error.name}: ${error.message}\n`);
     if (mcpClients.length === 0) {
       process.stderr.write(`  ${c.dim('No MCP servers connected. Use:')} ${c.brand('/mcp add <name> --command <cmd> | --url <url>')}\n`);
       return;
@@ -4739,8 +4782,9 @@ async function handleMcpSlashCommand(rest, ctx) {
     for (let i = 0; i < mcpClients.length; i++) {
       const cl = mcpClients[i];
       const name = cl.name || cl.config?.command || 'unknown';
-      const endpoint = cl.config?.url || cl.config?.command || 'unknown';
-      const status = cl.connected ? c.green('connected') : c.yellow('disconnected');
+      const config = cl.client?.config || cl.config || {};
+      const endpoint = config.url ? safeMcpUrl(config.url) : config.command || 'unknown';
+      const status = (cl.client?.connected ?? cl.connected) ? c.green('connected') : c.yellow('disconnected');
       process.stderr.write(`  ${c.brand(String(i + 1).padStart(2))}. ${c.brand(name.padEnd(20))} ${status} ${c.dim(endpoint)}\n`);
     }
     process.stderr.write('\n');
@@ -4750,7 +4794,7 @@ async function handleMcpSlashCommand(rest, ctx) {
   // Dispatch to the CLI handler — same code path as `bahulam mcp`
   try {
     const { handleMcpCommand } = await import('../commands/mcp.mjs');
-    const mcpArgs = String(rest || '').trim().split(/\s+/);
+    const mcpArgs = splitCommandWords(String(rest || '').trim());
     await handleMcpCommand(mcpArgs);
   } catch (err) {
     process.stderr.write(`  ${c.red('✗')} ${c.dim(err.message)}\n`);
@@ -4835,6 +4879,7 @@ export async function startTerminalRepl() {
   async function attachPluginMcp(executor) {
     const loaded = await loadMcpServers(executor, await loadSettings(), { pluginRegistry });
     executor._mcpClients = loaded.clients;
+    executor._mcpErrors = loaded.errors;
     return loaded;
   }
   let toolExecutor = null;
@@ -5540,7 +5585,8 @@ export async function startTerminalRepl() {
   function renderSlashHintNow(line = '', { preserveSelection = false } = {}) {
     if (!process.stderr.isTTY || term().plain || !inputActive || !promptBottomPaddingLines()) return;
     const rows = promptBottomPaddingLines();
-    const suggestions = slashCommandSuggestions(line, Math.min(5, rows));
+    const skills = toolExecutor?.listSkills?.() || [];
+    const suggestions = slashCommandSuggestions(line, Math.min(5, rows), skills);
     // Nothing matches (pasted path, typo) → hide instead of rendering
     // an empty/robotic frame.
     if (!suggestions.length) {
@@ -5675,7 +5721,13 @@ export async function startTerminalRepl() {
 
   function selectedSlashCommandFor(line) {
     const input = String(line || '').trim();
-    if (!input.startsWith('/')) return null;
+    if (!input.startsWith('/') && !input.startsWith('$')) return null;
+    if (input.startsWith('$')) {
+      const parts = input.split(/\s+/);
+      if (parts.length > 1) return input;
+      const item = slashHintItems[slashHintSelected];
+      return item?.command || input;
+    }
     const parts = input.split(/\s+/);
     const firstToken = parts[0] || '';
     if (COMMANDS[firstToken] || firstToken === '/help') return input;
@@ -5835,6 +5887,8 @@ export async function startTerminalRepl() {
     showPrompt();
   });
   let submitActiveFollowup = null;
+  let directCommandActive = false;
+  let currentRustView = null;
   _submitExternalPrompt = instruction => queueOrRunLine(instruction);
   function emitRustCommandResult(input, result, ok) {
     const previewLines = result.replace(/\r\n?/g, '\n').split('\n');
@@ -5850,6 +5904,14 @@ export async function startTerminalRepl() {
     }, { sessionId: session.id });
   }
   async function submitRustInstruction(instruction) {
+    if (isDirectTerminalCommand(instruction)) {
+      _submitExternalPrompt?.(instruction);
+      return;
+    }
+    if (submitActiveFollowup) {
+      const skillPrompt = expandSkillShortcut(instruction, toolExecutor);
+      if (skillPrompt) instruction = skillPrompt;
+    }
     const command = instruction.startsWith('/') ? normalizeCommandInput(instruction) : null;
     if (submitActiveFollowup && command?.cmd === '/auto') {
       session.inputHistory.push(instruction);
@@ -5875,6 +5937,7 @@ export async function startTerminalRepl() {
   }
   async function openRustView(view, snapshotMode = session.historyMode || 'current') {
     if (_rustTuiActive) return;
+    currentRustView = view;
     ctx.rustTuiCapabilities = null;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       process.stderr.write('  Full-screen view requires an interactive terminal.\n');
@@ -6102,7 +6165,7 @@ export async function startTerminalRepl() {
             if (terminalState.alternate_screen) process.stderr.write('\x1b[?1049l');
             process.stderr.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[?2026l\x1b[0m\x1b[?25h');
           }
-          if (!rustQuitRequested && !rustDefaultRequested) {
+          if (!rustQuitRequested && !rustDefaultRequested && !directCommandActive) {
             const reason = failure || (signal ? `signal ${signal}` : `exit ${code}`);
             process.stderr.write(`\n  Rust terminal disconnected (${stripTerminalControls(reason)}). Session preserved in the default view.\n`);
             for (const line of formatRustFallbackTranscript(recentEvents)) process.stderr.write(`${line}\n`);
@@ -6110,6 +6173,7 @@ export async function startTerminalRepl() {
           _rustTuiHost = null;
           _rustTuiInteractions?.close();
           _rustTuiInteractions = null;
+          if (directCommandActive) return;
           if (rustQuitRequested) {
             // Reuse the existing CLI exit behavior after the renderer releases
             // the terminal. Unexpected renderer exits retain Node recovery.
@@ -6158,9 +6222,14 @@ export async function startTerminalRepl() {
         '/help keys',
         ...HELP_GROUPS.flatMap(group => group.commands.map(([name]) => name)),
       ])].sort();
+      const rustSkillCompletions = (toolExecutor?.listSkills?.() || [])
+        .map(skill => ({ name: `$${skill.name}`, description: skill.description || 'Invoke this skill' }));
       _rustTuiHost.send({ v: 2, seq: 1, ts: new Date().toISOString(), type: 'command_catalog', session_id: rustSessionId, agent_id: 'main',
-        data: { commands: rustCompletions.map(name => ({ name, description: ['/tui', '/tui default'].includes(name)
-          ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })) } });
+        data: { commands: [
+          ...rustCompletions.map(name => ({ name, description: ['/tui', '/tui default'].includes(name)
+            ? 'Return to the Node default view, keeping this session' : slashCompletionDescription(name) })),
+          ...rustSkillCompletions,
+        ] } });
       await sendRustTranscriptSnapshot(snapshotMode);
     } catch (error) {
       _rustTuiEnsureSessionId = null;
@@ -6294,6 +6363,44 @@ export async function startTerminalRepl() {
       showPrompt();
       return;
     }
+    // Direct commands never enter agent context or saved prompt history. This
+    // also gives masked credentials exclusive stdin ownership in either view.
+    if (!followupId && isDirectTerminalCommand(input)) {
+      const commandInput = input.startsWith('!') ? input : `!bahulam ${input.slice(1)}`;
+      const returnView = _rustTuiActive ? currentRustView : null;
+      directCommandActive = true;
+      let result;
+      const ignoreInterrupt = () => {};
+      process.on('SIGINT', ignoreInterrupt);
+      try {
+        if (_rustTuiHost) {
+          const host = _rustTuiHost;
+          await new Promise(resolve => { host.child.once('close', resolve); host.close(); });
+        }
+        if (_dockTickTimer) { clearInterval(_dockTickTimer); _dockTickTimer = null; }
+        if (isInputDockMounted()) unmountInputDock();
+        rl.pause();
+        process.stdin.pause();
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        process.stderr.write('\x1b[?2004l');
+        result = await runDirectCommand(commandInput, { cwd: safeCwd(), waitForReturn: Boolean(process.stdin.isTTY) });
+      } catch (error) {
+        process.stderr.write(`  ${error.message}\n`);
+      } finally {
+        process.removeListener('SIGINT', ignoreInterrupt);
+        directCommandActive = false;
+        if (returnView) await openRustView(returnView);
+        else {
+          if (process.stdin.isTTY) process.stdin.setRawMode(true);
+          rl.resume();
+          process.stderr.write('\x1b[?2004h');
+          restoreNodeDock();
+          showPrompt();
+        }
+      }
+      if (returnView) emitRustCommandResult('! command', result?.code === 0 ? 'Direct command finished.' : 'Direct command ended; check the terminal output.', result?.code === 0);
+      return;
+    }
     printSubmittedInput(input);
 
     // Save to input history
@@ -6342,6 +6449,15 @@ export async function startTerminalRepl() {
     }
 
     const originalInput = input;
+    let skillInvocation;
+    try {
+      skillInvocation = parseSkillShortcut(input, toolExecutor?.listSkills?.() || []);
+    } catch (error) {
+      process.stderr.write(`  ${c.red(error.message || String(error))}\n`);
+      showPrompt();
+      return;
+    }
+    if (skillInvocation) input = skillInvocation.task;
     void ctx.refreshAuth().catch(() => {});
     const creds = auth.loadCredentials();
     const anthKey = process.env.ANTHROPIC_API_KEY || creds.anthropicKey;
@@ -6508,6 +6624,10 @@ export async function startTerminalRepl() {
       return;
     }
 
+    if (skillInvocation) {
+      input = `${skillInvocation.directive}\n\nTask: ${input}`;
+    }
+
     // Regular prompt
     const userMessage = { role: 'user', content: input };
     if (!followupId) session.history.push(userMessage);
@@ -6580,6 +6700,10 @@ export async function startTerminalRepl() {
     });
 
     submitActiveFollowup = async instruction => {
+      if (isDirectTerminalCommand(instruction)) {
+        queueOrRunLine(instruction);
+        return;
+      }
       try {
         await followups.submit(instruction);
       } catch (error) {
@@ -6651,7 +6775,8 @@ export async function startTerminalRepl() {
     }
 
     async function submitExecutionInstruction() {
-      const instruction = executionInputBuffer.trim();
+      let instruction = executionInputBuffer.trim();
+      const displayedInstruction = instruction;
       executionInputBuffer = '';
       if (!instruction) {
         if (isInputDockMounted()) {
@@ -6666,6 +6791,22 @@ export async function startTerminalRepl() {
           process.stderr.write('\n');
         }
         executionInputVisible = false;
+        return;
+      }
+      if (isDirectTerminalCommand(instruction)) {
+        queueOrRunLine(instruction);
+        process.stderr.write('  Direct command queued until this turn finishes.\n');
+        executionInputVisible = false;
+        redrawExecutionInput();
+        return;
+      }
+      try {
+        const skillPrompt = expandSkillShortcut(instruction, toolExecutor);
+        if (skillPrompt) instruction = skillPrompt;
+      } catch (error) {
+        executionInputBuffer = displayedInstruction;
+        process.stderr.write(`  ${c.red(error.message || String(error))}\n`);
+        redrawExecutionInput();
         return;
       }
       if (isExecutionSlashCommand(instruction)) {
@@ -6687,7 +6828,7 @@ export async function startTerminalRepl() {
         }
         return;
       }
-      printExecutionInstruction(instruction);
+      printExecutionInstruction(displayedInstruction);
       if (isInputDockMounted()) {
         renderDockInput(executionInputPrefix(), '', {
           context: buildContextStrip(),

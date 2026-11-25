@@ -371,6 +371,8 @@ async function main() {
     bahulam init                   Scaffold .bahulam config, memory, hooks, tasks
     bahulam mcp add <name> ...     Register an MCP server
     bahulam mcp list               List registered MCP servers
+    bahulam mcp login <name>      Browser sign-in for a registered MCP server
+    bahulam mcp logout <name>     Delete locally stored MCP credentials
     bahulam mcp test <name>        Test an MCP server connection
     bahulam version                Show version
 

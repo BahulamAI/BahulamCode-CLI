@@ -1625,7 +1625,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Esc => break,
                     KeyCode::Tab
-                        if stdio && focus_panel == 0 && input.trim_start().starts_with('/') =>
+                        if stdio
+                            && focus_panel == 0
+                            && (input.trim_start().starts_with('/')
+                                || input.trim_start().starts_with('$')) =>
                     {
                         let completion = model
                             .lock()

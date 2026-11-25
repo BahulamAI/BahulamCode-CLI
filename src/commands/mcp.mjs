@@ -1,296 +1,143 @@
-/**
- * `bahulam mcp` — manage MCP server registrations.
- *
- *   bahulam mcp add <name> --command <cmd> [--args ...] [--env KEY=VAL ...]
- *   bahulam mcp add <name> --url <url> [--headers ...]
- *   bahulam mcp remove <name>
- *   bahulam mcp list
- *   bahulam mcp test <name>
- *
- * MCP servers are stored in ~/.claude/settings.json under mcpServers,
- * matching the Claude Desktop / Cursor / Cline portable format.
- * The settings loader chain reads this file at startup, and the MCP
- * loader (src/mcp/loader.mjs) spawns and registers tools from it.
- */
+/** Portable registrations stay in ~/.claude/settings.json; secrets do not. */
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { McpCredentialStore, resolveMcpConfig, redactMcpConfig, safeMcpUrl, mcpError, safeMcpError } from '../mcp/credentials.mjs';
+import { loginMcp, requireSecureUrl } from '../mcp/oauth.mjs';
+import { promptMcpKey } from '../mcp/credential-prompt.mjs';
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
-
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const CYAN = '\x1b[36m';
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-
-function settingsFilePath() {
-    return path.join(os.homedir(), '.claude', 'settings.json');
+const settingsFilePath = () => path.join(os.homedir(), '.claude', 'settings.json');
+function readSettings() {
+    try { return JSON.parse(fs.readFileSync(settingsFilePath(), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return {}; throw safeMcpError('Cannot read MCP settings; repair the settings file before editing registrations.'); }
 }
-
-function loadSettingsFile() {
+function writeServer(name, config) {
+    // Login can take minutes. Re-read before committing so another command's
+    // unrelated settings updates are not replaced by our pre-login snapshot.
+    const settings = readSettings();
+    settings.mcpServers ||= {};
+    if (config) settings.mcpServers[name] = config;
+    else delete settings.mcpServers[name];
     const file = settingsFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = file + '.' + randomUUID();
     try {
-        return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    } catch {
-        return {};
-    }
+        fs.writeFileSync(temporary, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+        fs.renameSync(temporary, file);
+    } finally { try { fs.unlinkSync(temporary); } catch {} }
 }
 
-function saveSettingsFile(data) {
-    const file = settingsFilePath();
-    const dir = path.dirname(file);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-}
-
-function parseArgs(argv) {
-    const parsed = {
-        subcommand: null,
-        name: null,
-        command: null,
-        args: [],
-        url: null,
-        env: {},
-        headers: {},
-        transport: null,
-        help: false,
-        json: false,
-    };
+export function parseMcpArgs(argv) {
+    const args = { env: {}, headers: {}, args: [] };
     const positional = [];
+    const values = { '--url': 'url', '--command': 'command', '--transport': 'transport', '--client-id': 'clientId', '--scope': 'scope', '--callback-port': 'callbackPort', '--api-key-header': 'apiKeyHeader', '--api-key-prefix': 'apiKeyPrefix' };
     for (let i = 0; i < argv.length; i++) {
-        const arg = argv[i];
-        switch (arg) {
-            case '--help': case '-h': parsed.help = true; break;
-            case '--json': parsed.json = true; break;
-            case '--command': parsed.command = argv[++i]; break;
-            case '--url': parsed.url = argv[++i]; break;
-            case '--transport': parsed.transport = argv[++i]; break;
-            case '--env': {
-                const pair = argv[++i] || '';
-                const eq = pair.indexOf('=');
-                if (eq > 0) parsed.env[pair.slice(0, eq)] = pair.slice(eq + 1);
-                break;
-            }
-            case '--header': case '--headers': {
-                const pair = argv[++i] || '';
-                const eq = pair.indexOf(':');
-                if (eq > 0) parsed.headers[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-                break;
-            }
-            case '--args': {
-                // Collect remaining positional args until next --flag
-                while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
-                    parsed.args.push(argv[++i]);
-                }
-                break;
-            }
-            default:
-                if (!arg.startsWith('-')) positional.push(arg);
-                break;
-        }
+        const flag = argv[i];
+        if (values[flag]) {
+            if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw safeMcpError(`Missing value for ${flag}.`);
+            args[values[flag]] = argv[++i];
+        } else if (['--help', '-h', '--json', '--oauth', '--api-key'].includes(flag)) {
+            args[flag === '-h' ? 'help' : flag.slice(2)] = true;
+        } else if (['--env', '--header', '--headers'].includes(flag)) {
+            const pair = argv[++i] || '';
+            const header = flag !== '--env';
+            const split = pair.indexOf(header ? ':' : '=');
+            if (split < 1) throw safeMcpError('Expected --env NAME=value or --header "Name: value".');
+            args[header ? 'headers' : 'env'][pair.slice(0, split).trim()] = pair.slice(split + 1).trim();
+        } else if (flag === '--args') {
+            while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args.args.push(argv[++i]);
+        } else if (flag.startsWith('-')) throw safeMcpError('Unknown MCP option. Run bahulam mcp --help.');
+        else positional.push(flag);
     }
-    parsed.subcommand = positional.shift() || null;
-    parsed.name = positional.shift() || null;
-    return parsed;
+    [args.action, args.name] = positional;
+    if (positional.length > 2) throw safeMcpError('Unexpected MCP argument. --api-key prompts securely; do not pass the key as an argument.');
+    if (args.oauth && args['api-key']) throw safeMcpError('Choose --oauth or --api-key.');
+    if (args.callbackPort !== undefined && (!/^\d+$/.test(args.callbackPort) || +args.callbackPort < 1024 || +args.callbackPort > 65535)) throw safeMcpError('Callback port must be between 1024 and 65535.');
+    return args;
 }
 
 export async function handleMcpCommand(argv) {
-    const args = parseArgs(argv);
-
-    if (args.help || !args.subcommand) {
-        process.stderr.write(`
-  ${BOLD}bahulam mcp <subcommand>${RESET}
-
-  Manage MCP (Model Context Protocol) server registrations.
-
-  ${BOLD}Subcommands:${RESET}
-
-    ${CYAN}add${RESET} <name> ${DIM}--command <cmd> [--args a b c] [--env KEY=VAL ...]${RESET}
-         Register a stdio MCP server (spawns a child process).
-
-    ${CYAN}add${RESET} <name> ${DIM}--url <url> [--header "Key: Val" ...]${RESET}
-         Register a remote MCP server (SSE, WebSocket, or Streamable HTTP).
-         Transport is auto-detected: ws:// → WebSocket, /sse → SSE, else sHTTP.
-
-    ${CYAN}remove${RESET} <name>          Unregister an MCP server.
-    ${CYAN}list${RESET}                   List all registered MCP servers.
-    ${CYAN}test${RESET} <name>            Connect, list tools, and call one.
-
-  ${BOLD}Examples:${RESET}
-
-    ${DIM}# Supabase MCP (stdio)${RESET}
-    ${CYAN}bahulam mcp add supabase --command npx --args -y @supabase/mcp-server-supabase --env SUPABASE_ACCESS_TOKEN=sbp_xxx${RESET}
-
-    ${DIM}# Remote SSE server${RESET}
-    ${CYAN}bahulam mcp add myapi --url https://api.example.com/sse --header "Authorization: Bearer token123"${RESET}
-
-    ${DIM}# List and test${RESET}
-    ${CYAN}bahulam mcp list${RESET}
-    ${CYAN}bahulam mcp test supabase${RESET}
-
-  ${BOLD}Config location:${RESET} ${settingsFilePath()}
-
-`);
-        if (!args.subcommand) process.exit(1);
-        return;
-    }
-
-    switch (args.subcommand) {
-        case 'add': return handleAdd(args);
-        case 'remove': case 'rm': return handleRemove(args);
-        case 'list': case 'ls': return handleList(args);
-        case 'test': return handleTest(args);
-        default:
-            process.stderr.write(`${RED}✗${RESET} Unknown subcommand: ${args.subcommand}\n`);
-            process.stderr.write(`Run ${CYAN}bahulam mcp --help${RESET} for usage.\n`);
-            process.exit(1);
-    }
+    try { return await runMcpCommand(parseMcpArgs(argv)); }
+    catch (error) { throw safeMcpError(mcpError(error)); }
 }
 
-function handleAdd(args) {
-    if (!args.name) {
-        process.stderr.write(`${RED}✗${RESET} Server name required. Usage: bahulam mcp add <name> --command <cmd> | --url <url>\n`);
-        process.exit(1);
-    }
-    if (!args.command && !args.url) {
-        process.stderr.write(`${RED}✗${RESET} Either --command or --url is required.\n`);
-        process.exit(1);
-    }
-
-    const settings = loadSettingsFile();
-    if (!settings.mcpServers) settings.mcpServers = {};
-
-    const config = {};
-    if (args.command) {
-        config.command = args.command;
-        if (args.args.length > 0) config.args = args.args;
-    }
-    if (args.url) config.url = args.url;
-    if (Object.keys(args.env).length > 0) config.env = args.env;
-    if (Object.keys(args.headers).length > 0) config.headers = args.headers;
-    if (args.transport) config.transport = args.transport;
-
-    settings.mcpServers[args.name] = config;
-    saveSettingsFile(settings);
-
-    if (args.json) {
-        process.stdout.write(JSON.stringify({ ok: true, name: args.name, config }) + '\n');
+async function runMcpCommand(args) {
+    if (args.help || !args.action) {
+        process.stdout.write(`Bahulam MCP servers\n\n  add <name> --command <cmd> [--args ...] [--env NAME=value]\n  add <name> --url <url> [--transport http|sse] [--oauth | --api-key]\n  add <name> --url <url> --header 'Authorization: Bearer \${API_KEY}'\n  login <name> [--api-key]       Browser OAuth login or masked API-key entry\n  logout <name>                Delete locally saved credentials\n  list [--json]                Show registrations (secrets redacted)\n  test <name>                  Connect and discover tools; never execute tools\n  remove <name>                Unregister the server\n\nOAuth options: --client-id <id> --scope <scope> --callback-port <port>\nAPI-key options: --api-key-header <name> --api-key-prefix <prefix>\nRun these inside Bahulam with !bahulam mcp ...\n`);
         return;
     }
-
-    const type = config.command ? 'stdio' : 'remote';
-    const endpoint = config.command || config.url;
-    process.stderr.write(`${GREEN}✓${RESET} Registered MCP server ${BOLD}${args.name}${RESET} (${type}: ${endpoint})\n`);
-    process.stderr.write(`  ${DIM}config${RESET}  ${settingsFilePath()}\n`);
-    process.stderr.write(`  ${DIM}test${RESET}   ${CYAN}bahulam mcp test ${args.name}${RESET}\n\n`);
-}
-
-function handleRemove(args) {
-    if (!args.name) {
-        process.stderr.write(`${RED}✗${RESET} Server name required. Usage: bahulam mcp remove <name>\n`);
-        process.exit(1);
-    }
-    const settings = loadSettingsFile();
-    if (!settings.mcpServers?.[args.name]) {
-        process.stderr.write(`${YELLOW}!${RESET} No MCP server named "${args.name}" is registered.\n`);
-        process.exit(1);
-    }
-    delete settings.mcpServers[args.name];
-    saveSettingsFile(settings);
-
-    if (args.json) {
-        process.stdout.write(JSON.stringify({ ok: true, removed: args.name }) + '\n');
+    const settings = readSettings();
+    const servers = settings.mcpServers ||= {};
+    if (['list', 'ls'].includes(args.action)) {
+        const redacted = Object.fromEntries(Object.entries(servers).map(([name, config]) => [name, redactMcpConfig(config)]));
+        if (args.json) process.stdout.write(JSON.stringify({ servers: redacted }) + '\n');
+        else {
+            process.stdout.write('MCP servers\n');
+            for (const [name, config] of Object.entries(redacted)) process.stdout.write(`  ${name} · ${config.command || config.url} · ${config.auth?.type || 'configured headers / none'}\n`);
+            if (!Object.keys(servers).length) process.stdout.write('  No servers registered.\n');
+        }
         return;
     }
-    process.stderr.write(`${GREEN}✓${RESET} Removed MCP server ${BOLD}${args.name}${RESET}\n`);
-}
-
-function handleList(args) {
-    const settings = loadSettingsFile();
-    const servers = settings.mcpServers || {};
-    const names = Object.keys(servers);
-
-    if (names.length === 0) {
-        process.stderr.write(`${DIM}No MCP servers registered.${RESET}\n`);
-        process.stderr.write(`Add one: ${CYAN}bahulam mcp add <name> --command <cmd>${RESET}\n\n`);
+    if (!args.name || !/^[\w.-]+$/.test(args.name) || ['__proto__', 'constructor', 'prototype'].includes(args.name)) throw safeMcpError('A server name using letters, numbers, dots, hyphens or underscores is required.');
+    let config = Object.hasOwn(servers, args.name) ? servers[args.name] : undefined;
+    const success = message => process.stdout.write(args.json ? JSON.stringify({ ok: true, name: args.name, message, ...(args.action === 'add' ? { config: redactMcpConfig(config) } : {}) }) + '\n' : message + '\n');
+    const configureAuth = target => {
+        if (args['api-key']) target.auth = { type: 'api-key', header: args.apiKeyHeader || target.auth?.header || 'Authorization', prefix: args.apiKeyPrefix ?? target.auth?.prefix ?? 'Bearer ' };
+        else target.auth = { ...target.auth, type: 'oauth', ...(args.clientId ? { clientId: args.clientId } : {}), ...(args.scope ? { scope: args.scope } : {}), ...(args.callbackPort ? { callbackPort: +args.callbackPort } : {}) };
+        if (Object.keys(target.headers || {}).some(key => key.toLowerCase() === (target.auth.header || 'Authorization').toLowerCase())) throw safeMcpError('Remove the configured authentication header before using stored credentials.');
+    };
+    if (args.action === 'add') {
+        if (Boolean(args.command) === Boolean(args.url)) throw safeMcpError('Specify exactly one of --command or --url.');
+        config = args.url ? { url: args.url } : { command: args.command, args: args.args };
+        if (args.transport) {
+            if (!['stdio', 'http', 'streamable-http', 'sse', 'websocket'].includes(args.transport)) throw safeMcpError('Unsupported MCP transport.');
+            config.transport = args.transport;
+        }
+        if (Object.keys(args.env).length) config.env = args.env;
+        if (Object.keys(args.headers).length) config.headers = args.headers;
+        if (args.oauth || args['api-key']) {
+            if (!config.url) throw safeMcpError('Browser OAuth and stored API keys require a remote HTTP server.');
+            configureAuth(config);
+            const resolved = resolveMcpConfig(config);
+            requireSecureUrl(resolved.url);
+            if (args['api-key']) new McpCredentialStore(resolved.url).write({ apiKey: await promptMcpKey() });
+        }
+        servers[args.name] = config;
+        writeServer(args.name, config);
+        success(`Registered ${args.name}. Run bahulam mcp ${args.oauth ? 'login' : 'test'} ${args.name}.`);
         return;
     }
-
-    if (args.json) {
-        process.stdout.write(JSON.stringify({ servers }) + '\n');
-        return;
+    if (!config) throw safeMcpError('MCP server is not registered. Run bahulam mcp list.');
+    if (['remove', 'rm'].includes(args.action)) {
+        writeServer(args.name, null);
+        success('Server removed. Saved credentials are retained; use logout before removal to delete them.'); return;
     }
-
-    process.stderr.write(`${BOLD}MCP Servers${RESET} (${names.length}):\n`);
-    for (const name of names) {
-        const cfg = servers[name];
-        const type = cfg.command ? 'stdio' : 'remote';
-        const endpoint = cfg.command || cfg.url || 'unknown';
-        const toolCount = cfg._tools ? ` (${cfg._tools} tools)` : '';
-        process.stderr.write(`  ${CYAN}${name.padEnd(20)}${RESET} ${type.padEnd(7)} ${endpoint}${toolCount}\n`);
+    if (args.action === 'logout') {
+        if (!config.url) throw safeMcpError('This server has no stored remote credentials.');
+        new McpCredentialStore(resolveMcpConfig({ url: config.url }).url).clear();
+        success('Local credentials deleted. Active connections must be reconnected; provider-side grants are not revoked.'); return;
     }
-    process.stderr.write(`\n${DIM}Config: ${settingsFilePath()}${RESET}\n\n`);
-}
-
-async function handleTest(args) {
-    if (!args.name) {
-        process.stderr.write(`${RED}✗${RESET} Server name required. Usage: bahulam mcp test <name>\n`);
-        process.exit(1);
+    if (args.action === 'login') {
+        if (!config.url) throw safeMcpError('Browser login requires a remote HTTP server.');
+        if (config.auth?.type === 'api-key') args['api-key'] = true;
+        configureAuth(config);
+        const resolved = resolveMcpConfig(config);
+        requireSecureUrl(resolved.url);
+        if (args['api-key']) new McpCredentialStore(resolved.url).write({ apiKey: await promptMcpKey() });
+        else {
+            process.stderr.write(`Opening browser to sign in to ${safeMcpUrl(resolved.url)}…\n`);
+            await loginMcp(resolved);
+        }
+        writeServer(args.name, config);
+        success('Credentials saved. Run mcp test to verify; restart the Bahulam session to load newly registered tools.'); return;
     }
-
-    const settings = loadSettingsFile();
-    const config = settings.mcpServers?.[args.name];
-    if (!config) {
-        process.stderr.write(`${RED}✗${RESET} No MCP server named "${args.name}" is registered.\n`);
-        process.exit(1);
-    }
-
-    process.stderr.write(`${DIM}Connecting to ${args.name}…${RESET}\n`);
-
-    try {
+    if (args.action === 'test') {
         const { McpClient } = await import('../mcp/client.mjs');
-        const { loadMcpServers } = await import('../mcp/loader.mjs');
-
-        // Use the loader to handle env expansion
-        const fakeExecutor = {
-            registerMcpTool: () => true,
-            unregisterMcpServer: () => 0,
-        };
-        const mcp = await loadMcpServers(fakeExecutor, { mcpServers: { [args.name]: config } });
-
-        if (mcp.clients.length === 0) {
-            process.stderr.write(`${RED}✗${RESET} Failed to connect to "${args.name}".\n`);
-            process.stderr.write(`${DIM}Check that the command/URL is correct and any required env vars are set.${RESET}\n`);
-            process.exit(1);
-        }
-
-        const client = mcp.clients[0].client;
-        const tools = client.tools;
-
-        process.stderr.write(`${GREEN}✓${RESET} Connected! Server: ${BOLD}${client.serverInfo?.serverInfo?.name || args.name}${RESET}\n`);
-        process.stderr.write(`  ${DIM}tools${RESET}  ${tools.length}\n`);
-        for (const t of tools) {
-            process.stderr.write(`         ${CYAN}${t.name}${RESET} — ${(t.description || '').slice(0, 70)}\n`);
-        }
-
-        // Try calling the first tool that looks like a list/query
-        const listTool = tools.find(t =>
-            /list|query|search|get|fetch/i.test(t.name) && !/delete|update|create|insert|drop/i.test(t.name)
-        );
-
-        if (listTool) {
-            process.stderr.write(`\n${DIM}Testing tool: ${listTool.name}…${RESET}\n`);
-            const result = await client.callTool(listTool.name, {});
-            const preview = String(result).slice(0, 500);
-            process.stderr.write(`${GREEN}✓${RESET} Result: ${preview}${preview.length >= 500 ? '…' : ''}\n`);
-        }
-
-        await mcp.disconnectAll();
-        process.stderr.write(`\n${GREEN}✓${RESET} Test passed.\n\n`);
-    } catch (err) {
-        process.stderr.write(`${RED}✗${RESET} Test failed: ${err.message}\n`);
-        process.exit(1);
+        const client = new McpClient(config);
+        try { await client.connect(); const tools = await client.listTools(); success(`Connected to ${args.name}; ${tools.length} tools available.`); }
+        finally { await client.disconnect().catch(() => {}); }
+        return;
     }
+    throw safeMcpError('Unknown MCP action. Run bahulam mcp --help.');
 }

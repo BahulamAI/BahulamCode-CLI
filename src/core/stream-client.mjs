@@ -1,3 +1,4 @@
+import { CLI_INFO_SCHEMA } from './cli-info.mjs';
 /**
  * BahulamStreamClient — SSE consumer for Bahulam backend.
  *
@@ -405,7 +406,7 @@ export class BahulamStreamClient {
         // client_agent_tools — _getUnclaimedPluginToolSchemas excludes those.
         const clientAgents = this._getPluginAgentSchemas();
         if (clientAgents.length > 0) body.client_agents = clientAgents;
-        const clientTools = this._getUnclaimedPluginToolSchemas(context, clientAgents);
+        const clientTools = [CLI_INFO_SCHEMA, ...this._getUnclaimedPluginToolSchemas(context, clientAgents).filter(tool => tool.name !== CLI_INFO_SCHEMA.name)];
         if (clientTools.length > 0) body.client_tools = clientTools;
         const clientAgentTools = this._getClientAgentToolSchemas(context, clientAgents);
         if (clientAgentTools.length > 0) body.client_agent_tools = clientAgentTools;

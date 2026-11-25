@@ -1488,12 +1488,18 @@ impl Model {
                         .or_else(|| data.get("result").filter(|value| !value.is_null()));
                     let card = &mut self.cards[index];
                     if output.is_some() || event.payload_ref.is_some() || !summary.is_empty() {
-                        // A status-only acknowledgement can follow the local result.
-                        // The preview format belongs to the event supplying its content.
-                        card.has_edit_diff =
-                            data.get("has_edit_diff").and_then(Value::as_bool) == Some(true);
+                        // A status-only acknowledgement can follow the local result. Keep
+                        // its diff preview and styling when that later event omits this field.
+                        let edit_diff_update = data.get("has_edit_diff").and_then(Value::as_bool);
+                        if let Some(has_edit_diff) = edit_diff_update {
+                            card.has_edit_diff = has_edit_diff;
+                        }
+                        let preserve_edit_preview =
+                            card.has_edit_diff && edit_diff_update != Some(false);
                         card.begin_tool_output();
-                        if !summary.is_empty() {
+                        if !summary.is_empty()
+                            && (!preserve_edit_preview || edit_diff_update == Some(true))
+                        {
                             card.body = summary;
                         }
                         if card.payload_ref != event.payload_ref {
@@ -1782,6 +1788,9 @@ impl Model {
                     "error",
                 );
             }
+            "notice"
+                if text(data, "source") == "status"
+                    && text(data, "cause").starts_with("Continuing... (") => {}
             "notice" if text(data, "source") == "followup_applied" => {
                 self.finish_message_segment(&message_key);
                 self.finish_thinking_segment(&message_key);

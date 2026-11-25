@@ -65,6 +65,7 @@ The catalog also includes Kimi, Llama, Grok, GLM, and Nemotron. To select a codi
 - **Project instructions.** Put build commands and repository conventions in `AGENTS.md`. Use `/status context` to see which instruction files were loaded.
 - **Skills and tools.** Add a reusable skill at `.agents/skills/<name>/SKILL.md`, and inspect it with `/skills list`. Connect external tools through MCP. [Skills guide](https://docs.bahulam.ai/code/skills) · [MCP configuration](https://docs.bahulam.ai/code/mcp)
 - **Local workspace.** Run `bahulam workspace open .` to inspect local files in a browser. The CLI keeps session history and configuration under `~/.bahulam/` by default.
+- **MCP sign-in.** Register OAuth servers with `bahulam mcp add <name> --url <url> --oauth`, then run `bahulam mcp login <name>`. API-key servers support a masked `--api-key` prompt or environment references in headers. You can run these from the composer with `!bahulam mcp …`. [Authentication and credential storage](./docs/mcp-authentication.md)
 
 ## Documentation and development
 

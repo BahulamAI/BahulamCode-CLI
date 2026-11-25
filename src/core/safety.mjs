@@ -105,7 +105,7 @@ function isProtectedName(name = '') {
 }
 
 export function isSensitiveConfigPath(filePath = '') {
-  return isEnvLikeName(basenameFor(filePath));
+  return isEnvLikeName(basenameFor(filePath)) || /(?:^|[\\/])mcp-credentials(?:[\\/]|$)/.test(String(filePath));
 }
 
 export function isApprovalRequiredWritePath(filePath = '') {

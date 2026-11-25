@@ -385,7 +385,7 @@ impl SlashMenu {
         catalog: &'a [(String, String)],
     ) -> Vec<&'a (String, String)> {
         let prefix = input.trim_start();
-        if !prefix.starts_with('/')
+        if !(prefix.starts_with('/') || prefix.starts_with('$'))
             || prefix.contains('\n')
             || (self.query == input && self.dismissed)
         {

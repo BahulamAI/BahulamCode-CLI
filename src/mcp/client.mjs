@@ -11,6 +11,7 @@
  */
 
 import { spawn } from 'child_process';
+import { resolveMcpConfig, mcpError, safeMcpError } from './credentials.mjs';
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -20,7 +21,7 @@ export class McpClient {
      * @param {object} serverConfig - { command, args, env, url, transport }
      */
     constructor(serverConfig) {
-        this.config = serverConfig;
+        this.config = resolveMcpConfig(serverConfig);
         this.process = null;
         this.transport = null;
         this.requestId = 0;
@@ -33,7 +34,7 @@ export class McpClient {
     }
 
     _detectTransport() {
-        if (this.config.transport) return this.config.transport;
+        if (this.config.transport) return this.config.transport === 'http' ? 'streamable-http' : this.config.transport;
         if (this.config.command) return 'stdio';
         if (this.config.url) {
             if (this.config.url.startsWith('ws://') || this.config.url.startsWith('wss://')) return 'websocket';
@@ -45,13 +46,17 @@ export class McpClient {
 
     async connect() {
         const transportType = this._detectTransport();
-
-        switch (transportType) {
-            case 'stdio': return this._connectStdio();
-            case 'sse': return this._connectSSE();
-            case 'websocket': return this._connectWebSocket();
-            case 'streamable-http': return this._connectStreamableHttp();
-            default: throw new Error(`Unknown MCP transport: ${transportType}`);
+        try {
+            switch (transportType) {
+                case 'stdio': return await this._connectStdio();
+                case 'sse': return await this._connectSSE();
+                case 'websocket': return await this._connectWebSocket();
+                case 'streamable-http': return await this._connectStreamableHttp();
+                default: throw safeMcpError('Unknown MCP transport.');
+            }
+        } catch (error) {
+            await this.disconnect().catch(() => {});
+            throw safeMcpError(mcpError(error));
         }
     }
 
@@ -62,9 +67,13 @@ export class McpClient {
         });
 
         this.process.stdout.on('data', (data) => this._onData(data));
+        this.process.on('error', () => {
+            for (const { reject } of this.pending.values()) reject(safeMcpError('Could not start the MCP server process. Check its command and environment.'));
+            this.pending.clear();
+        });
         this.process.stderr.on('data', (data) => {
             if (process.env.MCP_DEBUG) {
-                process.stderr.write(`[mcp:${this.config.command}] ${data}`);
+                process.stderr.write('[mcp] Server wrote diagnostic output (hidden to protect credentials).\n');
             }
         });
 
@@ -88,31 +97,31 @@ export class McpClient {
         return this.serverInfo;
     }
 
-    async _connectSSE() {
-        const { SseTransport } = await import('./transport-sse.mjs');
-        this.transport = new SseTransport(this.config.url, {
-            headers: this.config.headers || {},
-        });
-        await this.transport.connect();
-        this.transport.onMessage((msg) => {
-            if (msg.data?.id && this.pending.has(msg.data.id)) {
-                const { resolve, reject } = this.pending.get(msg.data.id);
-                this.pending.delete(msg.data.id);
-                if (msg.data.error) reject(new Error(msg.data.error.message));
-                else resolve(msg.data.result);
-            }
-        });
+    async _connectSSE() { return this._connectHttp('sse'); }
+
+    async _connectHttp(kind) {
+        const { connectRemoteMcp } = await import('./remote-client.mjs');
+        this.transport = await connectRemoteMcp(this.config, kind);
         this.connected = true;
-        await this._initRemote();
-        this._notifyRemote('notifications/initialized', {});
+        this.serverInfo = this.transport.serverInfo;
         return this.serverInfo;
     }
 
     async _connectWebSocket() {
+        if (this.config.auth) throw safeMcpError('Stored MCP authentication requires HTTP or SSE; use headers for WebSocket servers.');
+        if (Object.keys(this.config.headers || {}).length) {
+            const { requireSecureUrl } = await import('./oauth.mjs');
+            requireSecureUrl(this.config.url.replace(/^ws/, 'http'));
+        }
         const { WebSocketTransport } = await import('./transport-ws.mjs');
         this.transport = new WebSocketTransport(this.config.url, {
             headers: this.config.headers || {},
         });
+        const request = this.transport.request.bind(this.transport);
+        this.transport.request = async (...args) => {
+            try { return await request(...args); }
+            catch (error) { throw safeMcpError(mcpError(error)); }
+        };
         await this.transport.connect();
         this.connected = true;
         this.serverInfo = await this.transport.request('initialize', {
@@ -124,21 +133,7 @@ export class McpClient {
         return this.serverInfo;
     }
 
-    async _connectStreamableHttp() {
-        const { StreamableHttpTransport } = await import('./transport-shttp.mjs');
-        this.transport = new StreamableHttpTransport(this.config.url, {
-            headers: this.config.headers || {},
-        });
-        await this.transport.connect();
-        this.connected = true;
-        this.serverInfo = await this.transport.request('initialize', {
-            protocolVersion: MCP_PROTOCOL_VERSION,
-            capabilities: {},
-            clientInfo: { name: 'bahulam-code', version: '2.0.0' },
-        });
-        this._notifyRemote('notifications/initialized', {});
-        return this.serverInfo;
-    }
+    async _connectStreamableHttp() { return this._connectHttp('streamable-http'); }
 
     async _initRemote() {
         const result = await this._transportRequest('initialize', {
@@ -209,6 +204,7 @@ export class McpClient {
         } else {
             result = await this._request('tools/call', params);
         }
+        if (result?.isError) throw safeMcpError('MCP tool reported an error. Provider details are hidden because they may contain credentials.');
         if (result?.content && Array.isArray(result.content)) {
             const textParts = result.content.filter(c => c.type === 'text').map(c => c.text);
             const imageParts = result.content.filter(c => c.type === 'image');
@@ -239,6 +235,7 @@ export class McpClient {
     }
 
     async disconnect() {
+        const wasConnected = this.connected;
         this.connected = false;
         if (this.transport) {
             await this.transport.disconnect();
@@ -246,9 +243,12 @@ export class McpClient {
             return;
         }
         if (!this.process) return;
+        if (this.process.exitCode !== null || this.process.signalCode !== null || !this.process.pid) { this.process = null; return; }
         try {
-            await this._request('shutdown', {});
-            this._notify('exit', {});
+            if (wasConnected) {
+                await this._request('shutdown', {}, 2000);
+                this._notify('exit', {});
+            }
         } catch { /* best effort */ }
 
         await new Promise(resolve => {
@@ -259,15 +259,15 @@ export class McpClient {
         this.process = null;
     }
 
-    _request(method, params) {
+    _request(method, params, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         return new Promise((resolve, reject) => {
             const id = ++this.requestId;
             const timeout = setTimeout(() => {
                 if (this.pending.has(id)) {
                     this.pending.delete(id);
-                    reject(new Error(`MCP request timeout: ${method} (${DEFAULT_REQUEST_TIMEOUT_MS}ms)`));
+                    reject(safeMcpError(`MCP request timeout: ${method} (${timeoutMs}ms)`));
                 }
-            }, DEFAULT_REQUEST_TIMEOUT_MS);
+            }, timeoutMs);
             this.pending.set(id, {
                 resolve: (val) => { clearTimeout(timeout); resolve(val); },
                 reject: (err) => { clearTimeout(timeout); reject(err); },
@@ -293,7 +293,7 @@ export class McpClient {
                 if (msg.id && this.pending.has(msg.id)) {
                     const { resolve, reject } = this.pending.get(msg.id);
                     this.pending.delete(msg.id);
-                    if (msg.error) reject(new Error(`MCP error: ${msg.error.message || JSON.stringify(msg.error)}`));
+                    if (msg.error) reject(safeMcpError(mcpError(msg.error)));
                     else resolve(msg.result);
                 }
             } catch { /* malformed */ }

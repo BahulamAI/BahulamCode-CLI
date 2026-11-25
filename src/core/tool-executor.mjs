@@ -1,3 +1,4 @@
+import { CLI_INFO_SCHEMA, CLI_CAPABILITIES, cliInfo } from './cli-info.mjs';
 /**
  * Tool Executor Bridge — maps Bahulam backend tool names to OCC tool calls.
  *
@@ -1015,6 +1016,7 @@ export function createToolExecutor({
     // ── Tool mapping table ──────────────────────────────────────
 
     const toolMap = {
+        bahulam_cli_info: async (args) => ({ success: true, output: JSON.stringify(cliInfo(args.topic), null, 2), _tool: CLI_INFO_SCHEMA.name }),
         // 0. ask_user → interactive direction question (client-executed).
         // The UI form is injected by the REPL via `interactionHandler`;
         // headless/piped sessions have none and get the best-judgment
@@ -2802,6 +2804,11 @@ export function createToolExecutor({
             return [...Object.keys(toolMap), ...pluginToolMap.keys()];
         },
 
+        /** Return loaded skill metadata for composer completion and explicit invocation. */
+        listSkills() {
+            return skillsLoader.list();
+        },
+
         /**
          * Register one MCP-backed tool as `<serverName>.<toolName>`.
          * Called by the workspace lifecycle after spawning per-plugin
@@ -2882,13 +2889,12 @@ export function createToolExecutor({
         // that compose model-facing tool lists — e.g. the graph engine's
         // direct substrate giving a plugin agent its declared tools.
         listPluginToolSchemas() {
-            if (!pluginRegistry) return [];
-            return (pluginRegistry.listTools?.() || []).map(tool => ({
+            return [CLI_INFO_SCHEMA, ...(pluginRegistry?.listTools?.() || []).map(tool => ({
                 name: tool.name,
                 description: tool.description || '',
                 input_schema: tool.input_schema || { type: 'object', properties: {} },
                 plugin_name: tool._plugin_name || tool.plugin_name || null,
-            })).filter(tool => tool.name);
+            })).filter(tool => tool.name && tool.name !== CLI_INFO_SCHEMA.name)];
         },
 
         getAgentContext() {
@@ -2896,6 +2902,7 @@ export function createToolExecutor({
             const mem = _readMemorySnapshot();
             const pluginState = pluginStateContext();
             return {
+                cli_capabilities: CLI_CAPABILITIES,
                 identity: global.identity,
                 preferences: global.preferences,
                 global_skills: skillsLoader.list(),

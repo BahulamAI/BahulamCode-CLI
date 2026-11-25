@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Refresh the CLI-shipped model catalog default from codekepler-backend.
+ * Refresh the CLI-shipped model catalog default from Bahulam-backend.
  *
- * Reads from `codekepler-backend/main` (the deployed source of truth after
+ * Reads from `Bahulam-backend/main` (the deployed source of truth after
  * PR merges) and writes to `src/config/model-catalog-default.json`. Wired
  * to `prepublishOnly` so `npm publish` always ships the latest catalog.
  *
@@ -10,7 +10,7 @@
  * that follow a catalog PR merge on the backend side.
  *
  * Fallback: if the network fetch fails and a local checkout of
- * codekepler-backend is present as a sibling of this repo, copy from
+ * Bahulam-backend is present as a sibling of this repo, copy from
  * disk instead. Keeps publish flows working offline.
  */
 
@@ -18,14 +18,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REMOTE_URL = 'https://raw.githubusercontent.com/raviakasapu/codekepler-backend/main/app/services/model_catalog_snapshot.json';
-const DEFAULTS_REMOTE_URL = 'https://raw.githubusercontent.com/raviakasapu/codekepler-backend/main/app/services/model_defaults.py';
+const REMOTE_URL = 'https://raw.githubusercontent.com/BahulamAI/Bahulam-backend/main/app/services/model_catalog_snapshot.json';
+const DEFAULTS_REMOTE_URL = 'https://raw.githubusercontent.com/BahulamAI/Bahulam-backend/main/app/services/model_defaults.py';
 const _dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(_dirname, '..');
 const OUT_PATH = path.join(REPO_ROOT, 'src', 'config', 'model-catalog-default.json');
 const DEFAULTS_OUT_PATH = path.join(REPO_ROOT, 'src', 'config', 'model-defaults-default.json');
-const LOCAL_FALLBACK = path.resolve(REPO_ROOT, '..', 'codekepler-backend', 'app', 'services', 'model_catalog_snapshot.json');
-const DEFAULTS_LOCAL_FALLBACK = path.resolve(REPO_ROOT, '..', 'codekepler-backend', 'app', 'services', 'model_defaults.py');
+const LOCAL_FALLBACK = path.resolve(REPO_ROOT, '..', 'Bahulam-backend', 'app', 'services', 'model_catalog_snapshot.json');
+const DEFAULTS_LOCAL_FALLBACK = path.resolve(REPO_ROOT, '..', 'Bahulam-backend', 'app', 'services', 'model_defaults.py');
 
 async function fetchRemote(url = REMOTE_URL) {
   try {
@@ -60,7 +60,7 @@ function modelDefaultsFromPython(source) {
   }
   return {
     schema: 'bahulam.model_defaults.v1',
-    source: 'codekepler-backend/app/services/model_defaults.py',
+    source: 'Bahulam-backend/app/services/model_defaults.py',
     defaults: { reasoning, fast, planning },
   };
 }
@@ -68,7 +68,7 @@ function modelDefaultsFromPython(source) {
 const remote = await fetchRemote();
 const raw = remote ?? readLocalFallback();
 if (!raw) {
-  console.error('[sync-catalog] no catalog source available (remote unreachable AND no local codekepler-backend checkout)');
+  console.error('[sync-catalog] no catalog source available (remote unreachable AND no local Bahulam-backend checkout)');
   process.exit(1);
 }
 
@@ -91,13 +91,13 @@ fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
 fs.writeFileSync(OUT_PATH, raw);
 console.log(`[sync-catalog] wrote ${path.relative(REPO_ROOT, OUT_PATH)}`);
 console.log(`  ${models.length} models, ${flagged} harness_validated`);
-console.log(`  source: ${remote ? 'remote (github raw)' : 'local (../codekepler-backend)'}`);
+console.log(`  source: ${remote ? 'remote (github raw)' : 'local (../Bahulam-backend)'}`);
 console.log(`  generated_at: ${parsed.generated_at ?? 'unknown'}`);
 
 const defaultsRemote = await fetchRemote(DEFAULTS_REMOTE_URL);
 const defaultsRaw = defaultsRemote ?? readLocalFallback(DEFAULTS_LOCAL_FALLBACK);
 if (!defaultsRaw) {
-  console.error('[sync-catalog] no model defaults source available (remote unreachable AND no local codekepler-backend checkout)');
+  console.error('[sync-catalog] no model defaults source available (remote unreachable AND no local Bahulam-backend checkout)');
   process.exit(1);
 }
 let defaults;

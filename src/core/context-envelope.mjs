@@ -1,3 +1,4 @@
+import { CLI_INFO_PROMPT } from './cli-info.mjs';
 import { contextToPromptBlock, directoryInstructions } from './project-context-loader.mjs';
 
 export function instructionContext(projectContext, agentContext = {}) {
@@ -6,7 +7,7 @@ export function instructionContext(projectContext, agentContext = {}) {
   const availableSkills = [...skills.values()];
   const instructions = directoryInstructions(projectContext?.files);
   const catalog = availableSkills.length ? [
-    'Available skills. When a skill matches the task or the user names it, read its SKILL.md using skill_view or read_file before following it.',
+    'Available skills. When a skill matches the task or the user names it, read its SKILL.md using skill_view or read_file before following it. A leading $skill-name explicitly invokes that skill; text after the name is its task.',
     ...availableSkills.map(skill => `- ${skill.name}: ${skill.description || ''}${skill.path ? ' (' + skill.path + ')' : ''}`),
   ].join('\n') : '';
   return {
@@ -14,7 +15,7 @@ export function instructionContext(projectContext, agentContext = {}) {
     project_context: {
       loaded_files: projectContext?.loaded || [],
       changed_files: projectContext?.changed?.map(f => ({ label: f.label, path: f.path, hash: f.hash })) || [],
-      prompt_block: [contextToPromptBlock(projectContext, instructions), catalog].filter(Boolean).join('\n\n'),
+      prompt_block: [contextToPromptBlock(projectContext, instructions), catalog, agentContext.cli_capabilities ? CLI_INFO_PROMPT : null].filter(Boolean).join('\n\n'),
     },
     available_skills: availableSkills,
   };
