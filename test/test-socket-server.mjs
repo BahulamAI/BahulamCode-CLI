@@ -46,11 +46,13 @@ assert(persisted.length === 3, `pre-populated 3 events (got ${persisted.length})
 
 // Boot the server with an approve handler.
 let approveCalls = [];
+let sentMessages = [];
 const server = await startSocketServer({
   sessionId,
   onCommand: {
     approve: async (payload, attachId) => { approveCalls.push({ payload, attachId }); },
     deny: async (payload, attachId) => { approveCalls.push({ payload, attachId, denied: true }); },
+    send_message: async payload => { sentMessages.push(payload.text); },
   },
 });
 assert(fs.existsSync(server.sockPath), 'socket file created');
@@ -59,6 +61,7 @@ assert(perms === '600' || perms === '700', `socket perms are 0600-ish (got 0${pe
 
 // Wire tap broadcasts to the server so live events fan out on the socket.
 const unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+const unregisterV2 = registerBroadcaster(evt => server.broadcastV2Event(evt), { schemaVersion: 2, live: true });
 
 // Connect a client.
 const client = net.createConnection(server.sockPath);
@@ -124,6 +127,32 @@ const live = receivedFrames[receivedFrames.length - 1];
 assert(live.type === 'tool_call' && live.data.name === 'read', 'live event landed with correct type');
 assert(live.turn_id === 't2', 'live event has turn_id');
 
+// A native client opts into v2. It must receive the complete replay and live
+// text stream while the existing v1 terminal attach keeps its old contract.
+const native = net.createConnection(server.sockPath);
+await new Promise(r => native.once('connect', r));
+const nativeFrames = [];
+let nativeBuffer = '';
+native.setEncoding('utf-8');
+native.on('data', chunk => {
+  nativeBuffer += chunk;
+  let nl;
+  while ((nl = nativeBuffer.indexOf('\n')) !== -1) {
+    const line = nativeBuffer.slice(0, nl).trim();
+    nativeBuffer = nativeBuffer.slice(nl + 1);
+    if (line) nativeFrames.push(JSON.parse(line));
+  }
+});
+native.write(JSON.stringify({ type: 'hello', protocol_versions: [2, 1], last_seq: 0 }) + '\n');
+await waitFor(() => nativeFrames.some(f => f.type === 'replay_batch_end'), { description: 'v2 replay' });
+assert(nativeFrames.find(f => f.type === 'hello_ok')?.data?.protocol_version === 2, 'native client negotiated v2');
+assert(nativeFrames.some(f => f.type === 'tool_requested' && f.v === 2), 'native replay preserves v2 tool identity');
+tapSseEvent({ type: 'content_partial', data: { text: 'hello native' } }, { sessionId, turnId: 't2' });
+await waitFor(() => nativeFrames.some(f => f.type === 'text_delta'), { description: 'v2 text delta' });
+assert(JSON.stringify(nativeFrames.find(f => f.type === 'text_delta')?.data).includes('hello native'), 'v2 text delta keeps content');
+assert(!receivedFrames.some(f => f.type === 'text_delta'), 'legacy client does not receive v2-only text');
+native.end();
+
 // 3. approve command → handler is invoked with payload and attachId.
 client.write(JSON.stringify({ type: 'approve', attach_id: 'att_test', data: { apr_id: 'apr_9', note: 'lgtm' } }) + '\n');
 await waitFor(() => approveCalls.length > 0, { description: 'approve handler called' });
@@ -148,6 +177,10 @@ await waitFor(
 );
 assert(true, 'deferred command → command_error not_implemented');
 
+client.write(JSON.stringify({ type: 'send_message', reply_to: 'message-1', data: { text: 'hello from desktop' } }) + '\n');
+await waitFor(() => receivedFrames.some(f => f.type === 'command_ack' && f.data.in_reply_to === 'message-1'), { description: 'send_message ack' });
+assert(sentMessages[0] === 'hello from desktop', 'send_message reaches agent queue before ack');
+
 // 6. Bye → attach_left + peer half-closes
 const beforeBye = receivedFrames.length;
 const clientEnded = new Promise(r => client.once('end', r));
@@ -163,8 +196,32 @@ await clientEnded;
 client.end();
 assert(true, 'bye elicits attach_left and peer half-close');
 
+// A crashed owner has no opportunity to send bye. Its lock must be released
+// so the next native or mobile attach can type immediately.
+const orphan = net.createConnection(server.sockPath);
+await new Promise(r => orphan.once('connect', r));
+orphan.write(JSON.stringify({ type: 'hello', last_seq: 4 }) + '\n');
+await new Promise(r => orphan.once('data', r));
+const orphanClosed = new Promise(r => orphan.once('close', r));
+orphan.destroy();
+await orphanClosed;
+const successor = net.createConnection(server.sockPath);
+await new Promise(r => successor.once('connect', r));
+successor.write(JSON.stringify({ type: 'hello', protocol_versions: [2], last_seq: 4 }) + '\n');
+const successorHello = await new Promise(resolve => {
+  let pending = '';
+  successor.on('data', chunk => {
+    pending += chunk.toString();
+    const line = pending.split('\n').find(row => row.includes('"hello_ok"'));
+    if (line) resolve(JSON.parse(line));
+  });
+});
+assert(successorHello.data.input_lock.kind === 'holder', 'unexpected close releases input lock');
+successor.destroy();
+
 // 7. Server close cleans up the socket file.
 unregister();
+unregisterV2();
 await server.close();
 await closeActiveEventLog();
 assert(!fs.existsSync(server.sockPath), 'server.close removed the socket file');

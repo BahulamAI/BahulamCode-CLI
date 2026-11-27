@@ -6,6 +6,27 @@ import { spawnSync } from 'node:child_process';
 import { BahulamAuth } from '../src/auth/bahulam-auth.mjs';
 import { TarangAuth } from '../src/auth/tarang-auth.mjs';
 import { createSessionAuthSync } from '../src/terminal/startup.mjs';
+import { browserLaunchCommand, openBrowser } from '../src/core/open-browser.mjs';
+import { EventEmitter } from 'node:events';
+
+const loginUrl = 'https://www.bahulam.ai/auth/cli?callback=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback&state=test';
+assert.deepEqual(browserLaunchCommand(loginUrl, 'win32'), {
+  command: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', loginUrl],
+});
+for (const platform of ['win32', 'darwin', 'linux']) {
+  const expected = browserLaunchCommand(loginUrl, platform);
+  await openBrowser(loginUrl, {
+    platform,
+    spawnProcess(command, args, options) {
+      assert.equal(command, expected.command);
+      assert.deepEqual(args, expected.args);
+      assert.equal(options.shell, false);
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('exit', 0));
+      return child;
+    },
+  });
+}
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'bahulam-auth-sessions-'));
 const previous = { BAHULAM_HOME: process.env.BAHULAM_HOME, B0_TOKEN: process.env.B0_TOKEN, KEPLER_TOKEN: process.env.KEPLER_TOKEN };

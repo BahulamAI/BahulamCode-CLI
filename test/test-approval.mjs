@@ -3,7 +3,7 @@
  */
 
 import { ApprovalManager } from '../src/core/approval.mjs';
-import { getTimeoutPolicy, interceptApproval, listPending, resolvePending, setTimeoutPolicy } from '../src/daemon/approval-store.mjs';
+import { getTimeoutPolicy, interceptApproval, installApprovalInterceptor, listPending, resolvePending, setTimeoutPolicy, shutdownAllPending } from '../src/daemon/approval-store.mjs';
 import assert from 'node:assert';
 
 let passed = 0;
@@ -327,6 +327,41 @@ await test('configured deny timeout resolves a remote approval and clears pendin
         clearTimeout(keepProcessAlive);
         setTimeoutPolicy(original);
     }
+});
+
+await test('approval intercept follows the active session and replacement manager', async () => {
+    let sessionId = 'session-one';
+    let enabled = true;
+    const emitted = [];
+    const options = {
+        sessionId: () => sessionId,
+        enabled: () => enabled,
+        emit: (type, data, id) => emitted.push({ type, data, id }),
+    };
+    const manager = { check: async () => new Promise(() => {}) };
+    assert.strictEqual(installApprovalInterceptor(manager, options), true);
+    assert.strictEqual(installApprovalInterceptor(manager, options), false);
+    const first = manager.check('shell', { command: 'npm test' });
+    const request = emitted.find(event => event.type === 'approval_required');
+    assert.strictEqual(request.id, 'session-one');
+    assert.strictEqual(resolvePending('approve', request.data.apr_id, 'desktop'), true);
+    assert.strictEqual((await first).approved, true);
+
+    sessionId = 'session-two';
+    const replacement = { check: async () => new Promise(() => {}) };
+    installApprovalInterceptor(replacement, options);
+    const second = replacement.check('shell', { command: 'npm run build' });
+    const secondRequest = emitted.filter(event => event.type === 'approval_required').at(-1);
+    assert.strictEqual(secondRequest.id, 'session-two');
+    assert.strictEqual(resolvePending('deny', secondRequest.data.apr_id, 'mobile'), true);
+    assert.strictEqual((await second).approved, false);
+
+    enabled = false;
+    const local = { check: async () => ({ approved: true }) };
+    installApprovalInterceptor(local, options);
+    assert.strictEqual((await local.check('shell', {})).approved, true);
+    assert.strictEqual(listPending().length, 0);
+    shutdownAllPending();
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);

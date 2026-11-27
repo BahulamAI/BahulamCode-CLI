@@ -169,6 +169,23 @@ export function shutdownAllPending(reason = 'shutdown') {
 
 // ── intercept helper for ApprovalManager ─────────────────────────────
 
+/** Install once per manager. Session IDs are read at check time because /new
+ * and /resume replace the manager and the active session. */
+export function installApprovalInterceptor(manager, { sessionId, enabled, emit } = {}) {
+  if (!manager || manager._prd092Intercepted) return false;
+  const original = manager.check.bind(manager);
+  manager.check = (tool, args, req, ctx) => {
+    const id = sessionId?.();
+    if (!id || enabled?.() === false) return original(tool, args, req, ctx);
+    return interceptApproval(original, {
+      tool, args, req, ctx, sessionId: id,
+      emit: (type, data) => emit?.(type, data, id),
+    });
+  };
+  manager._prd092Intercepted = true;
+  return true;
+}
+
 /**
  * Wrap an ApprovalManager.check() call so that:
  *   (a) an approval_required event is emitted (broadcast to attaches),

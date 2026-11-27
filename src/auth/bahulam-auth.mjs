@@ -10,6 +10,7 @@ import * as http from 'node:http';
 import { getLoginSuccessHTML } from '../ui/banner.mjs';
 import { resolveBackendUrl } from '../core/backend-url.mjs';
 import { bahulamHome } from '../core/paths.mjs';
+import { openBrowser } from '../core/open-browser.mjs';
 
 // Note: computed via a function (not a constant) so that BAHULAM_HOME
 // env-var swaps mid-process still work.
@@ -282,11 +283,8 @@ export class BahulamAuth {
                 process.stderr.write(`\n\x1b[36mOpening browser for login...\x1b[0m\n`);
                 process.stderr.write(`\x1b[2mIf browser doesn't open, visit:\x1b[0m\n  \x1b[4m${authUrl}\x1b[0m\n\n`);
 
-                // Open browser
-                const openCmd = process.platform === 'darwin' ? 'open' :
-                                process.platform === 'win32' ? 'start' : 'xdg-open';
-                import('node:child_process').then(({ exec }) => {
-                    exec(`${openCmd} "${authUrl}"`, () => {});
+                openBrowser(authUrl).catch(() => {
+                    process.stderr.write('\x1b[33mCould not open the browser automatically. Use the login URL above.\x1b[0m\n');
                 });
             });
 

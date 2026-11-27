@@ -67,7 +67,11 @@ export async function startSocketServer({ sessionId, onCommand = {} } = {}) {
 
     const client = _createAttachedClient(sock, sessionId, onCommand);
     clients.add(client);
-    sock.on('close', () => { clients.delete(client); });
+    sock.on('close', () => {
+      clients.delete(client);
+      // A crashed or closed app does not send `bye`. Release its input lock.
+      if (!client.left) onAttachLeft(client.id);
+    });
   });
 
   server.on('error', err => {
@@ -102,8 +106,28 @@ export async function startSocketServer({ sessionId, onCommand = {} } = {}) {
       // the individual client if that client fills.
       const line = _serializeFrame(event);
       for (const client of clients) {
-        try { client.write(line); }
+        if (client.protocolVersion !== 1) continue;
+        if (client.pendingBytes > 8 * 1024 * 1024) { client.end(); continue; }
+        try { client.writeEvent(event, line); }
         catch (err) { try { process.stderr.write(`[socket-server] write to ${client.id} failed: ${err.message}\n`); } catch {} }
+      }
+    },
+    broadcastV2Event(event) {
+      const line = _serializeFrame(event);
+      for (const client of clients) {
+        if (client.protocolVersion !== 2) continue;
+        if (client.pendingBytes > 8 * 1024 * 1024) { client.end(); continue; }
+        try { client.writeEvent(event, line); }
+        catch (err) { try { process.stderr.write(`[socket-server] v2 write to ${client.id} failed: ${err.message}\n`); } catch {} }
+      }
+    },
+    broadcastControlEvent(type, data) {
+      const line = _serializeFrame({
+        seq: 0, ts: new Date().toISOString(), type,
+        session_id: sessionId, v: 1, data,
+      });
+      for (const client of clients) {
+        try { client.write(line); } catch { /* a closed client is removed on close */ }
       }
     },
     attachedCount: () => clients.size,
@@ -129,6 +153,11 @@ let _nextAttachId = 1;
 function _createAttachedClient(sock, sessionId, onCommand) {
   const attachId = `att_${Date.now().toString(36)}_${(_nextAttachId++).toString(36)}`;
   let helloSeen = false;
+  let left = false;
+  let protocolVersion = 1;
+  let replaying = false;
+  let liveQueue = [];
+  let queuedBytes = 0;
   let buf = '';
 
   sock.setEncoding('utf-8');
@@ -163,6 +192,9 @@ function _createAttachedClient(sock, sessionId, onCommand) {
     switch (msg.type) {
       case 'hello': {
         helloSeen = true;
+        // Old `bahulam attach` requests v1. Native clients can opt into the
+        // complete v2 event stream without changing the terminal renderer.
+        protocolVersion = Array.isArray(msg.protocol_versions) && msg.protocol_versions.includes(2) ? 2 : 1;
         const lastSeq = Number(msg.last_seq) || 0;
         //  — input lock: first attach implicitly becomes holder;
         // later attaches join as watchers. The state is stored in
@@ -175,10 +207,21 @@ function _createAttachedClient(sock, sessionId, onCommand) {
           data: {
             attach_id: attachId,
             session_id: sessionId,
+            protocol_version: protocolVersion,
             input_lock: { holder: lockInfo.holder, kind: lockInfo.kind },
           },
         });
-        await _replaySince(lastSeq);
+        replaying = true;
+        const replaySeq = await _replaySince(lastSeq);
+        replaying = false;
+        // Events emitted during the async disk replay must follow that replay,
+        // with duplicates removed by sequence. Otherwise a live text delta
+        // can overtake older history and be discarded by a native renderer.
+        for (const item of liveQueue) {
+          if (Number(item.event.seq) > replaySeq) sock.write(item.line);
+        }
+        liveQueue = [];
+        queuedBytes = 0;
         _send({
           seq: 0, ts: new Date().toISOString(), type: 'attach_joined',
           session_id: sessionId, v: 1,
@@ -215,6 +258,7 @@ function _createAttachedClient(sock, sessionId, onCommand) {
 
       case 'bye': {
         onAttachLeft(attachId);
+        left = true;
         // Serialize attach_left, then end() only after the write drains.
         // Immediate sock.end() after sock.write() races the flush on some
         // kernels — the FIN can go out before the frame's last byte lands
@@ -257,7 +301,14 @@ function _createAttachedClient(sock, sessionId, onCommand) {
           _sendError('not_implemented', `command ${msg.type} is not wired yet (deferred slice)`, msg.reply_to);
           return;
         }
-        try { await handler(msg.data || {}, attachId); }
+        try {
+          await handler(msg.data || {}, attachId);
+          if (msg.type === 'send_message') {
+            _send({ seq: 0, ts: new Date().toISOString(), type: 'command_ack',
+                    session_id: sessionId, v: 1,
+                    data: { command: 'send_message', in_reply_to: msg.reply_to || null } });
+          }
+        }
         catch (err) { _sendError('handler_failed', err.message, msg.reply_to); }
         return;
       }
@@ -300,12 +351,24 @@ function _createAttachedClient(sock, sessionId, onCommand) {
       _send({ seq: 0, ts: new Date().toISOString(), type: 'replay_batch_start',
               session_id: sessionId, v: 1, data: { from_seq: firstSeq, to_seq: lastSeqSeen } });
       for (const evt of batch) {
-        const legacy = toLegacyEvent(evt);
-        if (legacy) _send(legacy);
+        const frame = protocolVersion === 2 ? evt : toLegacyEvent(evt);
+        if (frame) _send(frame);
       }
       _send({ seq: 0, ts: new Date().toISOString(), type: 'replay_batch_end',
               session_id: sessionId, v: 1, data: { from_seq: firstSeq, to_seq: lastSeqSeen } });
     }
+    return lastSeqSeen;
+  }
+
+  function _writeEvent(event, line) {
+    if (!replaying) { sock.write(line); return; }
+    queuedBytes += Buffer.byteLength(line);
+    if (queuedBytes > 8 * 1024 * 1024) {
+      sock.end();
+      liveQueue = [];
+      return;
+    }
+    liveQueue.push({ event, line });
   }
 
   function _send(obj) {
@@ -323,6 +386,10 @@ function _createAttachedClient(sock, sessionId, onCommand) {
 
   return {
     id: attachId,
+    get left() { return left; },
+    get protocolVersion() { return protocolVersion; },
+    get pendingBytes() { return sock.writableLength; },
+    writeEvent: _writeEvent,
     write: line => sock.write(line),
     end: () => sock.end(),
   };

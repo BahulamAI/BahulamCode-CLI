@@ -37,7 +37,7 @@ import { rustTuiEnvironment } from '../daemon/rust-tui-settings.mjs';
 import { rustTuiAvailable, startRustTuiHost } from '../daemon/rust-tui-host.mjs';
 import { rustTranscriptItems, rustResumeItems, rustUsageBaseline, rustSessionUsage, rustAttachmentArtifacts } from '../daemon/rust-tui-snapshot.mjs';
 import { createRustApprovalBridge } from '../daemon/rust-approval.mjs';
-import { resolvePending, interceptApproval, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
+import { resolvePending, installApprovalInterceptor, shutdownAllPending, setTimeoutPolicy } from '../daemon/approval-store.mjs';
 import { wireEmit as wireInputLockEmit, resetInputLock } from '../daemon/input-lock.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
 import { loadRemoteConfig } from '../commands/remote.mjs';
@@ -2217,6 +2217,7 @@ function flushFoldedSubAgentTools(key = null) {
 // Set while the REPL is active so local socket/remote terminal clients can
 // submit prompts through the same serial queue as readline.
 let _submitExternalPrompt = null;
+let _activeStreamClient = null;
 let _rustTuiActive = false;
 let _rustTuiHost = null;
 let _rustApprovalBridge = null;
@@ -2900,6 +2901,7 @@ function renderEvent(event) {
         if (process.env.BAHULAM_DAEMON_EVENTLOG === '1' && !session._prd092SocketStarting && !session._prd092SocketServer) {
           session._prd092SocketStarting = true;
           const _sid = session.id;
+          const _generation = session._prd092Generation || 0;
           (async () => {
             try {
               const server = await startSocketServer({
@@ -2919,11 +2921,9 @@ function renderEvent(event) {
                     if (!ok) try { process.stderr.write(`[prd-092] deny for unknown apr_id ${payload?.apr_id}\n`); } catch {}
                   },
                   // Slice C/E — interrupt from an attach holder cancels the
-                  // current turn. Uses the stream client on the closure
-                  // above (streamClient variable is in scope in this file
-                  // at the outer REPL loop; if unavailable, log and skip).
+                  // current turn through the active REPL's stream client.
                   interrupt: async (_payload, _attachId) => {
-                    try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {}
+                    try { _activeStreamClient?.()?.cancel?.(); } catch {}
                   },
                   send_message: async (_payload, _attachId) => {
                     const instruction = String(_payload?.text ?? _payload?.instruction ?? '').trim();
@@ -2933,12 +2933,21 @@ function renderEvent(event) {
                   },
                 }
               });
+              if ((session._prd092Generation || 0) !== _generation || session.id !== _sid) {
+                await server.close();
+                return;
+              }
               session._prd092SocketServer = server;
-              session._prd092Unregister = registerBroadcaster(evt => server.broadcastEvent(evt));
+              const unregisterV1 = registerBroadcaster(evt => server.broadcastEvent(evt));
+              const unregisterV2 = registerBroadcaster(evt => server.broadcastV2Event(evt), {
+                schemaVersion: 2, live: true, retainDetails: true,
+              });
+              session._prd092Unregister = () => { unregisterV1(); unregisterV2(); };
               // Slice E — input-lock changes broadcast via the tap so the
               // input_lock_changed events flow to attached clients + land
               // in the event log. Emit under the sessionId in scope.
               wireInputLockEmit((type, data) => {
+                server.broadcastControlEvent(type, data);
                 try { tapSseEvent({ type, data }, { sessionId: _sid }); }
                 catch { /* never blocks a lock transition */ }
               });
@@ -2956,29 +2965,6 @@ function renderEvent(event) {
                   durationSec: Number(secStr) || 0,
                 });
               } catch { /* stay on hold */ }
-              // Slice E — intercept ApprovalManager.check so every prompt
-              // also emits approval_required to attached clients AND can be
-              // resolved by a remote approve/deny command (racing the local
-              // TTY prompt; first answer wins). Only patch once per session.
-              try {
-                if (approval && !approval._prd092Intercepted) {
-                  const orig = approval.check.bind(approval);
-                  approval.check = (tool, args, req, ctx) => _rustTuiActive
-                    ? orig(tool, args, req, ctx)
-                    : interceptApproval(orig, {
-                    tool, args, req, ctx,
-                    sessionId: _sid,
-                    remoteOnly: _rustTuiActive,
-                    emit: (type, data) => {
-                      try { tapSseEvent({ type, data }, { sessionId: _sid }); }
-                      catch { /* never blocks approval */ }
-                    },
-                  });
-                  approval._prd092Intercepted = true;
-                }
-              } catch (err) {
-                try { process.stderr.write(`[prd-092] approval intercept: ${err.message}\n`); } catch {}
-              }
               // Slice H — dial the relay if `bahulam remote enable` set the
               // flag. Bridge is bidirectional: local events go out as
               // control-frame envelopes, incoming envelopes dispatch to the
@@ -2994,7 +2980,7 @@ function renderEvent(event) {
                     onCommand: {
                       approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
                       deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
-                      interrupt: async () => { try { if (typeof streamClient?.cancel === 'function') streamClient.cancel(); } catch {} },
+                      interrupt: async () => { try { _activeStreamClient?.()?.cancel?.(); } catch {} },
                       send_message: async (payload, _attachId) => {
                         const instruction = String(payload?.text ?? payload?.instruction ?? '').trim();
                         if (!instruction) throw new Error('send_message requires non-empty text');
@@ -3041,7 +3027,7 @@ function renderEvent(event) {
             } catch (err) {
               try { process.stderr.write(`[prd-092] socket server: ${err.message}\n`); } catch {}
             } finally {
-              session._prd092SocketStarting = false;
+              if ((session._prd092Generation || 0) === _generation) session._prd092SocketStarting = false;
             }
           })();
         }
@@ -4886,6 +4872,12 @@ export async function startTerminalRepl() {
   const skipPerms = cliArgs.skipPermissions;
   let approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
       getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
+  const installSessionApproval = manager => installApprovalInterceptor(manager, {
+    sessionId: () => session.id,
+    enabled: () => process.env.BAHULAM_DAEMON_EVENTLOG === '1' && !_rustTuiActive,
+    emit: (type, data, sessionId) => tapSseEvent({ type, data }, { sessionId }),
+  });
+  installSessionApproval(approval);
 
   // Session manager — persists conversation messages to .bahulam/conversations/
   let sessionMgr = new SessionManager(safeCwd());
@@ -4896,6 +4888,7 @@ export async function startTerminalRepl() {
 
   // Persistent stream client — session_id captured from backend on first turn
   let streamClient = null;
+  _activeStreamClient = () => streamClient;
   let activeLocalAgent = null;
 
   const ctx = {
@@ -4928,6 +4921,22 @@ export async function startTerminalRepl() {
   };
   let recoveredFollowups = [];
 
+  async function closeAttachSession(reason = 'session changed') {
+    session._prd092Generation = (session._prd092Generation || 0) + 1;
+    session._prd092SocketStarting = false;
+    const unregister = session._prd092Unregister;
+    session._prd092Unregister = null;
+    try { unregister?.(); } catch {}
+    const bridge = session._prd092RelayBridge;
+    session._prd092RelayBridge = null;
+    try { await bridge?.stop?.(); } catch {}
+    const server = session._prd092SocketServer;
+    session._prd092SocketServer = null;
+    wireInputLockEmit(null);
+    try { await server?.close?.(); } catch {}
+    shutdownAllPending(reason);
+  }
+
   // Wake-on-finish: background jobs with on_complete dispatch their target
   // agent through the trigger funnel when they exit. The ctx builder runs
   // lazily at fire time so it sees the live tool executor.
@@ -4936,6 +4945,7 @@ export async function startTerminalRepl() {
   });
 
   async function startNewSession({ announce = true } = {}) {
+    await closeAttachSession('new session');
     recoveredFollowups = [];
     stopSpinner();
     flushContent();
@@ -4971,6 +4981,7 @@ export async function startTerminalRepl() {
     await attachPluginMcp(toolExecutor);
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
       getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
+    installSessionApproval(approval);
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgrRef.current = sessionMgr;
@@ -5125,6 +5136,7 @@ export async function startTerminalRepl() {
     }
 
     onProgress('rebuilding local session state', 55);
+    await closeAttachSession('resuming another session');
     checkpoints = new CheckpointManager(safeCwd());
     effectivePolicy = loadEffectivePolicy({ cwd: safeCwd() });
     hookRunner = new HookRunner({ cwd: safeCwd(), sessionId });
@@ -5132,6 +5144,7 @@ export async function startTerminalRepl() {
     await attachPluginMcp(toolExecutor);
     approval = new ApprovalManager({ autoApprove: skipPerms, cwd: safeCwd(), policy: effectivePolicy.policy,
       getPromptHandler: () => _rustTuiActive ? _rustApprovalBridge?.choose : null });
+    installSessionApproval(approval);
     if (ctx._rl) approval.setReadline(ctx._rl);
     sessionMgr = new SessionManager(safeCwd());
     sessionMgr.activateSession(sessionId, {
@@ -7376,10 +7389,12 @@ export async function startTerminalRepl() {
   }
 
   rl.on('close', async () => {
+    await closeAttachSession('session ended');
     _rustTuiHost?.close();
     _rustTuiHost = null;
     _rustTuiActive = false;
     _submitExternalPrompt = null;
+    _activeStreamClient = null;
     clearSlashHint({ restoreCursor: false });
     inputActive = false;
     stopSpinner();

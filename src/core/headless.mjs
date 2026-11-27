@@ -27,6 +27,7 @@ import { loadMcpServers } from '../mcp/loader.mjs';
 // is invisible to attach clients and to paired mobile devices.
 import { tapSseEvent, registerBroadcaster } from '../daemon/event-tap.mjs';
 import { startSocketServer } from '../daemon/socket-server.mjs';
+import { wireEmit as wireInputLockEmit } from '../daemon/input-lock.mjs';
 import { startHttpDashboard } from '../daemon/http-dashboard.mjs';
 import { resolvePending } from '../daemon/approval-store.mjs';
 import { startRelayBridge } from '../daemon/relay-client.mjs';
@@ -532,10 +533,14 @@ export async function runHeadless({ instruction, model, timeout = 300, maxCost, 
                                     approve: async (payload, attachId) => resolvePending('approve', payload?.apr_id, attachId, payload?.note),
                                     deny: async (payload, attachId) => resolvePending('deny', payload?.apr_id, attachId, payload?.note),
                                     interrupt: async () => { try { if (typeof client?.cancel === 'function') client.cancel(); } catch {} },
-                                    send_message: async () => { /* Slice C follow-up */ },
+                                    send_message: async () => { throw new Error('Headless Code sessions do not accept interactive messages'); },
                                 },
                             });
                             registerBroadcaster(evt => server.broadcastEvent(evt));
+                            registerBroadcaster(evt => server.broadcastV2Event(evt), {
+                                schemaVersion: 2, live: true, retainDetails: true,
+                            });
+                            wireInputLockEmit((type, data) => server.broadcastControlEvent(type, data));
 
                             // Optional HTTP browser dashboard (opt-in with BAHULAM_DASHBOARD=1)
                             let dashboardUrl = null;
